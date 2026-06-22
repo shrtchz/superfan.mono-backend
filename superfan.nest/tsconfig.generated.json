@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "dist/generated",
+    "rootDir": "generated",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "declaration": false,
+    "sourceMap": false,
+    "inlineSources": false,
+    "sourceRoot": "",
+    "emitDeclarationOnly": false
+  },
+  "include": ["generated/**/*.ts"]
+}

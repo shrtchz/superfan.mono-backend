@@ -1,0 +1,62 @@
+services:
+  api:
+    build:
+      context: .
+      target: build
+    container_name: superfan-api
+    command: pnpm start:dev
+    ports:
+      - '3001:3000'
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://postgres:password@db:5432/superfan?connection_limit=10&pool_timeout=20
+      - LOCAL_REDIS_HOST=redis
+    volumes:
+      - .:/app
+      - /app/node_modules
+    depends_on:
+      - redis
+      - db
+      - maildev
+    restart: unless-stopped
+
+  redis:
+    image: redis:7
+    container_name: superfan-redis
+    ports:
+      - '6379:6379'
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+  redis-insight:
+    image: redis/redisinsight:latest
+    container_name: superfan-redis-insight
+    ports:
+      - '5540:5540'
+    depends_on:
+      - redis
+
+  db:
+    image: postgres:16
+    container_name: superfan-db
+    ports:
+      - '5433:5432'
+    env_file:
+      - .env
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  maildev:
+    image: maildev/maildev
+    container_name: superfan-maildev
+    ports:
+      - '1080:1080' # Web UI
+      - '1025:1025' # SMTP
+
+volumes:
+  redis-data:
+  pgdata:

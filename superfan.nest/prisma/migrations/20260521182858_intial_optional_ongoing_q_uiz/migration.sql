@@ -1,0 +1,7 @@
+-- AlterTable
+ALTER TABLE "ongoing_quizzes" ALTER COLUMN "totalTime" DROP NOT NULL,
+ALTER COLUMN "accuracyBonus" DROP NOT NULL,
+ALTER COLUMN "adBonuses" DROP NOT NULL,
+ALTER COLUMN "baseScore" DROP NOT NULL,
+ALTER COLUMN "speedBonus" DROP NOT NULL,
+ALTER COLUMN "streakMultiplier" DROP NOT NULL;

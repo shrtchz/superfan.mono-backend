@@ -1,0 +1,951 @@
+generator client {
+  provider     = "prisma-client-js"
+  // output       = "../generated/prisma" // Adjusted to match the new directory structure for generated Prisma client code.
+  // output       = "../../src/generated/prisma"
+  moduleFormat = "cjs" //Matches Prisma's output format with NestJS's CommonJS runtime environment.
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id                     Int                 @id @default(autoincrement())
+  firstName              String
+  lastName               String?
+  email                  String              @unique
+  password               String
+  username               String              @unique
+  referral_code          String?             @unique
+  phone                  String?
+  hashedRt               String?
+  roleName               String
+  login_timestamp        DateTime?
+  active                 Boolean             @default(false)
+  verificationCode       String?
+  verificationCodeExpiry DateTime?
+  profilePicture         String?
+  verify_photo           String?
+  address                String?
+  bvn                    String?
+  country                String?
+  postal_code            String?
+  dob                    DateTime?
+  nin                    String?
+  resetToken             String?
+  resetTokenExpiry       DateTime?
+  banReason              String?
+  unBanReason            String?
+  banCategory            String?
+  userCode               String?
+  isBanned               Boolean             @default(false)
+  createdAt              DateTime            @default(now())
+  state                  String?
+  referredByCode         String?
+  languagePreference     String?
+  subjectPreference      String?
+  subscriptionPlan       SubscriptionPlan?
+  testLevel              TestLevel?
+  userHistory            UserHistory[]       @relation("UserToHistory")
+  payouts                Payout[]            @relation("UserToPayouts")
+  login_method           String?
+  ip_address             String?
+  isOnline               Boolean             @default(false)
+  lastSeen               DateTime?
+  subAccountCode         String?
+  accountNumber          String?
+  accounts               Json?
+  bankCode               String?
+  location               String?
+  flw_customer_id        String?
+  busha_customer_id      String?
+  busha_balance_id       String?
+  bitnob_customer_id     String?
+  dailyStreak            Int                 @default(0)
+  lastStreakDate         DateTime? // last date a streak was counted
+  questionPreference     QuestionPreference?
+  timePreference         TimePreference?
+  accountReference       String?
+  admin                  Admin?
+  notifications          Notification[]
+  referralsReceived      Referral[]          @relation("Referee")
+  referralsMade          Referral[]          @relation("Referrer")
+  subAdmin               SubAdmin?
+  subAdminInvites        SubAdminInvite[]
+  wallet                 Wallet?
+  WalletTransaction      WalletTransaction[]
+  activityWallets        ActivityWallet[]
+  userHistories          UserHistory[]
+  cardFundings           CardFunding[]
+  bankTransfers          BankTransfer[]
+  userCards              UserCard[]
+  ongoingQuizs           OngoingQuiz[]
+}
+
+model Reward {
+  id        String        @id @default(uuid())
+  userId    Int
+  amount    Int
+  currency  String
+  reference String?
+  type      String // e.g. 'REFERRAL_SIGNUP', 'REFERRAL_TEST'
+  status    EarningStatus @default(PENDING)
+  createdAt DateTime      @default(now())
+}
+
+model Point {
+  id        String   @id @default(uuid())
+  userId    Int
+  points    Int
+  reference String?
+  type      String // e.g. 'REFERRAL_SIGNUP', 'REFERRAL_TEST'
+  createdAt DateTime @default(now())
+}
+
+model Admin {
+  id     Int  @id @default(autoincrement())
+  userId Int  @unique
+  roleId Int
+  role   Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Subscription {
+  id                 Int                 @id @default(autoincrement())
+  userId             Int
+  subscriptionPlan   SubscriptionPlan
+  status             String
+  amount             Int
+  debitAmount        Int
+  startDate          DateTime
+  endDate            DateTime
+  paymentMethod      String?
+  mandateReference   String?
+  paymentReference   String?
+  cardToken          String?
+  paymentDates       Json?
+  paymentStatus      String
+  mandateCode        String?
+  subscriptionDebits SubscriptionDebit[]
+}
+
+model SubscriptionDebit {
+  id               Int      @id @default(autoincrement())
+  subscriptionId   Int
+  amount           Int
+  debitDate        DateTime
+  paymentReference String   @unique
+  transactionRef   String?
+  status           String // PENDING, SUCCESS, FAILED
+  narration        String?
+  createdAt        DateTime @default(now())
+
+  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+}
+
+model PaymentProcessor {
+  id          Int       @id @default(autoincrement())
+  name        String // monnify, flutterwave, busha
+  publicKey   String?
+  secretKey   String?
+  isEnabled   Boolean   @default(false)
+  isConnected Boolean   @default(false)
+  lastSync    DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model BankTransfer {
+  id Int @id @default(autoincrement())
+
+  // Relationship
+  userId Int
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Monnify references
+  transactionReference String @unique
+  paymentReference     String @unique
+
+  // Bank details
+  accountNumber String
+  accountName   String
+  bankName      String
+  bankCode      String
+
+  // Payment details
+  amount       Decimal @db.Decimal(18, 2)
+  fee          Decimal @default(0) @db.Decimal(18, 2)
+  totalPayable Decimal @db.Decimal(18, 2)
+
+  // Transfer metadata
+  ussdPayment        String?
+  collectionChannel  String?
+  productInformation String?
+
+  // Status tracking
+  status BankTransferStatus @default(PENDING)
+
+  // Timing
+  requestTime            DateTime
+  expiresOn              DateTime
+  accountDurationSeconds Int
+
+  // Webhook / payment confirmation
+  paidAt      DateTime?
+  completedAt DateTime?
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([transactionReference])
+  @@index([paymentReference])
+  @@index([status])
+}
+
+model PaymentPlan {
+  id              Int      @id @default(autoincrement())
+  name            String   @unique
+  amount          String?
+  interval        String?
+  duration        Int?
+  payment_plan_id String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model SubAdmin {
+  id                  Int                  @id @default(autoincrement())
+  userId              Int                  @unique
+  roleId              Int
+  role                Role                 @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  user                User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subAdminPermissions SubAdminPermission[]
+}
+
+model SubAdminInvite {
+  id                  Int                  @id @default(autoincrement())
+  email               String
+  token               String               @unique
+  expiresAt           DateTime
+  createdAt           DateTime             @default(now())
+  invitedById         Int?
+  invitedBy           User?                @relation(fields: [invitedById], references: [id])
+  subAdminPermissions SubAdminPermission[]
+}
+
+model Permission {
+  id                  Int                  @id @default(autoincrement())
+  name                String               @unique
+  description         String?
+  roles               RolePermission[]
+  subAdminPermissions SubAdminPermission[]
+}
+
+model Role {
+  id          Int              @id @default(autoincrement())
+  name        String
+  admins      Admin[]
+  permissions RolePermission[]
+  subAdmins   SubAdmin[]
+}
+
+model RolePermission {
+  id           Int        @id @default(autoincrement())
+  roleId       Int
+  permissionId Int
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+}
+
+model SubAdminPermission {
+  id           Int             @id @default(autoincrement())
+  subAdminId   Int?
+  permissionId Int
+  inviteId     Int?
+  invite       SubAdminInvite? @relation(fields: [inviteId], references: [id])
+  permission   Permission      @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  subAdmin     SubAdmin?       @relation(fields: [subAdminId], references: [id], onDelete: Cascade)
+
+  @@unique([inviteId, permissionId])
+}
+
+model Task {
+  id                Int           @id @default(autoincrement())
+  title             String
+  description       String?
+  priority          TaskPriority
+  status            TaskStatus    @default(PENDING)
+  dueDate           DateTime
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  assignTo          String
+  assignmentDate    DateTime
+  assignerId        Int
+  assignerFirstName String
+  assignerLastName  String
+  assignerUserName  String
+  userId            Int
+  isDeleted         Boolean
+  taskMessages      TaskMessage[]
+}
+
+model TaskMessage {
+  id        Int      @id @default(autoincrement())
+  taskId    Int
+  senderId  Int
+  message   String
+  createdAt DateTime @default(now())
+  task      Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+}
+
+model Notification {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  title     String
+  message   String
+  amount    Float?
+  type      String?
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Quote {
+  id        Int      @id @default(autoincrement())
+  text      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Referral {
+  id                Int            @id @default(autoincrement())
+  referrerId        Int
+  refereeId         Int
+  status            ReferralStatus @default(SIGNED_UP)
+  signupRewardGiven Boolean        @default(false)
+  testRewardGiven   Boolean        @default(false)
+  createdAt         DateTime       @default(now())
+  referee           User           @relation("Referee", fields: [refereeId], references: [id], onDelete: Cascade)
+  referrer          User           @relation("Referrer", fields: [referrerId], references: [id], onDelete: Cascade)
+}
+
+model UserWithdrawalBank {
+  id            Int      @id @default(autoincrement())
+  accountName   String
+  accountNumber String
+  bankName      String
+  bankCode      String
+  userId        Int
+  createdAt     DateTime @default(now())
+}
+
+model UserWithdrawalWallet {
+  id            Int      @id @default(autoincrement())
+  walletAddress String
+  recipientId   String? // maps to Busha recipient_id for crypto wallets
+  symbol        String
+  network       String
+  userId        Int
+  createdAt     DateTime @default(now())
+}
+
+model UserCard {
+  id         Int      @id @default(autoincrement())
+  userId     Int
+  cardToken  String?
+  cardNumber String?
+  maskedPan  String?
+  cardType   String?
+  expiry     String?
+  issuer     String?
+  country    String?
+  isDefault  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+}
+
+model OngoingQuiz {
+  id     String @id @default(cuid())
+  userId Int
+
+  // Quiz metadata
+  testQuiz            String // e.g. "yoruba"
+  subject             String // e.g. "politics"
+  testLevel           String // e.g. "basic"
+  totalEarning        Int // e.g. 2000
+  totalEarninginUSDC  Int? // e.g. 2
+  totalEarninginUSDT  Int? // e.g. 2
+  totalEarninginNaira Int? // e.g. 2000
+  totalQuestions      Int // e.g. 5
+  totalTime           Int? // total time in seconds
+  baseScore           Int? // base score for the quiz
+  isRandom            Boolean @default(false)
+  accuracyBonus       Int? // bonus points for accuracy
+  speedBonus          Int? // bonus points for speed
+  streakMultiplier    Int? // multiplier for consecutive correct answers
+  adBonuses           Int? // bonus points from ads
+  quizTime            String? // time taken by user in seconds
+  timeRemaining       Int // countdown tracker in seconds
+
+  // Questions stored as JSON array
+  questions   Json // QuizQuestion[]
+  quizAttempt QuizAttempt?
+
+  // User progress
+  answers      Json    @default("[]") // UserAnswer[]
+  currentIndex Int     @default(0)
+  earnedAmount Int     @default(0)
+  isCompleted  Boolean @default(false)
+
+  startedAt   DateTime?
+  expiresAt   DateTime? // startedAt + totalTime
+  completedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, isCompleted])
+  @@map("ongoing_quizzes")
+}
+
+model QuizAttempt {
+  id     Int    @id @default(autoincrement())
+  userId Int
+  quizId String @unique
+
+  startedAt   DateTime?
+  expiresAt   DateTime?
+  completedAt DateTime?
+
+  isStarted   Boolean
+  isCompleted Boolean
+
+  quiz OngoingQuiz @relation(fields: [quizId], references: [id], onDelete: Cascade)
+}
+
+model OngoingLiveQuiz {
+  id Int @id @default(autoincrement())
+
+  userId   String
+  quizIds  String[]
+  streamId Int?
+
+  questions Json?
+
+  answers Json?
+
+  totalEarning Int?
+
+  completed Boolean @default(false)
+
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  liveQuizAttempts LiveQuizAttempt[]
+
+  @@map("ongoing_live_quiz")
+}
+
+model LiveQuizAttempt {
+  id Int @id @default(autoincrement())
+
+  userId            String
+  quizId            String
+  ongoingLiveQuizId Int?
+
+  totalPrize  Int?
+  recipients  Int?
+  unitPrize   Int?
+  earning     Int     @default(0)
+  isWinner    Boolean @default(false)
+  isCompleted Boolean @default(false)
+
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  ongoingLiveQuiz OngoingLiveQuiz? @relation(fields: [ongoingLiveQuizId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, quizId])
+  @@index([quizId])
+  @@index([userId])
+  @@index([quizId, isCompleted])
+  @@map("live_quiz_attempts")
+}
+
+model LiveQuizLeaderboard {
+  id           Int      @id @default(autoincrement())
+  userId       String
+  quizId       String
+  question     String
+  answer       String
+  rewardType   String?
+  isWinner     Boolean  @default(false)
+  participants Int      @default(0)
+  unitPrize    Int      @default(0)
+  rewardStatus String   @default("pending") // "paid" | "pending" | "none"
+  quizDate     DateTime
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([userId])
+  @@index([quizId])
+  @@index([quizDate])
+}
+
+model QuizLeaderboard {
+  id             Int      @id @default(autoincrement())
+  userId         String
+  quizId         String
+  subject        String
+  testLevel      String
+  score          Int?
+  selectedAnswer String
+  quizTime       String?
+  accuracyBonus  String?
+  position       Int?
+  correctAnswer  String
+  earning        Int
+  submittedAt    DateTime
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([userId])
+  @@index([quizId])
+}
+
+model Wallet {
+  id          Int   @id @default(autoincrement())
+  userId      Int   @unique
+  balance     Float @default(0)
+  usdcBalance Float @default(0)
+  usdtBalance Float @default(0)
+  user        User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model WalletTransaction {
+  id           Int     @id @default(autoincrement())
+  userId       Int
+  amount       Float
+  type         String?
+  username     String?
+  account_name String?
+
+  payment_method  String?
+  bank_name       String?
+  cardToken       String?
+  wallet_address  String?
+  account_no      String?
+  account_type    String?
+  settlement_date DateTime?
+  reference       String?
+  status          String?
+  total_earnings  Float?
+  payouts         Float?
+  last_payout     DateTime?
+  payment_date    DateTime?
+  pending_balance Float?
+  rewardType      String?
+  transactionType String?
+  description     String?
+  trx_ref         String?
+
+  walletId Int?
+
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model exchangeRate {
+  id           Int      @id @default(autoincrement())
+  fromCurrency String
+  toCurrency   String
+  rate         Float
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([fromCurrency, toCurrency])
+}
+
+model CardFunding {
+  id       Int  @id @default(autoincrement())
+  userId   Int
+  walletId Int?
+
+  amount    Float
+  currency  String
+  reference String  @unique
+  flwRef    String?
+
+  status    String // PENDING | PROCESSING | SUCCESS | FAILED
+  cardLast4 String?
+  cardToken String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model ActivityMonitor {
+  id         Int          @id @default(autoincrement())
+  type       ActivityType
+  actorId    Int?
+  actorName  String
+  actorEmail String
+  metadata   Json?
+  createdAt  DateTime     @default(now())
+
+  @@index([createdAt])
+}
+
+model ActivityWallet {
+  id          Int            @id @default(autoincrement())
+  userId      Int
+  type        ActivityType // CREDIT | DEBIT
+  title       String // Short label (e.g. "Money Sent")
+  description String // Human-readable message
+  amount      Float
+  currency    String
+  reference   String?
+  status      ActivityStatus // PENDING | SUCCESS | FAILED
+  metadata    Json? // Extra flexible data (bank, crypto, etc.)
+  createdAt   DateTime       @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model BushaBalance {
+  id         Int    @id @default(autoincrement())
+  balance_id String @unique
+  currency   String
+}
+
+model BushaQuotes {
+  id              Int      @id @default(autoincrement())
+  quote_id        String   @unique
+  user_id         Int
+  customer_id     String
+  source_currency String
+  target_currency String
+  source_amount   String
+  target_amount   String
+  created_at      DateTime @default(now())
+}
+
+model BushaTransfer {
+  id     Int    @id @default(autoincrement())
+  trf_id String @unique // maps to data.id
+  status String
+  pay_in Json? // stores the pay_in object
+  fees   Json? // stores the fees array
+
+  // Optional but useful fields
+  quote_id        String?
+  profile_id      String?
+  source_currency String?
+  target_currency String?
+  source_amount   String?
+  target_amount   String?
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+}
+
+model Payout {
+  id          Int          @id @default(autoincrement())
+  userId      Int
+  amount      Float
+  method      PayoutMethod
+  reference   String       @unique
+  currency    String
+  status      PayoutStatus @default(PENDING)
+  provider    String? // e.g. "Monnify", "Flutterwave", "Busha"
+  metadata    Json? // flexible extra data
+  providerRef String? // external transaction id
+  processedAt DateTime?
+  createdAt   DateTime     @default(now())
+  user        User         @relation("UserToPayouts", fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model bitnobWithdrawal {
+  id                Int       @id @default(autoincrement())
+  transactionId     String
+  status            String
+  address           String
+  amount            String
+  currency          String
+  chain             String
+  reference         String
+  userId             Int
+  memo              String?
+  description       String?
+  hash              String?
+  fee               String?
+  success_timestamp DateTime?
+  created_at        DateTime
+}
+
+model UserHistory {
+  id          Int         @id @default(autoincrement())
+  userId      Int
+  creatorId   Int
+  type        HistoryType
+  title       String
+  description String
+  submittedBy SubmittedBy
+  createdAt   DateTime    @default(now())
+  user        User        @relation("UserToHistory", fields: [userId], references: [id], onDelete: Cascade)
+  creator     User        @relation(fields: [creatorId], references: [id])
+
+  @@index([userId])
+  @@index([createdAt])
+}
+
+model Stream {
+  id                Int             @id @default(autoincrement())
+  userId            Int
+  title             String
+  description       String?
+  privacyStatus     String
+  broadcastId       String?
+  streamId          String?
+  rtmpUrl           String?
+  streamKey         String?
+  networkPlatform   String          @default("unknown")
+  streamUrl         String?
+  liveTiming        String?
+  preRecordedTiming String?
+  status            String // live, pre-recorded, scheduled
+  scheduledDate     DateTime?
+  category          String?
+  thumbnailUrl      String?
+  recordedVideoUrl  String?
+  duration          String? // in seconds
+  lockChat          Boolean         @default(false)
+  isActive          Boolean         @default(false)
+  createdAt         DateTime        @default(now())
+  streamComments    StreamComment[]
+}
+
+model YouTubeToken {
+  id           Int       @id @default(autoincrement())
+  service      String    @unique @default("youtube")
+  accessToken  String?
+  refreshToken String?
+  expiryDate   DateTime?
+  scope        String?
+  tokenType    String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+}
+
+model StreamComment {
+  id       Int @id @default(autoincrement())
+  streamId Int
+  userId   Int
+
+  message String
+
+  // Stats
+  likesCount   Int @default(0)
+  reportsCount Int @default(0)
+
+  isDeleted Boolean
+  isWinner  Boolean  @default(false)
+  isPinned  Boolean  @default(false)
+  winAmount Float?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  stream  Stream          @relation(fields: [streamId], references: [id], onDelete: Cascade)
+  likes   CommentLike[]
+  reports CommentReport[]
+  replies CommentReply[]
+}
+
+model CommentLike {
+  id        Int      @id @default(autoincrement())
+  commentId Int
+  userId    Int
+  createdAt DateTime @default(now())
+
+  comment StreamComment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+
+  @@unique([commentId, userId])
+}
+
+model CommentReply {
+  id Int @id @default(autoincrement())
+
+  commentId Int
+  userId    Int
+
+  message String
+
+  likesCount   Int @default(0)
+  reportsCount Int @default(0)
+
+  isDeleted Boolean
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // relation
+  comment StreamComment @relation(fields: [commentId], references: [id])
+
+  @@index([commentId])
+}
+
+model CommentReport {
+  id        Int      @id @default(autoincrement())
+  commentId Int
+  userId    Int
+  reason    String?
+  createdAt DateTime @default(now())
+
+  comment StreamComment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+
+  @@unique([commentId, userId])
+}
+
+// model StreamComment {
+//   id        Int      @id @default(autoincrement())
+//   streamId  Int
+//   userId    Int
+//   message   String
+//   likes     Int      @default(0)
+//   replies    Int      @default(0)
+//   reply String?
+//   reports    Int      @default(0)
+//   repor String? // array of userIds who reported
+//   createdAt DateTime @default(now())
+// }
+
+enum HistoryType {
+  REPORT
+  FEEDBACK
+}
+
+enum SubmittedBy {
+  ADMIN
+  USER
+  SYSTEM
+}
+
+enum PayoutStatus {
+  COMPLETED
+  PENDING
+}
+
+enum PayoutMethod {
+  BUSHA
+  FLUTTERWAVE
+  MONNIFY
+}
+
+enum TaskPriority {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum TaskStatus {
+  PENDING
+  COMPLETED
+}
+
+enum ActivityType {
+  user_registered
+  content_approved
+  report_submitted
+  subadmin_registered
+  credit
+  debit
+}
+
+enum ActivityStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
+enum ReferralStatus {
+  CLICKED
+  SIGNED_UP
+  FIRST_TEST_COMPLETED
+}
+
+enum SubscriptionPlan {
+  FREE
+  PREMIUM_PRO
+  PREMIUM_PRO_MAX
+}
+
+// enum Language {
+//   yoruba
+//   igbo
+//   hausa
+// }
+
+// enum Subject {
+//   general
+//   proverbs
+//   folktale
+//   sports
+//   politics
+//   drama
+// }
+
+enum TestLevel {
+  basic
+  intermediate
+  advanced
+}
+
+enum EarningStatus {
+  PENDING
+  AVAILABLE
+  PAID_OUT
+}
+
+enum QuestionPreference {
+  Q5    @map("5")
+  Q25   @map("25")
+  Q50   @map("50")
+  Q100  @map("100")
+  Q200  @map("200")
+  Q400  @map("400")
+  Q1000 @map("1000")
+}
+
+enum TimePreference {
+  T5        @map("5")
+  T25       @map("25")
+  T15       @map("15")
+  T30       @map("30")
+  T45       @map("45")
+  T60       @map("60")
+  UNLIMITED @map("unlimited")
+}
+
+enum BankTransferStatus {
+  PENDING
+  PAID
+  EXPIRED
+  FAILED
+  CANCELLED
+  SUCCESS
+}

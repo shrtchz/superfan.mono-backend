@@ -1,0 +1,26 @@
+allowBuilds:
+  '@clerk/shared': set this to true or false
+  '@nestjs/core': set this to true or false
+  '@prisma/engines': set this to true or false
+  '@scarf/scarf': set this to true or false
+  '@swc/core': set this to true or false
+  argon2: set this to true or false
+  bcrypt: set this to true or false
+  esbuild: set this to true or false
+  msgpackr-extract: set this to true or false
+  prisma: set this to true or false
+  sharp: set this to true or false
+  unrs-resolver: set this to true or false
+onlyBuiltDependencies:
+  - '@clerk/shared'
+  - '@nestjs/core'
+  - '@prisma/engines'
+  - '@scarf/scarf'
+  - '@swc/core'
+  - argon2
+  - bcrypt
+  - esbuild
+  - msgpackr-extract
+  - prisma
+  - sharp
+  - unrs-resolver

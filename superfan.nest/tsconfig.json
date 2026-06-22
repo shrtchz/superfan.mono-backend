@@ -1,0 +1,51 @@
+{
+  "compilerOptions": {
+    "target": "ES2021",
+
+    "module": "Node16",
+    "moduleResolution": "Node16",
+
+    "declaration": true,
+    "removeComments": true,
+
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+
+       "listFiles": true,        // Prints the files read during compilation
+    "explainFiles": true,
+
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+
+    "sourceMap": true,
+
+    "outDir": "./dist",
+
+    "incremental": true,
+
+    "strict": false,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+  },
+    "watchOptions": {
+    // Use native file system events for files and directories
+    "watchFile": "fixedPollingInterval",
+    "watchDirectory": "useFsEvents",
+    // Poll files for updates more frequently
+    // when they're updated a lot.
+    "fallbackPolling": "dynamicPriority",
+    // Don't coalesce watch notification
+    "synchronousWatchDirectory": true,
+    // Finally, two additional settings for reducing the amount of possible
+    // files to track  work from these directories
+    "excludeDirectories": ["**/node_modules", "_build"],
+    "excludeFiles": ["build/fileWhichChangesOften.ts"]
+  },
+    "exclude": [
+    "node_modules",
+    "dist",
+    "/prisma",
+    "src/generated"
+  ]
+}

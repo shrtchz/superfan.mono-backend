@@ -1,0 +1,1302 @@
+package services
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"quiz.superfan.com/apis/models"
+	"quiz.superfan.com/apis/utils"
+)
+
+type QuizServiceImpl struct {
+	quizcollection           *mongo.Collection
+	quizCategoryCollection   *mongo.Collection
+	liveQuizCollection       *mongo.Collection
+	quizSubmissionCollection *mongo.Collection
+	ctx                      context.Context
+}
+
+// type QuizSubmissionServiceImpl struct {
+// 	collection *mongo.Collection
+// 	ctx        context.Context
+// }
+
+func NewQuizService(quizcollection *mongo.Collection, quizCategoryCollection *mongo.Collection, liveQuizCollection *mongo.Collection, quizSubmissionCollection *mongo.Collection, ctx context.Context) QuizService {
+	return &QuizServiceImpl{
+		quizcollection:           quizcollection,
+		quizCategoryCollection:   quizCategoryCollection,
+		quizSubmissionCollection: quizSubmissionCollection,
+		liveQuizCollection:       liveQuizCollection,
+		ctx:                      ctx,
+	}
+}
+
+// func NewQuizSubmissionService(collection *mongo.Collection, ctx context.Context) QuizSubmissionService {
+// 	return &QuizServiceImpl{
+// 		quizSubmissionCollection: collection,
+// 		ctx:                      ctx,
+// 	}
+// }
+
+func (u *QuizServiceImpl) CreateQuiz(quiz *models.Quiz) error {
+
+	// Basic validation
+	if quiz.TestQuiz == "" {
+		return errors.New("testQuiz is required")
+	}
+
+	if quiz.TestLevel == "" {
+		return errors.New("testLevel is required")
+	}
+
+	if quiz.Subject == "" {
+		return errors.New("subject is required")
+	}
+
+	if quiz.Question == "" {
+		return errors.New("question is required")
+	}
+
+	// if len(quiz.Options) < 4 {
+	// 	return errors.New("at least four options are required")
+	// }
+
+	if quiz.Answer == "" {
+		return errors.New("answer is required")
+	}
+
+	// Normalize strings (optional but recommended)
+	quiz.TestQuiz = strings.ToLower(quiz.TestQuiz)
+	quiz.TestLevel = strings.ToLower(quiz.TestLevel)
+	quiz.Subject = strings.ToLower(quiz.Subject)
+
+	// Assign earning based on testLevel (string-based)
+	switch quiz.TestLevel {
+	case "basic":
+		quiz.Earning = "400"
+	case "intermediate":
+		quiz.Earning = "600"
+	case "advanced":
+		quiz.Earning = "800"
+	default:
+		return errors.New("invalid testLevel value")
+	}
+
+	// Generate ID
+	if quiz.ID.IsZero() {
+		quiz.ID = bson.NewObjectID()
+	}
+	quiz.IDHex = quiz.ID.Hex()
+
+	_, err := u.quizcollection.InsertOne(u.ctx, quiz)
+	return err
+}
+
+func (u *QuizServiceImpl) CreateLiveQuiz(liveQuiz *models.LiveQuiz) error {
+	// Validate required fields
+	if liveQuiz.Question == "" {
+		return errors.New("question is required")
+	}
+
+	// Conditional validation:
+	// - If typed answer is enabled, TypedAnswer must be provided and options may be empty.
+	// - If typed answer is disabled, at least one option must be provided and TypedAnswer is ignored.
+	if liveQuiz.IsTypedAnswer {
+		if strings.TrimSpace(liveQuiz.TypedAnswer) == "" {
+			return errors.New("typed answer is required")
+		}
+	} else {
+		if len(liveQuiz.Options) == 0 {
+			return errors.New("options are required")
+		}
+	}
+
+	if liveQuiz.TotalPrize <= 0 {
+		return errors.New("total prize is required")
+	}
+
+	if liveQuiz.Recipients <= 0 {
+		return errors.New("recipients is required")
+	}
+
+	if liveQuiz.UnitPrize <= 0 {
+		return errors.New("unit prize is required")
+	}
+
+	if !liveQuiz.IsTypedAnswer && liveQuiz.Answer == "" {
+		return errors.New("answer is required")
+	}
+
+	if liveQuiz.QuizScheduleDate.IsZero() {
+		return errors.New("quiz schedule date is required")
+	}
+
+	// Generate MongoDB ObjectID
+	liveQuiz.ID = bson.NewObjectID()
+	liveQuiz.IDHex = liveQuiz.ID.Hex()
+
+	_, err := u.liveQuizCollection.InsertOne(u.ctx, liveQuiz)
+	return err
+}
+
+func (u *QuizServiceImpl) GetLiveQuiz(id string) (*models.LiveQuiz, error) {
+	objectId, err := bson.ObjectIDFromHex(id)
+	if err != nil {
+		return nil, errors.New("invalid id format")
+	}
+
+	var liveQuiz models.LiveQuiz
+
+	filter := bson.M{"_id": objectId}
+
+	err = u.liveQuizCollection.FindOne(u.ctx, filter).Decode(&liveQuiz)
+	if err != nil {
+		return nil, err
+	}
+
+	return &liveQuiz, nil
+}
+
+
+func (u *QuizServiceImpl) GetRandomLiveQuiz(number string) ([]models.LiveQuiz, error) {
+	limit, err := strconv.Atoi(strings.TrimSpace(number))
+	if err != nil || limit <= 0 {
+		return nil, errors.New("invalid quiz number")
+	}
+
+	location, err := time.LoadLocation("Africa/Lagos")
+	if err != nil {
+		return nil, err
+	}
+
+	now := time.Now().In(location)
+
+	pipeline := mongo.Pipeline{
+		// Stage 1: Filter to only future/current quizzes
+		{
+			{Key: "$match", Value: bson.M{
+				"quizScheduleDate": bson.M{"$gte": now},
+			}},
+		},
+		// Stage 2: Randomly sample 'limit' documents
+		{
+			{Key: "$sample", Value: bson.M{"size": limit}},
+		},
+		// Stage 3: Exclude sensitive fields
+		{
+			{Key: "$project", Value: bson.M{
+				"answer":      0,
+				"typedAnswer": 0,
+			}},
+		},
+	}
+
+	cursor, err := u.liveQuizCollection.Aggregate(u.ctx, pipeline)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(u.ctx)
+
+	var quizzes []models.LiveQuiz
+	if err := cursor.All(u.ctx, &quizzes); err != nil {
+		return nil, err
+	}
+
+	if len(quizzes) == 0 {
+		return nil, errors.New("no active live quizzes found")
+	}
+
+	for i := range quizzes {
+		quizzes[i].IDHex = quizzes[i].ID.Hex()
+	}
+
+	return quizzes, nil
+}
+
+func (u *QuizServiceImpl) GetAllLiveQuiz() ([]map[string]interface{}, error) {
+	var liveQuizzes []map[string]interface{}
+
+	now := time.Now()
+	filter := bson.D{{Key: "quizScheduleDate", Value: bson.D{{Key: "$gte", Value: now}}}}
+
+	//log commit
+
+	cursor, err := u.liveQuizCollection.Find(u.ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(u.ctx)
+
+	for cursor.Next(u.ctx) {
+		var liveQuiz models.LiveQuiz
+
+		if err := cursor.Decode(&liveQuiz); err != nil {
+			return nil, err
+		}
+
+		// Build response without answer field
+		quizResponse := map[string]interface{}{
+			"id":               liveQuiz.ID.Hex(),
+			"question":         liveQuiz.Question,
+			"options":          liveQuiz.Options,
+			"totalPrize":       liveQuiz.TotalPrize,
+			"recipients":       liveQuiz.Recipients,
+			"unitPrize":        liveQuiz.UnitPrize,
+			"quizScheduleDate": liveQuiz.QuizScheduleDate,
+			"imageLink":        liveQuiz.ImageLink,
+		}
+
+		liveQuizzes = append(liveQuizzes, quizResponse)
+	}
+
+	if err := cursor.Err(); err != nil {
+		return nil, err
+	}
+
+	if len(liveQuizzes) == 0 {
+		return nil, errors.New("no live quizzes found")
+	}
+
+	return liveQuizzes, nil
+}
+
+// func (u *QuizServiceImpl) GetQuizByPreferences(
+// 	languagePreference string,
+// 	subjectPreference string,
+// 	testLevel string,
+// 	questionPreference string,
+// 	timePreference string,
+// ) (map[string]interface{}, error) {
+
+// 	// Validate empty fields
+// 	if languagePreference == "" ||
+// 		subjectPreference == "" ||
+// 		testLevel == "" ||
+// 		questionPreference == "" ||
+// 		timePreference == "" {
+// 		return nil, errors.New("missing required query parameters")
+// 	}
+
+// 	// Normalize values (optional but recommended)
+// 	languagePreference = strings.ToLower(languagePreference)
+// 	subjectPreference = strings.ToLower(subjectPreference)
+// 	testLevel = strings.ToLower(testLevel)
+
+// 	// Parse Question Preference
+// 	questionPreference = strings.TrimSpace(strings.ToUpper(questionPreference))
+// 	if strings.HasPrefix(questionPreference, "Q") {
+// 		questionPreference = strings.TrimPrefix(questionPreference, "Q")
+// 	}
+// 	questionLimit, err := strconv.Atoi(strings.TrimSpace(questionPreference))
+// 	if err != nil || questionLimit <= 0 {
+// 		return nil, errors.New("invalid questionPreference")
+// 	}
+
+// 	// Parse Time Preference
+// 	timeLimitStr := strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(timePreference)), "T")
+// 	totalTimeMinutes, err := strconv.Atoi(strings.TrimSpace(timeLimitStr))
+// 	if err != nil || totalTimeMinutes <= 0 {
+// 		return nil, errors.New("invalid timePreference")
+// 	}
+
+// 	filter := bson.M{
+// 		"testQuiz":  languagePreference,
+// 		"subject":   subjectPreference,
+// 		"testLevel": testLevel,
+// 	}
+
+// 	count, err := u.quizcollection.CountDocuments(u.ctx, filter)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+
+// 	if count == 0 {
+// 		return nil, errors.New("no quizzes found for selected preferences")
+// 	}
+
+// 	if count < int64(questionLimit) {
+// 		return nil, fmt.Errorf("requested %d questions but only %d quizzes are available", questionLimit, count)
+// 	}
+
+// 	// Mongo Pipeline
+// 	pipeline := mongo.Pipeline{
+// 		{
+// 			{
+// 				Key: "$match",
+// 				Value: bson.M{
+// 					"testQuiz":  languagePreference,
+// 					"subject":   subjectPreference,
+// 					"testLevel": testLevel,
+// 				},
+// 			},
+// 		},
+// 		{
+// 			{
+// 				Key: "$sample",
+// 				Value: bson.M{
+// 					"size": questionLimit,
+// 				},
+// 			},
+// 		},
+// 	}
+
+// 	cursor, err := u.quizcollection.Aggregate(u.ctx, pipeline)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	defer cursor.Close(u.ctx)
+
+// 	type QuizResponse struct {
+// 		ID        string      `json:"id"`
+// 		TestQuiz  string      `json:"testQuiz"`
+// 		Earning   string      `json:"earning"`
+// 		Subject   string      `json:"subject"`
+// 		TestLevel string      `json:"testLevel"`
+// 		Question  string      `json:"question"`
+// 		ImageLink []string      `json:"imageLink"`
+// 		Options   interface{} `json:"options"`
+// 	}
+
+// 	var quizResponses []QuizResponse
+// 	totalEarning := 0
+
+// 	for cursor.Next(u.ctx) {
+// 		var quiz models.Quiz
+
+// 		if err := cursor.Decode(&quiz); err != nil {
+// 			return nil, err
+// 		}
+
+// 		earning, err := strconv.Atoi(strings.TrimSpace(quiz.Earning))
+// 		if err == nil {
+// 			totalEarning += earning
+// 		}
+
+// 		quizResponses = append(quizResponses, QuizResponse{
+// 			ID:        quiz.ID.Hex(),
+// 			TestQuiz:  quiz.TestQuiz,
+// 			Earning:   quiz.Earning,
+// 			Subject:   quiz.Subject,
+// 			TestLevel: quiz.TestLevel,
+// 			Question:  quiz.Question,
+// 			ImageLink: quiz.ImageLink,
+// 			Options:   quiz.Options,
+// 		})
+// 	}
+
+// 	if err := cursor.Err(); err != nil {
+// 		return nil, err
+// 	}
+
+// 	if len(quizResponses) == 0 {
+// 		return nil, errors.New("no quizzes found")
+// 	}
+
+// 	if len(quizResponses) != questionLimit {
+// 		return nil, fmt.Errorf("requested %d questions but only %d quizzes are available", questionLimit, len(quizResponses))
+// 	}
+
+// 	return map[string]interface{}{
+// 		"totalQuestions": len(quizResponses),
+// 		"totalTime":      totalTimeMinutes,
+// 		"totalEarning":   totalEarning,
+// 		"quizzes":        quizResponses,
+// 	}, nil
+// }
+
+// func (u *QuizServiceImpl) GetQuizByPreferences(
+// 	languagePreference string,
+// 	subjectPreference string,
+// 	testLevel string,
+// 	questionPreference string,
+// 	timePreference string,
+// ) (map[string]interface{}, error) {
+
+// 	// Default question preference
+// 	if strings.TrimSpace(questionPreference) == "" {
+// 		questionPreference = "25"
+// 	}
+
+// 	// Default time preference
+// 	if strings.TrimSpace(timePreference) == "" {
+// 		timePreference = "5"
+// 	}
+
+// 	// Normalize values ONCE
+// 	languagePreference = strings.ToLower(strings.TrimSpace(languagePreference))
+// 	subjectPreference = strings.ToLower(strings.TrimSpace(subjectPreference))
+// 	testLevel = strings.ToLower(strings.TrimSpace(testLevel))
+
+// 	// Parse Question Preference — strip leading "Q" or "q"
+// 	qPref := strings.TrimSpace(questionPreference)
+// 	qPref = strings.TrimPrefix(strings.ToUpper(qPref), "Q")
+
+// 	questionLimit, err := strconv.Atoi(qPref)
+// 	if err != nil || questionLimit <= 0 {
+// 		return nil, errors.New("invalid questionPreference: must be a positive integer, e.g. '25' or 'Q25'")
+// 	}
+
+// 	// Parse Time Preference — strip leading "T" or "t"
+// 	tPref := strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(timePreference)), "T")
+
+// 	totalTimeMinutes, err := strconv.Atoi(strings.TrimSpace(tPref))
+// 	if err != nil || totalTimeMinutes <= 0 {
+// 		return nil, errors.New("invalid timePreference: must be a positive integer, e.g. '5' or 'T45'")
+// 	}
+
+// 	// Build filter — only add conditions for non-empty preferences
+// 	filter := bson.M{}
+
+// 	if languagePreference != "" {
+// 		filter["testQuiz"] = bson.M{"$regex": languagePreference, "$options": "i"}
+// 	}
+// 	if subjectPreference != "" {
+// 		filter["subject"] = bson.M{"$regex": subjectPreference, "$options": "i"}
+// 	}
+// 	if testLevel != "" {
+// 		filter["testLevel"] = bson.M{"$regex": testLevel, "$options": "i"}
+// 	}
+
+// 	// Count matching documents
+// 	count, err := u.quizcollection.CountDocuments(u.ctx, filter)
+// 	if err != nil {
+// 		return nil, fmt.Errorf("database error while counting quizzes: %w", err)
+// 	}
+
+// 	if count == 0 {
+// 		return nil, errors.New("no quizzes found for the selected preferences")
+// 	}
+
+// 	// If fewer docs exist than requested, use what's available instead of erroring
+// 	if count < int64(questionLimit) {
+// 		questionLimit = int(count)
+// 	}
+
+// 	// Aggregation: match + random sample
+// 	pipeline := mongo.Pipeline{
+// 		{{Key: "$match", Value: filter}},
+// 		{{Key: "$sample", Value: bson.M{"size": questionLimit}}},
+// 	}
+
+// 	cursor, err := u.quizcollection.Aggregate(u.ctx, pipeline)
+// 	if err != nil {
+// 		return nil, fmt.Errorf("database error during aggregation: %w", err)
+// 	}
+// 	defer cursor.Close(u.ctx)
+
+// 	type QuizResponse struct {
+// 		ID        string      `json:"id"`
+// 		TestQuiz  string      `json:"testQuiz"`
+// 		Earning   string      `json:"earning"`
+// 		Subject   string      `json:"subject"`
+// 		TestLevel string      `json:"testLevel"`
+// 		Question  string      `json:"question"`
+// 		ImageLink []string    `json:"imageLink"`
+// 		Options   interface{} `json:"options"`
+// 	}
+
+// 	var quizResponses []QuizResponse
+// 	totalEarning := 0
+
+// 	for cursor.Next(u.ctx) {
+// 		var quiz models.Quiz
+// 		if err := cursor.Decode(&quiz); err != nil {
+// 			return nil, fmt.Errorf("error decoding quiz document: %w", err)
+// 		}
+
+// 		if earning, err := strconv.Atoi(strings.TrimSpace(quiz.Earning)); err == nil {
+// 			totalEarning += earning
+// 		}
+
+// 		quizResponses = append(quizResponses, QuizResponse{
+// 			ID:        quiz.ID.Hex(),
+// 			TestQuiz:  quiz.TestQuiz,
+// 			Earning:   quiz.Earning,
+// 			Subject:   quiz.Subject,
+// 			TestLevel: quiz.TestLevel,
+// 			Question:  quiz.Question,
+// 			ImageLink: quiz.ImageLink,
+// 			Options:   quiz.Options,
+// 		})
+// 	}
+
+// 	if err := cursor.Err(); err != nil {
+// 		return nil, fmt.Errorf("cursor error: %w", err)
+// 	}
+
+// 	if len(quizResponses) == 0 {
+// 		return nil, errors.New("no quizzes found")
+// 	}
+
+// 	return map[string]interface{}{
+// 		"totalQuestions": len(quizResponses),
+// 		"totalTime":      totalTimeMinutes,
+// 		"totalEarning":   totalEarning,
+// 		"quizzes":        quizResponses,
+// 	}, nil
+// }
+
+func (u *QuizServiceImpl) GetQuizByPreferences(
+	languagePreference string,
+	subjectPreference string,
+	testLevel string,
+	questionPreference string,
+	timePreference string,
+) (map[string]interface{}, error) {
+
+	// --- Parse Question Limit (default: 25) ---
+	questionLimit := 25
+	if q := strings.TrimSpace(questionPreference); q != "" {
+		q = strings.TrimPrefix(strings.ToUpper(q), "Q")
+		parsed, err := strconv.Atoi(q)
+		if err != nil || parsed <= 0 {
+			return nil, utils.NewAppError(http.StatusBadRequest, "INVALID_PARAM",
+				"invalid questionPreference: must be a number like '25' or 'Q25'")
+		}
+		questionLimit = parsed
+	}
+
+	// --- Parse Time Limit (default: 5) ---
+	totalTimeMinutes := 5
+	if t := strings.TrimSpace(timePreference); t != "" {
+		t = strings.TrimPrefix(strings.ToUpper(t), "T")
+		parsed, err := strconv.Atoi(t)
+		if err != nil || parsed <= 0 {
+			return nil, utils.NewAppError(http.StatusBadRequest, "INVALID_PARAM",
+				"invalid timePreference: must be a number like '5' or 'T45'")
+		}
+		totalTimeMinutes = parsed
+	}
+
+	// --- Build Filter ---
+	// Store individual conditions separately so $match is airtight
+	matchConditions := bson.D{}
+
+	lang := strings.ToLower(strings.TrimSpace(languagePreference))
+	subj := strings.ToLower(strings.TrimSpace(subjectPreference))
+	level := strings.ToLower(strings.TrimSpace(testLevel))
+
+	if lang != "" {
+		matchConditions = append(matchConditions, bson.E{
+			Key:   "testQuiz",
+			Value: bson.M{"$regex": lang, "$options": "i"},
+		})
+	}
+	if subj != "" {
+		matchConditions = append(matchConditions, bson.E{
+			Key:   "subject",
+			Value: bson.M{"$regex": subj, "$options": "i"},
+		})
+	}
+	if level != "" {
+		matchConditions = append(matchConditions, bson.E{
+			Key:   "testLevel",
+			Value: bson.M{"$regex": level, "$options": "i"},
+		})
+	}
+
+	// Build the filter for CountDocuments
+	filter := bson.D{}
+	if len(matchConditions) > 0 {
+		filter = matchConditions
+	}
+
+	// --- Count matching documents first ---
+	count, err := u.quizcollection.CountDocuments(u.ctx, filter)
+	if err != nil {
+		return nil, utils.NewAppError(http.StatusInternalServerError, "DB_ERROR",
+			fmt.Sprintf("database error: %v", err))
+	}
+
+	if count == 0 {
+		if len(filter) == 0 {
+			return nil, utils.NewAppError(http.StatusNotFound, "NO_QUIZZES",
+				"no quizzes exist in the database")
+		}
+		return nil, utils.NewAppError(http.StatusNotFound, "NO_QUIZZES",
+			fmt.Sprintf("no quizzes found for: language=%s, subject=%s, level=%s",
+				lang, subj, level))
+	}
+
+	// Cap to available count
+	if int64(questionLimit) > count {
+		questionLimit = int(count)
+	}
+
+	// --- Pipeline: $match THEN $sample ---
+	// Using bson.D (ordered) guarantees $match always runs before $sample
+	var pipeline mongo.Pipeline
+
+	if len(matchConditions) > 0 {
+		pipeline = mongo.Pipeline{
+			// Stage 1: filter strictly
+			bson.D{{Key: "$match", Value: matchConditions}},
+			// Stage 2: random sample from filtered set only
+			bson.D{{Key: "$sample", Value: bson.D{{Key: "size", Value: questionLimit}}}},
+		}
+	} else {
+		// No filters = full random quiz
+		pipeline = mongo.Pipeline{
+			bson.D{{Key: "$sample", Value: bson.D{{Key: "size", Value: questionLimit}}}},
+		}
+	}
+
+	cursor, err := u.quizcollection.Aggregate(u.ctx, pipeline)
+	if err != nil {
+		return nil, utils.NewAppError(http.StatusInternalServerError, "DB_ERROR",
+			fmt.Sprintf("aggregation error: %v", err))
+	}
+	defer cursor.Close(u.ctx)
+
+	type QuizResponse struct {
+		ID        string      `json:"id"`
+		TestQuiz  string      `json:"testQuiz"`
+		Earning   string      `json:"earning"`
+		Subject   string      `json:"subject"`
+		TestLevel string      `json:"testLevel"`
+		Question  string      `json:"question"`
+		ImageLink []string    `json:"imageLink"`
+		Options   interface{} `json:"options"`
+	}
+
+	var quizResponses []QuizResponse
+	totalEarning := 0
+
+	for cursor.Next(u.ctx) {
+		var quiz models.Quiz
+		if err := cursor.Decode(&quiz); err != nil {
+			return nil, utils.NewAppError(http.StatusInternalServerError, "DECODE_ERROR",
+				fmt.Sprintf("failed to decode quiz: %v", err))
+		}
+		if earning, err := strconv.Atoi(strings.TrimSpace(quiz.Earning)); err == nil {
+			totalEarning += earning
+		}
+		quizResponses = append(quizResponses, QuizResponse{
+			ID:        quiz.ID.Hex(),
+			TestQuiz:  quiz.TestQuiz,
+			Earning:   quiz.Earning,
+			Subject:   quiz.Subject,
+			TestLevel: quiz.TestLevel,
+			Question:  quiz.Question,
+			ImageLink: quiz.ImageLink,
+			Options:   quiz.Options,
+		})
+	}
+
+	if err := cursor.Err(); err != nil {
+		return nil, utils.NewAppError(http.StatusInternalServerError, "CURSOR_ERROR",
+			fmt.Sprintf("cursor error: %v", err))
+	}
+
+	if len(quizResponses) == 0 {
+		return nil, utils.NewAppError(http.StatusNotFound, "NO_QUIZZES",
+			"no quizzes found after sampling")
+	}
+
+	return map[string]interface{}{
+		"totalQuestions": len(quizResponses),
+		"totalTime":      totalTimeMinutes,
+		"totalEarning":   totalEarning,
+		"quizzes":        quizResponses,
+	}, nil
+}
+
+func (u *QuizServiceImpl) SubmitQuiz(
+	request models.SubmitQuizRequest,
+) (map[string]interface{}, error) {
+
+	userID := request.UserID
+
+	totalScore := 0
+	totalEarning := 0
+	subject := ""
+	rewardType := "" // capture from first response
+
+	var responses []models.QuizAnswer
+
+	for _, response := range request.Responses {
+
+		quizObjectID, err := bson.ObjectIDFromHex(response.QuizID)
+		if err != nil {
+			return nil, errors.New("invalid quizId")
+		}
+
+		quiz, err := u.GetQuiz(response.QuizID)
+		if err != nil {
+			return nil, errors.New("quiz not found")
+		}
+
+		if subject == "" && quiz.Subject != "" {
+			subject = quiz.Subject
+		}
+
+		// Capture reward type from the first response
+		if rewardType == "" && response.RewardType != "" {
+			rewardType = response.RewardType
+		}
+
+		correctAnswer := quiz.Answer
+
+		isCorrect := strings.TrimSpace(
+			strings.ToLower(response.SelectedAnswer),
+		) == strings.TrimSpace(
+			strings.ToLower(correctAnswer),
+		)
+
+		earning := 0
+
+		if isCorrect {
+			totalScore++
+			earningValue, _ := strconv.Atoi(quiz.Earning)
+			earning = earningValue
+			totalEarning += earningValue
+		}
+
+		responses = append(responses, models.QuizAnswer{
+			QuizID:         quizObjectID,
+			SelectedAnswer: response.SelectedAnswer,
+			Subject:        quiz.Subject,
+			IsCorrect:      isCorrect,
+			CorrectAnswer:  correctAnswer,
+			Earning:        earning,
+		})
+	}
+
+	submission := models.QuizSubmission{
+		ID:            bson.NewObjectID(),
+		UserID:        userID,
+		Subject:       subject,
+		Score:         totalScore,
+		TotalAnswered: len(request.Responses),
+		TotalEarning:  totalEarning,
+		RewardType:    request.RewardType,
+		QuizTime:      request.QuizTime,
+		Responses:     responses,
+		SubmittedAt:   time.Now(),
+	}
+
+	_, err := u.quizSubmissionCollection.InsertOne(
+		u.ctx,
+		submission,
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return map[string]interface{}{
+		"submission": submission,
+	}, nil
+}
+
+// func (s *QuizServiceImpl) GetUserSubmissions(userID string) ([]models.QuizSubmission, error) {
+// 	if userID == "" {
+// 		return nil, errors.New("userID is required")
+// 	}
+
+// 	filter := bson.M{
+// 		"userId": userID,
+// 	}
+
+// 	cursor, err := s.quizSubmissionCollection.Find(s.ctx, filter)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	defer cursor.Close(s.ctx)
+
+// 	var submissions []models.QuizSubmission
+
+// 	for cursor.Next(s.ctx) {
+// 		var sub models.QuizSubmission
+// 		if err := cursor.Decode(&sub); err != nil {
+// 			return nil, err
+// 		}
+// 		submissions = append(submissions, sub)
+// 	}
+
+// 	if err := cursor.Err(); err != nil {
+// 		return nil, err
+// 	}
+
+// 	return submissions, nil
+// }
+
+// func (s *QuizServiceImpl) GetUserSubmissions(userID string) ([]models.QuizSubmission, error) {
+// 	if userID == "" {
+// 		return nil, errors.New("userID is required")
+// 	}
+
+// 	filter := bson.M{"userId": userID}
+// 	opts := options.Find().SetSort(bson.D{{Key: "submittedAt", Value: -1}}) // ✅ newest first
+
+// 	cursor, err := s.quizSubmissionCollection.Find(s.ctx, filter, opts)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	defer cursor.Close(s.ctx)
+
+// 	groupedMap := make(map[string]*models.QuizSubmission)
+// 	orderMap := []string{}
+
+// 	for cursor.Next(s.ctx) {
+// 		var doc models.QuizSubmissionDoc
+// 		if err := cursor.Decode(&doc); err != nil {
+// 			return nil, err
+// 		}
+
+// 		quizKey := doc.QuizID.Hex() // group by quizId
+
+// 		existing, found := groupedMap[quizKey]
+// 		if !found {
+// 			newSub := &models.QuizSubmission{
+// 				ID:          doc.ID,
+// 				UserID:      doc.UserID,
+// 				Responses:   []models.QuizAnswer{},
+// 				SubmittedAt: doc.SubmittedAt,
+// 			}
+// 			groupedMap[quizKey] = newSub
+// 			orderMap = append(orderMap, quizKey)
+// 			existing = newSub
+// 		}
+
+// 		existing.Responses = append(existing.Responses, models.QuizAnswer{
+// 			QuizID:         doc.QuizID,
+// 			SelectedAnswer: doc.SelectedAnswer,
+// 			IsCorrect:      doc.IsCorrect,
+// 			CorrectAnswer:  doc.CorrectAnswer,
+// 			Earning:        doc.Earning,
+// 		})
+
+// 		existing.TotalAnswered++
+// 		if doc.IsCorrect {
+// 			existing.Score++
+// 			existing.TotalEarning += doc.Earning
+// 		}
+// 	}
+
+// 	if err := cursor.Err(); err != nil {
+// 		return nil, err
+// 	}
+
+// 	if len(groupedMap) == 0 {
+// 		return nil, errors.New("no submissions found for user")
+// 	}
+
+// 	submissions := make([]models.QuizSubmission, 0, len(orderMap))
+// 	for _, key := range orderMap {
+// 		submissions = append(submissions, *groupedMap[key])
+// 	}
+
+// 	return submissions, nil
+// }
+
+func (s *QuizServiceImpl) GetUserSubmissions(userID string) ([]models.QuizSubmission, error) {
+	if userID == "" {
+		return nil, errors.New("userID is required")
+	}
+
+	filter := bson.M{"userId": userID}
+
+	opts := options.Find().
+		SetSort(bson.D{{Key: "submittedAt", Value: -1}})
+
+	cursor, err := s.quizSubmissionCollection.Find(s.ctx, filter, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(s.ctx)
+
+	var submissions []models.QuizSubmission
+
+	for cursor.Next(s.ctx) {
+		var submission models.QuizSubmission
+
+		if err := cursor.Decode(&submission); err != nil {
+			return nil, err
+		}
+
+		submissions = append(submissions, submission)
+	}
+
+	if err := cursor.Err(); err != nil {
+		return nil, err
+	}
+
+	if len(submissions) == 0 {
+		return nil, errors.New("no submissions found for user")
+	}
+
+	return submissions, nil
+}
+
+// func (s *QuizServiceImpl) GetAllSubmissions() ([]models.QuizSubmission, error) {
+// 	cursor, err := s.quizSubmissionCollection.Find(s.ctx, bson.M{})
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	defer cursor.Close(s.ctx)
+
+// 	var submissions []models.QuizSubmission
+
+// 	for cursor.Next(s.ctx) {
+// 		var sub models.QuizSubmission
+// 		if err := cursor.Decode(&sub); err != nil {
+// 			return nil, err
+// 		}
+// 		submissions = append(submissions, sub)
+// 	}
+
+// 	if err := cursor.Err(); err != nil {
+// 		return nil, err
+// 	}
+
+// 	return submissions, nil
+// }
+
+// func (s *QuizServiceImpl) GetAllSubmissions() ([]models.QuizSubmission, error) {
+//     cursor, err := s.quizSubmissionCollection.Find(s.ctx, bson.M{})
+//     if err != nil {
+//         return nil, err
+//     }
+//     defer cursor.Close(s.ctx)
+
+//     var submissions []models.QuizSubmission
+
+//     for cursor.Next(s.ctx) {
+//         var doc models.QuizSubmissionDoc        // ✅ decode into flat DB struct
+//         if err := cursor.Decode(&doc); err != nil {
+//             return nil, err
+//         }
+//         submissions = append(submissions, models.ToSubmissionDTO(doc)) // ✅ convert to API shape
+//     }
+
+//     if err := cursor.Err(); err != nil {
+//         return nil, err
+//     }
+
+//     return submissions, nil
+// }
+
+func (s *QuizServiceImpl) GetAllSubmissions() ([]models.QuizSubmission, error) {
+
+	opts := options.Find().
+		SetSort(bson.D{{Key: "submittedAt", Value: -1}})
+
+	cursor, err := s.quizSubmissionCollection.Find(s.ctx, bson.M{}, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(s.ctx)
+
+	var submissions []models.QuizSubmission
+
+	for cursor.Next(s.ctx) {
+		var submission models.QuizSubmission
+
+		if err := cursor.Decode(&submission); err != nil {
+			return nil, err
+		}
+
+		submissions = append(submissions, submission)
+	}
+
+	if err := cursor.Err(); err != nil {
+		return nil, err
+	}
+
+	return submissions, nil
+}
+
+func (u *QuizServiceImpl) GetQuizAnswerById(id string) (map[string]interface{}, error) {
+
+	objectID, err := bson.ObjectIDFromHex(id)
+	if err != nil {
+		return nil, errors.New("invalid quiz id")
+	}
+
+	filter := bson.M{"_id": objectID}
+
+	var quiz models.Quiz
+	err = u.quizcollection.FindOne(u.ctx, filter).Decode(&quiz)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, errors.New("quiz not found")
+		}
+		return nil, err
+	}
+
+	response := map[string]interface{}{
+		"id":     quiz.ID.Hex(),
+		"answer": quiz.Answer,
+	}
+
+	return response, nil
+}
+
+func (u *QuizServiceImpl) GetLiveQuizAnswerById(id string) (map[string]interface{}, error) {
+
+	objectID, err := bson.ObjectIDFromHex(id)
+	if err != nil {
+		return nil, errors.New("invalid live quiz id")
+	}
+
+	filter := bson.M{
+		"_id": objectID,
+	}
+
+	var liveQuiz models.LiveQuiz
+
+	err = u.liveQuizCollection.FindOne(u.ctx, filter).Decode(&liveQuiz)
+	if err != nil {
+
+		if err == mongo.ErrNoDocuments {
+			return nil, errors.New("live quiz not found")
+		}
+
+		return nil, err
+	}
+
+	response := map[string]interface{}{
+		"id":       liveQuiz.ID.Hex(),
+		"question": liveQuiz.Question,
+		"answer":   liveQuiz.Answer,
+	}
+
+	return response, nil
+}
+
+func (u *QuizServiceImpl) DeleteLiveQuiz(id string) error {
+	objectId, err := bson.ObjectIDFromHex(id)
+	if err != nil {
+		return errors.New("invalid id format")
+	}
+
+	filter := bson.M{"_id": objectId}
+
+	result, err := u.liveQuizCollection.DeleteOne(u.ctx, filter)
+	if err != nil {
+		return err
+	}
+
+	if result.DeletedCount == 0 {
+		return errors.New("live quiz not found")
+	}
+
+	return nil
+}
+
+func (u *QuizServiceImpl) UpdateLiveQuiz(quiz *models.LiveQuiz) error {
+	filter := bson.D{
+		{Key: "_id", Value: quiz.ID},
+	}
+
+	update := bson.D{
+		{
+			Key: "$set",
+			Value: bson.D{
+				{Key: "question", Value: quiz.Question},
+				{Key: "options", Value: quiz.Options},
+				{Key: "answer", Value: quiz.Answer},
+				{Key: "typedAnswer", Value: quiz.TypedAnswer},
+				{Key: "totalPrize", Value: quiz.TotalPrize},
+				{Key: "recipients", Value: quiz.Recipients},
+				{Key: "unitPrize", Value: quiz.UnitPrize},
+				{Key: "quizScheduleDate", Value: quiz.QuizScheduleDate},
+				{Key: "imageLink", Value: quiz.ImageLink},
+			},
+		},
+	}
+
+	result, err := u.liveQuizCollection.UpdateOne(u.ctx, filter, update)
+	if err != nil {
+		return err
+	}
+
+	if result.MatchedCount == 0 {
+		return errors.New("no live quiz found with given id")
+	}
+
+	return nil
+}
+
+func (u *QuizServiceImpl) CreateQuizCategory(category *models.QuizCategory) (*models.QuizCategory, error) {
+
+	// Basic validation (optional but recommended)
+	if category.TestQuiz == "" {
+		return nil, errors.New("testQuiz is required")
+	}
+
+	if category.Subject == "" {
+		return nil, errors.New("subject is required")
+	}
+
+	// Generate ID
+	if category.ID.IsZero() {
+		category.ID = bson.NewObjectID()
+	}
+
+	// Normalize values (optional but useful for consistency)
+	category.TestQuiz = strings.ToLower(category.TestQuiz)
+	category.Subject = strings.ToLower(category.Subject)
+
+	// Insert category into MongoDB
+	_, err := u.quizCategoryCollection.InsertOne(u.ctx, category)
+	if err != nil {
+		return nil, err
+	}
+
+	return category, nil
+}
+
+func (u *QuizServiceImpl) GetAllCategory() ([]*models.QuizCategory, error) {
+	var categories []*models.QuizCategory
+
+	cursor, err := u.quizCategoryCollection.Find(u.ctx, bson.D{})
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(u.ctx)
+
+	for cursor.Next(u.ctx) {
+		var category models.QuizCategory
+
+		if err := cursor.Decode(&category); err != nil {
+			return nil, err
+		}
+
+		// ✅ Convert ObjectID to string for JSON response
+		// category.IDHex = category.ID.Hex()
+
+		categories = append(categories, &category)
+	}
+
+	if err := cursor.Err(); err != nil {
+		return nil, err
+	}
+
+	if len(categories) == 0 {
+		return nil, errors.New("no quiz categories found")
+	}
+
+	return categories, nil
+}
+
+func (u *QuizServiceImpl) GetCategoryById(id string) (*models.QuizCategory, error) {
+	objectId, err := bson.ObjectIDFromHex(id)
+	if err != nil {
+		return nil, errors.New("invalid id format")
+	}
+
+	var category models.QuizCategory
+
+	filter := bson.M{"_id": objectId}
+
+	err = u.quizCategoryCollection.FindOne(u.ctx, filter).Decode(&category)
+	if err != nil {
+		return nil, err
+	}
+
+	return &category, nil
+}
+
+func (u *QuizServiceImpl) GetQuiz(id string) (*models.Quiz, error) {
+	objectId, err := bson.ObjectIDFromHex(id)
+	if err != nil {
+		return nil, errors.New("invalid id format")
+	}
+
+	var quiz models.Quiz
+
+	filter := bson.M{"_id": objectId}
+
+	err = u.quizcollection.FindOne(u.ctx, filter).Decode(&quiz)
+	if err != nil {
+		return nil, err
+	}
+
+	return &quiz, nil
+}
+
+func (u *QuizServiceImpl) GetAllQuiz() ([]*models.Quiz, error) {
+	var quizzes []*models.Quiz
+
+	cursor, err := u.quizcollection.Find(u.ctx, bson.D{})
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(u.ctx)
+
+	for cursor.Next(u.ctx) {
+		var quiz models.Quiz
+
+		if err := cursor.Decode(&quiz); err != nil {
+			return nil, err
+		}
+
+		// ✅ Convert ObjectID to string for JSON response
+		quiz.IDHex = quiz.ID.Hex()
+
+		quizzes = append(quizzes, &quiz)
+	}
+
+	if err := cursor.Err(); err != nil {
+		return nil, err
+	}
+
+	if len(quizzes) == 0 {
+		return nil, errors.New("no quizzes found")
+	}
+
+	return quizzes, nil
+}
+
+func (u *QuizServiceImpl) UpdateQuiz(quiz *models.Quiz) error {
+	filter := bson.D{bson.E{Key: "_id", Value: quiz.ID}}
+	update := bson.D{bson.E{Key: "$set", Value: bson.D{
+		{Key: "question", Value: quiz.Question},
+		{Key: "options", Value: quiz.Options},
+		{Key: "imageLink", Value: quiz.ImageLink},
+		{Key: "typedAnswer", Value: quiz.TypedAnswer},
+		{Key: "earning", Value: quiz.Earning},
+		{Key: "answer", Value: quiz.Answer},
+	}}}
+
+	result, err := u.quizcollection.UpdateOne(u.ctx, filter, update)
+	if err != nil {
+		return err
+	}
+
+	if result.MatchedCount == 0 {
+		return errors.New("no quiz found with given id")
+	}
+
+	return nil
+}
+
+func (u *QuizServiceImpl) DeleteQuiz(id string) error {
+	objectId, err := bson.ObjectIDFromHex(id)
+	if err != nil {
+		return errors.New("invalid id format")
+	}
+
+	filter := bson.M{"_id": objectId}
+
+	result, err := u.quizcollection.DeleteOne(u.ctx, filter)
+	if err != nil {
+		return err
+	}
+
+	if result.DeletedCount == 0 {
+		return errors.New("no quiz found with given id")
+	}
+
+	return nil
+}
