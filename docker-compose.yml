@@ -1,0 +1,104 @@
+version: '3.8'
+
+services:
+  # ----------------------------------------------------
+  # Databases & Infrastructure
+  # ----------------------------------------------------
+  db:
+    image: postgres:16
+    container_name: superfan-db
+    ports:
+      - '5433:5432'
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: superfan
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redis:
+    image: redis:7
+    container_name: superfan-redis
+    ports:
+      - '6379:6379'
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+  redis-insight:
+    image: redis/redisinsight:latest
+    container_name: superfan-redis-insight
+    ports:
+      - '5540:5540'
+    depends_on:
+      - redis
+
+  mongo:
+    image: mongo:7
+    container_name: superfan-mongo
+    ports:
+      - '27017:27017'
+    volumes:
+      - mongo-data:/data/db
+    restart: unless-stopped
+
+  maildev:
+    image: maildev/maildev
+    container_name: superfan-maildev
+    ports:
+      - '1080:1080' # Web UI
+      - '1025:1025' # SMTP
+
+  # ----------------------------------------------------
+  # Application Services
+  # ----------------------------------------------------
+  superfan-nest:
+    build:
+      context: ./superfan.nest
+      target: build
+    container_name: superfan-nest-api
+    command: pnpm start:dev
+    ports:
+      - '3001:3000'
+    env_file:
+      - path: ./superfan.nest/.env
+        required: false
+    environment:
+      - DATABASE_URL=postgresql://postgres:password@db:5432/superfan?connection_limit=10&pool_timeout=20
+      - LOCAL_REDIS_HOST=redis
+      - GO_ENDPOINT=http://superfan-go:7190
+    volumes:
+      - ./superfan.nest:/app
+      - /app/node_modules
+    depends_on:
+      - redis
+      - db
+      - maildev
+    restart: unless-stopped
+
+  superfan-go:
+    build:
+      context: ./superfan.go
+      target: dev
+    container_name: superfan-go-api
+    ports:
+      - '7190:7190'
+    env_file:
+      - path: ./superfan.go/.env
+        required: false
+    environment:
+      - MONGO_URI=mongodb://mongo:27017/quizdb
+      - PORT=7190
+      - GIN_MODE=debug
+    volumes:
+      - ./superfan.go:/app
+    depends_on:
+      - mongo
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+  pgdata:
+  mongo-data:
