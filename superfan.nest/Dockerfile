@@ -18,6 +18,9 @@ WORKDIR /app
 
 COPY . .
 
+# Create dummy credentials.json if missing to satisfy TypeScript compilation
+RUN [ -f credentials.json ] || echo '{"web":{"client_id":"dummy","client_secret":"dummy","redirect_uris":["http://localhost:3000"]}}' > credentials.json
+
 ENV DATABASE_URL="postgresql://1TdILekB7Rc5:cZei5SOTDSNA5yQsM1bxMBjXu@marine-ship.igris.cloud:14999/pipeops"
 
 ENV NODE_OPTIONS="--max-old-space-size=4096"
