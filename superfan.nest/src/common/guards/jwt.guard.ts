@@ -59,13 +59,15 @@ export class JwtGuard implements CanActivate {
         const phone = (clerkUser.unsafeMetadata?.phone as string) || clerkUser.phoneNumbers[0]?.phoneNumber || '';
         const referralCode = clerkUser.unsafeMetadata?.referralCode as string | undefined;
 
+        const loginMethod = clerkUser.externalAccounts?.[0]?.provider || 'clerk';
+
         user = await this.userService.registerClerkUser({
           email,
           firstName: clerkUser.firstName || 'User',
           lastName: clerkUser.lastName || '',
           username: clerkUser.username || clerkUser.firstName?.toLowerCase() || `user_${payload.sub.slice(-6)}`,
           phone,
-          login_method: 'clerk',
+          login_method: loginMethod,
           referralCode,
         });
       }

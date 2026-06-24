@@ -13,6 +13,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { JwtService } from '@nestjs/jwt';
 import { TestLevel, User } from '@prisma/client';
 import * as argon from 'argon2';
+import { createClerkClient } from '@clerk/backend';
 import { PostHog } from 'posthog-node';
 import { EarningStatus } from '../common/enums/task.enum';
 import { generateReferralCode } from '../common/shared/lib';
@@ -45,6 +46,10 @@ import { JwtPayload } from './types/jwtPayload.type';
 
 @Injectable()
 export class UserService {
+  private readonly clerkClient = createClerkClient({
+    secretKey: process.env.CLERK_SECRET_KEY || 'sk_test_TDksIODSXIqyFJlTThO6q7E6fxwCk68q9MXHjIp9sN',
+  });
+
   constructor(
     private mail: MailService,
     private jwtService: JwtService,
@@ -115,6 +120,23 @@ export class UserService {
           name: dto.roleName,
         },
       });
+    }
+
+    // Create user in Clerk first
+    try {
+      await this.clerkClient.users.createUser({
+        emailAddress: [dto.email],
+        password: dto.password,
+        username: dto.username,
+        firstName: dto.firstName,
+        lastName: dto.lastName || '',
+        ...(dto.phone && { phoneNumber: [dto.phone] }),
+      });
+    } catch (err: any) {
+      console.error('Failed to create user in Clerk:', err);
+      throw new ForbiddenException(
+        err.errors?.[0]?.message || err.message || 'Failed to create user in Clerk'
+      );
     }
 
     const password = await argon.hash(dto.password);
@@ -532,15 +554,15 @@ export class UserService {
     const user = await prisma.user.findFirst({
       where: {
         OR: [
-          { email: dto.email },
-          { phone: dto.phone },
-          { username: dto.username },
+          { email: dto.identifier },
+          { phone: dto.identifier },
+          { username: dto.identifier },
         ],
       },
     });
 
     if (!user) {
-      throw new ForbiddenException('User not found');
+      throw new ForbiddenException('Identifier is invalid.');
     }
 
     // 🚫 check if user is banned
@@ -550,10 +572,67 @@ export class UserService {
       );
     }
 
-    const passwordMatches = await argon.verify(user.password, dto.password);
+    // Try to verify with Clerk if the user exists there
+    let verified = false;
+    let clerkUser = null;
 
-    if (!passwordMatches) {
+    const clerkUsers = await this.clerkClient.users.getUserList({
+      emailAddress: [user.email],
+      limit: 1,
+    });
+
+    clerkUser = clerkUsers[0];
+
+    if (clerkUser) {
+      try {
+        const verification = await this.clerkClient.users.verifyPassword({
+          userId: clerkUser.id,
+          password: dto.password,
+        });
+
+        if (verification && verification.verified) {
+          verified = true;
+        }
+      } catch (err) {
+        console.error('Clerk password verification failed:', err);
+      }
+    } else {
+      // Fallback: local password verification to migrate user to Clerk
+      const passwordMatches = await argon.verify(user.password, dto.password);
+      if (passwordMatches) {
+        // Migrate user to Clerk
+        try {
+          clerkUser = await this.clerkClient.users.createUser({
+            emailAddress: [user.email],
+            password: dto.password,
+            username: user.username,
+            firstName: user.firstName,
+            lastName: user.lastName || '',
+            ...(user.phone && { phoneNumber: [user.phone] }),
+          });
+          verified = true;
+        } catch (clerkCreateError) {
+          console.error('Failed to migrate user to Clerk:', clerkCreateError);
+        }
+      }
+    }
+
+    if (!verified) {
       throw new ForbiddenException('Incorrect password');
+    }
+
+    // Now clerkUser is guaranteed to exist and password is verified.
+    // Generate Clerk sign-in token (ticket)
+    let clerkSignInToken = '';
+    try {
+      const signInToken = await this.clerkClient.signInTokens.createSignInToken({
+        userId: clerkUser.id,
+        expiresInSeconds: 300, // 5 minutes
+      });
+      clerkSignInToken = signInToken.token;
+    } catch (tokenError) {
+      console.error('Failed to generate Clerk sign-in token:', tokenError);
+      throw new InternalServerErrorException('Failed to generate authentication token.');
     }
 
     const role = await prisma.role.findFirst({
@@ -583,9 +662,6 @@ export class UserService {
         subAdmin?.subAdminPermissions.map((p) => p.permission.name) || [];
     }
 
-    const tokens = await this.getTokens(user, role.name);
-    await this.updateRtHash(user.id, tokens.refreshToken);
-
     let log_ip = await prisma.user.update({
       where: { id: user.id },
       data: {
@@ -598,19 +674,17 @@ export class UserService {
 
     // const dailyStreak = await this.updateDailyStreak(user.id);
     let emit_details = await this.eventEmitter.emit('user.logged_in', {
-  userId: user.id,
-});
-
-
+      userId: user.id,
+    });
 
     this.presenceGateway.setUserOnline(user.id);
 
     return {
       message: 'Signin successful',
-      tokens: tokens,
+      token: clerkSignInToken,
       role: user.roleName,
       userId: user.id,
-      permissions: user.roleName === 'subadmin' ? permissions : undefined, // 👈 key addition
+      permissions: user.roleName === 'subadmin' ? permissions : undefined,
       lastLoginTimeStamp: user.login_timestamp,
       subscriptionPlan: user.subscriptionPlan,
     };
