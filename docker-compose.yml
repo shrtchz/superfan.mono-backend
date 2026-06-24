@@ -63,6 +63,8 @@ services:
     ports:
       - '3001:3000'
     env_file:
+      - path: ./.env
+        required: false
       - path: ./superfan.nest/.env
         required: false
     environment:
@@ -86,6 +88,8 @@ services:
     ports:
       - '7190:7190'
     env_file:
+      - path: ./.env
+        required: false
       - path: ./superfan.go/.env
         required: false
     environment:

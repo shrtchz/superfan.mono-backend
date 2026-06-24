@@ -1,5 +1,6 @@
 import { BullModule } from '@nestjs/bullmq';
 import { Module } from '@nestjs/common';
+import * as path from 'path';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import {
   APP_FILTER,
@@ -39,6 +40,11 @@ import { ElasticsearchModule } from './elasticsearch/elasticsearch.module';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
+      envFilePath: [
+        path.resolve(__dirname, '../../../.env'),
+        path.resolve(__dirname, '../../.env'),
+        '.env',
+      ],
     }),
     SentryModule.forRoot(),
     JwtModule.registerAsync({
