@@ -41,6 +41,7 @@ import { ElasticsearchModule } from './elasticsearch/elasticsearch.module';
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: [
+        '/etc/secrets/.env',
         path.resolve(__dirname, '../../../.env'),
         path.resolve(__dirname, '../../.env'),
         '.env',
