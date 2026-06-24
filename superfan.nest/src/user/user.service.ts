@@ -158,6 +158,7 @@ export class UserService {
         password,
         phone: dto.phone,
         roleName: dto.roleName,
+        login_method: 'clerk',
         subscriptionPlan: dto.subscriptionPlan || 'FREE',
 
         referral_code: referralCode,
