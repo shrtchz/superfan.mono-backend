@@ -1,7 +1,8 @@
 import dotenv from 'dotenv';
 import * as path from 'path';
 
-// Load root .env first, then local .env
+// Load Render secret file, root .env first, then local .env
+dotenv.config({ path: '/etc/secrets/.env' });
 dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 dotenv.config();
