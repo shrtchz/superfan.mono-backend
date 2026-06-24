@@ -64,7 +64,6 @@ FROM node:22-slim AS nest-production
 WORKDIR /app
 ENV NODE_ENV=production
 ENV DATABASE_URL="postgresql://1TdILekB7Rc5:cZei5SOTDSNA5yQsM1bxMBjXu@marine-ship.igris.cloud:14999/pipeops"
-ENV REDIS_URL="redis://default:AZnsAAIncDJjNWE4NDRlMTBmZTc0NGNiOWIyMGUyNTBlN2E1NWZkMHAyMzk0MDQ@awaited-platypus-39404.upstash.io:6379"
 COPY --from=nest-build /app/package.json ./
 COPY --from=nest-build /app/node_modules ./node_modules
 COPY --from=nest-build /app/dist ./dist
