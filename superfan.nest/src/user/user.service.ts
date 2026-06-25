@@ -552,7 +552,7 @@ export class UserService {
   }
 
   async signinUser(dto: LoginDto): Promise<any> {
-    const user = await prisma.user.findFirst({
+    let user = await prisma.user.findFirst({
       where: {
         OR: [
           { email: dto.identifier },
@@ -562,60 +562,118 @@ export class UserService {
       },
     });
 
-    if (!user) {
-      throw new ForbiddenException('Identifier is invalid.');
-    }
-
-    // 🚫 check if user is banned
-    if (user.isBanned) {
-      throw new ForbiddenException(
-        'Your account has been banned. Contact support.',
-      );
-    }
-
     // Try to verify with Clerk if the user exists there
     let verified = false;
     let clerkUser = null;
 
-    const clerkUsers = await this.clerkClient.users.getUserList({
-      emailAddress: [user.email],
-      limit: 1,
-    });
+    if (user) {
+      // 🚫 check if user is banned
+      if (user.isBanned) {
+        throw new ForbiddenException(
+          'Your account has been banned. Contact support.',
+        );
+      }
 
-    clerkUser = clerkUsers[0];
+      const clerkUsers = await this.clerkClient.users.getUserList({
+        emailAddress: [user.email],
+        limit: 1,
+      });
 
-    if (clerkUser) {
-      try {
-        const verification = await this.clerkClient.users.verifyPassword({
-          userId: clerkUser.id,
-          password: dto.password,
-        });
+      clerkUser = clerkUsers[0];
 
-        if (verification && verification.verified) {
-          verified = true;
+      if (clerkUser) {
+        try {
+          const verification = await this.clerkClient.users.verifyPassword({
+            userId: clerkUser.id,
+            password: dto.password,
+          });
+
+          if (verification && verification.verified) {
+            verified = true;
+          }
+        } catch (err) {
+          console.error('Clerk password verification failed:', err);
         }
-      } catch (err) {
-        console.error('Clerk password verification failed:', err);
+      } else {
+        // Fallback: local password verification to migrate user to Clerk
+        const passwordMatches = await argon.verify(user.password, dto.password);
+        if (passwordMatches) {
+          // Migrate user to Clerk
+          try {
+            clerkUser = await this.clerkClient.users.createUser({
+              emailAddress: [user.email],
+              password: dto.password,
+              username: user.username,
+              firstName: user.firstName,
+              lastName: user.lastName || '',
+              ...(user.phone && { phoneNumber: [user.phone] }),
+            });
+            verified = true;
+          } catch (clerkCreateError) {
+            console.error('Failed to migrate user to Clerk:', clerkCreateError);
+          }
+        }
       }
     } else {
-      // Fallback: local password verification to migrate user to Clerk
-      const passwordMatches = await argon.verify(user.password, dto.password);
-      if (passwordMatches) {
-        // Migrate user to Clerk
-        try {
-          clerkUser = await this.clerkClient.users.createUser({
-            emailAddress: [user.email],
-            password: dto.password,
-            username: user.username,
-            firstName: user.firstName,
-            lastName: user.lastName || '',
-            ...(user.phone && { phoneNumber: [user.phone] }),
+      // User is not in the database! Let's check if they exist in Clerk.
+      let clerkUsers = [];
+      try {
+        if (dto.identifier.includes('@')) {
+          clerkUsers = await this.clerkClient.users.getUserList({
+            emailAddress: [dto.identifier],
+            limit: 1,
           });
-          verified = true;
-        } catch (clerkCreateError) {
-          console.error('Failed to migrate user to Clerk:', clerkCreateError);
+        } else if (dto.identifier.startsWith('+')) {
+          clerkUsers = await this.clerkClient.users.getUserList({
+            phoneNumber: [dto.identifier],
+            limit: 1,
+          });
+        } else {
+          clerkUsers = await this.clerkClient.users.getUserList({
+            username: [dto.identifier],
+            limit: 1,
+          });
+        }
+      } catch (clerkListError) {
+        console.error('Failed to query Clerk users:', clerkListError);
+      }
+
+      clerkUser = clerkUsers[0];
+
+      if (clerkUser) {
+        try {
+          const verification = await this.clerkClient.users.verifyPassword({
+            userId: clerkUser.id,
+            password: dto.password,
+          });
+
+          if (verification && verification.verified) {
+            const email = clerkUser.emailAddresses[0]?.emailAddress;
+            const phone = (clerkUser.unsafeMetadata?.phone as string) || clerkUser.phoneNumbers[0]?.phoneNumber || '';
+            const referralCode = clerkUser.unsafeMetadata?.referralCode as string | undefined;
+            const loginMethod = clerkUser.externalAccounts?.[0]?.provider || 'clerk';
+
+            if (email) {
+              user = await this.registerClerkUser({
+                email,
+                firstName: clerkUser.firstName || 'User',
+                lastName: clerkUser.lastName || '',
+                username: clerkUser.username || clerkUser.firstName?.toLowerCase() || `user_${clerkUser.id.slice(-6)}`,
+                phone,
+                login_method: loginMethod,
+                referralCode,
+              });
+              verified = true;
+            }
+          }
+        } catch (err) {
+          console.error('Clerk password verification failed for local registration:', err);
         }
       }
+    }
+
+    if (!user) {
+      throw new ForbiddenException('Identifier is invalid.');
     }
 
     if (!verified) {
