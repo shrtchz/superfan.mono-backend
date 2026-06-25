@@ -42,7 +42,9 @@ export class JwtGuard implements CanActivate {
 
     try {
       // 1. Verify token using Clerk's public keys (JWKS)
-      const payload = await this.clerkClient.verifyToken(token);
+      const payload = await this.clerkClient.verifyToken(token, {
+        clockSkewInMs: 60000, // 60 seconds tolerance to prevent clock drift issues on Render
+      });
 
       // 2. Fetch full user details from Clerk using the 'sub' ID
       const clerkUser = await this.clerkClient.users.getUser(payload.sub);
@@ -75,9 +77,9 @@ export class JwtGuard implements CanActivate {
       // 4. Attach user to request object so downstream controllers can use it
       request.user = user;
       return true;
-    } catch (error) {
+    } catch (error: any) {
       console.error('Clerk auth guard error:', error);
-      throw new UnauthorizedException('Session expired! Please sign in');
+      throw new UnauthorizedException(`Session expired! Please sign in. (Clerk error: ${error.message || error})`);
     }
   }
 }
