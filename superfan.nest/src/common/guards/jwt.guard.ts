@@ -5,7 +5,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { createClerkClient } from '@clerk/backend';
+import { createClerkClient, verifyToken } from '@clerk/backend';
 import { UserService } from '../../user/user.service';
 
 @Injectable()
@@ -42,7 +42,8 @@ export class JwtGuard implements CanActivate {
 
     try {
       // 1. Verify token using Clerk's public keys (JWKS)
-      const payload = await this.clerkClient.verifyToken(token, {
+      const payload = await verifyToken(token, {
+        secretKey: process.env.CLERK_SECRET_KEY || 'sk_test_TDksIODSXIqyFJlTThO6q7E6fxwCk68q9MXHjIp9sN',
         clockSkewInMs: 60000, // 60 seconds tolerance to prevent clock drift issues on Render
       });
 
