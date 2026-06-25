@@ -579,7 +579,7 @@ export class UserService {
         limit: 1,
       });
 
-      clerkUser = clerkUsers[0];
+      clerkUser = clerkUsers?.data?.[0] || clerkUsers?.[0];
 
       if (clerkUser) {
         try {
@@ -616,7 +616,7 @@ export class UserService {
       }
     } else {
       // User is not in the database! Let's check if they exist in Clerk.
-      let clerkUsers = [];
+      let clerkUsers: any = [];
       try {
         if (dto.identifier.includes('@')) {
           clerkUsers = await this.clerkClient.users.getUserList({
@@ -638,7 +638,7 @@ export class UserService {
         console.error('Failed to query Clerk users:', clerkListError);
       }
 
-      clerkUser = clerkUsers[0];
+      clerkUser = clerkUsers?.data?.[0] || clerkUsers?.[0];
 
       if (clerkUser) {
         try {
