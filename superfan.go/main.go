@@ -148,7 +148,7 @@ func main() {
 
 	defer mongoclient.Disconnect(ctx)
 
-	basepath := server.Group("/")
+	basepath := server.Group("/v1")
 
 	controllers.RegisterQuizRoutes(
 		basepath,
