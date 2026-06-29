@@ -58,7 +58,9 @@ export class QuizService implements OnApplicationBootstrap {
       );
 
       // 2. Fetch from Airtable
-      const rawRecords = await this.airtableService.findAll('quiz_qustions');
+      const tableName = process.env.AIRTABLE_TABLE_NAME || 'quiz_questions';
+      console.log(`Fetching from Airtable table: "${tableName}"`);
+      const rawRecords = await this.airtableService.findAll(tableName);
       let records: any[] = [];
       
       if (Array.isArray(rawRecords)) {
