@@ -79,15 +79,9 @@ func ErrorHandler() gin.HandlerFunc {
 		err := c.Errors.Last().Err
 		var appErr *AppError
 		if errors.As(err, &appErr) {
-			c.JSON(appErr.Status, gin.H{
-				"success": false,
-				"error":   gin.H{"code": appErr.Code, "message": appErr.Message},
-			})
+			utils.SendError(c, appErr.Status, appErr.Code, appErr.Message)
 		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"success": false,
-				"error":   gin.H{"code": "INTERNAL", "message": "an unexpected error occurred"},
-			})
+			utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "an unexpected error occurred")
 		}
 	}
 }
@@ -146,7 +140,16 @@ func init() {
 	qsc = controllers.NewQuizSubmissionController(qsImpl)
 	qc = controllers.NewQuizController(qs)
 
-	server = gin.Default()
+	server = gin.New()
+	server.Use(gin.Logger())
+	server.Use(gin.CustomRecovery(func(c *gin.Context, recovered interface{}) {
+		if err, ok := recovered.(string); ok {
+			utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err)
+		} else {
+			utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "an unexpected error occurred")
+		}
+		c.AbortWithStatus(http.StatusInternalServerError)
+	}))
 
 	server.Use(ErrorHandler())
 }
@@ -160,9 +163,7 @@ func main() {
 	defer mongoclient.Disconnect(ctx)
 
 	server.GET("/health", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
-			"status": "UP",
-		})
+		utils.Success(c, http.StatusOK, "UP", nil)
 	})
 
 	basepath := server.Group("/v1")
