@@ -22,24 +22,21 @@ export class AirtableService {
    * Get a single record by ID
    */
   async findOne(tableName: string, recordId: string) {
-    return await this.db.table(tableName).find(recordId);
+    return await this.db.model(tableName).find(recordId);
   }
 
   /**
    * Get all records
    */
   async findAll(tableName: string) {
-    console.log(await this.db);
-    return await this.db.table(tableName).select();
+    return await this.db.model(tableName).all();
   }
 
   /**
    * Get records with limit
    */
   async findPage(tableName: string, limit = 50) {
-    return await this.db.table(tableName).select({
-      maxRecords: limit,
-    });
+    return await this.db.model(tableName).where({ maxRecords: limit });
   }
 
   /**
@@ -49,7 +46,7 @@ export class AirtableService {
     tableName: string,
     fields: Record<string, any>,
   ) {
-    return await this.db.table(tableName).create(fields);
+    return await this.db.model(tableName).create(fields);
   }
 
   /**
@@ -60,7 +57,7 @@ export class AirtableService {
     recordId: string,
     fields: Record<string, any>,
   ) {
-    return await this.db.table(tableName).update(recordId, fields);
+    return await this.db.model(tableName).update(recordId, fields);
   }
 
   /**
@@ -70,6 +67,6 @@ export class AirtableService {
     tableName: string,
     recordId: string,
   ) {
-    return await this.db.table(tableName).delete(recordId);
+    return await this.db.model(tableName).destroy(recordId);
   }
 }
