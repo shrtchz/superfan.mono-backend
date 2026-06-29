@@ -58,7 +58,23 @@ export class QuizService implements OnApplicationBootstrap {
       );
 
       // 2. Fetch from Airtable
-      const records = await this.airtableService.findAll('quiz_qustions');
+      const rawRecords = await this.airtableService.findAll('quiz_qustions');
+      let records: any[] = [];
+      
+      if (Array.isArray(rawRecords)) {
+        records = rawRecords;
+      } else if (rawRecords && Array.isArray(rawRecords.records)) {
+        records = rawRecords.records;
+      } else if (rawRecords && typeof rawRecords === 'object') {
+        const arrValue = Object.values(rawRecords).find(v => Array.isArray(v));
+        if (arrValue) records = arrValue as any[];
+      }
+
+      if (!records || records.length === 0) {
+        console.log('No valid array of records found from Airtable. Raw response keys:', rawRecords ? Object.keys(rawRecords) : typeof rawRecords);
+        return;
+      }
+
       let inserted = 0;
       let skipped = 0;
 
