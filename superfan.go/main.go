@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	_ "github.com/joho/godotenv/autoload"
@@ -104,14 +105,24 @@ func init() {
 
 	clientOptions := options.Client().ApplyURI(mongoURI)
 
-	mongoclient, err = mongo.Connect(clientOptions)
-	if err != nil {
-		log.Fatal("error while connecting with mongo:", err)
+	var mongoclient *mongo.Client
+	var err error
+	maxRetries := 10
+	
+	for i := 0; i < maxRetries; i++ {
+		mongoclient, err = mongo.Connect(clientOptions)
+		if err == nil {
+			err = mongoclient.Ping(ctx, readpref.Primary())
+			if err == nil {
+				break
+			}
+		}
+		log.Printf("Failed to connect to MongoDB, retrying in 2 seconds... (%d/%d)", i+1, maxRetries)
+		time.Sleep(2 * time.Second)
 	}
 
-	err = mongoclient.Ping(ctx, readpref.Primary())
 	if err != nil {
-		log.Fatal("error while trying to ping mongo", err)
+		log.Fatal("error while trying to ping/connect mongo after retries: ", err)
 	}
 
 	fmt.Println("mongo connection established")
