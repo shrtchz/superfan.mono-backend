@@ -122,7 +122,7 @@ func init() {
 	}
 
 	if err != nil {
-		log.Fatal("error while trying to ping/connect mongo after retries: ", err)
+		log.Fatal("error  while trying to ping/connect mongo after retries: ", err)
 	}
 
 	fmt.Println("mongo connection established")
