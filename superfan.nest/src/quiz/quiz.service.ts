@@ -71,7 +71,7 @@ export class QuizService implements OnApplicationBootstrap {
       }
 
       if (!records || records.length === 0) {
-        console.log('No valid array of records found from Airtable. Raw response keys:', rawRecords ? Object.keys(rawRecords) : typeof rawRecords);
+        console.error('No valid array of records found from Airtable. Full response:', JSON.stringify(rawRecords));
         return;
       }
 
