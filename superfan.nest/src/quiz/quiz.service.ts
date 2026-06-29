@@ -1,5 +1,5 @@
 import { HttpService } from '@nestjs/axios';
-import { BadRequestException, HttpException, HttpStatus, Injectable, InternalServerErrorException, NotFoundException, Inject, forwardRef } from '@nestjs/common';
+import { BadRequestException, HttpException, HttpStatus, Injectable, InternalServerErrorException, NotFoundException, Inject, forwardRef, OnApplicationBootstrap } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma } from '@prisma/client';
 import { JsonArray } from '@prisma/client/runtime/client';
@@ -11,6 +11,7 @@ import { PaymentService } from '../payment/payment.service';
 import { prisma } from '../prisma/prisma';
 import { UserService } from '../user/user.service';
 import { WalletService } from '../wallet/wallet.service';
+import { AirtableService } from '../elasticsearch/airtable.service';
 import {
   CreateLiveQuizDto,
   CreateQuizCategoryDto,
@@ -23,7 +24,7 @@ import {
 import { QuestionAddedEvent } from './quiz.events';
 
 @Injectable()
-export class QuizService {
+export class QuizService implements OnApplicationBootstrap {
   private baseUrl = `${process.env.GO_ENDPOINT}/v1/quiz`;
   // private trackerBaseUrl = `${process.env.GO_ENDPOINT}/v1`;
 
@@ -32,9 +33,85 @@ export class QuizService {
     private readonly walletService: WalletService,
     private readonly paymentService: PaymentService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly airtableService: AirtableService,
     @Inject(forwardRef(() => UserService))
     private readonly userService: UserService,
   ) {}
+
+  async onApplicationBootstrap() {
+    console.log('Bootstrapping QuizService... running Airtable sync in the background.');
+    // Run asynchronously so it doesn't block server startup
+    this.syncFromAirtable().catch((err) => {
+      console.error('Failed to sync from Airtable during startup:', err);
+    });
+  }
+
+  async syncFromAirtable() {
+    console.log('--- Starting Airtable to MongoDB Sync ---');
+    try {
+      // 1. Fetch existing questions from Go
+      const existingRes = await firstValueFrom(this.httpService.get(`${this.baseUrl}/getall`));
+      const existingQuizzes = existingRes.data?.data || [];
+      
+      const existingQuestions = new Set(
+        existingQuizzes.map((q: any) => q.question?.toLowerCase().trim()),
+      );
+
+      // 2. Fetch from Airtable
+      const records = await this.airtableService.findAll('quiz_qustions');
+      let inserted = 0;
+      let skipped = 0;
+
+      // 3. Compare and Insert
+      for (const record of records) {
+        const fields = record.fields || record; // Safely handle different Airtable wrappers
+        const rawQuestion = fields['Question Text'] as string;
+        
+        if (!rawQuestion) continue; // Skip empty rows
+
+        const questionText = rawQuestion.trim();
+        const lowerQuestion = questionText.toLowerCase();
+
+        if (existingQuestions.has(lowerQuestion)) {
+          skipped++;
+          continue;
+        }
+
+        // Build options array safely
+        const options = [];
+        if (fields['Option A']) options.push(fields['Option A']);
+        if (fields['Option B']) options.push(fields['Option B']);
+        if (fields['Option C']) options.push(fields['Option C']);
+        if (fields['Option D']) options.push(fields['Option D']);
+
+        // Handle ImageLink safely (Airtable sends an array of attachment objects)
+        let imageLink = undefined;
+        if (fields['Image'] && Array.isArray(fields['Image'])) {
+           imageLink = fields['Image'].map((img: any) => img.url);
+        }
+
+        const dto = {
+          testQuiz: fields['Educational Product/Purpose'] || 'unknown',
+          testLevel: fields['Difficulty Level'] || 'basic',
+          subject: fields['Subject'] || 'general',
+          question: questionText,
+          options: options,
+          answer: fields['Correct Answer'] || '',
+          ImageLink: imageLink,
+          isTypedAnswer: options.length === 0,
+        };
+
+        // Send to Go API
+        await firstValueFrom(this.httpService.post(`${this.baseUrl}/create`, dto));
+        inserted++;
+        existingQuestions.add(lowerQuestion); // update cache
+      }
+
+      console.log(`--- Airtable Sync Complete: ${inserted} inserted, ${skipped} duplicates skipped ---`);
+    } catch (error) {
+      console.error('Error syncing with Airtable:', error?.response?.data || error.message);
+    }
+  }
 
   async createQuiz(quizData: CreateQuizDto) {
     const response = await firstValueFrom(
