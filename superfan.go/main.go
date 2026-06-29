@@ -148,6 +148,12 @@ func main() {
 
 	defer mongoclient.Disconnect(ctx)
 
+	server.GET("/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"status": "UP",
+		})
+	})
+
 	basepath := server.Group("/v1")
 
 	controllers.RegisterQuizRoutes(
