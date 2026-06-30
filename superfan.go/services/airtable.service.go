@@ -58,11 +58,13 @@ func SyncFromAirtable(qs QuizService) {
 	log.Printf("Fetching from Airtable base: %s, table: %s", baseId, tableName)
 
 	// Get existing quizzes to avoid duplicates
+	log.Println("[Debug] Fetching existing quizzes from MongoDB...")
 	existingQuizzes, err := qs.GetAllQuiz()
 	if err != nil {
 		log.Println("Failed to fetch existing quizzes from DB:", err)
 		return
 	}
+	log.Printf("[Debug] Fetched %d existing quizzes from MongoDB.", len(existingQuizzes))
 
 	existingMap := make(map[string]bool)
 	for _, q := range existingQuizzes {
@@ -74,6 +76,7 @@ func SyncFromAirtable(qs QuizService) {
 	skipped := 0
 	offset := ""
 	totalFetched := 0
+	client := &http.Client{Timeout: 30 * time.Second} // ADDED TIMEOUT
 
 	for {
 		fetchUrl := airtableUrl
@@ -81,6 +84,7 @@ func SyncFromAirtable(qs QuizService) {
 			fetchUrl = fmt.Sprintf("%s?offset=%s", airtableUrl, url.QueryEscape(offset))
 		}
 
+		log.Println("[Debug] Making HTTP request to Airtable...")
 		req, err := http.NewRequest("GET", fetchUrl, nil)
 		if err != nil {
 			log.Println("Error creating Airtable request:", err)
@@ -90,12 +94,12 @@ func SyncFromAirtable(qs QuizService) {
 		req.Header.Add("Authorization", "Bearer "+apiKey)
 		req.Header.Add("Content-Type", "application/json")
 
-		client := &http.Client{}
 		res, err := client.Do(req)
 		if err != nil {
 			log.Println("Error making Airtable request:", err)
 			return
 		}
+		log.Printf("[Debug] Airtable responded with status %d", res.StatusCode)
 
 		if res.StatusCode != http.StatusOK {
 			log.Printf("Airtable request failed with status: %d", res.StatusCode)
