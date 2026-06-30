@@ -35,9 +35,9 @@ type AirtableResponse struct {
 func SyncFromAirtable(qs QuizService) {
 	log.Println("--- Starting Airtable to MongoDB Sync in Go ---")
 
-	rawBaseId := os.Getenv("AIRTABLE_BASE_ID")
-	apiKey := os.Getenv("AIRTABLE_API_KEY")
-	tableName := os.Getenv("AIRTABLE_TABLE_NAME")
+	rawBaseId := strings.TrimSpace(os.Getenv("AIRTABLE_BASE_ID"))
+	apiKey := strings.TrimSpace(os.Getenv("AIRTABLE_API_KEY"))
+	tableName := strings.TrimSpace(os.Getenv("AIRTABLE_TABLE_NAME"))
 
 	if tableName == "" {
 		tableName = "tbltD2dVLp7hNb60s"
@@ -48,45 +48,12 @@ func SyncFromAirtable(qs QuizService) {
 		return
 	}
 
-	// Clean base ID (strip slashes)
+	// Clean base ID and table ID (strip slashes from full URLs)
 	baseId := strings.Split(rawBaseId, "/")[0]
+	tableName = strings.Split(tableName, "/")[0]
 
 	airtableUrl := fmt.Sprintf("https://api.airtable.com/v0/%s/%s", baseId, url.PathEscape(tableName))
 	log.Printf("Fetching from Airtable base: %s, table: %s", baseId, tableName)
-
-	req, err := http.NewRequest("GET", airtableUrl, nil)
-	if err != nil {
-		log.Println("Error creating Airtable request:", err)
-		return
-	}
-
-	req.Header.Add("Authorization", "Bearer "+apiKey)
-	req.Header.Add("Content-Type", "application/json")
-
-	client := &http.Client{}
-	res, err := client.Do(req)
-	if err != nil {
-		log.Println("Error making Airtable request:", err)
-		return
-	}
-	defer res.Body.Close()
-
-	if res.StatusCode != http.StatusOK {
-		log.Printf("Airtable request failed with status: %d", res.StatusCode)
-		// Try to read error body
-		var errRes map[string]interface{}
-		json.NewDecoder(res.Body).Decode(&errRes)
-		log.Printf("Airtable error details: %+v", errRes)
-		return
-	}
-
-	var parsedRes AirtableResponse
-	if err := json.NewDecoder(res.Body).Decode(&parsedRes); err != nil {
-		log.Println("Error decoding Airtable response:", err)
-		return
-	}
-
-	log.Printf("Fetched %d records from Airtable.", len(parsedRes.Records))
 
 	// Get existing quizzes to avoid duplicates
 	existingQuizzes, err := qs.GetAllQuiz()
@@ -103,55 +70,111 @@ func SyncFromAirtable(qs QuizService) {
 
 	inserted := 0
 	skipped := 0
+	offset := ""
+	totalFetched := 0
 
-	for _, record := range parsedRes.Records {
-		fields := record.Fields
-		if fields.QuestionText == "" {
-			continue
+	for {
+		fetchUrl := airtableUrl
+		if offset != "" {
+			fetchUrl = fmt.Sprintf("%s?offset=%s", airtableUrl, url.QueryEscape(offset))
 		}
 
-		cleanQText := strings.TrimSpace(strings.ToLower(fields.QuestionText))
-		if existingMap[cleanQText] {
-			skipped++
-			continue
+		req, err := http.NewRequest("GET", fetchUrl, nil)
+		if err != nil {
+			log.Println("Error creating Airtable request:", err)
+			return
 		}
 
-		var options []string
-		if fields.OptionA != "" { options = append(options, fields.OptionA) }
-		if fields.OptionB != "" { options = append(options, fields.OptionB) }
-		if fields.OptionC != "" { options = append(options, fields.OptionC) }
-		if fields.OptionD != "" { options = append(options, fields.OptionD) }
+		req.Header.Add("Authorization", "Bearer "+apiKey)
+		req.Header.Add("Content-Type", "application/json")
 
-		subject := fields.Subject
-		if subject == "" {
-			subject = "General"
+		client := &http.Client{}
+		res, err := client.Do(req)
+		if err != nil {
+			log.Println("Error making Airtable request:", err)
+			return
 		}
 
-		level := fields.Difficulty
-		if level == "" {
-			level = "Medium"
+		if res.StatusCode != http.StatusOK {
+			log.Printf("Airtable request failed with status: %d", res.StatusCode)
+			var errRes map[string]interface{}
+			json.NewDecoder(res.Body).Decode(&errRes)
+			log.Printf("Airtable error details: %+v", errRes)
+			res.Body.Close()
+			return
 		}
 
-		quiz := &models.Quiz{
-			ID:            bson.NewObjectID(),
-			TestQuiz:      "Airtable Sync",
-			TestLevel:     level,
-			Subject:       subject,
-			Earning:       "0",
-			Question:      fields.QuestionText,
-			Options:       options,
-			Answer:        fields.CorrectAnswer,
-			IsTypedAnswer: false,
+		var parsedRes AirtableResponse
+		if err := json.NewDecoder(res.Body).Decode(&parsedRes); err != nil {
+			log.Println("Error decoding Airtable response:", err)
+			res.Body.Close()
+			return
 		}
-		quiz.IDHex = quiz.ID.Hex()
+		res.Body.Close()
 
-		if err := qs.CreateQuiz(quiz); err != nil {
-			log.Println("Failed to insert quiz from Airtable:", err)
-		} else {
-			inserted++
-			existingMap[cleanQText] = true
+		totalFetched += len(parsedRes.Records)
+
+		for _, record := range parsedRes.Records {
+			fields := record.Fields
+			if fields.QuestionText == "" {
+				continue
+			}
+
+			cleanQText := strings.TrimSpace(strings.ToLower(fields.QuestionText))
+			if existingMap[cleanQText] {
+				skipped++
+				continue
+			}
+
+			var options []string
+			if fields.OptionA != "" { options = append(options, fields.OptionA) }
+			if fields.OptionB != "" { options = append(options, fields.OptionB) }
+			if fields.OptionC != "" { options = append(options, fields.OptionC) }
+			if fields.OptionD != "" { options = append(options, fields.OptionD) }
+
+			subject := fields.Subject
+			if subject == "" {
+				subject = "General"
+			}
+
+			levelRaw := strings.ToLower(strings.TrimSpace(fields.Difficulty))
+			level := "intermediate" // default
+
+			if levelRaw == "easy" || levelRaw == "basic" {
+				level = "basic"
+			} else if levelRaw == "hard" || levelRaw == "advanced" {
+				level = "advanced"
+			} else if levelRaw == "medium" || levelRaw == "intermediate" {
+				level = "intermediate"
+			}
+
+			quiz := &models.Quiz{
+				ID:            bson.NewObjectID(),
+				TestQuiz:      "Airtable Sync",
+				TestLevel:     level,
+				Subject:       subject,
+				Earning:       "0",
+				Question:      fields.QuestionText,
+				Options:       options,
+				Answer:        fields.CorrectAnswer,
+				IsTypedAnswer: false,
+			}
+			quiz.IDHex = quiz.ID.Hex()
+
+			if err := qs.CreateQuiz(quiz); err != nil {
+				log.Println("Failed to insert quiz from Airtable:", err)
+			} else {
+				inserted++
+				existingMap[cleanQText] = true
+			}
+		}
+
+		offset = parsedRes.Offset
+		if offset == "" {
+			break
 		}
 	}
 
+	log.Printf("Fetched %d total records from Airtable.", totalFetched)
 	log.Printf("--- Airtable Sync Complete: %d inserted, %d duplicates skipped ---", inserted, skipped)
 }
