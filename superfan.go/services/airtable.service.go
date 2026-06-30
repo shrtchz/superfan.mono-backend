@@ -22,8 +22,9 @@ type AirtableRecord struct {
 		OptionC       string `json:"Option C"`
 		OptionD       string `json:"Option D"`
 		CorrectAnswer string `json:"Correct Answer"`
-		Subject       string `json:"Subject"`
-		Difficulty    string `json:"Difficulty Level"`
+		Subject            string `json:"Subject"`
+		Difficulty         string `json:"Difficulty Level"`
+		EducationalProduct string `json:"Educational Product/Purpose"`
 	} `json:"fields"`
 }
 
@@ -148,9 +149,14 @@ func SyncFromAirtable(qs QuizService) {
 				level = "intermediate"
 			}
 
+			testQuiz := fields.EducationalProduct
+			if testQuiz == "" {
+				testQuiz = "Unknown"
+			}
+
 			quiz := &models.Quiz{
 				ID:            bson.NewObjectID(),
-				TestQuiz:      "Airtable Sync",
+				TestQuiz:      testQuiz,
 				TestLevel:     level,
 				Subject:       subject,
 				Earning:       "0",
