@@ -1,7 +1,7 @@
 import * as argon from 'argon2';
 import { generateReferralCode } from '../../src/common/shared/lib';
 import { prisma } from "../../src/prisma/prisma";
-
+import { createClerkClient } from '@clerk/backend';
 export enum SubscriptionPlan {
   FREE = "FREE",
   PREMIUM_PRO = "PREMIUM_PRO",
@@ -161,7 +161,34 @@ if (!existingRole) {
     });
   }
 
-  console.log("Users seeded");
+  console.log("Users seeded in DB");
+
+  // ✅ Seed users in Clerk
+  const clerkClient = createClerkClient({
+    secretKey: process.env.CLERK_SECRET_KEY || 'sk_test_TDksIODSXIqyFJlTThO6q7E6fxwCk68q9MXHjIp9sN',
+  });
+
+  for (const user of users) {
+    try {
+      const clerkUsers = await clerkClient.users.getUserList({ emailAddress: [user.email] });
+      const existingClerkUser = clerkUsers?.data?.[0] || clerkUsers?.[0];
+      if (existingClerkUser) {
+        await clerkClient.users.updateUser(existingClerkUser.id, { password: user.password });
+        console.log(`Updated Clerk password for ${user.email}`);
+      } else {
+        await clerkClient.users.createUser({
+          emailAddress: [user.email],
+          password: user.password,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          username: user.username,
+        });
+        console.log(`Created Clerk user for ${user.email}`);
+      }
+    } catch (e) {
+      console.error(`Error syncing ${user.email} to Clerk:`, e);
+    }
+  }
 }
 
 // ✅ Run everything

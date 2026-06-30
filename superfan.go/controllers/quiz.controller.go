@@ -45,7 +45,20 @@ func (qc *QuizController) CreateQuiz(ctx *gin.Context) {
 		utils.SendError(ctx, http.StatusBadGateway, "BAD_GATEWAY", err.Error())
 		return
 	}
+
+	// Trigger the 2-way sync to push the new question to Airtable in the background!
+	go services.PushToAirtable(&quiz)
+
 	utils.Success(ctx, http.StatusOK, "success", nil)
+}
+
+// Airtable Webhook Endpoint
+func (qc *QuizController) AirtableWebhook(ctx *gin.Context) {
+	// Immediately trigger the background sync
+	go services.SyncFromAirtable(qc.QuizService)
+
+	// Return 200 OK instantly so Airtable knows the webhook was received
+	utils.Success(ctx, http.StatusOK, "Airtable background sync triggered successfully", nil)
 }
 
 func (qc *QuizController) CreateQuizCategory(ctx *gin.Context) {
@@ -378,6 +391,9 @@ func RegisterQuizRoutes(
 	qsc *QuizSubmissionController,
 ) {
 	quizroute := rg.Group("/quiz")
+
+	// Airtable Webhook
+	quizroute.POST("/airtable-webhook", qc.AirtableWebhook)
 
 	// ── Quiz CRUD ──────────────────────────────────────────
 	quizroute.POST("/create", qc.CreateQuiz)
