@@ -19,7 +19,7 @@ import { Public } from '../common/decorators';
 import { ApiRoutes } from '../common/enums/routes.enum';
 import { JwtGuard } from '../common/guards';
 import { failureResponse, successResponse } from '../common/interceptors/response.interceptor';
-import { AirtableService } from '../elasticsearch/airtable.service';
+
 import {
   CreateLiveQuizDto,
   CreateQuizCategoryDto,
@@ -34,7 +34,7 @@ import { QuizService } from './quiz.service';
 @UseGuards(JwtGuard)
 @Controller(ApiRoutes.QUIZ)
 export class QuizController {
-  constructor(private readonly quizService: QuizService, private readonly airtableService: AirtableService) {}
+  constructor(private readonly quizService: QuizService) {}
 
   @Public()
   @Post('/create')
@@ -279,11 +279,6 @@ async getOngoingLiveQuiz(@Param('id', ParseIntPipe) id: number) {
     }
   }
 
-  @Public()
-  @Get('/get-records')
-  getRecord(@Query('tableName') tableName: string) {
-    return this.airtableService.findAll(tableName)
-  }
 
     @Public()
   @Get('/get-live-quiz-answer/:id')

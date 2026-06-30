@@ -140,6 +140,9 @@ func init() {
 	qsc = controllers.NewQuizSubmissionController(qsImpl)
 	qc = controllers.NewQuizController(qs)
 
+	// Launch Airtable sync in the background
+	go services.SyncFromAirtable(qs)
+
 	server = gin.New()
 	server.Use(gin.Logger())
 	server.Use(gin.CustomRecovery(func(c *gin.Context, recovered interface{}) {
