@@ -49,7 +49,7 @@ export class QuizService implements OnApplicationBootstrap {
   async syncFromAirtable() {
     console.log('--- Starting Airtable to MongoDB Sync ---');
     try {
-      // 1. Fetch existing questions from Go
+ 
       const existingRes = await firstValueFrom(this.httpService.get(`${this.baseUrl}/getall`));
       const existingQuizzes = existingRes.data?.data || [];
       
@@ -57,8 +57,8 @@ export class QuizService implements OnApplicationBootstrap {
         existingQuizzes.map((q: any) => q.question?.toLowerCase().trim()),
       );
 
-      // 2. Fetch from Airtable using direct HTTP (Bypassing the wrapper)
-      const tableName = process.env.AIRTABLE_TABLE_NAME || 'quiz_questions';
+   
+      const tableName = process.env.AIRTABLE_TABLE_NAME;
       const baseId = process.env.AIRTABLE_BASE_ID;
       const apiKey = process.env.AIRTABLE_API_KEY;
 
