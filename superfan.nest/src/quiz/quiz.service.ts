@@ -49,7 +49,7 @@ export class QuizService implements OnApplicationBootstrap {
   async syncFromAirtable() {
     console.log('--- Starting Airtable to MongoDB Sync ---');
     try {
-      // 1. Fetch existing questions from Go
+ 
       const existingRes = await firstValueFrom(this.httpService.get(`${this.baseUrl}/getall`));
       const existingQuizzes = existingRes.data?.data || [];
       
@@ -57,23 +57,36 @@ export class QuizService implements OnApplicationBootstrap {
         existingQuizzes.map((q: any) => q.question?.toLowerCase().trim()),
       );
 
-      // 2. Fetch from Airtable
-      const tableName = process.env.AIRTABLE_TABLE_NAME || 'quiz_questions';
-      console.log(`Fetching from Airtable table: "${tableName}"`);
-      const rawRecords = await this.airtableService.findAll(tableName);
-      let records: any[] = [];
-      
-      if (Array.isArray(rawRecords)) {
-        records = rawRecords;
-      } else if (rawRecords && Array.isArray(rawRecords.records)) {
-        records = rawRecords.records;
-      } else if (rawRecords && typeof rawRecords === 'object') {
-        const arrValue = Object.values(rawRecords).find(v => Array.isArray(v));
-        if (arrValue) records = arrValue as any[];
+   
+      const tableName = process.env.AIRTABLE_TABLE_NAME;
+      const baseId = process.env.AIRTABLE_BASE_ID;
+      const apiKey = process.env.AIRTABLE_API_KEY;
+
+      if (!baseId || !apiKey) {
+        console.error('ERROR: AIRTABLE_BASE_ID or AIRTABLE_API_KEY is missing in environment variables');
+        return;
       }
 
-      if (!records || records.length === 0) {
-        console.error('No valid array of records found from Airtable. Full response:', JSON.stringify(rawRecords));
+      console.log(`Fetching from Airtable base: "${baseId}", table: "${tableName}"`);
+      const airtableUrl = `https://api.airtable.com/v0/${baseId}/${encodeURIComponent(tableName)}`;
+      
+      let records: any[] = [];
+      try {
+        const response = await firstValueFrom(
+          this.httpService.get(airtableUrl, {
+            headers: {
+              Authorization: `Bearer ${apiKey}`,
+            },
+          })
+        );
+        records = response.data?.records || [];
+      } catch (error: any) {
+        console.error('Airtable HTTP Error:', JSON.stringify(error.response?.data || error.message));
+        return;
+      }
+
+      if (records.length === 0) {
+        console.log('Airtable returned success, but the records array is empty. Do you have any rows in the table?');
         return;
       }
 
