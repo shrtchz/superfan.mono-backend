@@ -35,6 +35,14 @@ type AirtableResponse struct {
 	Error   interface{}      `json:"error,omitempty"`
 }
 
+type AirtableCreateRequest struct {
+	Records []AirtableCreateRecord `json:"records"`
+}
+
+type AirtableCreateRecord struct {
+	Fields map[string]string `json:"fields"`
+}
+
 func SyncFromAirtable(qs QuizService) {
 	log.Println("--- Starting Airtable to MongoDB Sync in Go ---")
 
@@ -189,4 +197,86 @@ func SyncFromAirtable(qs QuizService) {
 
 	log.Printf("Fetched %d total records from Airtable.", totalFetched)
 	log.Printf("--- Airtable Sync Complete: %d inserted, %d duplicates skipped ---", inserted, skipped)
+}
+
+func PushToAirtable(quiz *models.Quiz) {
+	log.Println("[Debug] Pushing new question to Airtable...")
+
+	rawBaseId := strings.TrimSpace(os.Getenv("AIRTABLE_BASE_ID"))
+	apiKey := strings.TrimSpace(os.Getenv("AIRTABLE_API_KEY"))
+	tableName := strings.TrimSpace(os.Getenv("AIRTABLE_TABLE_NAME"))
+
+	if tableName == "" {
+		tableName = "tbltD2dVLp7hNb60s"
+	}
+
+	if rawBaseId == "" || apiKey == "" {
+		log.Println("AIRTABLE_BASE_ID or AIRTABLE_API_KEY missing, skipping push.")
+		return
+	}
+
+	baseId := strings.Split(rawBaseId, "/")[0]
+	tableName = strings.Split(tableName, "/")[0]
+
+	airtableUrl := fmt.Sprintf("https://api.airtable.com/v0/%s/%s", baseId, url.PathEscape(tableName))
+
+	// Map Go testLevel to Airtable Difficulty
+	level := "Medium"
+	if quiz.TestLevel == "basic" {
+		level = "Easy"
+	} else if quiz.TestLevel == "advanced" {
+		level = "Hard"
+	}
+
+	fields := map[string]string{
+		"Question Text":               quiz.Question,
+		"Correct Answer":              quiz.Answer,
+		"Difficulty Level":            level,
+		"Subject":                     quiz.Subject,
+		"Educational Product/Purpose": quiz.TestQuiz,
+	}
+
+	if len(quiz.Options) > 0 { fields["Option A"] = quiz.Options[0] }
+	if len(quiz.Options) > 1 { fields["Option B"] = quiz.Options[1] }
+	if len(quiz.Options) > 2 { fields["Option C"] = quiz.Options[2] }
+	if len(quiz.Options) > 3 { fields["Option D"] = quiz.Options[3] }
+
+	payload := AirtableCreateRequest{
+		Records: []AirtableCreateRecord{
+			{Fields: fields},
+		},
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		log.Println("Error marshalling Airtable payload:", err)
+		return
+	}
+
+	req, err := http.NewRequest("POST", airtableUrl, strings.NewReader(string(body)))
+	if err != nil {
+		log.Println("Error creating Airtable push request:", err)
+		return
+	}
+
+	req.Header.Add("Authorization", "Bearer "+apiKey)
+	req.Header.Add("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	res, err := client.Do(req)
+	if err != nil {
+		log.Println("Error pushing to Airtable:", err)
+		return
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK && res.StatusCode != http.StatusCreated {
+		log.Printf("Airtable push failed with status: %d", res.StatusCode)
+		var errRes map[string]interface{}
+		json.NewDecoder(res.Body).Decode(&errRes)
+		log.Printf("Airtable push error details: %+v", errRes)
+		return
+	}
+
+	log.Println("[Debug] Successfully pushed new question to Airtable!")
 }
