@@ -30,6 +30,7 @@ type AirtableRecord struct {
 
 type AirtableResponse struct {
 	Records []AirtableRecord `json:"records"`
+	Offset  string           `json:"offset,omitempty"`
 	Error   interface{}      `json:"error,omitempty"`
 }
 
