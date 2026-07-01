@@ -738,9 +738,16 @@ export class UserService {
 
     this.presenceGateway.setUserOnline(user.id);
 
+    // Generate JWT tokens for the application
+    const appTokens = await this.getTokens(user, role.name);
+
     return {
       message: 'Signin successful',
-      token: clerkSignInToken,
+      // Clerk sign-in token (short-lived ticket)
+      clerkToken: clerkSignInToken,
+      // Application JWT tokens
+      accessToken: appTokens.accessToken,
+      refreshToken: appTokens.refreshToken,
       role: user.roleName,
       userId: user.id,
       permissions: user.roleName === 'subadmin' ? permissions : undefined,
