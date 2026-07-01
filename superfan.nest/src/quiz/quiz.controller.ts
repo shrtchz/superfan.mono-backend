@@ -421,12 +421,15 @@ async getOngoingLiveQuiz(@Param('id', ParseIntPipe) id: number) {
 
   @Public()
   @Get('/getall')
-  getAllQuiz() {
+  async getAllQuiz() {
     try {
-      return this.quizService.getAllQuiz();
+      return await this.quizService.getAllQuiz();
     } catch (error) {
+      if (error.response && error.response.data) {
+        throw new HttpException(error.response.data, error.response.status);
+      }
       throw failureResponse(
-        error.message || 'Failed to get all quiz submissions',
+        error.message || 'Failed to get all quizzes',
       );
     }
   }
