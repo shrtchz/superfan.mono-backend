@@ -11,6 +11,7 @@ import { PaymentService } from '../payment/payment.service';
 import { prisma } from '../prisma/prisma';
 import { UserService } from '../user/user.service';
 import { WalletService } from '../wallet/wallet.service';
+
 import {
   CreateLiveQuizDto,
   CreateQuizCategoryDto,
@@ -35,6 +36,8 @@ export class QuizService {
     @Inject(forwardRef(() => UserService))
     private readonly userService: UserService,
   ) {}
+
+
 
   async createQuiz(quizData: CreateQuizDto) {
     const response = await firstValueFrom(

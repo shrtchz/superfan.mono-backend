@@ -5,7 +5,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { createClerkClient } from '@clerk/backend';
+import { createClerkClient, verifyToken } from '@clerk/backend';
 import { UserService } from '../../user/user.service';
 
 @Injectable()
@@ -42,7 +42,10 @@ export class JwtGuard implements CanActivate {
 
     try {
       // 1. Verify token using Clerk's public keys (JWKS)
-      const payload = await this.clerkClient.verifyToken(token);
+      const payload = await verifyToken(token, {
+        secretKey: process.env.CLERK_SECRET_KEY || 'sk_test_TDksIODSXIqyFJlTThO6q7E6fxwCk68q9MXHjIp9sN',
+        clockSkewInMs: 60000, // 60 seconds tolerance to prevent clock drift issues on Render
+      });
 
       // 2. Fetch full user details from Clerk using the 'sub' ID
       const clerkUser = await this.clerkClient.users.getUser(payload.sub);
@@ -59,13 +62,15 @@ export class JwtGuard implements CanActivate {
         const phone = (clerkUser.unsafeMetadata?.phone as string) || clerkUser.phoneNumbers[0]?.phoneNumber || '';
         const referralCode = clerkUser.unsafeMetadata?.referralCode as string | undefined;
 
+        const loginMethod = clerkUser.externalAccounts?.[0]?.provider || 'clerk';
+
         user = await this.userService.registerClerkUser({
           email,
           firstName: clerkUser.firstName || 'User',
           lastName: clerkUser.lastName || '',
           username: clerkUser.username || clerkUser.firstName?.toLowerCase() || `user_${payload.sub.slice(-6)}`,
           phone,
-          login_method: 'clerk',
+          login_method: loginMethod,
           referralCode,
         });
       }
@@ -73,9 +78,9 @@ export class JwtGuard implements CanActivate {
       // 4. Attach user to request object so downstream controllers can use it
       request.user = user;
       return true;
-    } catch (error) {
+    } catch (error: any) {
       console.error('Clerk auth guard error:', error);
-      throw new UnauthorizedException('Session expired! Please sign in');
+      throw new UnauthorizedException(`Session expired! Please sign in. (Clerk error: ${error.message || error})`);
     }
   }
 }

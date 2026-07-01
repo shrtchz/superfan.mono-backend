@@ -12,10 +12,14 @@ export class RedisService implements OnModuleDestroy {
     } else {
       // Local development
       this.redis = new Redis({
-        host: process.env.LOCAL_REDIS_HOST,
-        port: Number(process.env.LOCAL_REDIS_PORT),
+        host: process.env.LOCAL_REDIS_HOST || '127.0.0.1',
+        port: Number(process.env.LOCAL_REDIS_PORT) || 6379,
       })
     }
+
+    this.redis.on('error', (err) => {
+      console.error('Redis error occurred:', err);
+    });
   }
 
   // async onModuleInit() {
