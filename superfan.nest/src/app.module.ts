@@ -1,5 +1,6 @@
 import { BullModule } from '@nestjs/bullmq';
 import { Module } from '@nestjs/common';
+import * as path from 'path';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import {
   APP_FILTER,
@@ -39,6 +40,12 @@ import { ElasticsearchModule } from './elasticsearch/elasticsearch.module';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
+      envFilePath: [
+        '/etc/secrets/.env',
+        path.resolve(__dirname, '../../../.env'),
+        path.resolve(__dirname, '../../.env'),
+        '.env',
+      ],
     }),
     SentryModule.forRoot(),
     JwtModule.registerAsync({
@@ -77,7 +84,7 @@ import { ElasticsearchModule } from './elasticsearch/elasticsearch.module';
     BullModule.forRootAsync({
       imports: [ConfigModule],
       useFactory: (configService: ConfigService) => ({
-        ...(configService.get('NODE_ENV') === 'production'
+        ...(configService.get('REDIS_URL')
           ? {
               connection: {
                 url: configService.get('REDIS_URL'),
@@ -87,7 +94,7 @@ import { ElasticsearchModule } from './elasticsearch/elasticsearch.module';
             }
           : {
               connection: {
-                host: configService.get('LOCAL_REDIS_HOST'),
+                host: configService.get('LOCAL_REDIS_HOST') || '127.0.0.1',
                 port: configService.get('LOCAL_REDIS_PORT', 6379),
                 maxRetriesPerRequest: null,
               },
