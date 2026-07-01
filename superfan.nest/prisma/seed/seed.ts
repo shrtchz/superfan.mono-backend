@@ -189,6 +189,7 @@ if (!existingRole) {
       console.error(`Error syncing ${user.email} to Clerk:`, e);
     }
   }
+  console.log('✅ All seeded users have been synced to Clerk');
 }
 
 // ✅ Run everything
