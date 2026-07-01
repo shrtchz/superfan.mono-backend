@@ -598,7 +598,7 @@ export class UserService {
         // Fallback: local password verification to migrate user to Clerk
         const passwordMatches = await argon.verify(user.password, dto.password);
         if (passwordMatches) {
-          // Migrate user to Clerk
+          // Migrate user to Clerk - verified locally so mark email as verified
           try {
             clerkUser = await this.clerkClient.users.createUser({
               emailAddress: [user.email],
@@ -606,11 +606,24 @@ export class UserService {
               username: user.username,
               firstName: user.firstName,
               lastName: user.lastName || '',
+              skipPasswordChecks: true,
+              skipPasswordRequirement: false,
               ...(user.phone && { phoneNumber: [user.phone] }),
             });
+            // Mark email as verified since we verified locally
+            if (clerkUser?.emailAddresses?.[0]?.id) {
+              try {
+                await this.clerkClient.emailAddresses.updateEmailAddress(
+                  clerkUser.emailAddresses[0].id,
+                  { verified: true },
+                );
+              } catch (_) {}
+            }
             verified = true;
-          } catch (clerkCreateError) {
+          } catch (clerkCreateError: any) {
             console.error('Failed to migrate user to Clerk:', clerkCreateError);
+            // Even if Clerk migration fails, allow login via local JWT
+            verified = true;
           }
         }
       }
@@ -680,18 +693,19 @@ export class UserService {
       throw new ForbiddenException('Incorrect password');
     }
 
-    // Now clerkUser is guaranteed to exist and password is verified.
-    // Generate Clerk sign-in token (ticket)
+    // Generate Clerk sign-in token (ticket) — optional, best-effort
     let clerkSignInToken = '';
-    try {
-      const signInToken = await this.clerkClient.signInTokens.createSignInToken({
-        userId: clerkUser.id,
-        expiresInSeconds: 300, // 5 minutes
-      });
-      clerkSignInToken = signInToken.token;
-    } catch (tokenError) {
-      console.error('Failed to generate Clerk sign-in token:', tokenError);
-      throw new InternalServerErrorException('Failed to generate authentication token.');
+    if (clerkUser?.id) {
+      try {
+        const signInToken = await this.clerkClient.signInTokens.createSignInToken({
+          userId: clerkUser.id,
+          expiresInSeconds: 300, // 5 minutes
+        });
+        clerkSignInToken = signInToken.token;
+      } catch (tokenError) {
+        console.error('Failed to generate Clerk sign-in token (non-fatal):', tokenError);
+        // Not fatal — frontend can use the JWT accessToken directly
+      }
     }
 
     const role = await prisma.role.findFirst({
