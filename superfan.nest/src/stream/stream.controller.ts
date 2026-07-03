@@ -43,6 +43,12 @@ export class StreamingController {
     const payload = { ...tokens, service: tokens.service ?? 'youtube' };
 
     await this.streamingService.persistYoutubeTokens(payload);
+    
+    // 🔥 CRITICAL: Update the in-memory OAuth client so it doesn't keep using the old tokens!
+    this.streamingService.setCredentials({
+      access_token: payload.access_token,
+      refresh_token: payload.refresh_token,
+    });
 
     return { message: 'YouTube tokens saved', userId };
   }
