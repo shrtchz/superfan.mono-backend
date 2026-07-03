@@ -12,6 +12,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import type { OAuth2Client } from 'google-auth-library';
 import { google, youtube_v3 } from 'googleapis';
+import axios from 'axios';
 import keys from '../../credentials.json';
 import { ElasticsearchService } from '../elasticsearch/elasticsearch.service';
 import { RedisService } from '../mail/redis.service';
@@ -415,98 +416,52 @@ export class StreamingService {
 
 
   /**
-   * Create YouTube Live Broadcast
+   * Create YouTube Live Broadcast via Go Microservice
    */
   async createBroadcast(
     title: string,
     privacyStatus: 'public' | 'private' | 'unlisted' = 'public',
-  ): Promise<youtube_v3.Schema$LiveBroadcast> {
+  ): Promise<any> {
     try {
-      this.logger.log(`Creating broadcast: ${title}`);
+      this.logger.log(`Creating broadcast via Go service: ${title}`);
 
-      // Ensure token is valid before making API call
-      await this.ensureValidToken();
-
-      const res = await this.youtube.liveBroadcasts.insert({
-        part: ['snippet', 'status', 'contentDetails'],
-        requestBody: {
-          snippet: {
-            title,
-            scheduledStartTime: new Date().toISOString(),
-          },
-          status: {
-            privacyStatus,
-            selfDeclaredMadeForKids: false,
-          },
-          contentDetails: {
-            enableAutoStart: false,
-            recordFromStart: true,
-            // enableEmbed: true,
-            enableDvr: true,
-            enableAutoStop: true,
-            monitorStream: {
-              enableMonitorStream: false,
-            },
-            // contentDetails.monitorStream.enableMonitorStream
-            // contentDetails.enableAutoStart
-            // contentDetails.monitorStream.enableMonitorStream
-          },
-        },
+      const goServiceUrl = this.configService.get<string>('GO_SERVICE_URL') || 'http://localhost:7190';
+      const response = await axios.post(`${goServiceUrl}/v1/streams/broadcast`, {
+        title,
+        description: '', // Optional description
       });
-      this.logger.log(`Broadcast created: ${res.data.id}`);
 
-      return res.data;
+      this.logger.log(`Broadcast created: ${response.data.id}`);
+      return response.data;
     } catch (error) {
       this.logger.error(error);
-
       throw new InternalServerErrorException(
-        `Failed to create broadcast: ${error.message}`,
+        `Failed to create broadcast via Go: ${error.message}`,
       );
     }
   }
 
   /**
-   * Create stream + bind to broadcast
+   * Create stream + bind to broadcast via Go Microservice
    */
   async setupStream(
     broadcastId: string,
     title: string,
   ): Promise<StreamSession> {
     try {
-      this.logger.log(`Setting up stream for ${broadcastId}`);
+      this.logger.log(`Setting up stream for ${broadcastId} via Go`);
 
-      // Ensure token is valid before making API call
-      await this.ensureValidToken();
-
-      const streamRes = await this.youtube.liveStreams.insert({
-        part: ['snippet', 'cdn'],
-        requestBody: {
-          snippet: {
-            title,
-          },
-          cdn: {
-            frameRate: '30fps',
-            ingestionType: 'rtmp',
-            resolution: '720p',
-          },
-        },
+      const goServiceUrl = this.configService.get<string>('GO_SERVICE_URL') || 'http://localhost:7190';
+      const response = await axios.post(`${goServiceUrl}/v1/streams/setup`, {
+        broadcastId,
+        title,
       });
 
-      const streamId = streamRes.data.id!;
+      const streamId = response.data.id;
+      const ingestionInfo = response.data.cdn?.ingestionInfo;
 
-      const ingestionInfo = streamRes.data.cdn?.ingestionInfo!;
-
-      const rtmpUrl = ingestionInfo.ingestionAddress!;
-      const streamKey = ingestionInfo.streamName!;
-
-      /**
-       * Bind stream to broadcast
-       */
-      await this.youtube.liveBroadcasts.bind({
-        id: broadcastId,
-        part: ['id', 'contentDetails'],
-        streamId,
-      });
+      const rtmpUrl = ingestionInfo.ingestionAddress;
+      const streamKey = ingestionInfo.streamName;
 
       const session: StreamSession = {
         broadcastId,
@@ -517,13 +472,11 @@ export class StreamingService {
       };
 
       this.logger.log(`RTMP URL: ${session.streamUrl}`);
-
       return session;
     } catch (error) {
       this.logger.error(error);
-
       throw new InternalServerErrorException(
-        `Failed to setup stream: ${error.message}`,
+        `Failed to setup stream via Go: ${error.message}`,
       );
     }
   }
@@ -782,22 +735,20 @@ async editStream(
   }
 
   /**
-   * Transition to LIVE
+   * Transition to LIVE via Go
    */
   async goLive(broadcastId: string): Promise<void> {
     try {
-      await this.ensureValidToken();
-
-      await this.youtube.liveBroadcasts.transition({
-        broadcastStatus: 'live',
-        id: broadcastId,
-        part: ['id', 'status'],
+      const goServiceUrl = this.configService.get<string>('GO_SERVICE_URL') || 'http://localhost:7190';
+      await axios.post(`${goServiceUrl}/v1/streams/transition`, {
+        broadcastId,
+        status: 'live',
       });
 
-      this.logger.log(`Broadcast ${broadcastId} is LIVE`);
+      this.logger.log(`Broadcast ${broadcastId} is LIVE via Go`);
     } catch (error) {
       throw new InternalServerErrorException(
-        `Failed to go live: ${error.message}`,
+        `Failed to go live via Go: ${error.message}`,
       );
     }
   }
@@ -1212,34 +1163,28 @@ async isWinner(commentId: number, winAmount: number) {
 
 
   /**
-   * End stream
+   * End stream via Go
    */
   async endStream(broadcastId: string): Promise<void> {
     try {
-      await this.ensureValidToken();
-
-      await this.youtube.liveBroadcasts.transition({
-        broadcastStatus: 'complete',
-        id: broadcastId,
-        part: ['id', 'status'],
+      const goServiceUrl = this.configService.get<string>('GO_SERVICE_URL') || 'http://localhost:7190';
+      await axios.post(`${goServiceUrl}/v1/streams/transition`, {
+        broadcastId,
+        status: 'complete',
       });
 
-      this.logger.log(`Broadcast ${broadcastId} completed`);
+      this.logger.log(`Broadcast ${broadcastId} completed via Go`);
     } catch (error) {
       throw new InternalServerErrorException(
-        `Failed to end stream: ${error.message}`,
+        `Failed to end stream via Go: ${error.message}`,
       );
     }
   }
 
     async getVideoViews(videoId: string): Promise<any> {
     try {
-      await this.ensureValidToken();
-
-      const response = await this.youtube.videos.list({
-        id: [videoId],
-        part: ['statistics', 'snippet', 'liveStreamingDetails', 'status'],
-      });
+      const goServiceUrl = this.configService.get<string>('GO_SERVICE_URL') || 'http://localhost:7190';
+      const response = await axios.get(`${goServiceUrl}/v1/streams/views?videoId=${videoId}`);
 
       const videoItem = response.data.items?.[0];
       
@@ -1248,11 +1193,11 @@ async isWinner(commentId: number, winAmount: number) {
       }
 
       // The viewCount property contains the number of views
-      return videoItem
+      return videoItem;
       // .statistics?.viewCount || '0';
     } catch (error) {
       throw new HttpException(
-        error.message || 'Failed to fetch YouTube data',
+        error.message || 'Failed to fetch YouTube data via Go',
         HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }

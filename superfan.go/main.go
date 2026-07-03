@@ -95,6 +95,13 @@ func init() {
 		log.Fatal("MONGO_URI environment variable is required")
 	}
 
+	pgURI := get("DATABASE_URL")
+	if pgURI != "" {
+		utils.ConnectPostgres(pgURI)
+	} else {
+		log.Println("DATABASE_URL environment variable is not set; skipping PostgreSQL connection")
+	}
+
 	ctx = context.Background()
 
 	clientOptions := options.Client().ApplyURI(mongoURI)
@@ -176,6 +183,12 @@ func main() {
 		qc,
 		qsc,
 	)
+
+	// Register REST routes for the streaming proxy
+	controllers.RegisterStreamRoutes(basepath)
+
+	// WebSocket Streaming Route
+	basepath.GET("/streams/ws", controllers.StreamWebSocket)
 
 	port := os.Getenv("PORT")
 	if port == "" {
