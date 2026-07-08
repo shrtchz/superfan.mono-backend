@@ -7,6 +7,7 @@ import {
 import { Reflector } from '@nestjs/core';
 import { createClerkClient, verifyToken } from '@clerk/backend';
 import { UserService } from '../../user/user.service';
+import { JwtService } from '@nestjs/jwt';
 
 @Injectable()
 export class JwtGuard implements CanActivate {
@@ -15,6 +16,7 @@ export class JwtGuard implements CanActivate {
   constructor(
     private readonly reflector: Reflector,
     private readonly userService: UserService,
+    private readonly jwtService: JwtService,
   ) {
     this.clerkClient = createClerkClient({
       secretKey: process.env.CLERK_SECRET_KEY || 'sk_test_TDksIODSXIqyFJlTThO6q7E6fxwCk68q9MXHjIp9sN',
@@ -39,6 +41,7 @@ export class JwtGuard implements CanActivate {
     }
 
     const token = authHeader.split(' ')[1];
+    let user: any = null;
 
     try {
       // 1. Verify token using Clerk's public keys (JWKS)
@@ -56,7 +59,7 @@ export class JwtGuard implements CanActivate {
       }
 
       // 3. Find or automatically register user in our local Postgres DB
-      let user = await this.userService.findUserByEmail(email);
+      user = await this.userService.findUserByEmail(email);
 
       if (!user) {
         const phone = (clerkUser.unsafeMetadata?.phone as string) || clerkUser.phoneNumbers[0]?.phoneNumber || '';
@@ -74,13 +77,27 @@ export class JwtGuard implements CanActivate {
           referralCode,
         });
       }
+    } catch (clerkError) {
+      try {
+        // Try to verify as NestJS token
+        const payload = await this.jwtService.verifyAsync(token, {
+          secret: process.env.AT_SECRET || 'superfan_secret_key',
+        });
 
-      // 4. Attach user to request object so downstream controllers can use it
-      request.user = user;
-      return true;
-    } catch (error: any) {
-      console.error('Clerk auth guard error:', error);
-      throw new UnauthorizedException(`Session expired! Please sign in. (Clerk error: ${error.message || error})`);
+        // Find user by ID from the payload
+        user = await this.userService.findUserById(payload.id);
+      } catch (jwtError) {
+        console.error('Clerk auth guard error:', clerkError);
+        console.error('NestJS JWT verification failed:', jwtError);
+        throw new UnauthorizedException('Session expired! Please sign in');
+      }
     }
+
+    if (!user) {
+      throw new UnauthorizedException('User not found');
+    }
+
+    request.user = user;
+    return true;
   }
 }

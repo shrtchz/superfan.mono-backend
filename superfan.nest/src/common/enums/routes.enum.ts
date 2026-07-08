@@ -12,5 +12,6 @@ export enum ApiRoutes {
     NOTIFICATION = 'api/v1/notification',
     WIPE = 'api/v1/reset/',
     STREAMING = 'api/v1/streams/',
-    WEBHOOK = 'webhooks/'
+    WEBHOOK = 'webhooks/',
+    WAITLIST = 'api/v1/waitlist'
 }

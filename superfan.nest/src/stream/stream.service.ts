@@ -731,6 +731,54 @@ async editStream(
   async getStream() {
     let get_streams = await prisma.stream.findMany();
 
+    const latestStream = get_streams[get_streams.length - 1];
+    if (latestStream && latestStream.networkPlatform === 'youtube') {
+      try {
+        await this.ensureValidToken();
+        const activeBroadcasts = await this.youtube.liveBroadcasts.list({
+          part: ['id', 'snippet', 'status'],
+          broadcastStatus: 'active',
+        });
+        
+        let activeBroadcastId: string | undefined;
+        const activeBroadcast = activeBroadcasts.data.items?.[0];
+        if (activeBroadcast && activeBroadcast.id) {
+          this.logger.log(`Found active YouTube live broadcast: ${activeBroadcast.id}`);
+          activeBroadcastId = activeBroadcast.id;
+        } else {
+          // Fallback to searching active video via channel search
+          const channelId = this.configService.get<string>('YOUTUBE_CHANNEL_ID');
+          if (channelId) {
+            const searchLive = await this.youtube.search.list({
+              part: ['snippet'],
+              channelId: channelId,
+              type: ['video'],
+              eventType: 'live',
+            });
+            const searchItem = searchLive.data.items?.[0];
+            if (searchItem && searchItem.id?.videoId) {
+              this.logger.log(`Found active live video via search: ${searchItem.id.videoId}`);
+              activeBroadcastId = searchItem.id.videoId;
+            }
+          }
+        }
+
+        if (activeBroadcastId && latestStream.broadcastId !== activeBroadcastId) {
+          await prisma.stream.update({
+            where: { id: latestStream.id },
+            data: { 
+              broadcastId: activeBroadcastId,
+              status: 'live',
+            },
+          });
+          latestStream.broadcastId = activeBroadcastId;
+          latestStream.status = 'live';
+        }
+      } catch (error) {
+        this.logger.error(`Failed to fetch active broadcast: ${error.message}`);
+      }
+    }
+
     return get_streams;
   }
 

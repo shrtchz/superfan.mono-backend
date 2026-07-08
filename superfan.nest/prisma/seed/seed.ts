@@ -137,6 +137,7 @@ if (!existingRole) {
         subscriptionPlan: user.subscriptionPlan,
         roleName: role.name, // safer
         referral_code: user.referral_code,
+        password: hashedPassword,
       },
       create: {
         firstName: user.firstName,

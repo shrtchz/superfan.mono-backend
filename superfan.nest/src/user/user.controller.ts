@@ -77,7 +77,27 @@ export class UserController {
   @Public()
   @Post('/auth/login')
   @HttpCode(HttpStatus.OK)
-  async loginUser(@Body() dto: LoginDto) {
+  async loginUser(@Body() body: any): Promise<any> {
+    const dto: LoginDto = {
+      password: body.password,
+      ip_address: body.ip_address,
+      location: body.location,
+      email: body.email,
+      phone: body.phone,
+      username: body.username,
+    };
+
+    const identifier = body.identifier;
+    if (identifier) {
+      if (identifier.includes('@')) {
+        dto.email = identifier;
+      } else if (/^\+?[0-9\s\-()]+$/.test(identifier)) {
+        dto.phone = identifier;
+      } else {
+        dto.username = identifier;
+      }
+    }
+
     return this.userService.signinUser(dto);
   }
 
@@ -89,7 +109,6 @@ export class UserController {
       role: req.user.roleName,
     };
   }
-
   @Get(':id/login-method')
   async getLoginMethod(@Param('id', ParseIntPipe) userId: number) {
     return this.userService.getUserLoginMethod(userId);
