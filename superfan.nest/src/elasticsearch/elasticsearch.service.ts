@@ -21,7 +21,7 @@ export class ElasticsearchService implements OnModuleInit {
           password: process.env.LOCAL_ELASTICSEARCH_PASSWORD || process.env.PROD_ELASTICSEARCH_PASSWORD,
         },
         tls: {
-          rejectUnauthorized: false, // for local self-signed cert
+          rejectUnauthorized: false,
         },
       });
 

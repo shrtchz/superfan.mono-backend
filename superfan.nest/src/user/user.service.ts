@@ -354,11 +354,11 @@ export class UserService {
 
     const [accessToken, refreshToken] = await Promise.all([
       this.jwtService.signAsync(jwtPayload, {
-        secret: this.configService.get<string>('AT_SECRET'),
+        secret: this.configService.get<string>('AT_SECRET') || 'superfan_secret_key',
         // expiresIn: '15m'
       }),
       this.jwtService.signAsync(jwtPayload, {
-        secret: this.configService.get<string>('RT_SECRET'),
+        secret: this.configService.get<string>('RT_SECRET') || 'superfan_refresh_secret_key',
         // expiresIn: '7d'
       }),
     ]);
