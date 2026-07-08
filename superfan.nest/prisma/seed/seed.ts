@@ -183,13 +183,13 @@ if (!existingRole) {
     try {
       const clerkUsers = await clerkClient.users.getUserList({ emailAddress: [user.email] });
       const existingClerkUser = clerkUsers?.data?.[0] || clerkUsers?.[0];
-      const clerkPassword = generateSafePassword();
+      const clerkPassword = user.password;
       if (existingClerkUser) {
-        // Update Clerk user with a new safe password.
+        // Update Clerk user with the configured password.
         await clerkClient.users.updateUser(existingClerkUser.id, { password: clerkPassword });
         console.log(`Updated Clerk password for ${user.email}`);
       } else {
-        // Create Clerk user with the generated safe password.
+        // Create Clerk user with the configured password.
         await clerkClient.users.createUser({
           emailAddress: [user.email],
           password: clerkPassword,
