@@ -752,10 +752,16 @@ export class UserService {
 
     this.presenceGateway.setUserOnline(user.id);
 
+    // Keep returning API tokens so clients can call private routes immediately.
+    const appTokens = await this.getTokens(user, role.name);
+
     return {
       message: 'Signin successful',
       // Clerk sign-in token (short-lived ticket)
       clerkSignInToken,
+      // Primary API bearer token for protected backend routes
+      token: appTokens.accessToken,
+      refreshToken: appTokens.refreshToken,
       role: user.roleName,
       userId: user.id,
       permissions: user.roleName === 'subadmin' ? permissions : undefined,
