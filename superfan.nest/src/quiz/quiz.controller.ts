@@ -116,7 +116,10 @@ export class QuizController {
     try {
       return await this.quizService.getQuizWithPreferences(dto, req.user.id);
     } catch (error) {
-      console.log('Error fetching quiz with preferences:', error);
+      console.error('CRITICAL Error fetching quiz with preferences:', error);
+      if (error.response) {
+        console.error('CRITICAL Axios Response Data:', error.response.data);
+      }
       throw failureResponse(
         error || 'Failed to get quiz with preferences',
       );
