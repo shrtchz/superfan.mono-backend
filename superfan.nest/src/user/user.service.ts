@@ -704,7 +704,7 @@ export class UserService {
         clerkSignInToken = signInToken.token;
       } catch (tokenError) {
         console.error('Failed to generate Clerk sign-in token (non-fatal):', tokenError);
-        // Not fatal — frontend can use the JWT accessToken directly
+        // Not fatal — frontend can complete Clerk auth with its normal flow
       }
     }
 
@@ -752,16 +752,10 @@ export class UserService {
 
     this.presenceGateway.setUserOnline(user.id);
 
-    // Generate JWT tokens for the application
-    const appTokens = await this.getTokens(user, role.name);
-
     return {
       message: 'Signin successful',
       // Clerk sign-in token (short-lived ticket)
-      clerkToken: clerkSignInToken,
-      // Application JWT tokens
-      accessToken: appTokens.accessToken,
-      refreshToken: appTokens.refreshToken,
+      clerkSignInToken,
       role: user.roleName,
       userId: user.id,
       permissions: user.roleName === 'subadmin' ? permissions : undefined,
