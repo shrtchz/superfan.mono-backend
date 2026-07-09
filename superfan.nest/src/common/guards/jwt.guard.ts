@@ -33,14 +33,22 @@ export class JwtGuard implements CanActivate {
 
     const request = context.switchToHttp().getRequest();
     const authHeader = request.headers.authorization;
+    const cookieToken = request.cookies?.__session;
+    const token = this.extractBearerToken(authHeader) || cookieToken;
 
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    if (!token) {
       throw new UnauthorizedException('No token provided');
     }
 
-    const token = authHeader.split(' ')[1];
+    if (token.startsWith('sit_')) {
+      throw new UnauthorizedException(
+        'Invalid token type: Clerk sign-in token cannot be used for protected routes. Use a Clerk session JWT.',
+      );
+    }
+
     let user: any = null;
 
+    // Verify as Clerk session JWT.
     try {
       // Verify token using Clerk's public keys (JWKS)
       const payload = await verifyToken(token, {
@@ -81,6 +89,7 @@ export class JwtGuard implements CanActivate {
       if (clerkError?.reason === 'token-expired') {
         throw new UnauthorizedException('Token expired');
       }
+
       throw new UnauthorizedException(`Invalid token: ${clerkError?.message || clerkError}`);
     }
 
@@ -90,5 +99,22 @@ export class JwtGuard implements CanActivate {
 
     request.user = user;
     return true;
+  }
+
+  private extractBearerToken(authorizationHeader?: string): string | null {
+    if (!authorizationHeader) {
+      return null;
+    }
+
+    const [scheme, token] = authorizationHeader.trim().split(/\s+/);
+    if (!scheme || !token) {
+      return null;
+    }
+
+    if (scheme.toLowerCase() !== 'bearer') {
+      return null;
+    }
+
+    return token;
   }
 }
