@@ -6,7 +6,6 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { JwtService } from '@nestjs/jwt';
 import { UserService } from '../../user/user.service';
 
 @Injectable()
@@ -16,7 +15,6 @@ export class JwtGuard implements CanActivate {
   constructor(
     private readonly reflector: Reflector,
     private readonly userService: UserService,
-    private readonly jwtService: JwtService,
   ) {
     this.clerkClient = createClerkClient({
       secretKey: process.env.CLERK_SECRET_KEY,
@@ -44,13 +42,13 @@ export class JwtGuard implements CanActivate {
     let user: any = null;
 
     try {
-      // 1. Verify token using Clerk's public keys (JWKS)
+      // Verify token using Clerk's public keys (JWKS)
       const payload = await verifyToken(token, {
-        secretKey: process.env.CLERK_SECRET_KEY || 'sk_test_TDksIODSXIqyFJlTThO6q7E6fxwCk68q9MXHjIp9sN',
-        clockSkewInMs: 60000, // 60 seconds tolerance to prevent clock drift issues on Render
+        secretKey: process.env.CLERK_SECRET_KEY,
+        clockSkewInMs: 300000, // 5 minutes tolerance to prevent clock drift issues on Render
       });
 
-      // 2. Fetch full user details from Clerk using the 'sub' ID
+      // Fetch full user details from Clerk using the 'sub' ID
       const clerkUser = await this.clerkClient.users.getUser(payload.sub);
       const email = clerkUser.emailAddresses[0]?.emailAddress;
 
@@ -58,7 +56,7 @@ export class JwtGuard implements CanActivate {
         throw new UnauthorizedException('Clerk user has no email address');
       }
 
-      // 3. Find or automatically register user in our local Postgres DB
+      // Find or automatically register user in our local Postgres DB
       user = await this.userService.findUserByEmail(email);
 
       if (!user) {
@@ -77,20 +75,13 @@ export class JwtGuard implements CanActivate {
           referralCode,
         });
       }
-    } catch (clerkError) {
-      try {
-        // Try to verify as NestJS token
-        const payload = await this.jwtService.verifyAsync(token, {
-          secret: process.env.AT_SECRET || 'superfan_secret_key',
-        });
+    } catch (clerkError: any) {
+      console.error('Clerk auth verification failed:', clerkError);
 
-        // Find user by ID from the payload
-        user = await this.userService.findUserById(payload.id);
-      } catch (jwtError) {
-        console.error('Clerk auth guard error:', clerkError);
-        console.error('NestJS JWT verification failed:', jwtError);
-        throw new UnauthorizedException('Session expired! Please sign in');
+      if (clerkError?.reason === 'token-expired') {
+        throw new UnauthorizedException('Token expired');
       }
+      throw new UnauthorizedException(`Invalid token: ${clerkError?.message || clerkError}`);
     }
 
     if (!user) {
