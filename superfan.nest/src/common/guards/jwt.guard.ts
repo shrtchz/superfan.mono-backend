@@ -1,3 +1,4 @@
+import { createClerkClient, verifyToken } from '@clerk/backend';
 import {
   CanActivate,
   ExecutionContext,
@@ -5,9 +6,8 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { createClerkClient, verifyToken } from '@clerk/backend';
-import { UserService } from '../../user/user.service';
 import { JwtService } from '@nestjs/jwt';
+import { UserService } from '../../user/user.service';
 
 @Injectable()
 export class JwtGuard implements CanActivate {
@@ -19,7 +19,7 @@ export class JwtGuard implements CanActivate {
     private readonly jwtService: JwtService,
   ) {
     this.clerkClient = createClerkClient({
-      secretKey: process.env.CLERK_SECRET_KEY || 'sk_test_TDksIODSXIqyFJlTThO6q7E6fxwCk68q9MXHjIp9sN',
+      secretKey: process.env.CLERK_SECRET_KEY,
     });
   }
 
@@ -100,4 +100,4 @@ export class JwtGuard implements CanActivate {
     request.user = user;
     return true;
   }
-}
+}
