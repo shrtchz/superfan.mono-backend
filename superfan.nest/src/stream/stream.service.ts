@@ -1529,6 +1529,7 @@ async unpinComment(commentId: number) {
       `Failed to unpin comment: ${error.message}`,
     );
   }
+}
 
   async searchStreamChatComments(
     streamId: number,
