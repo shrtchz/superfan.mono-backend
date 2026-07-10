@@ -169,12 +169,6 @@ export class SubmitLiveAnswerDto {
   selectedAnswer: string;
 }
 
-export class SubmitLiveAnswerDto {
-  @IsString()
-  @IsNotEmpty()
-  selectedAnswer: string;
-}
-
 export class SubmitLiveQuizDto {
   @IsString()
   userId: string;
