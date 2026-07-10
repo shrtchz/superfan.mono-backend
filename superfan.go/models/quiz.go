@@ -51,12 +51,14 @@ type LiveQuiz struct {
 	Answer           string        `bson:"answer,omitempty" json:"answer,omitempty"`
 	IsTypedAnswer    bool          `json:"isTypedAnswer,omitempty" bson:"isTypedAnswer,omitempty"`
 	TypedAnswer      string        `json:"typedAnswer,omitempty" bson:"typedAnswer,omitempty"`
-	TotalPrize       int           `json:"totalPrize" bson:"totalPrize"`
+	JackpotAmount    float64       `json:"jackpotAmount,omitempty" bson:"jackpotAmount,omitempty"`
+	TotalPrize       float64       `json:"totalPrize" bson:"totalPrize"`
 	Recipients       int           `json:"recipients" bson:"recipients"`
-	UnitPrize        int           `json:"unitPrize" bson:"unitPrize"`
+	UnitPrize        float64       `json:"unitPrize" bson:"unitPrize"`
 	ShowAnswer       bool          `json:"showAnswer" bson:"showAnswer"`
 	QuizScheduleDate time.Time     `json:"quizScheduleDate" bson:"quizScheduleDate"`
-	ImageLink        []string `json:"imageLink,omitempty" bson:"imageLink,omitempty"`
+	QuizFinishDate   time.Time     `json:"quizFinishDate" bson:"quizFinishDate"`
+	ImageLink        []string      `json:"imageLink,omitempty" bson:"imageLink,omitempty"`
 }
 
 type QuizAnswer struct {

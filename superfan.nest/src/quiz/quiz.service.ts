@@ -1,5 +1,5 @@
 import { HttpService } from '@nestjs/axios';
-import { BadRequestException, HttpException, HttpStatus, Injectable, InternalServerErrorException, NotFoundException, Inject, forwardRef } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, HttpException, HttpStatus, Injectable, InternalServerErrorException, NotFoundException, Inject, forwardRef } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma } from '@prisma/client';
 import { JsonArray } from '@prisma/client/runtime/client';
@@ -36,6 +36,179 @@ export class QuizService {
     @Inject(forwardRef(() => UserService))
     private readonly userService: UserService,
   ) {}
+
+  private getLagosNow(): Date {
+    return new Date(
+      new Date().toLocaleString('en-US', {
+        timeZone: 'Africa/Lagos',
+      }),
+    );
+  }
+
+  private toDate(value: unknown): Date | null {
+    if (!value) return null;
+    const parsed = new Date(String(value));
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  private normalizeText(value: unknown): string {
+    return String(value ?? '').trim().toLowerCase();
+  }
+
+  private extractSelectedAnswer(
+    answers: any[],
+    quizId: string,
+  ): { selectedAnswer: string; submittedAt: Date } | null {
+    if (!Array.isArray(answers)) return null;
+    const row = answers.find((item) => String(item?.quizId) === String(quizId));
+    if (!row?.selectedAnswer) return null;
+
+    const submittedAt =
+      this.toDate(row.submittedAt) ||
+      this.toDate(row.answeredAt) ||
+      this.getLagosNow();
+
+    return {
+      selectedAnswer: String(row.selectedAnswer),
+      submittedAt,
+    };
+  }
+
+  private parseLiveQuizPayload(response: any) {
+    const payload = response?.data?.data ?? response?.data ?? response ?? {};
+    const quiz = Array.isArray(payload) ? payload[0] ?? {} : payload;
+
+    const quizId = String(quiz?.id ?? quiz?.quizId ?? '').trim();
+    const answer = String(quiz?.answer ?? '').trim();
+    const quizScheduleDate = this.toDate(quiz?.quizScheduleDate);
+    const quizFinishDate = this.toDate(quiz?.quizFinishDate);
+    const recipients = Number(quiz?.recipients ?? 0) || 0;
+    const totalPrize = Number(quiz?.totalPrize ?? 0) || 0;
+    const unitPrize =
+      Number(quiz?.unitPrize ?? 0) ||
+      (recipients > 0 ? totalPrize / recipients : 0);
+
+    return {
+      quizId,
+      answer,
+      quizScheduleDate,
+      quizFinishDate,
+      recipients,
+      totalPrize,
+      unitPrize,
+    };
+  }
+
+  private async getLiveQuizMeta(quizId: string) {
+    const response = await this.getLiveQuiz(quizId);
+    const meta = this.parseLiveQuizPayload(response);
+    if (!meta.quizId) {
+      throw new NotFoundException('Live quiz not found');
+    }
+    return meta;
+  }
+
+  private async authenticateFinishedSubmissionsForQuiz(
+    quizId: string,
+  ): Promise<void> {
+    const meta = await this.getLiveQuizMeta(quizId);
+    const now = this.getLagosNow();
+    if (!meta.quizFinishDate || now < meta.quizFinishDate) {
+      return;
+    }
+
+    const sessions = await prisma.ongoingLiveQuiz.findMany({
+      where: {
+        quizIds: { has: quizId },
+      },
+    });
+
+    const participants: Array<{
+      userId: string;
+      ongoingLiveQuizId: number;
+      submittedAt: Date;
+      isCorrect: boolean;
+    }> = [];
+
+    for (const session of sessions) {
+      const answers = (session.answers as any[]) || [];
+      const selection = this.extractSelectedAnswer(answers, quizId);
+      if (!selection) continue;
+
+      const isCorrect =
+        this.normalizeText(selection.selectedAnswer) ===
+        this.normalizeText(meta.answer);
+
+      participants.push({
+        userId: session.userId,
+        ongoingLiveQuizId: session.id,
+        submittedAt: selection.submittedAt,
+        isCorrect,
+      });
+    }
+
+    const dedupedParticipants = Array.from(
+      participants.reduce((acc, current) => {
+        const existing = acc.get(current.userId);
+        if (!existing || current.submittedAt < existing.submittedAt) {
+          acc.set(current.userId, current);
+        }
+        return acc;
+      }, new Map<string, (typeof participants)[number]>() ).values(),
+    );
+
+    const correctParticipants = dedupedParticipants
+      .filter((item) => item.isCorrect)
+      .sort((a, b) => a.submittedAt.getTime() - b.submittedAt.getTime());
+
+    const maxWinners =
+      meta.recipients > 0 ? meta.recipients : correctParticipants.length;
+    const winnerKeys = new Set(
+      correctParticipants
+        .slice(0, Math.max(maxWinners, 0))
+        .map((item) => `${item.userId}:${item.ongoingLiveQuizId}`),
+    );
+
+    await Promise.all(
+      dedupedParticipants.map((participant) => {
+        const key = `${participant.userId}:${participant.ongoingLiveQuizId}`;
+        const isWinner = winnerKeys.has(key);
+
+        return prisma.liveQuizAttempt.upsert({
+          where: {
+            userId_quizId: {
+              userId: participant.userId,
+              quizId,
+            },
+          },
+          update: {
+            ongoingLiveQuizId: participant.ongoingLiveQuizId,
+            totalPrize: meta.totalPrize || null,
+            recipients: meta.recipients || null,
+            unitPrize: meta.unitPrize || null,
+            earning: isWinner ? Math.round(meta.unitPrize || 0) : 0,
+            isWinner,
+            isCompleted: true,
+            startedAt: participant.submittedAt,
+            completedAt: now,
+          },
+          create: {
+            userId: participant.userId,
+            quizId,
+            ongoingLiveQuizId: participant.ongoingLiveQuizId,
+            totalPrize: meta.totalPrize || null,
+            recipients: meta.recipients || null,
+            unitPrize: meta.unitPrize || null,
+            earning: isWinner ? Math.round(meta.unitPrize || 0) : 0,
+            isWinner,
+            isCompleted: true,
+            startedAt: participant.submittedAt,
+            completedAt: now,
+          },
+        });
+      }),
+    );
+  }
 
 
 
@@ -377,96 +550,123 @@ async getRandomLiveQuiz(
   userId: number,
 ) {
   try {
-  // check existing active quiz
-  const existingQuiz =
-    await prisma.ongoingLiveQuiz.findFirst({
+    // Resume existing session only — quiz content is fetched from Go by clients
+    const existingQuiz = await prisma.ongoingLiveQuiz.findFirst({
       where: {
         userId: String(userId),
         completed: false,
       },
     });
 
+    if (existingQuiz) {
+      const questions = (existingQuiz.questions as any[]) || [];
+      const now = this.getLagosNow();
+      const allFinished =
+        questions.length > 0 &&
+        questions.every((question) => {
+          const finishAt = this.toDate(
+            question?.quizFinishDate ?? question?.quizScheduleDate,
+          );
+          return finishAt ? now >= finishAt : false;
+        });
+
+      if (allFinished) {
+        await this.submitLiveQuiz(String(userId));
+        const completedQuiz = await prisma.ongoingLiveQuiz.findUnique({
+          where: { id: existingQuiz.id },
+        });
+        if (completedQuiz) {
+          return completedQuiz;
+        }
+      }
+
+      return existingQuiz;
+    }
+
+    throw new NotFoundException(
+      'No ongoing live quiz session. Fetch questions from Go and POST /quiz/start-live-session.',
+    );
+  } catch (error) {
+    if (error instanceof NotFoundException) {
+      throw error;
+    }
+    console.log(error, 'log error');
+    throw new NotFoundException(
+      error?.response?.message || error?.message || 'Failed to get live quiz',
+    );
+  }
+}
+
+/**
+ * Start a live quiz session using questions already fetched from Go.
+ * Nest no longer calls Go for quiz content.
+ */
+async startLiveQuizSession(
+  userId: number,
+  streamId: number,
+  quizzes: any[],
+) {
+  if (!Array.isArray(quizzes) || !quizzes.length) {
+    throw new NotFoundException('No live quizzes provided');
+  }
+
+  const existingQuiz = await prisma.ongoingLiveQuiz.findFirst({
+    where: {
+      userId: String(userId),
+      completed: false,
+    },
+  });
   if (existingQuiz) {
     return existingQuiz;
   }
 
-  // fetch random quizzes
-  const response = await firstValueFrom(
-    this.httpService.get(
-      `${this.baseUrl}/live/random/${totalQuestions}`,
-    ),
-  );
-
-  const quizzes = response.data?.data || [];
-
-  if (!quizzes.length) {
-    throw new NotFoundException(
-      'No live quizzes found',
-    );
-  }
-
-  // filter quizzes by recipient cap and previous user attempts
   const filteredQuizzes = [];
 
   for (const quiz of quizzes) {
+    const quizId = String(quiz.id ?? quiz.quizId ?? '');
+    if (!quizId) continue;
+
     const recipients = Number(quiz.recipients ?? 0);
     const [attemptCount, userAttempt] = await Promise.all([
       prisma.liveQuizAttempt.count({
-        where: {
-          quizId: quiz.id,
-        },
+        where: { quizId },
       }),
       prisma.liveQuizAttempt.findUnique({
         where: {
           userId_quizId: {
             userId: String(userId),
-            quizId: quiz.id,
+            quizId,
           },
         },
       }),
     ]);
 
-    // only allow quiz if recipients are not exhausted and this user has not attempted it
     if (!userAttempt && (!recipients || attemptCount < recipients)) {
-      filteredQuizzes.push(quiz);
+      filteredQuizzes.push({ ...quiz, id: quizId });
     }
   }
 
   if (!filteredQuizzes.length) {
-    throw new NotFoundException(
-      'No available live quizzes remaining',
-    );
+    throw new NotFoundException('No available live quizzes remaining');
   }
 
-  // limit to requested totalQuestions
-  const selectedQuizzes = filteredQuizzes.slice(
-    0,
-    totalQuestions,
-  );
+  const questions = filteredQuizzes.map((quiz: any) => ({
+    quizId: quiz.id,
+    question: quiz.question,
+    options: quiz.options,
+    imageLink: quiz.imageLink,
+    totalPrize: quiz.totalPrize,
+    jackpotAmount: quiz.jackpotAmount ?? quiz.totalPrize,
+    recipients: quiz.recipients,
+    unitPrize: quiz.unitPrize,
+    quizScheduleDate: quiz.quizScheduleDate,
+    quizFinishDate: quiz.quizFinishDate,
+    selectedAnswer: null,
+    isCorrect: null,
+  }));
 
-  // save only required quiz data
-  const questions = selectedQuizzes.map(
-    (quiz: any) => ({
-      quizId: quiz.id,
-      question: quiz.question,
-      options: quiz.options,
-      imageLink: quiz.imageLink,
-      totalPrize: quiz.totalPrize,
-      recipients: quiz.recipients,
-      unitPrize: quiz.unitPrize,
-      quizScheduleDate:
-        quiz.quizScheduleDate,
+  const quizIds = filteredQuizzes.map((quiz: any) => quiz.id);
 
-      selectedAnswer: null,
-      isCorrect: null,
-    }),
-  );
-
-  const quizIds = selectedQuizzes.map(
-    (quiz: any) => quiz.id,
-  );
-
-  // create ongoing quiz
   return prisma.ongoingLiveQuiz.create({
     data: {
       userId: String(userId),
@@ -474,16 +674,9 @@ async getRandomLiveQuiz(
       questions,
       answers: [],
       completed: false,
-      streamId
+      streamId,
     },
   });
-
-}catch(error) {
-  console.log(error, 'log error')
-      throw new NotFoundException(
-       error.response.message
-      );
-}
 }
 
 
@@ -804,140 +997,143 @@ async submitLiveQuiz(userId: string) {
   }
 
   const questions: any[] = (ongoingQuiz.questions as any[]) || [];
-  const answers: any[]   = (ongoingQuiz.answers   as any[]) || [];
+  const answers: any[] = (ongoingQuiz.answers as any[]) || [];
+  const now = this.getLagosNow();
 
-  let totalCorrect  = 0;
-  let totalEarning  = 0;
+  const finishChecks = await Promise.all(
+    questions.map(async (question) => {
+      const quizId = String(question?.quizId ?? '');
+      if (!quizId) return { quizId, finished: false };
+      const meta = await this.getLiveQuizMeta(quizId);
+      return {
+        quizId,
+        finished: Boolean(meta.quizFinishDate && now >= meta.quizFinishDate),
+      };
+    }),
+  );
 
-  // ── 1. Grade every question ──────────────────────────────────────────────
-  for (let i = 0; i < questions.length; i++) {
-    const question = questions[i];
-
-    const userAnswer = answers.find(
-      (a) => a.quizId === question.quizId,
+  if (finishChecks.some((row) => !row.finished)) {
+    throw new BadRequestException(
+      'Live quiz authentication is only available after finish time',
     );
-
-    if (!userAnswer) {
-      questions[i] = { ...question, isCorrect: false };
-      continue;
-    }
-
-    const answerResponse = await this.getLiveQuizAnswer(question.quizId);
-    const realAnswer     = answerResponse?.data?.answer;
-    const isCorrect      = userAnswer.selectedAnswer === realAnswer;
-
-    if (isCorrect) {
-      totalCorrect++;
-      totalEarning += question.unitPrize ?? 0;
-    }
-
-    questions[i] = {
-      ...question,
-      isCorrect,
-      correctAnswer:  realAnswer,
-      selectedAnswer: userAnswer.selectedAnswer,
-    };
   }
 
-  // ── 2. Determine if user is a winner (ALL correct) ───────────────────────
-  const isWinner = totalCorrect === questions.length && questions.length > 0;
+  // Authenticate globally per quiz using stored submission timestamps.
+  for (const question of questions) {
+    const quizId = String(question?.quizId ?? '');
+    if (!quizId) continue;
+    await this.authenticateFinishedSubmissionsForQuiz(quizId);
+  }
 
-  // ── 3. Persist completed quiz with earning ───────────────────────────────
-  const updatedQuiz = await prisma.ongoingLiveQuiz.update({
-    where: { id: ongoingQuiz.id },
-    data: {
-      completed:    true,
-      questions,
-      totalEarning: totalEarning,
+  const attempts = await prisma.liveQuizAttempt.findMany({
+    where: {
+      userId,
+      quizId: { in: questions.map((q) => String(q?.quizId ?? '')).filter(Boolean) },
+      isCompleted: true,
     },
   });
 
-  const completedAt = new Date();
+  let totalCorrect = 0;
+  let totalEarning = 0;
+  const attemptsByQuizId = new Map(attempts.map((item) => [item.quizId, item]));
 
-  await Promise.all(
-    questions.map((question) =>
-      prisma.liveQuizAttempt.upsert({
-        where: {
-          userId_quizId: {
-            userId,
-            quizId: question.quizId,
-          },
-        },
-        update: {
-          ongoingLiveQuizId: ongoingQuiz.id,
-          totalPrize: question.totalPrize ?? null,
-          recipients: question.recipients ?? null,
-          unitPrize: question.unitPrize ?? null,
-          earning: question.isCorrect ? question.unitPrize ?? 0 : 0,
-          isWinner,
-          isCompleted: true,
-          completedAt,
-        },
-        create: {
-          userId,
-          quizId: question.quizId,
-          ongoingLiveQuizId: ongoingQuiz.id,
-          totalPrize: question.totalPrize ?? null,
-          recipients: question.recipients ?? null,
-          unitPrize: question.unitPrize ?? null,
-          earning: question.isCorrect ? question.unitPrize ?? 0 : 0,
-          isWinner,
-          isCompleted: true,
-          completedAt,
-        },
-      }),
-    ),
+  const gradedQuestions = await Promise.all(
+    questions.map(async (question) => {
+      const quizId = String(question?.quizId ?? '');
+      if (!quizId) return { ...question, isCorrect: false };
+      const attempt = attemptsByQuizId.get(quizId);
+      const selection = this.extractSelectedAnswer(answers, quizId);
+      const meta = await this.getLiveQuizMeta(quizId);
+      const isCorrect =
+        Boolean(selection) &&
+        this.normalizeText(selection?.selectedAnswer) === this.normalizeText(meta.answer);
+
+      if (isCorrect) totalCorrect += 1;
+      totalEarning += Number(attempt?.earning ?? 0);
+
+      return {
+        ...question,
+        isCorrect,
+        selectedAnswer: selection?.selectedAnswer ?? null,
+        correctAnswer: meta.answer,
+      };
+    }),
   );
 
-  // ── 4. Credit wallet once (sum of all correct unitPrizes) ────────────────
-  const rewardStatus = isWinner ? 'paid' : totalEarning > 0 ? 'paid' : 'none';
+  const updatedQuiz = await prisma.ongoingLiveQuiz.update({
+    where: { id: ongoingQuiz.id },
+    data: {
+      completed: true,
+      questions: gradedQuestions,
+      totalEarning: Math.round(totalEarning),
+    },
+  });
+
+  const isWinner = attempts.some((attempt) => attempt.isWinner);
+  const rewardStatus = totalEarning > 0 ? 'paid' : 'none';
+
+  await prisma.liveQuizLeaderboard.deleteMany({
+    where: {
+      userId,
+      quizId: { in: gradedQuestions.map((q) => String(q?.quizId ?? '')).filter(Boolean) },
+    },
+  });
+
+  await prisma.liveQuizLeaderboard.createMany({
+    data: gradedQuestions
+      .map((question) => {
+        const quizId = String(question?.quizId ?? '');
+        if (!quizId) return null;
+        const attempt = attemptsByQuizId.get(quizId);
+        return {
+          userId,
+          quizId,
+          question: String(question?.question ?? ''),
+          answer: String(question?.correctAnswer ?? ''),
+          isWinner: Boolean(attempt?.isWinner),
+          participants: Number(question?.recipients ?? 0) || 0,
+          unitPrize: Number(question?.unitPrize ?? 0) || 0,
+          rewardStatus: attempt?.isWinner ? rewardStatus : 'none',
+          rewardType: 'CASH',
+          quizDate: this.toDate(question?.quizScheduleDate) || now,
+        };
+      })
+      .filter((row): row is NonNullable<typeof row> => Boolean(row)),
+  });
 
   if (totalEarning > 0) {
     await this.walletService.createLiveQuizReward(
       Number(userId),
-      totalEarning,
-      EarningStatus.PAID_OUT,   // or whatever your "paid" enum value is
+      Math.round(totalEarning),
+      EarningStatus.PAID_OUT,
     );
   }
 
-  // ── 5. Build leaderboard rows (one per question) ─────────────────────────
-  const leaderboardRows = questions.map((question) => ({
-    userId,
-    quizId:      question.quizId,
-    question:    question.question,
-    answer:      question.correctAnswer ?? '',
-    isWinner,
-    participants: question.recipients  ?? 0,
-    unitPrize:   question.unitPrize    ?? 0,
-    rewardStatus: question.isCorrect ? rewardStatus : 'none',
-    rewardType: 'CASH',
-    quizDate:    question.quizScheduleDate
-                   ? new Date(question.quizScheduleDate)
-                   : new Date(),
-  }));
-
-  await prisma.liveQuizLeaderboard.createMany({
-    data: leaderboardRows,
-  });
-
-  // ── 6. Return result ─────────────────────────────────────────────────────
   return {
-    totalQuestions: questions.length,
+    totalQuestions: gradedQuestions.length,
     totalCorrect,
-    totalWrong:    questions.length - totalCorrect,
-    score:         totalCorrect,
-    totalEarning,
+    totalWrong: gradedQuestions.length - totalCorrect,
+    score: totalCorrect,
+    totalEarning: Math.round(totalEarning),
     isWinner,
-    quiz:          updatedQuiz,
+    quiz: updatedQuiz,
   };
 }
 
-async updateLiveQuizAnswer(dto: UpdateLiveAnswerDto) {
+async updateLiveQuizAnswer(dto: UpdateLiveAnswerDto, authenticatedUserId?: number) {
+  const resolvedUserId = String(authenticatedUserId ?? dto.userId ?? '');
+  if (!resolvedUserId) {
+    throw new BadRequestException('User identity is required');
+  }
+
   const ongoingQuiz =
     await prisma.ongoingLiveQuiz.findFirst({
       where: {
-        userId: String(dto.userId),
+        userId: resolvedUserId,
         completed: false,
+        quizIds: {
+          has: dto.quizId,
+        },
       },
     });
 
@@ -963,6 +1159,21 @@ async updateLiveQuizAnswer(dto: UpdateLiveAnswerDto) {
     );
   }
 
+  const now = this.getLagosNow();
+  const meta = await this.getLiveQuizMeta(dto.quizId);
+
+  if (meta.quizScheduleDate && now < meta.quizScheduleDate) {
+    throw new BadRequestException('Submission window is not open yet');
+  }
+
+  if (meta.quizFinishDate && now >= meta.quizFinishDate) {
+    // Authenticate all pending submissions for this quiz once finish time is reached.
+    await this.authenticateFinishedSubmissionsForQuiz(dto.quizId);
+    throw new ForbiddenException(
+      'Submission window has closed for this live quiz',
+    );
+  }
+
   // update question snapshot
   questions[questionIndex] = {
     ...questions[questionIndex],
@@ -977,15 +1188,29 @@ async updateLiveQuizAnswer(dto: UpdateLiveAnswerDto) {
   const answerPayload = {
     quizId: dto.quizId,
     selectedAnswer: dto.selectedAnswer,
+    submittedAt: now.toISOString(),
   };
 
   if (answerIndex !== -1) {
-    answers[answerIndex] = answerPayload;
+    const existingAnswer = String(answers[answerIndex]?.selectedAnswer ?? '').trim();
+    const incomingAnswer = String(dto.selectedAnswer ?? '').trim();
+
+    if (this.normalizeText(existingAnswer) !== this.normalizeText(incomingAnswer)) {
+      throw new ConflictException(
+        'Answer already submitted and cannot be changed',
+      );
+    }
+
+    return {
+      ...ongoingQuiz,
+      questions,
+      answers,
+    };
   } else {
     answers.push(answerPayload);
   }
 
-  return prisma.ongoingLiveQuiz.update({
+  const updated = await prisma.ongoingLiveQuiz.update({
     where: {
       id: ongoingQuiz.id,
     },
@@ -994,6 +1219,50 @@ async updateLiveQuizAnswer(dto: UpdateLiveAnswerDto) {
       answers,
     },
   });
+
+  await prisma.liveQuizAttempt.upsert({
+    where: {
+      userId_quizId: {
+        userId: resolvedUserId,
+        quizId: dto.quizId,
+      },
+    },
+    update: {
+      ongoingLiveQuizId: ongoingQuiz.id,
+      totalPrize: Number(meta.totalPrize || 0) || null,
+      recipients: Number(meta.recipients || 0) || null,
+      unitPrize: Number(meta.unitPrize || 0) || null,
+    },
+    create: {
+      userId: resolvedUserId,
+      quizId: dto.quizId,
+      ongoingLiveQuizId: ongoingQuiz.id,
+      totalPrize: Number(meta.totalPrize || 0) || null,
+      recipients: Number(meta.recipients || 0) || null,
+      unitPrize: Number(meta.unitPrize || 0) || null,
+      isWinner: false,
+      isCompleted: false,
+      earning: 0,
+      startedAt: now,
+    },
+  });
+
+  return updated;
+}
+
+async submitLiveAnswerByQuizId(
+  userId: number,
+  quizId: string,
+  selectedAnswer: string,
+) {
+  return this.updateLiveQuizAnswer(
+    {
+      userId: String(userId),
+      quizId,
+      selectedAnswer,
+    },
+    userId,
+  );
 }
 
 async hasSubmittedLiveQuizForStream(
@@ -1098,36 +1367,34 @@ async hasSubmittedLiveQuizForStream(
 
 
 
-async getQuizWithPreferences(dto: GetQuizWithPreferencesDto, userId: number) {
+/**
+ * Create a quick-start quiz session from a pack already fetched from Go.
+ * Nest no longer needs to call Go when the client supplies the pack.
+ */
+async startQuickQuizSession(
+  userId: number,
+  pack: Record<string, any>,
+  isRandom = true,
+) {
   try {
+    await prisma.ongoingQuiz.deleteMany({
+      where: {
+        userId,
+        isCompleted: false,
+      },
+    });
 
-    const activeNow = new Date(
-      new Date().toLocaleString("en-US", {
-        timeZone: "Africa/Lagos",
-      })
-    );
-
-    // Delete any incomplete quizzes before creating a new one
-    // This ensures fresh quiz attempts without orphaned incomplete records
-    await Promise.all([
-      // Delete incomplete ongoing quizzes (both random and non-random)
-      prisma.ongoingQuiz.deleteMany({
-        where: {
-          userId,
-          isCompleted: false,
-        },
-      }),
-    ]);
-
-    const subscription = await this.userService.checkSubscriptionStatusbyUserId(userId);
-    const plan = subscription.subscriptionPlan?.toString().trim().toUpperCase() || '';
+    const subscription =
+      await this.userService.checkSubscriptionStatusbyUserId(userId);
+    const plan =
+      subscription.subscriptionPlan?.toString().trim().toUpperCase() || '';
 
     if (plan === 'FREE') {
-            const now = new Date(
-    new Date().toLocaleString("en-US", {
-      timeZone: "Africa/Lagos",
-    })
-  );
+      const now = new Date(
+        new Date().toLocaleString('en-US', {
+          timeZone: 'Africa/Lagos',
+        }),
+      );
       const startOfDay = new Date(now);
       startOfDay.setHours(0, 0, 0, 0);
       const endOfDay = new Date(startOfDay);
@@ -1155,19 +1422,16 @@ async getQuizWithPreferences(dto: GetQuizWithPreferencesDto, userId: number) {
               lt: endOfDay,
             },
           },
-          orderBy: [
-            { completedAt: 'desc' },
-            { createdAt: 'desc' },
-          ],
+          orderBy: [{ completedAt: 'desc' }, { createdAt: 'desc' }],
         });
 
-        const quizzes = Array.isArray(lastCompletedQuiz?.questions)
+        const limitQuizzes = Array.isArray(lastCompletedQuiz?.questions)
           ? lastCompletedQuiz.questions
           : [];
 
         return {
           data: {
-            quizzes,
+            quizzes: limitQuizzes,
             totalEarning: lastCompletedQuiz?.totalEarning ?? 0,
             totalQuestions: lastCompletedQuiz?.totalQuestions ?? 25,
             totalTime: lastCompletedQuiz?.totalTime ?? null,
@@ -1179,151 +1443,153 @@ async getQuizWithPreferences(dto: GetQuizWithPreferencesDto, userId: number) {
       }
     }
 
-    // Generate random preferences if isRandom is true
+    const quizzes = Array.isArray(pack?.quizzes) ? pack.quizzes : [];
+    if (!quizzes.length) {
+      throw new NotFoundException('No quizzes provided');
+    }
+
+    const languagePreference = pack.languagePreference || null;
+    const subjectPreference = pack.subjectPreference || null;
+    const testLevel = pack.testLevel || quizzes[0]?.testLevel || null;
+
+    const totalQuestions: number = quizzes.length;
+    const totalEarning: number =
+      Number(pack.totalEarning) ||
+      quizzes.reduce(
+        (sum: number, q: any) => sum + Number(q.earning ?? 0),
+        0,
+      );
+
+    const amountInNaira = totalEarning / 1000;
+
+    const convertToUSDC = await this.paymentService.getExchangeRate('USDC');
+    const convertToUSDT = await this.paymentService.getExchangeRate('USDT');
+
+    const amountInUSDC = amountInNaira / Number(convertToUSDC.rate);
+    const amountInUSDT = amountInNaira / Number(convertToUSDT.rate);
+    const totalTime: number = pack.totalTime ?? totalQuestions * 2;
+
+    const now = new Date(
+      new Date().toLocaleString('en-US', {
+        timeZone: 'Africa/Lagos',
+      }),
+    );
+
+    const expiresAt = new Date(now.getTime() + totalTime * 60 * 1000);
+
+    const quizAttempt = await prisma.ongoingQuiz.create({
+      data: {
+        userId: Number(userId),
+        testQuiz: quizzes[0]?.testQuiz ?? '',
+        subject: quizzes[0]?.subject ?? '',
+        testLevel: quizzes[0]?.testLevel ?? '',
+        totalEarning,
+        totalEarninginNaira: amountInNaira,
+        totalEarninginUSDC: amountInUSDC,
+        totalEarninginUSDT: amountInUSDT,
+        totalQuestions,
+        totalTime,
+        isRandom,
+        timeRemaining: totalTime,
+        questions: JSON.parse(JSON.stringify(quizzes)),
+        answers: JSON.parse('[]'),
+        ...(!isRandom && {
+          startedAt: now,
+          expiresAt,
+        }),
+      },
+    });
+
+    if (isRandom) {
+      await prisma.quizAttempt.create({
+        data: {
+          quizId: quizAttempt.id,
+          userId: Number(userId),
+          isStarted: false,
+          isCompleted: false,
+          startedAt: now,
+          expiresAt,
+        },
+      });
+    }
+
+    return {
+      data: {
+        ...pack,
+        quizzes,
+        totalQuestions,
+        totalTime,
+        totalEarning,
+        quizId: quizAttempt.id,
+        amountInNaira,
+        amountInUSDC,
+        amountInUSDT,
+        isRandom,
+        languagePreference,
+        subjectPreference,
+        testLevel,
+      },
+    };
+  } catch (error) {
+    if (error instanceof HttpException) throw error;
+
+    console.log(error, 'startQuickQuizSession error');
+
+    const message =
+      error?.response?.data?.error ||
+      error?.response?.data?.message ||
+      error?.message ||
+      'Failed to start quick quiz session';
+
+    throw new HttpException(message, error?.response?.status || 500);
+  }
+}
+
+async getQuizWithPreferences(dto: GetQuizWithPreferencesDto, userId: number) {
+  try {
     let actualLanguagePreference = dto.languagePreference;
     let actualSubjectPreference = dto.subjectPreference;
     let actualTestLevel = dto.testLevel;
 
-    // Fetch from user's onboarding details if any preference is null
-    if (!actualLanguagePreference || !actualSubjectPreference || !actualTestLevel) {
+    if (
+      !dto.isRandom &&
+      (!actualLanguagePreference ||
+        !actualSubjectPreference ||
+        !actualTestLevel)
+    ) {
       try {
-        const onboardingDetails = await this.userService.fetchOnboardingdetails(userId);
-        const { languagePreference, subjectPreference, testLevel } = onboardingDetails.data;
+        const onboardingDetails =
+          await this.userService.fetchOnboardingdetails(userId);
+        const { languagePreference, subjectPreference, testLevel } =
+          onboardingDetails.data;
 
-        actualLanguagePreference = actualLanguagePreference || languagePreference;
-        actualSubjectPreference = actualSubjectPreference || subjectPreference;
+        actualLanguagePreference =
+          actualLanguagePreference || languagePreference;
+        actualSubjectPreference =
+          actualSubjectPreference || subjectPreference;
         actualTestLevel = actualTestLevel || testLevel;
       } catch (error) {
-        // If fetch fails, continue to random generation
         console.warn('Failed to fetch onboarding details:', error?.message);
       }
     }
 
-    // If still null or isRandom, generate random preferences
-    if (dto.isRandom || !actualLanguagePreference || !actualSubjectPreference || !actualTestLevel) {
-      const languages = ['yoruba'];
-      const subjects = ['general'];
-      const levels = ['basic'];
-
-      actualLanguagePreference = actualLanguagePreference || languages[Math.floor(Math.random() * languages.length)];
-      actualSubjectPreference = actualSubjectPreference || subjects[Math.floor(Math.random() * subjects.length)];
-      actualTestLevel = actualTestLevel || levels[Math.floor(Math.random() * levels.length)];
-    }
-
+    // Legacy Nest GET still fetches pack from Go, then creates session locally.
+    // Prefer client → Go /quick-start + POST /quiz/start-quick-session.
     const response = await firstValueFrom(
-      this.httpService.get(`${this.baseUrl}/preferences`, {
+      this.httpService.get(`${this.baseUrl}/quick-start`, {
         params: {
           languagePreference: actualLanguagePreference,
           subjectPreference: actualSubjectPreference,
           testLevel: actualTestLevel,
           questionPreference: dto.questionPreference,
           timePreference: dto.timePreference,
+          isRandom: dto.isRandom === true ? 'true' : 'false',
         },
       }),
     );
 
-    const { quizzes } = response.data.data;
-
-    // Derive totals from quizzes array (API returns per-question earning, not aggregates)
-    const totalQuestions: number = quizzes.length;
-    const totalEarning: number = quizzes.reduce(
-      (sum: number, q: any) => sum + Number(q.earning ?? 0),
-      0,
-    );
-
-    const amountInNaira = totalEarning / 1000;
-
-    let convertToUSDC = await this.paymentService.getExchangeRate('USDC');
-    let convertToUSDT = await this.paymentService.getExchangeRate('USDT');
-
-    let amountInUSDC = amountInNaira / Number(convertToUSDC.rate);
-    let amountInUSDT = amountInNaira / Number(convertToUSDT.rate);
-    const totalTime: number = response.data.data.totalTime ?? totalQuestions * 2;
-
-      const now = new Date(
-    new Date().toLocaleString("en-US", {
-      timeZone: "Africa/Lagos",
-    })
-  );
-
-  const expiresAt = new Date(
-    now.getTime() + totalTime * 60 * 1000
-  );
-
-// console.log(lagosTime.toISOString());
-// amountInNaira, amountInUSDC, amountInUSDT
-
-    let quizAttempt = await prisma.ongoingQuiz.create({
-  data: {
-    userId: Number(userId),
-    testQuiz: quizzes[0]?.testQuiz ?? '',
-    subject: quizzes[0]?.subject ?? '',
-    testLevel: quizzes[0]?.testLevel ?? '',
-    totalEarning,
-    totalEarninginNaira: amountInNaira,
-    totalEarninginUSDC: amountInUSDC,
-    totalEarninginUSDT: amountInUSDT,
-    totalQuestions,
-    totalTime,
-    isRandom: dto.isRandom,
-    timeRemaining: totalTime,
-    questions: JSON.parse(JSON.stringify(quizzes)),
-    answers: JSON.parse('[]'),
-    ...(!dto.isRandom && {
-      startedAt: now,
-      expiresAt: expiresAt,
-    }),
-  },
-});
-
-    if (response?.data?.data) {
-      response.data.data.quizId = quizAttempt.id;
-
-      // attach currency amounts to the response payload
-      response.data.data.amountInNaira = amountInNaira;
-      response.data.data.amountInUSDC = amountInUSDC;
-      response.data.data.amountInUSDT = amountInUSDT;
-
-      if (dto.isRandom) {
-        response.data.data.languagePreference = actualLanguagePreference;
-        response.data.data.subjectPreference = actualSubjectPreference;
-        response.data.data.testLevel = actualTestLevel;
-      }
-    }
-
-        if (dto.isRandom) {
-  await prisma.quizAttempt.create({
-    data: {
-      quizId: quizAttempt.id,
-      userId: Number(userId),
-      isStarted: false,
-      isCompleted: false,
-      startedAt: now,
-      expiresAt,
-    },
-  });
-}
-
-    // Attach the created quiz attempt id to the API response so callers
-    // can reference the persisted `ongoingQuiz` record.
-    try {
-      if (response && response.data && response.data.data) {
-        response.data.data.quizId = quizAttempt.id;
-        response.data.data.amountInNaira = amountInNaira;
-        response.data.data.amountInUSDC = amountInUSDC;
-        response.data.data.amountInUSDT = amountInUSDT;
-      } else if (response && response.data) {
-        response.data.quizId = quizAttempt.id;
-        response.data.amountInNaira = amountInNaira;
-        response.data.amountInUSDC = amountInUSDC;
-        response.data.amountInUSDT = amountInUSDT;
-      }
-    } catch (err) {
-      // non-fatal: if we can't attach, still return the original response
-      console.warn('Failed to attach quizAttemptId or amounts to response', err);
-    }
-
-    return response.data;
+    const pack = response.data?.data || response.data || {};
+    return this.startQuickQuizSession(userId, pack, !!dto.isRandom);
   } catch (error) {
     if (error instanceof HttpException) throw error;
 

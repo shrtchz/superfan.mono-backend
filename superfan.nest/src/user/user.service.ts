@@ -1,3 +1,4 @@
+import { createClerkClient } from '@clerk/backend';
 import {
   BadRequestException,
   ForbiddenException,
@@ -13,7 +14,6 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { JwtService } from '@nestjs/jwt';
 import { TestLevel, User } from '@prisma/client';
 import * as argon from 'argon2';
-import { createClerkClient } from '@clerk/backend';
 import { PostHog } from 'posthog-node';
 import { EarningStatus } from '../common/enums/task.enum';
 import { generateReferralCode } from '../common/shared/lib';
@@ -552,6 +552,9 @@ export class UserService {
   }
 
   async signinUser(dto: LoginDto): Promise<any> {
+    console.log("CLERK_SECRET_KEY from env:", process.env.CLERK_SECRET_KEY);
+    console.log("dto.identifier:", dto.identifier);
+    console.log("password", dto.password)
     let user = await prisma.user.findFirst({
       where: {
         OR: [

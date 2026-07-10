@@ -2,8 +2,10 @@ package controllers
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
+	"quiz.superfan.com/apis/middleware"
 	"quiz.superfan.com/apis/services"
 )
 
@@ -32,7 +34,12 @@ func (ctrl *StreamAPIController) CreateBroadcast(c *gin.Context) {
 
 	broadcast, err := ctrl.ytService.CreateBroadcast(c.Request.Context(), req.Title, req.Description)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create broadcast", "details": err.Error()})
+		errStr := err.Error()
+		if strings.Contains(errStr, "token") || strings.Contains(errStr, "oauth2") || strings.Contains(errStr, "credential") || strings.Contains(errStr, "auth") {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "YouTube authentication required", "details": errStr})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create broadcast", "details": errStr})
 		return
 	}
 
@@ -54,7 +61,12 @@ func (ctrl *StreamAPIController) SetupStream(c *gin.Context) {
 
 	streamRes, err := ctrl.ytService.SetupStream(c.Request.Context(), req.BroadcastID, req.Title)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to setup stream", "details": err.Error()})
+		errStr := err.Error()
+		if strings.Contains(errStr, "token") || strings.Contains(errStr, "oauth2") || strings.Contains(errStr, "credential") || strings.Contains(errStr, "auth") {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "YouTube authentication required", "details": errStr})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to setup stream", "details": errStr})
 		return
 	}
 
@@ -100,16 +112,42 @@ func (ctrl *StreamAPIController) GetVideoViews(c *gin.Context) {
 	c.JSON(http.StatusOK, res)
 }
 
-// RegisterStreamRoutes registers the REST endpoints for NestJS to call
+type EnableEmbedRequest struct {
+	VideoID string `json:"videoId" binding:"required"`
+}
+
+// EnableEmbed forces embedding on an existing YouTube video/broadcast
+func (ctrl *StreamAPIController) EnableEmbed(c *gin.Context) {
+	var req EnableEmbedRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := ctrl.ytService.EnsureEmbeddable(c.Request.Context(), req.VideoID); err != nil {
+		errStr := err.Error()
+		if strings.Contains(errStr, "token") || strings.Contains(errStr, "oauth2") || strings.Contains(errStr, "credential") || strings.Contains(errStr, "auth") {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "YouTube authentication required", "details": errStr})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to enable embedding", "details": errStr})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"ok": true, "videoId": req.VideoID})
+}
+
+// RegisterStreamRoutes registers the REST endpoints (protected like Nest JwtGuard)
 func RegisterStreamRoutes(router *gin.RouterGroup) {
 	ctrl := NewStreamAPIController()
-	
-	// Create a sub-router for streams
+
 	streamGroup := router.Group("/streams")
+	streamGroup.Use(middleware.AuthRequired())
 	{
 		streamGroup.POST("/broadcast", ctrl.CreateBroadcast)
 		streamGroup.POST("/setup", ctrl.SetupStream)
 		streamGroup.POST("/transition", ctrl.TransitionBroadcast)
+		streamGroup.POST("/enable-embed", ctrl.EnableEmbed)
 		streamGroup.GET("/views", ctrl.GetVideoViews)
 	}
 }

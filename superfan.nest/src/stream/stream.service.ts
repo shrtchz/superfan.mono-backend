@@ -12,7 +12,6 @@ import {
 import { ConfigService } from '@nestjs/config';
 import type { OAuth2Client } from 'google-auth-library';
 import { google, youtube_v3 } from 'googleapis';
-import axios from 'axios';
 import keys from '../../credentials.json';
 import { ElasticsearchService } from '../elasticsearch/elasticsearch.service';
 import { RedisService } from '../mail/redis.service';
@@ -31,6 +30,9 @@ export interface StreamSession {
 @Injectable()
 export class StreamingService {
   private readonly logger = new Logger(StreamingService.name);
+  private readonly defaultAvatarUrl =
+    this.configService.get<string>('DEFAULT_AVATAR_URL') ||
+    'https://ui-avatars.com/api/?name=User&background=e5e7eb&color=111827';
 
   private readonly SCOPES = [
 
@@ -53,6 +55,52 @@ export class StreamingService {
 
   private normalizeQuizOption(value: unknown): string {
     return String(value ?? '').trim().toLowerCase();
+  }
+
+  private toHttpsAvatarUrl(value?: string | null): string {
+    const raw = String(value ?? '').trim();
+    if (!raw) return this.defaultAvatarUrl;
+    if (raw.startsWith('https://')) return raw;
+    if (raw.startsWith('//')) return `https:${raw}`;
+    if (raw.startsWith('http://')) return raw.replace(/^http:\/\//i, 'https://');
+    // Non-URL or relative path: do not expose unsafe URL to clients
+    return this.defaultAvatarUrl;
+  }
+
+  private buildDisplayName(user?: {
+    firstName?: string | null;
+    lastName?: string | null;
+    username?: string | null;
+  }, fallbackUserId?: number): string {
+    const fullName = `${user?.firstName || ''} ${user?.lastName || ''}`.trim();
+    if (fullName) return fullName;
+    if (user?.username) return user.username;
+    return `User${fallbackUserId || ''}`.trim() || 'User';
+  }
+
+  private async getUserPublicProfile(userId: number): Promise<{
+    id: number;
+    displayName: string;
+    avatarUrl: string;
+    username: string;
+  }> {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        username: true,
+        profilePicture: true,
+      },
+    });
+
+    return {
+      id: userId,
+      displayName: this.buildDisplayName(user || undefined, userId),
+      avatarUrl: this.toHttpsAvatarUrl(user?.profilePicture),
+      username: user?.username || this.buildDisplayName(user || undefined, userId),
+    };
   }
 
   private extractLiveQuizOptions(liveQuiz: any): string[] {
@@ -371,13 +419,13 @@ export class StreamingService {
   /**
    * Ensure valid access token, refresh if needed
    */
-  private async ensureValidToken(): Promise<void> {
+  async ensureValidToken(): Promise<void> {
     try {
       await this.loadStoredOAuthCredentials();
       const credentials = this.oauth2Client.credentials;
 
       if (!credentials.access_token && !credentials.refresh_token) {
-        throw new InternalServerErrorException(
+        throw new ForbiddenException(
           'YouTube OAuth tokens are not configured. Authenticate first.',
         );
       }
@@ -387,7 +435,7 @@ export class StreamingService {
         credentials.expiry_date <= Date.now()
       ) {
         if (!credentials.refresh_token) {
-          throw new InternalServerErrorException(
+          throw new ForbiddenException(
             'YouTube access token expired and no refresh token is available.',
           );
         }
@@ -397,18 +445,18 @@ export class StreamingService {
         this.logger.log('Token refreshed successfully');
 
         if (!token) {
-          throw new InternalServerErrorException(
+          throw new ForbiddenException(
             'Failed to refresh YouTube access token.',
           );
         }
       }
     } catch (error) {
       this.logger.error(`Failed to refresh token: ${error.message}`);
-      if (error instanceof InternalServerErrorException) {
+      if (error instanceof ForbiddenException) {
         throw error;
       }
 
-      throw new InternalServerErrorException(
+      throw new ForbiddenException(
         `Failed to validate YouTube OAuth token: ${error.message}`,
       );
     }
@@ -416,52 +464,98 @@ export class StreamingService {
 
 
   /**
-   * Create YouTube Live Broadcast via Go Microservice
+   * Create YouTube Live Broadcast (Nest YouTube client — Go is independent)
    */
   async createBroadcast(
     title: string,
     privacyStatus: 'public' | 'private' | 'unlisted' = 'public',
   ): Promise<any> {
     try {
-      this.logger.log(`Creating broadcast via Go service: ${title}`);
+      await this.ensureValidToken();
+      this.logger.log(`Creating broadcast via Nest YouTube client: ${title}`);
 
-      const goServiceUrl = this.configService.get<string>('GO_SERVICE_URL') || 'http://localhost:7190';
-      const response = await axios.post(`${goServiceUrl}/v1/streams/broadcast`, {
-        title,
-        description: '', // Optional description
+      const response = await this.youtube.liveBroadcasts.insert({
+        part: ['snippet', 'status', 'contentDetails'],
+        requestBody: {
+          snippet: {
+            title,
+            description: '',
+            scheduledStartTime: new Date(Date.now() + 60_000).toISOString(),
+          },
+          status: {
+            privacyStatus,
+            selfDeclaredMadeForKids: false,
+          },
+          contentDetails: {
+            enableEmbed: true,
+            enableDvr: true,
+            recordFromStart: true,
+            enableClosedCaptions: false,
+            enableAutoStart: false,
+            enableAutoStop: false,
+            monitorStream: {
+              enableMonitorStream: true,
+              broadcastStreamDelayMs: 0,
+            },
+          },
+        },
       });
 
-      this.logger.log(`Broadcast created: ${response.data.id}`);
-      return response.data;
-    } catch (error) {
+      const broadcast = response.data;
+      if (broadcast?.id) {
+        await this.ensureVideoEmbeddable(broadcast.id);
+      }
+
+      this.logger.log(`Broadcast created: ${broadcast.id}`);
+      return broadcast;
+    } catch (error: any) {
       this.logger.error(error);
+      if (error?.code === 401 || error?.code === 403 || error?.response?.status === 401 || error?.response?.status === 403) {
+        throw new ForbiddenException(
+          `YouTube authorization failed: ${error?.message || 'Authentication required'}`,
+        );
+      }
       throw new InternalServerErrorException(
-        `Failed to create broadcast via Go: ${error.message}`,
+        `Failed to create broadcast: ${error.message}`,
       );
     }
   }
 
   /**
-   * Create stream + bind to broadcast via Go Microservice
+   * Create stream + bind to broadcast (Nest YouTube client)
    */
   async setupStream(
     broadcastId: string,
     title: string,
   ): Promise<StreamSession> {
     try {
-      this.logger.log(`Setting up stream for ${broadcastId} via Go`);
+      await this.ensureValidToken();
+      this.logger.log(`Setting up stream for ${broadcastId} via Nest YouTube client`);
 
-      const goServiceUrl = this.configService.get<string>('GO_SERVICE_URL') || 'http://localhost:7190';
-      const response = await axios.post(`${goServiceUrl}/v1/streams/setup`, {
-        broadcastId,
-        title,
+      const streamRes = await this.youtube.liveStreams.insert({
+        part: ['snippet', 'cdn'],
+        requestBody: {
+          snippet: { title },
+          cdn: {
+            frameRate: '30fps',
+            ingestionType: 'rtmp',
+            resolution: '720p',
+          },
+        },
       });
 
-      const streamId = response.data.id;
-      const ingestionInfo = response.data.cdn?.ingestionInfo;
+      const streamId = streamRes.data.id!;
+      await this.youtube.liveBroadcasts.bind({
+        id: broadcastId,
+        part: ['id', 'contentDetails'],
+        streamId,
+      });
 
-      const rtmpUrl = ingestionInfo.ingestionAddress;
-      const streamKey = ingestionInfo.streamName;
+      const ingestionInfo = streamRes.data.cdn?.ingestionInfo;
+      const rtmpUrl = ingestionInfo?.ingestionAddress || '';
+      const streamKey = ingestionInfo?.streamName || '';
+
+      await this.ensureVideoEmbeddable(broadcastId);
 
       const session: StreamSession = {
         broadcastId,
@@ -473,10 +567,15 @@ export class StreamingService {
 
       this.logger.log(`RTMP URL: ${session.streamUrl}`);
       return session;
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(error);
+      if (error?.code === 401 || error?.code === 403 || error?.response?.status === 401 || error?.response?.status === 403) {
+        throw new ForbiddenException(
+          `YouTube authorization failed: ${error?.message || 'Authentication required'}`,
+        );
+      }
       throw new InternalServerErrorException(
-        `Failed to setup stream via Go: ${error.message}`,
+        `Failed to setup stream: ${error.message}`,
       );
     }
   }
@@ -774,6 +873,12 @@ async editStream(
           latestStream.broadcastId = activeBroadcastId;
           latestStream.status = 'live';
         }
+
+        // Ensure embedding via Nest YouTube client (Go is independent)
+        const embedVideoId = latestStream.broadcastId || activeBroadcastId;
+        if (embedVideoId) {
+          await this.ensureVideoEmbeddable(embedVideoId);
+        }
       } catch (error) {
         this.logger.error(`Failed to fetch active broadcast: ${error.message}`);
       }
@@ -783,20 +888,98 @@ async editStream(
   }
 
   /**
-   * Transition to LIVE via Go
+   * Force-enable embedding on a YouTube video/broadcast.
+   * Best-effort; never throws to the caller.
+   */
+  private async ensureVideoEmbeddable(videoId: string): Promise<void> {
+    try {
+      const listed = await this.youtube.videos.list({
+        part: ['status'],
+        id: [videoId],
+      });
+      const existing = listed.data.items?.[0];
+      if (!existing?.status) {
+        return;
+      }
+
+      if (existing.status.embeddable === true) {
+        return;
+      }
+
+      await this.youtube.videos.update({
+        part: ['status'],
+        requestBody: {
+          id: videoId,
+          status: {
+            embeddable: true,
+            privacyStatus: existing.status.privacyStatus || 'public',
+            selfDeclaredMadeForKids:
+              existing.status.selfDeclaredMadeForKids ?? false,
+          },
+        },
+      });
+      this.logger.log(`Enabled embedding for YouTube video ${videoId}`);
+    } catch (error: any) {
+      this.logger.warn(
+        `Could not enable embedding for ${videoId}: ${error?.message || error}`,
+      );
+    }
+
+    try {
+      const broadcast = await this.youtube.liveBroadcasts.list({
+        part: ['id', 'contentDetails', 'status', 'snippet'],
+        id: [videoId],
+      });
+      const item = broadcast.data.items?.[0];
+      if (!item?.id || item.contentDetails?.enableEmbed === true) {
+        return;
+      }
+
+      await this.youtube.liveBroadcasts.update({
+        part: ['id', 'contentDetails', 'status', 'snippet'],
+        requestBody: {
+          id: item.id,
+          snippet: {
+            title: item.snippet?.title || 'Livestream',
+            scheduledStartTime:
+              item.snippet?.scheduledStartTime || new Date().toISOString(),
+          },
+          status: {
+            privacyStatus: item.status?.privacyStatus || 'public',
+          },
+          contentDetails: {
+            ...item.contentDetails,
+            enableEmbed: true,
+            monitorStream: item.contentDetails?.monitorStream || {
+              enableMonitorStream: true,
+              broadcastStreamDelayMs: 0,
+            },
+          },
+        },
+      });
+      this.logger.log(`Enabled enableEmbed on live broadcast ${videoId}`);
+    } catch (error: any) {
+      this.logger.warn(
+        `Could not update liveBroadcast enableEmbed for ${videoId}: ${error?.message || error}`,
+      );
+    }
+  }
+
+  /**
+   * Transition to LIVE (Nest YouTube client)
    */
   async goLive(broadcastId: string): Promise<void> {
     try {
-      const goServiceUrl = this.configService.get<string>('GO_SERVICE_URL') || 'http://localhost:7190';
-      await axios.post(`${goServiceUrl}/v1/streams/transition`, {
-        broadcastId,
-        status: 'live',
+      await this.ensureValidToken();
+      await this.youtube.liveBroadcasts.transition({
+        id: broadcastId,
+        broadcastStatus: 'live',
+        part: ['id', 'status'],
       });
-
-      this.logger.log(`Broadcast ${broadcastId} is LIVE via Go`);
-    } catch (error) {
+      this.logger.log(`Broadcast ${broadcastId} is LIVE`);
+    } catch (error: any) {
       throw new InternalServerErrorException(
-        `Failed to go live via Go: ${error.message}`,
+        `Failed to go live: ${error.message}`,
       );
     }
   }
@@ -823,7 +1006,18 @@ async editStream(
         await this.submitLiveQuizAnswerFromMessage(streamId, comment, userId);
       }
 
-      return stream_comment;
+      const author = await this.getUserPublicProfile(userId);
+      return {
+        ...stream_comment,
+        displayName: author.displayName,
+        avatarUrl: author.avatarUrl,
+        username: author.username,
+        name: author.displayName,
+        fullName: author.displayName,
+        image: author.avatarUrl,
+        profileImage: author.avatarUrl,
+        avatar: author.avatarUrl,
+      };
     } catch(error) {
       throw new InternalServerErrorException(
         `Failed to comment on stream: ${error.message}`,
@@ -957,7 +1151,19 @@ async editStream(
         );
       }
 
-      return reply_comment;
+      const author = await this.getUserPublicProfile(userId);
+      return {
+        ...reply_comment,
+        parentCommentId: reply_comment.commentId,
+        displayName: author.displayName,
+        avatarUrl: author.avatarUrl,
+        username: author.username,
+        name: author.displayName,
+        fullName: author.displayName,
+        image: author.avatarUrl,
+        profileImage: author.avatarUrl,
+        avatar: author.avatarUrl,
+      };
 
     } catch (error) {
       throw new InternalServerErrorException(
@@ -1151,13 +1357,94 @@ async getStreamCommentsandReplies(streamId: number) {
     ? [pinnedComment, ...comments]
     : comments;
 
+  const allUserIds = Array.from(
+    new Set(
+      result
+        .flatMap((item) => [
+          item.userId,
+          ...(Array.isArray(item.replies) ? item.replies.map((reply) => reply.userId) : []),
+        ])
+        .filter((id): id is number => typeof id === 'number' && Number.isFinite(id)),
+    ),
+  );
+
+  const users = allUserIds.length
+    ? await prisma.user.findMany({
+        where: { id: { in: allUserIds } },
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          username: true,
+          profilePicture: true,
+        },
+      })
+    : [];
+
+  const userMap = new Map(
+    users.map((user) => [
+      user.id,
+      {
+        displayName: this.buildDisplayName(user, user.id),
+        avatarUrl: this.toHttpsAvatarUrl(user.profilePicture),
+        username: user.username || this.buildDisplayName(user, user.id),
+      },
+    ]),
+  );
+
+  const enriched = result.map((comment) => {
+    const commentUser =
+      userMap.get(comment.userId) || {
+        displayName: `User${comment.userId}`,
+        avatarUrl: this.defaultAvatarUrl,
+        username: `User${comment.userId}`,
+      };
+
+    const replies = Array.isArray(comment.replies)
+      ? comment.replies.map((reply) => {
+          const replyUser =
+            userMap.get(reply.userId) || {
+              displayName: `User${reply.userId}`,
+              avatarUrl: this.defaultAvatarUrl,
+              username: `User${reply.userId}`,
+            };
+
+          return {
+            ...reply,
+            parentCommentId: reply.commentId,
+            displayName: replyUser.displayName,
+            avatarUrl: replyUser.avatarUrl,
+            username: replyUser.username,
+            name: replyUser.displayName,
+            fullName: replyUser.displayName,
+            image: replyUser.avatarUrl,
+            profileImage: replyUser.avatarUrl,
+            avatar: replyUser.avatarUrl,
+          };
+        })
+      : [];
+
+    return {
+      ...comment,
+      replies,
+      displayName: commentUser.displayName,
+      avatarUrl: commentUser.avatarUrl,
+      username: commentUser.username,
+      name: commentUser.displayName,
+      fullName: commentUser.displayName,
+      image: commentUser.avatarUrl,
+      profileImage: commentUser.avatarUrl,
+      avatar: commentUser.avatarUrl,
+    };
+  });
+
   await this.redis.set(
     cacheKey,
-    JSON.stringify(result),
+    JSON.stringify(enriched),
     60, // 1 minute
   );
 
-  return result;
+  return enriched;
 }
 
 async lockandUnlockChat(streamId: number, lock: boolean) {
@@ -1178,19 +1465,181 @@ async lockandUnlockChat(streamId: number, lock: boolean) {
 
 async pinComment(commentId: number) {
   try {
-    let pin_comment = await prisma.streamComment.update({
+    const target = await prisma.streamComment.findUnique({
       where: { id: commentId },
-      data: {
-        isPinned: true,
-      },
+      select: { id: true, streamId: true, isDeleted: true },
     });
-    return pin_comment;
+
+    if (!target || target.isDeleted) {
+      throw new NotFoundException(`Comment with ID ${commentId} not found.`);
+    }
+
+    await prisma.$transaction([
+      prisma.streamComment.updateMany({
+        where: {
+          streamId: target.streamId,
+          isPinned: true,
+        },
+        data: {
+          isPinned: false,
+        },
+      }),
+      prisma.streamComment.update({
+        where: { id: commentId },
+        data: {
+          isPinned: true,
+        },
+      }),
+    ]);
+
+    return prisma.streamComment.findUnique({
+      where: { id: commentId },
+    });
   } catch (error) {
+    if (error instanceof NotFoundException) {
+      throw error;
+    }
     throw new InternalServerErrorException(
       `Failed to pin comment: ${error.message}`,
     );
   }
 }
+
+async unpinComment(commentId: number) {
+  try {
+    const target = await prisma.streamComment.findUnique({
+      where: { id: commentId },
+      select: { id: true, isDeleted: true },
+    });
+    if (!target || target.isDeleted) {
+      throw new NotFoundException(`Comment with ID ${commentId} not found.`);
+    }
+
+    return prisma.streamComment.update({
+      where: { id: commentId },
+      data: {
+        isPinned: false,
+      },
+    });
+  } catch (error) {
+    if (error instanceof NotFoundException) {
+      throw error;
+    }
+    throw new InternalServerErrorException(
+      `Failed to unpin comment: ${error.message}`,
+    );
+  }
+
+  async searchStreamChatComments(
+    streamId: number,
+    query: string,
+    page = 1,
+    limit = 20,
+  ) {
+    const keyword = String(query ?? '').trim();
+    const safePage = Number.isFinite(page) && page > 0 ? Math.floor(page) : 1;
+    const safeLimit = Number.isFinite(limit)
+      ? Math.min(Math.max(Math.floor(limit), 1), 100)
+      : 20;
+
+    if (!keyword) {
+      return {
+        items: [],
+        page: safePage,
+        limit: safeLimit,
+        total: 0,
+        hasNext: false,
+      };
+    }
+
+    const where = {
+      streamId,
+      isDeleted: false,
+      message: {
+        contains: keyword,
+        mode: 'insensitive' as const,
+      },
+    };
+
+    const [total, comments] = await Promise.all([
+      prisma.streamComment.count({ where }),
+      prisma.streamComment.findMany({
+        where,
+        orderBy: {
+          createdAt: 'desc',
+        },
+        skip: (safePage - 1) * safeLimit,
+        take: safeLimit,
+        select: {
+          id: true,
+          message: true,
+          userId: true,
+          createdAt: true,
+          likesCount: true,
+        },
+      }),
+    ]);
+
+    const userIds = Array.from(
+      new Set(
+        comments
+          .map((comment) => comment.userId)
+          .filter((id): id is number => typeof id === 'number' && Number.isFinite(id)),
+      ),
+    );
+
+    const users = userIds.length
+      ? await prisma.user.findMany({
+          where: {
+            id: {
+              in: userIds,
+            },
+          },
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            username: true,
+            profilePicture: true,
+          },
+        })
+      : [];
+
+    const usersById = new Map(
+      users.map((user) => [
+        user.id,
+        {
+          displayName: this.buildDisplayName(user, user.id),
+          avatarUrl: this.toHttpsAvatarUrl(user.profilePicture),
+        },
+      ]),
+    );
+
+    const items = comments.map((comment) => {
+      const profile = usersById.get(comment.userId) || {
+        displayName: `User${comment.userId}`,
+        avatarUrl: this.defaultAvatarUrl,
+      };
+
+      return {
+        id: comment.id,
+        message: comment.message,
+        displayName: profile.displayName,
+        avatarUrl: profile.avatarUrl,
+        createdAt: comment.createdAt.toISOString(),
+        timestamp: comment.createdAt.toISOString(),
+        likesCount: Number(comment.likesCount ?? 0),
+      };
+    });
+
+    return {
+      items,
+      page: safePage,
+      limit: safeLimit,
+      total,
+      hasNext: safePage * safeLimit < total,
+    };
+  }
 
 async isWinner(commentId: number, winAmount: number) {
   try {
@@ -1211,69 +1660,47 @@ async isWinner(commentId: number, winAmount: number) {
 
 
   /**
-   * End stream via Go
+   * End stream (Nest YouTube client)
    */
   async endStream(broadcastId: string): Promise<void> {
     try {
-      const goServiceUrl = this.configService.get<string>('GO_SERVICE_URL') || 'http://localhost:7190';
-      await axios.post(`${goServiceUrl}/v1/streams/transition`, {
-        broadcastId,
-        status: 'complete',
+      await this.ensureValidToken();
+      await this.youtube.liveBroadcasts.transition({
+        id: broadcastId,
+        broadcastStatus: 'complete',
+        part: ['id', 'status'],
       });
-
-      this.logger.log(`Broadcast ${broadcastId} completed via Go`);
-    } catch (error) {
+      this.logger.log(`Broadcast ${broadcastId} completed`);
+    } catch (error: any) {
       throw new InternalServerErrorException(
-        `Failed to end stream via Go: ${error.message}`,
+        `Failed to end stream: ${error.message}`,
       );
     }
   }
 
-    async getVideoViews(videoId: string): Promise<any> {
+  async getVideoViews(videoId: string): Promise<any> {
     try {
-      const goServiceUrl = this.configService.get<string>('GO_SERVICE_URL') || 'http://localhost:7190';
-      const response = await axios.get(`${goServiceUrl}/v1/streams/views?videoId=${videoId}`);
+      await this.ensureValidToken();
+      const response = await this.youtube.videos.list({
+        id: [videoId],
+        part: ['statistics', 'snippet', 'liveStreamingDetails', 'status'],
+      });
 
       const videoItem = response.data.items?.[0];
-      
+
       if (!videoItem) {
         throw new HttpException('Video not found', HttpStatus.NOT_FOUND);
       }
 
-      // The viewCount property contains the number of views
       return videoItem;
-      // .statistics?.viewCount || '0';
-    } catch (error) {
+    } catch (error: any) {
+      if (error instanceof HttpException) {
+        throw error;
+      }
       throw new HttpException(
-        error.message || 'Failed to fetch YouTube data via Go',
+        error.message || 'Failed to fetch YouTube data',
         HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
   }
-
-  //     async getVideoDetails(videoId: string): Promise<any> {
-  //   try {
-  //     await this.ensureValidToken();
-
-  //     const response = await this.youtube.videos.list({
-  //       id: [videoId],
-  //       part: ['snippet, liveStreamingDetails'],
-  //     });
-
-  //     const videoItem = response.data.items?.[0];
-      
-  //     if (!videoItem) {
-  //       throw new HttpException('Video not found', HttpStatus.NOT_FOUND);
-  //     }
-
-  //     // The viewCount property contains the number of views
-  //     return videoItem
-  //     // .statistics?.viewCount || '0';
-  //   } catch (error) {
-  //     throw new HttpException(
-  //       error.message || 'Failed to fetch YouTube data',
-  //       HttpStatus.INTERNAL_SERVER_ERROR,
-  //     );
-  //   }
-  // }
 }
