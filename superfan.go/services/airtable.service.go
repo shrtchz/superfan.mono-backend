@@ -66,12 +66,18 @@ func SyncFromAirtable(qs QuizService) {
 	airtableUrl := fmt.Sprintf("https://api.airtable.com/v0/%s/%s", baseId, url.PathEscape(tableName))
 	log.Printf("Fetching from Airtable base: %s, table: %s", baseId, tableName)
 
-	// Get existing quizzes to avoid duplicates
+	// Get existing quizzes to avoid duplicates.
+	// Empty Mongo is normal on first boot — treat "no quizzes found" as [] so sync can seed.
 	log.Println("[Debug] Fetching existing quizzes from MongoDB...")
 	existingQuizzes, err := qs.GetAllQuiz()
 	if err != nil {
-		log.Println("Failed to fetch existing quizzes from DB:", err)
-		return
+		if strings.Contains(strings.ToLower(err.Error()), "no quizzes found") {
+			log.Println("[Debug] MongoDB quiz collection is empty; seeding from Airtable.")
+			existingQuizzes = nil
+		} else {
+			log.Println("Failed to fetch existing quizzes from DB:", err)
+			return
+		}
 	}
 	log.Printf("[Debug] Fetched %d existing quizzes from MongoDB.", len(existingQuizzes))
 

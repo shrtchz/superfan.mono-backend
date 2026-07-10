@@ -26,6 +26,7 @@ import {
   CreateQuizDto,
   GetQuizWithPreferencesDto,
   RecordAnswerDto,
+  SubmitLiveAnswerDto,
   startRandomQuiz,
   UpdateLiveAnswerDto,
 } from './quiz.dto';
@@ -122,6 +123,43 @@ export class QuizController {
       }
       throw failureResponse(
         error || 'Failed to get quiz with preferences',
+      );
+    }
+  }
+
+  /**
+   * Start a quick-start session with a quiz pack already loaded from Go.
+   * Body: { quizzes, totalEarning?, totalTime?, languagePreference?, ... , isRandom? }
+   */
+  @Post('start-quick-session')
+  async startQuickSession(
+    @Body()
+    body: {
+      quizzes?: any[];
+      totalEarning?: number;
+      totalTime?: number;
+      languagePreference?: string;
+      subjectPreference?: string;
+      testLevel?: string;
+      isRandom?: boolean | string;
+      [key: string]: any;
+    },
+    @Req() req: any,
+  ) {
+    try {
+      const isRandom =
+        body.isRandom === true ||
+        body.isRandom === 'true' ||
+        body.isRandom === '1';
+      const { isRandom: _ignored, ...pack } = body;
+      return await this.quizService.startQuickQuizSession(
+        req.user.id,
+        pack,
+        isRandom,
+      );
+    } catch (error) {
+      throw failureResponse(
+        error || 'Failed to start quick quiz session',
       );
     }
   }
@@ -302,17 +340,61 @@ async getOngoingLiveQuiz(@Param('id', ParseIntPipe) id: number) {
     }
   }
 
+  /**
+   * Start a live quiz session with questions already loaded from Go.
+   * Body: { streamId: number, questions: GoLiveQuiz[] }
+   */
+  @Post('/start-live-session')
+  startLiveSession(
+    @Body()
+    body: {
+      streamId: number;
+      questions: any[];
+    },
+    @Req() req: any,
+  ) {
+    try {
+      return this.quizService.startLiveQuizSession(
+        req.user.id,
+        Number(body.streamId),
+        body.questions || [],
+      );
+    } catch (error) {
+      throw failureResponse(error.message || 'Failed to start live quiz session');
+    }
+  }
+
     @Put('live-quiz-answer')
   async updateAnswer(
+    @Req() req: any,
     @Body() dto: UpdateLiveAnswerDto,
   ) {
     const data =
       await this.quizService.updateLiveQuizAnswer(
         dto,
+        req.user.id,
       );
 
     return {
       data,
+    };
+  }
+
+  @Post('live/:id/answer')
+  async submitLiveAnswerByQuizId(
+    @Req() req: any,
+    @Param('id') quizId: string,
+    @Body() dto: SubmitLiveAnswerDto,
+  ) {
+    const data = await this.quizService.submitLiveAnswerByQuizId(
+      req.user.id,
+      quizId,
+      dto.selectedAnswer,
+    );
+
+    return {
+      data,
+      message: 'Live quiz answer submitted',
     };
   }
 

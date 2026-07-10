@@ -5,7 +5,9 @@ import {
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
+import { JwtService } from '@nestjs/jwt';
 import { UserService } from '../../user/user.service';
 
 @Injectable()
@@ -15,6 +17,8 @@ export class JwtGuard implements CanActivate {
   constructor(
     private readonly reflector: Reflector,
     private readonly userService: UserService,
+    private readonly jwtService: JwtService,
+    private readonly configService: ConfigService,
   ) {
     this.clerkClient = createClerkClient({
       secretKey: process.env.CLERK_SECRET_KEY,
@@ -33,22 +37,35 @@ export class JwtGuard implements CanActivate {
 
     const request = context.switchToHttp().getRequest();
     const authHeader = request.headers.authorization;
+    const cookieToken = request.cookies?.__session;
+    const token = this.extractBearerToken(authHeader) || cookieToken;
 
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    if (!token) {
       throw new UnauthorizedException('No token provided');
     }
 
-    const token = authHeader.split(' ')[1];
-    let user: any = null;
+    if (token === 'undefined' || token === 'null') {
+      throw new UnauthorizedException(
+        'Invalid token value. Expected a Clerk session JWT.',
+      );
+    }
 
+    if (token.startsWith('sit_')) {
+      throw new UnauthorizedException(
+        'Invalid token type: Clerk sign-in token cannot be used for protected routes. Use a Clerk session JWT.',
+      );
+    }
+
+    let user: any = null;
+    let clerkError: any = null;
+
+    // 1) Verify as Clerk session JWT.
     try {
-      // Verify token using Clerk's public keys (JWKS)
       const payload = await verifyToken(token, {
         secretKey: process.env.CLERK_SECRET_KEY,
-        clockSkewInMs: 300000, // 5 minutes tolerance to prevent clock drift issues on Render
+        clockSkewInMs: 300000,
       });
 
-      // Fetch full user details from Clerk using the 'sub' ID
       const clerkUser = await this.clerkClient.users.getUser(payload.sub);
       const email = clerkUser.emailAddresses[0]?.emailAddress;
 
@@ -75,20 +92,59 @@ export class JwtGuard implements CanActivate {
           referralCode,
         });
       }
-    } catch (clerkError: any) {
-      console.error('Clerk auth verification failed:', clerkError);
+    } catch (error: any) {
+      clerkError = error;
+    }
 
-      if (clerkError?.reason === 'token-expired') {
-        throw new UnauthorizedException('Token expired');
+    // 2) Fallback to app access token (returned by /auth/login).
+    if (!user) {
+      try {
+        const appPayload = await this.jwtService.verifyAsync(token, {
+          secret:
+            this.configService.get<string>('AT_SECRET') ||
+            'superfan_secret_key',
+        });
+
+        if (appPayload?.id) {
+          user = await this.userService.findUserById(Number(appPayload.id));
+        }
+
+        if (!user && appPayload?.email) {
+          user = await this.userService.findUserByEmail(appPayload.email);
+        }
+      } catch {
+        // If both verifiers fail, final unauthorized is thrown below.
       }
-      throw new UnauthorizedException(`Invalid token: ${clerkError?.message || clerkError}`);
     }
 
     if (!user) {
-      throw new UnauthorizedException('User not found');
+      if (clerkError?.reason === 'token-expired') {
+        throw new UnauthorizedException('Token expired');
+      }
+
+      throw new UnauthorizedException(
+        'Invalid token. Use a Clerk session JWT or the token returned by /auth/login.',
+      );
     }
 
     request.user = user;
     return true;
+  }
+
+  private extractBearerToken(authorizationHeader?: string): string | null {
+    if (!authorizationHeader) {
+      return null;
+    }
+
+    const [scheme, token] = authorizationHeader.trim().split(/\s+/);
+    if (!scheme || !token) {
+      return null;
+    }
+
+    if (scheme.toLowerCase() !== 'bearer') {
+      return null;
+    }
+
+    return token;
   }
 }

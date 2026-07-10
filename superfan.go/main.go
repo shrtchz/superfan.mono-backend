@@ -17,6 +17,7 @@ import (
 	"quiz.superfan.com/apis/utils"
 
 	"quiz.superfan.com/apis/controllers"
+	"quiz.superfan.com/apis/middleware"
 	"quiz.superfan.com/apis/services"
 )
 
@@ -152,13 +153,20 @@ func init() {
 
 	server = gin.New()
 	server.Use(gin.Logger())
+	server.Use(middleware.CORSMiddleware())
 	server.Use(gin.CustomRecovery(func(c *gin.Context, recovered interface{}) {
-		if err, ok := recovered.(string); ok {
-			utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err)
-		} else {
-			utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "an unexpected error occurred")
+		msg := "an unexpected error occurred"
+		if err, ok := recovered.(string); ok && err != "" {
+			msg = err
+		} else if err, ok := recovered.(error); ok && err != nil {
+			msg = err.Error()
 		}
-		c.AbortWithStatus(http.StatusInternalServerError)
+		log.Printf("panic recovered: %v", recovered)
+		// Avoid double-write: only send JSON error body.
+		if !c.Writer.Written() {
+			utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", msg)
+		}
+		c.Abort()
 	}))
 
 	server.Use(ErrorHandler())
@@ -184,11 +192,11 @@ func main() {
 		qsc,
 	)
 
-	// Register REST routes for the streaming proxy
+	// Register REST routes for the streaming proxy (auth required — same tokens as Nest)
 	controllers.RegisterStreamRoutes(basepath)
 
-	// WebSocket Streaming Route
-	basepath.GET("/streams/ws", controllers.StreamWebSocket)
+	// WebSocket Streaming Route (token via Authorization header or ?token=)
+	basepath.GET("/streams/ws", middleware.AuthRequired(), controllers.StreamWebSocket)
 
 	port := os.Getenv("PORT")
 	if port == "" {

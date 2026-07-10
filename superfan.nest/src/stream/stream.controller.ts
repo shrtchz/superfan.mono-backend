@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -14,14 +15,13 @@ import {
 } from '@nestjs/common';
 import { ApiRoutes } from '../common/enums/routes.enum';
 import { JwtGuard } from '../common/guards';
-import { ElasticsearchService } from '../elasticsearch/elasticsearch.service';
 import { EditStreamDto, StartStreamDto } from './stream.dto';
 import { StreamingService, StreamSession } from './stream.service';
 
 @UseGuards(JwtGuard)
 @Controller(ApiRoutes.STREAMING)
 export class StreamingController {
-  constructor(private readonly streamingService: StreamingService, private readonly elasticsearchService: ElasticsearchService) {}
+  constructor(private readonly streamingService: StreamingService) {}
 
 
   // store youtube access_token
@@ -61,6 +61,12 @@ export class StreamingController {
     return {
       authUrl: this.streamingService.generateAuthUrl(),
     };
+  }
+
+  @Get('check-auth')
+  async checkAuth() {
+    await this.streamingService.ensureValidToken();
+    return { status: 'authenticated' };
   }
 
   /**
@@ -184,13 +190,35 @@ async editStream(
     return this.streamingService.getStreamCommentsandReplies(streamId);
   }
 
-     @Get('search')
-    async searchcommentAndReply(
-      @Query('streamId') streamId: number,
-      @Query('q') query: string,
-    ) {
-      return this.elasticsearchService.searchCommentAndReply(streamId, query);
-    }
+  @Get(':id/chat/search')
+  async searchStreamChat(
+    @Param('id', ParseIntPipe) streamId: number,
+    @Query('q') query: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.streamingService.searchStreamChatComments(
+      streamId,
+      query,
+      Number.parseInt(page || '1', 10),
+      Number.parseInt(limit || '20', 10),
+    );
+  }
+
+  @Get('search')
+  async searchcommentAndReply(
+    @Query('streamId') streamId: number,
+    @Query('q') query: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.streamingService.searchStreamChatComments(
+      Number(streamId),
+      query,
+      Number.parseInt(page || '1', 10),
+      Number.parseInt(limit || '20', 10),
+    );
+  }
 
 
   @Post('comment/:commentId/reply')
@@ -213,6 +241,15 @@ async editStream(
   ) {
     // const userId = req.user?.id;
     return this.streamingService.pinComment(
+      commentId,
+    );
+  }
+
+  @Delete('pin-comment/:commentId')
+  async unpinComment(
+    @Param('commentId') commentId: number,
+  ) {
+    return this.streamingService.unpinComment(
       commentId,
     );
   }
@@ -275,10 +312,22 @@ async editStream(
     return this.streamingService.deleteReply(replyId);
   }
 
+  @Delete('comment/:replyId/reply')
+  @HttpCode(HttpStatus.OK)
+  async deleteReplyByDelete(@Param('replyId') replyId: number) {
+    return this.streamingService.deleteReply(replyId);
+  }
+
   @Post('comment/:commentId')
   @HttpCode(HttpStatus.OK)
   async deleteComment(@Param('commentId') commentId: number) {
     // const userId = req.user?.id;
+    return this.streamingService.deleteComment(commentId);
+  }
+
+  @Delete('comment/:commentId')
+  @HttpCode(HttpStatus.OK)
+  async deleteCommentByDelete(@Param('commentId') commentId: number) {
     return this.streamingService.deleteComment(commentId);
   }
 }

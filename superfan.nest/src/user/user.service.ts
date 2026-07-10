@@ -1,3 +1,4 @@
+import { createClerkClient } from '@clerk/backend';
 import {
   BadRequestException,
   ForbiddenException,
@@ -13,7 +14,6 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { JwtService } from '@nestjs/jwt';
 import { TestLevel, User } from '@prisma/client';
 import * as argon from 'argon2';
-import { createClerkClient } from '@clerk/backend';
 import { PostHog } from 'posthog-node';
 import { EarningStatus } from '../common/enums/task.enum';
 import { generateReferralCode } from '../common/shared/lib';
@@ -552,6 +552,9 @@ export class UserService {
   }
 
   async signinUser(dto: LoginDto): Promise<any> {
+    console.log("CLERK_SECRET_KEY from env:", process.env.CLERK_SECRET_KEY);
+    console.log("dto.identifier:", dto.identifier);
+    console.log("password", dto.password)
     let user = await prisma.user.findFirst({
       where: {
         OR: [
@@ -704,7 +707,7 @@ export class UserService {
         clerkSignInToken = signInToken.token;
       } catch (tokenError) {
         console.error('Failed to generate Clerk sign-in token (non-fatal):', tokenError);
-        // Not fatal — frontend can use the JWT accessToken directly
+        // Not fatal — frontend can complete Clerk auth with its normal flow
       }
     }
 
@@ -752,15 +755,15 @@ export class UserService {
 
     this.presenceGateway.setUserOnline(user.id);
 
-    // Generate JWT tokens for the application
+    // Keep returning API tokens so clients can call private routes immediately.
     const appTokens = await this.getTokens(user, role.name);
 
     return {
       message: 'Signin successful',
       // Clerk sign-in token (short-lived ticket)
-      clerkToken: clerkSignInToken,
-      // Application JWT tokens
-      accessToken: appTokens.accessToken,
+      clerkSignInToken,
+      // Primary API bearer token for protected backend routes
+      token: appTokens.accessToken,
       refreshToken: appTokens.refreshToken,
       role: user.roleName,
       userId: user.id,
