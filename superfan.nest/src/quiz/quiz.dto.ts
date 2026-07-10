@@ -148,6 +148,7 @@ export class GetQuizWithPreferencesDto {
 }
 
 export class UpdateLiveAnswerDto {
+  @IsOptional()
   @IsString()
   userId: string;
 
@@ -155,6 +156,16 @@ export class UpdateLiveAnswerDto {
   quizId: string;
 
   @IsString()
+  selectedAnswer: string;
+}
+
+export class SubmitLiveAnswerDto {
+  @IsOptional()
+  @IsString()
+  userId?: string;
+
+  @IsString()
+  @IsNotEmpty()
   selectedAnswer: string;
 }
 

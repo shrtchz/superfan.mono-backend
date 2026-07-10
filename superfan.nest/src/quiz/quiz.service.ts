@@ -1,5 +1,5 @@
 import { HttpService } from '@nestjs/axios';
-import { BadRequestException, HttpException, HttpStatus, Injectable, InternalServerErrorException, NotFoundException, Inject, forwardRef } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, HttpException, HttpStatus, Injectable, InternalServerErrorException, NotFoundException, Inject, forwardRef } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma } from '@prisma/client';
 import { JsonArray } from '@prisma/client/runtime/client';
@@ -1131,6 +1131,9 @@ async updateLiveQuizAnswer(dto: UpdateLiveAnswerDto, authenticatedUserId?: numbe
       where: {
         userId: resolvedUserId,
         completed: false,
+        quizIds: {
+          has: dto.quizId,
+        },
       },
     });
 
@@ -1166,7 +1169,7 @@ async updateLiveQuizAnswer(dto: UpdateLiveAnswerDto, authenticatedUserId?: numbe
   if (meta.quizFinishDate && now >= meta.quizFinishDate) {
     // Authenticate all pending submissions for this quiz once finish time is reached.
     await this.authenticateFinishedSubmissionsForQuiz(dto.quizId);
-    throw new BadRequestException(
+    throw new ForbiddenException(
       'Submission window has closed for this live quiz',
     );
   }
@@ -1189,19 +1192,25 @@ async updateLiveQuizAnswer(dto: UpdateLiveAnswerDto, authenticatedUserId?: numbe
   };
 
   if (answerIndex !== -1) {
-    const existingSubmissionTime =
-      this.toDate(answers[answerIndex]?.submittedAt) ||
-      this.toDate(answers[answerIndex]?.answeredAt);
-    answers[answerIndex] = {
-      ...answerPayload,
-      submittedAt: (existingSubmissionTime || now).toISOString(),
-      updatedAt: now.toISOString(),
+    const existingAnswer = String(answers[answerIndex]?.selectedAnswer ?? '').trim();
+    const incomingAnswer = String(dto.selectedAnswer ?? '').trim();
+
+    if (this.normalizeText(existingAnswer) !== this.normalizeText(incomingAnswer)) {
+      throw new ConflictException(
+        'Answer already submitted and cannot be changed',
+      );
+    }
+
+    return {
+      ...ongoingQuiz,
+      questions,
+      answers,
     };
   } else {
     answers.push(answerPayload);
   }
 
-  return prisma.ongoingLiveQuiz.update({
+  const updated = await prisma.ongoingLiveQuiz.update({
     where: {
       id: ongoingQuiz.id,
     },
@@ -1210,6 +1219,35 @@ async updateLiveQuizAnswer(dto: UpdateLiveAnswerDto, authenticatedUserId?: numbe
       answers,
     },
   });
+
+  await prisma.liveQuizAttempt.upsert({
+    where: {
+      userId_quizId: {
+        userId: resolvedUserId,
+        quizId: dto.quizId,
+      },
+    },
+    update: {
+      ongoingLiveQuizId: ongoingQuiz.id,
+      totalPrize: Number(meta.totalPrize || 0) || null,
+      recipients: Number(meta.recipients || 0) || null,
+      unitPrize: Number(meta.unitPrize || 0) || null,
+    },
+    create: {
+      userId: resolvedUserId,
+      quizId: dto.quizId,
+      ongoingLiveQuizId: ongoingQuiz.id,
+      totalPrize: Number(meta.totalPrize || 0) || null,
+      recipients: Number(meta.recipients || 0) || null,
+      unitPrize: Number(meta.unitPrize || 0) || null,
+      isWinner: false,
+      isCompleted: false,
+      earning: 0,
+      startedAt: now,
+    },
+  });
+
+  return updated;
 }
 
 async submitLiveAnswerByQuizId(

@@ -1529,7 +1529,117 @@ async unpinComment(commentId: number) {
       `Failed to unpin comment: ${error.message}`,
     );
   }
-}
+
+  async searchStreamChatComments(
+    streamId: number,
+    query: string,
+    page = 1,
+    limit = 20,
+  ) {
+    const keyword = String(query ?? '').trim();
+    const safePage = Number.isFinite(page) && page > 0 ? Math.floor(page) : 1;
+    const safeLimit = Number.isFinite(limit)
+      ? Math.min(Math.max(Math.floor(limit), 1), 100)
+      : 20;
+
+    if (!keyword) {
+      return {
+        items: [],
+        page: safePage,
+        limit: safeLimit,
+        total: 0,
+        hasNext: false,
+      };
+    }
+
+    const where = {
+      streamId,
+      isDeleted: false,
+      message: {
+        contains: keyword,
+        mode: 'insensitive' as const,
+      },
+    };
+
+    const [total, comments] = await Promise.all([
+      prisma.streamComment.count({ where }),
+      prisma.streamComment.findMany({
+        where,
+        orderBy: {
+          createdAt: 'desc',
+        },
+        skip: (safePage - 1) * safeLimit,
+        take: safeLimit,
+        select: {
+          id: true,
+          message: true,
+          userId: true,
+          createdAt: true,
+          likesCount: true,
+        },
+      }),
+    ]);
+
+    const userIds = Array.from(
+      new Set(
+        comments
+          .map((comment) => comment.userId)
+          .filter((id): id is number => typeof id === 'number' && Number.isFinite(id)),
+      ),
+    );
+
+    const users = userIds.length
+      ? await prisma.user.findMany({
+          where: {
+            id: {
+              in: userIds,
+            },
+          },
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            username: true,
+            profilePicture: true,
+          },
+        })
+      : [];
+
+    const usersById = new Map(
+      users.map((user) => [
+        user.id,
+        {
+          displayName: this.buildDisplayName(user, user.id),
+          avatarUrl: this.toHttpsAvatarUrl(user.profilePicture),
+        },
+      ]),
+    );
+
+    const items = comments.map((comment) => {
+      const profile = usersById.get(comment.userId) || {
+        displayName: `User${comment.userId}`,
+        avatarUrl: this.defaultAvatarUrl,
+      };
+
+      return {
+        id: comment.id,
+        message: comment.message,
+        displayName: profile.displayName,
+        avatarUrl: profile.avatarUrl,
+        createdAt: comment.createdAt.toISOString(),
+        timestamp: comment.createdAt.toISOString(),
+        likesCount: Number(comment.likesCount ?? 0),
+      };
+    });
+
+    return {
+      items,
+      page: safePage,
+      limit: safeLimit,
+      total,
+      hasNext: safePage * safeLimit < total,
+    };
+  }
 
 async isWinner(commentId: number, winAmount: number) {
   try {

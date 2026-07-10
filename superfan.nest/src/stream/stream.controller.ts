@@ -15,14 +15,13 @@ import {
 } from '@nestjs/common';
 import { ApiRoutes } from '../common/enums/routes.enum';
 import { JwtGuard } from '../common/guards';
-import { ElasticsearchService } from '../elasticsearch/elasticsearch.service';
 import { EditStreamDto, StartStreamDto } from './stream.dto';
 import { StreamingService, StreamSession } from './stream.service';
 
 @UseGuards(JwtGuard)
 @Controller(ApiRoutes.STREAMING)
 export class StreamingController {
-  constructor(private readonly streamingService: StreamingService, private readonly elasticsearchService: ElasticsearchService) {}
+  constructor(private readonly streamingService: StreamingService) {}
 
 
   // store youtube access_token
@@ -191,13 +190,35 @@ async editStream(
     return this.streamingService.getStreamCommentsandReplies(streamId);
   }
 
-     @Get('search')
-    async searchcommentAndReply(
-      @Query('streamId') streamId: number,
-      @Query('q') query: string,
-    ) {
-      return this.elasticsearchService.searchCommentAndReply(streamId, query);
-    }
+  @Get(':id/chat/search')
+  async searchStreamChat(
+    @Param('id', ParseIntPipe) streamId: number,
+    @Query('q') query: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.streamingService.searchStreamChatComments(
+      streamId,
+      query,
+      Number.parseInt(page || '1', 10),
+      Number.parseInt(limit || '20', 10),
+    );
+  }
+
+  @Get('search')
+  async searchcommentAndReply(
+    @Query('streamId') streamId: number,
+    @Query('q') query: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.streamingService.searchStreamChatComments(
+      Number(streamId),
+      query,
+      Number.parseInt(page || '1', 10),
+      Number.parseInt(limit || '20', 10),
+    );
+  }
 
 
   @Post('comment/:commentId/reply')
