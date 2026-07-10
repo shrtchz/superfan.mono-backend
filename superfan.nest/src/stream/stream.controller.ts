@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -61,6 +62,12 @@ export class StreamingController {
     return {
       authUrl: this.streamingService.generateAuthUrl(),
     };
+  }
+
+  @Get('check-auth')
+  async checkAuth() {
+    await this.streamingService.ensureValidToken();
+    return { status: 'authenticated' };
   }
 
   /**
@@ -217,6 +224,15 @@ async editStream(
     );
   }
 
+  @Delete('pin-comment/:commentId')
+  async unpinComment(
+    @Param('commentId') commentId: number,
+  ) {
+    return this.streamingService.unpinComment(
+      commentId,
+    );
+  }
+
       @Post('tag-winner/:commentId')
   async tagWInner(
     @Param('commentId') commentId: number,
@@ -275,10 +291,22 @@ async editStream(
     return this.streamingService.deleteReply(replyId);
   }
 
+  @Delete('comment/:replyId/reply')
+  @HttpCode(HttpStatus.OK)
+  async deleteReplyByDelete(@Param('replyId') replyId: number) {
+    return this.streamingService.deleteReply(replyId);
+  }
+
   @Post('comment/:commentId')
   @HttpCode(HttpStatus.OK)
   async deleteComment(@Param('commentId') commentId: number) {
     // const userId = req.user?.id;
+    return this.streamingService.deleteComment(commentId);
+  }
+
+  @Delete('comment/:commentId')
+  @HttpCode(HttpStatus.OK)
+  async deleteCommentByDelete(@Param('commentId') commentId: number) {
     return this.streamingService.deleteComment(commentId);
   }
 }
