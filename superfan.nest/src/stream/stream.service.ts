@@ -475,34 +475,58 @@ export class StreamingService {
       await this.ensureValidToken();
       this.logger.log(`Creating broadcast via Nest YouTube client: ${title}`);
 
-      const response = await this.youtube.liveBroadcasts.insert({
-        part: ['snippet', 'status', 'contentDetails'],
-        requestBody: {
-          snippet: {
-            title,
-            description: '',
-            scheduledStartTime: new Date(Date.now() + 60_000).toISOString(),
-          },
-          status: {
-            privacyStatus,
-            selfDeclaredMadeForKids: false,
-          },
-          contentDetails: {
-            enableEmbed: true,
-            enableDvr: true,
-            recordFromStart: true,
-            enableClosedCaptions: false,
-            enableAutoStart: false,
-            enableAutoStop: false,
-            monitorStream: {
-              enableMonitorStream: true,
-              broadcastStreamDelayMs: 0,
+      const scheduledStartTime = new Date(Date.now() + 60_000).toISOString();
+      const snippet = {
+        title,
+        description: '',
+        scheduledStartTime,
+      };
+      const status = {
+        privacyStatus,
+        selfDeclaredMadeForKids: false,
+      };
+
+      let broadcast: any;
+      try {
+        const response = await this.youtube.liveBroadcasts.insert({
+          part: ['snippet', 'status', 'contentDetails'],
+          requestBody: {
+            snippet,
+            status,
+            contentDetails: {
+              enableEmbed: true,
+              enableDvr: true,
+              recordFromStart: true,
+              enableClosedCaptions: false,
+              enableAutoStart: false,
+              enableAutoStop: false,
+              monitorStream: {
+                enableMonitorStream: true,
+                broadcastStreamDelayMs: 0,
+              },
             },
           },
-        },
-      });
+        });
+        broadcast = response.data;
+      } catch (insertError: any) {
+        if (!this.isInvalidEmbedSettingError(insertError)) {
+          throw insertError;
+        }
 
-      const broadcast = response.data;
+        this.logger.warn(
+          'YouTube rejected enableEmbed on broadcast create; retrying without contentDetails',
+        );
+
+        const fallbackResponse = await this.youtube.liveBroadcasts.insert({
+          part: ['snippet', 'status'],
+          requestBody: {
+            snippet,
+            status,
+          },
+        });
+        broadcast = fallbackResponse.data;
+      }
+
       if (broadcast?.id) {
         await this.ensureVideoEmbeddable(broadcast.id);
       }
@@ -892,6 +916,25 @@ async editStream(
    * Force-enable embedding on a YouTube video/broadcast.
    * Best-effort; never throws to the caller.
    */
+  private isInvalidEmbedSettingError(error: any): boolean {
+    const message = String(error?.message || '').toLowerCase();
+    if (
+      message.includes('embed setting was invalid') ||
+      message.includes('invalidembedsetting')
+    ) {
+      return true;
+    }
+
+    const errors = error?.errors || error?.response?.data?.errors || [];
+    return errors.some(
+      (entry: any) =>
+        entry?.reason === 'invalidEmbedSetting' ||
+        String(entry?.message || '')
+          .toLowerCase()
+          .includes('embed setting was invalid'),
+    );
+  }
+
   private async ensureVideoEmbeddable(videoId: string): Promise<void> {
     try {
       const listed = await this.youtube.videos.list({
@@ -960,6 +1003,12 @@ async editStream(
       });
       this.logger.log(`Enabled enableEmbed on live broadcast ${videoId}`);
     } catch (error: any) {
+      if (this.isInvalidEmbedSettingError(error)) {
+        this.logger.warn(
+          `YouTube account cannot enable embed via API for ${videoId}; stream created without embed flag`,
+        );
+        return;
+      }
       this.logger.warn(
         `Could not update liveBroadcast enableEmbed for ${videoId}: ${error?.message || error}`,
       );
