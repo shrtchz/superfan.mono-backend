@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -242,6 +243,53 @@ func (qc *QuizController) QuickStart(ctx *gin.Context) {
 	pack["timePreference"] = timePref
 
 	utils.Success(ctx, http.StatusOK, "success", pack)
+}
+
+// GetOngoingQuiz mirrors Nest GET /quiz/get-ongoing-quiz/:id (session state in Postgres).
+func (qc *QuizController) GetOngoingQuiz(ctx *gin.Context) {
+	idParam := strings.TrimSpace(ctx.Param("id"))
+	if idParam == "" {
+		utils.SendError(ctx, http.StatusBadRequest, "BAD_REQUEST", "user id is required")
+		return
+	}
+
+	userID, err := strconv.Atoi(idParam)
+	if err != nil || userID <= 0 {
+		utils.SendError(ctx, http.StatusBadRequest, "BAD_REQUEST", "invalid user id")
+		return
+	}
+
+	result, err := services.FetchOngoingQuiz(userID)
+	if errors.Is(err, services.ErrPostgresUnavailable) {
+		utils.SendError(ctx, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", err.Error())
+		return
+	}
+	if errors.Is(err, services.ErrOngoingQuizNotFound) {
+		utils.SendError(ctx, http.StatusNotFound, "NOT_FOUND", "No ongoing quiz found.")
+		return
+	}
+	if err != nil {
+		utils.SendError(ctx, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
+		return
+	}
+
+	if result.Expired {
+		ctx.JSON(http.StatusGone, gin.H{
+			"expired": true,
+			"message": result.ExpiredMessage,
+		})
+		return
+	}
+
+	if result.MissingQuizAttempt {
+		utils.Success(ctx, http.StatusOK, "Ongoing quiz fetched successfully", gin.H{
+			"missingQuizAttempt": true,
+			"quizId":             result.QuizID,
+		})
+		return
+	}
+
+	utils.Success(ctx, http.StatusOK, "Ongoing quiz fetched successfully", result.OngoingQuiz)
 }
 
 func (qc *QuizController) SubmitQuiz(ctx *gin.Context) {
@@ -795,6 +843,7 @@ func RegisterQuizRoutes(
 		// ── Preferences & Submission ───────────────────────────
 		protected.GET("/preferences", qc.GetQuizByPreferences)
 		protected.GET("/quick-start", qc.QuickStart)
+		protected.GET("/get-ongoing-quiz/:id", qc.GetOngoingQuiz)
 		protected.POST("/submit", qc.SubmitQuiz)
 
 		// ── Submissions ────────────────────────────────────────
