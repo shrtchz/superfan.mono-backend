@@ -102,6 +102,69 @@ export class CreateLiveQuizDto {
   @IsOptional()
   @IsString()
   quizScheduleDate: string;
+
+  @IsOptional()
+  @IsString()
+  quizFinishDate: string;
+
+  @IsOptional()
+  @IsNumber()
+  jackpotAmount: number;
+}
+
+export class UpdateLiveQuizDto {
+  @IsOptional()
+  @IsString()
+  question?: string;
+
+  @IsOptional()
+  @IsString({ each: true })
+  imageLink?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  options?: string[];
+
+  @IsOptional()
+  @IsString()
+  answer?: string;
+
+  @IsOptional()
+  @IsString()
+  typedAnswer?: string;
+
+  @IsOptional()
+  @IsNumber()
+  recipients?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  isTypedAnswer?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  showAnswer?: boolean;
+
+  @IsOptional()
+  @IsNumber()
+  totalPrize?: number;
+
+  @IsOptional()
+  @IsNumber()
+  unitPrize?: number;
+
+  @IsOptional()
+  @IsNumber()
+  jackpotAmount?: number;
+
+  @IsOptional()
+  @IsString()
+  quizScheduleDate?: string;
+
+  @IsOptional()
+  @IsString()
+  quizFinishDate?: string;
 }
 
 export class startRandomQuiz {

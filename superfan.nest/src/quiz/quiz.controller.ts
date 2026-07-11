@@ -15,9 +15,11 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { Public } from '../common/decorators';
+import { Public, Roles } from '../common/decorators';
 import { ApiRoutes } from '../common/enums/routes.enum';
+import { Role } from '../common/enums/role.enum';
 import { JwtGuard } from '../common/guards';
+import { RoleGuard } from '../common/guards/roles.guard';
 import { failureResponse, successResponse } from '../common/interceptors/response.interceptor';
 
 import {
@@ -29,6 +31,7 @@ import {
   SubmitLiveAnswerDto,
   startRandomQuiz,
   UpdateLiveAnswerDto,
+  UpdateLiveQuizDto,
 } from './quiz.dto';
 import { QuizService } from './quiz.service';
 
@@ -54,6 +57,48 @@ export class QuizController {
       return this.quizService.createLiveQuiz(liveQuizData);
     } catch (error) {
       throw failureResponse(error.message || 'Failed to create live quiz');
+    }
+  }
+
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin, Role.moderator)
+  @Post('live')
+  createLiveQuizSpec(@Body() liveQuizData: CreateLiveQuizDto) {
+    try {
+      return this.quizService.createLiveQuiz(liveQuizData);
+    } catch (error) {
+      throw failureResponse(error.message || 'Failed to create live quiz');
+    }
+  }
+
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin, Role.moderator)
+  @Patch('live/:id')
+  async updateLiveQuizSpec(
+    @Param('id') id: string,
+    @Body() updateData: UpdateLiveQuizDto,
+  ) {
+    try {
+      return await this.quizService.updateLiveQuiz(updateData, id);
+    } catch (error) {
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      throw failureResponse(error.message || 'Failed to update live quiz');
+    }
+  }
+
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin, Role.moderator)
+  @Delete('live/:id')
+  async deleteLiveQuizSpec(@Param('id') id: string) {
+    try {
+      return await this.quizService.deleteLiveQuiz(id);
+    } catch (error) {
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      throw failureResponse(error.message || 'Failed to delete live quiz');
     }
   }
 
@@ -444,18 +489,24 @@ async getOngoingLiveQuiz(@Param('id', ParseIntPipe) id: number) {
   @Patch('/update/:id')
   async updateLiveQuiz(@Param('id') id: string, @Body() updateData: any) {
     try {
-      return this.quizService.updateLiveQuiz(updateData, id);
+      return await this.quizService.updateLiveQuiz(updateData, id);
     } catch (error) {
+      if (error instanceof HttpException) {
+        throw error;
+      }
       throw failureResponse(error.message || 'Failed to update live quiz');
     }
   }
 
   @Public()
   @Delete('/delete-live-quiz/:id')
-  deleteLiveQuiz(@Param('id') id: string) {
+  async deleteLiveQuiz(@Param('id') id: string) {
     try {
-      return this.quizService.deleteLiveQuiz(id);
+      return await this.quizService.deleteLiveQuiz(id);
     } catch (error) {
+      if (error instanceof HttpException) {
+        throw error;
+      }
       throw failureResponse(error.message || 'Failed to delete live quiz');
     }
   }

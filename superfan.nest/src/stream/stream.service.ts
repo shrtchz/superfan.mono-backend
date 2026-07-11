@@ -14,6 +14,7 @@ import type { OAuth2Client } from 'google-auth-library';
 import { google, youtube_v3 } from 'googleapis';
 import keys from '../../credentials.json';
 import { ElasticsearchService } from '../elasticsearch/elasticsearch.service';
+import { Role } from '../common/enums/role.enum';
 import { RedisService } from '../mail/redis.service';
 import { NotificationService } from '../notification/notification.service';
 import { prisma } from '../prisma/prisma';
@@ -984,8 +985,134 @@ async editStream(
     }
   }
 
+  async getCommentStreamId(commentId: number): Promise<number | null> {
+    const comment = await prisma.streamComment.findUnique({
+      where: { id: commentId },
+      select: { streamId: true },
+    });
+    return comment?.streamId ?? null;
+  }
+
+  private async isStreamModerator(userId: number): Promise<boolean> {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { roleName: true },
+    });
+    const role = String(user?.roleName ?? '').toLowerCase();
+    return (
+      role === Role.superadmin ||
+      role === Role.subadmin ||
+      role === Role.moderator
+    );
+  }
+
+  private async assertStreamParticipation(
+    streamId: number,
+    userId: number,
+    options?: { bypassChatLock?: boolean },
+  ) {
+    const stream = await prisma.stream.findUnique({
+      where: { id: streamId },
+      select: { lockChat: true },
+    });
+
+    if (!stream) {
+      throw new NotFoundException(`Stream with ID ${streamId} not found.`);
+    }
+
+    if (stream.lockChat && !options?.bypassChatLock) {
+      throw new ForbiddenException('Chat is locked for this stream');
+    }
+
+    const streamBan = await prisma.streamUserBan.findUnique({
+      where: {
+        streamId_userId: {
+          streamId,
+          userId,
+        },
+      },
+    });
+
+    if (streamBan) {
+      throw new ForbiddenException('You are banned from this stream');
+    }
+  }
+
+  async banUserFromStream(
+    streamId: number,
+    userId: number,
+    bannedBy: number,
+    banReason?: string,
+  ) {
+    const stream = await prisma.stream.findUnique({
+      where: { id: streamId },
+      select: { id: true },
+    });
+
+    if (!stream) {
+      throw new NotFoundException(`Stream with ID ${streamId} not found.`);
+    }
+
+    await prisma.streamUserBan.upsert({
+      where: {
+        streamId_userId: {
+          streamId,
+          userId,
+        },
+      },
+      create: {
+        streamId,
+        userId,
+        bannedBy,
+        banReason: banReason || 'Banned from stream',
+      },
+      update: {
+        bannedBy,
+        banReason: banReason || 'Banned from stream',
+      },
+    });
+
+    return {
+      streamId,
+      userId,
+      isBanned: true,
+      banReason: banReason || 'Banned from stream',
+    };
+  }
+
+  async unbanUserFromStream(streamId: number, userId: number) {
+    await prisma.streamUserBan.deleteMany({
+      where: { streamId, userId },
+    });
+
+    return {
+      streamId,
+      userId,
+      isBanned: false,
+    };
+  }
+
+  async clearStreamBans(streamId: number) {
+    await prisma.streamUserBan.deleteMany({
+      where: { streamId },
+    });
+  }
+
+  async clearStreamBansForBroadcast(broadcastId: string) {
+    const stream = await prisma.stream.findFirst({
+      where: { broadcastId },
+      select: { id: true },
+    });
+
+    if (stream?.id) {
+      await this.clearStreamBans(stream.id);
+    }
+  }
+
   async commentOnStream(streamId: number, comment: string, userId: number): Promise<any> {
     try {
+      await this.assertStreamParticipation(streamId, userId);
+
       let stream_comment = await prisma.streamComment.create({
         data: {
           streamId,
@@ -1026,33 +1153,29 @@ async editStream(
   }
 
   async deleteComment(commentId: number) {
-    console.log(commentId, 'log commentId')
     try {
-      // Check and update streamComment if it exists
-      let findComment = await prisma.streamComment.findFirst({
-        where: { id: commentId }
-      })
-      console.log(findComment, 'findComments for deleteComment')
+      const findComment = await prisma.streamComment.findFirst({
+        where: { id: commentId },
+      });
 
-      if (findComment) {
-        await prisma.streamComment.update({
-          where: { id: findComment.id },
-          data: {
-            isDeleted: true
-          }
-        })
-      }
-
-      // Check and update commentReply if it exist
-
-      // Throw error if neither exists
       if (!findComment) {
         throw new NotFoundException(
           `Comment with ID ${commentId} not found.`,
         );
       }
 
-    } catch(error: any) {
+      await prisma.streamComment.update({
+        where: { id: findComment.id },
+        data: {
+          isDeleted: true,
+        },
+      });
+
+      return {
+        commentId: findComment.id,
+        streamId: findComment.streamId,
+      };
+    } catch (error: any) {
       if (error instanceof NotFoundException) {
         throw error;
       }
@@ -1060,6 +1183,43 @@ async editStream(
         `Failed to delete comment: ${error.message}`,
       );
     }
+  }
+
+  async deleteOwnStreamComment(commentId: number, userId: number) {
+    const comment = await prisma.streamComment.findUnique({
+      where: { id: commentId },
+      select: { id: true, streamId: true, userId: true, isDeleted: true },
+    });
+
+    if (!comment || comment.isDeleted) {
+      throw new NotFoundException(`Comment with ID ${commentId} not found.`);
+    }
+
+    if (comment.userId !== userId) {
+      throw new ForbiddenException('You can only delete your own comments');
+    }
+
+    const replies = await prisma.commentReply.findMany({
+      where: { commentId },
+      select: { id: true },
+    });
+
+    await prisma.$transaction([
+      prisma.commentReply.deleteMany({ where: { commentId } }),
+      prisma.streamComment.delete({ where: { id: commentId } }),
+    ]);
+
+    await this.redis.del(`stream:${comment.streamId}:comments`);
+
+    await Promise.all([
+      this.elasticSearch.deleteComment(commentId),
+      ...replies.map((reply) => this.elasticSearch.deleteComment(reply.id)),
+    ]);
+
+    return {
+      commentId: comment.id,
+      streamId: comment.streamId,
+    };
   }
 
   async deleteReply(replyId: number) {
@@ -1094,15 +1254,6 @@ async editStream(
 
   async replyToComment(commentId: number, comment: string, userId: number) {
     try {
-      let reply_comment = await prisma.commentReply.create({
-        data: {
-          commentId,
-          message: comment,
-          userId,
-          isDeleted: false,
-        },
-      });
-
       const parentComment = await prisma.streamComment.findUnique({
         where: { id: commentId },
         select: { streamId: true, userId: true },
@@ -1113,6 +1264,19 @@ async editStream(
           `Comment with ID ${commentId} not found.`,
         );
       }
+
+      await this.assertStreamParticipation(parentComment.streamId, userId, {
+        bypassChatLock: await this.isStreamModerator(userId),
+      });
+
+      let reply_comment = await prisma.commentReply.create({
+        data: {
+          commentId,
+          message: comment,
+          userId,
+          isDeleted: false,
+        },
+      });
 
             let index_comment = await this.elasticSearch.indexComment({
         id: reply_comment.id,
@@ -1154,6 +1318,7 @@ async editStream(
       const author = await this.getUserPublicProfile(userId);
       return {
         ...reply_comment,
+        streamId: parentComment.streamId,
         parentCommentId: reply_comment.commentId,
         displayName: author.displayName,
         avatarUrl: author.avatarUrl,
@@ -1174,14 +1339,40 @@ async editStream(
 
   async likeComment(commentId: number, userId: number) {
   try {
-    let save_comment_like = await prisma.commentLike.create({
+    const existing = await prisma.streamComment.findUnique({
+      where: { id: commentId },
+      select: { id: true, streamId: true, likesCount: true, isDeleted: true },
+    });
+
+    if (!existing || existing.isDeleted) {
+      throw new NotFoundException(`Comment with ID ${commentId} not found.`);
+    }
+
+    const alreadyLiked = await prisma.commentLike.findUnique({
+      where: {
+        commentId_userId: {
+          commentId,
+          userId,
+        },
+      },
+      select: { id: true },
+    });
+
+    if (alreadyLiked) {
+      return {
+        message: 'Comment already liked',
+        data: existing,
+      };
+    }
+
+    await prisma.commentLike.create({
       data: {
         commentId,
-        userId
-      }
-    })
-    // update streamComment likes count
-    let like_comment = await prisma.streamComment.update({
+        userId,
+      },
+    });
+
+    const like_comment = await prisma.streamComment.update({
       where: {
         id: commentId,
       },
@@ -1219,6 +1410,9 @@ async editStream(
       data: like_comment,
     };
   } catch(error) {
+    if (error instanceof NotFoundException) {
+      throw error;
+    }
     throw new InternalServerErrorException(
       `Failed to like comment: ${error.message}`,
     );
@@ -1268,7 +1462,7 @@ async reportComment(commentId: number, creatorId: number, userId: number, reason
       })
 
       // increment reportsCount in streamComment
-      await prisma.streamComment.update({
+      const updatedComment = await prisma.streamComment.update({
         where: {
           id: commentId,
         },
@@ -1290,7 +1484,10 @@ async reportComment(commentId: number, creatorId: number, userId: number, reason
         }
       })
 
-      return report_comment;
+      return {
+        ...report_comment,
+        reportsCount: updatedComment.reportsCount,
+      };
 
   } catch(error) {
           throw new InternalServerErrorException(
@@ -1300,15 +1497,6 @@ async reportComment(commentId: number, creatorId: number, userId: number, reason
 }
 
 async getStreamCommentsandReplies(streamId: number) {
-  const isStreamLocked = await prisma.stream.findUnique({
-    where: { id: streamId },
-    select: { lockChat: true },
-  });
-
-  if (isStreamLocked?.lockChat) {
-    throw new ForbiddenException('Chat is locked for this stream');
-  }
-
   const cacheKey = `stream:${streamId}:comments`;
 
   const cached = await this.redis.get(cacheKey);
@@ -1447,20 +1635,77 @@ async getStreamCommentsandReplies(streamId: number) {
   return enriched;
 }
 
-async lockandUnlockChat(streamId: number, lock: boolean) {
+async getStreamChatStatus(streamId: number) {
+  const stream = await prisma.stream.findUnique({
+    where: { id: streamId },
+    select: { id: true, lockChat: true },
+  });
+
+  if (!stream) {
+    throw new NotFoundException(`Stream with ID ${streamId} not found.`);
+  }
+
+  return {
+    streamId: stream.id,
+    locked: stream.lockChat,
+  };
+}
+
+async setStreamChatLock(streamId: number, locked: boolean, adminId: number) {
   try {
-    let lock_chat = await prisma.stream.update({
+    const stream = await prisma.stream.findUnique({
       where: { id: streamId },
+      select: { id: true },
+    });
+
+    if (!stream) {
+      throw new NotFoundException(`Stream with ID ${streamId} not found.`);
+    }
+
+    const updated = await prisma.stream.update({
+      where: { id: streamId },
+      data: { lockChat: locked },
+      select: { id: true, lockChat: true },
+    });
+
+    await prisma.streamChatLockLog.create({
       data: {
-        lockChat: lock
+        streamId,
+        adminId,
+        action: locked ? 'lock' : 'unlock',
       },
     });
-    return {lock_chat: lock_chat.lockChat};
+
+    await this.redis.del(`stream:${streamId}:comments`);
+
+    const timestamp = new Date().toISOString();
+
+    this.logger.log(
+      `Stream chat ${locked ? 'locked' : 'unlocked'} by admin ${adminId} for stream ${streamId} at ${timestamp}`,
+    );
+
+    return {
+      streamId: updated.id,
+      locked: updated.lockChat,
+      action: locked ? 'lock' : 'unlock',
+      adminId,
+      timestamp,
+    };
   } catch (error) {
+    if (error instanceof NotFoundException) {
+      throw error;
+    }
     throw new InternalServerErrorException(
-      `Failed to lock chat: ${error.message}`,
+      `Failed to ${locked ? 'lock' : 'unlock'} chat: ${error.message}`,
     );
   }
+}
+
+async lockandUnlockChat(streamId: number, lock: boolean, adminId?: number) {
+  if (!adminId) {
+    return this.setStreamChatLock(streamId, lock, 0);
+  }
+  return this.setStreamChatLock(streamId, lock, adminId);
 }
 
 async pinComment(commentId: number) {
@@ -1671,6 +1916,7 @@ async isWinner(commentId: number, winAmount: number) {
         broadcastStatus: 'complete',
         part: ['id', 'status'],
       });
+      await this.clearStreamBansForBroadcast(broadcastId);
       this.logger.log(`Broadcast ${broadcastId} completed`);
     } catch (error: any) {
       throw new InternalServerErrorException(
@@ -1703,5 +1949,85 @@ async isWinner(commentId: number, winAmount: number) {
         HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
+  }
+
+  async getUserChatFeed(streamId: number) {
+    const stream = await prisma.stream.findUnique({
+      where: { id: streamId },
+      select: { id: true, lockChat: true },
+    });
+
+    if (!stream) {
+      throw new NotFoundException(`Stream with ID ${streamId} not found.`);
+    }
+
+    const comments = await this.getStreamCommentsandReplies(streamId);
+
+    return {
+      streamId,
+      locked: stream.lockChat,
+      comments,
+      realtime: {
+        transport: 'websocket',
+        room: `stream-${streamId}`,
+        joinEvent: 'joinStream',
+        leaveEvent: 'leaveStream',
+        events: [
+          'streamMessage',
+          'replyMessage',
+          'likeComment',
+          'unlikeComment',
+          'deleteComment',
+          'chatLockChanged',
+        ],
+      },
+    };
+  }
+
+  async buildStreamSharePayload(streamId: number) {
+    const stream = await prisma.stream.findUnique({
+      where: { id: streamId },
+      select: {
+        id: true,
+        title: true,
+        broadcastId: true,
+        streamUrl: true,
+        networkPlatform: true,
+      },
+    });
+
+    if (!stream) {
+      throw new NotFoundException(`Stream with ID ${streamId} not found.`);
+    }
+
+    const clientOrigin = this.resolveClientAppOrigin();
+    const youtubeWatchUrl =
+      stream.broadcastId && stream.networkPlatform === 'youtube'
+        ? `https://www.youtube.com/watch?v=${stream.broadcastId}`
+        : null;
+    const shareUrl =
+      youtubeWatchUrl || stream.streamUrl || `${clientOrigin}/dashboard`;
+
+    return {
+      streamId: stream.id,
+      title: stream.title,
+      shareUrl,
+      watchUrl: youtubeWatchUrl || stream.streamUrl || null,
+      appUrl: `${clientOrigin}/dashboard`,
+    };
+  }
+
+  private resolveClientAppOrigin(): string {
+    const configured =
+      this.configService.get<string>('CLIENT_FRONTEND_URL') ||
+      this.configService.get<string>('FRONTEND_URL') ||
+      'https://superfan-client.vercel.app';
+
+    const trimmed = configured.trim().replace(/\/$/, '');
+    if (/^https?:\/\//i.test(trimmed)) {
+      return trimmed;
+    }
+
+    return `https://${trimmed}`;
   }
 }
