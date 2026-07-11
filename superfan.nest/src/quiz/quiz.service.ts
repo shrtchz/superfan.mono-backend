@@ -1,5 +1,5 @@
 import { HttpService } from '@nestjs/axios';
-import { BadRequestException, ConflictException, ForbiddenException, HttpException, HttpStatus, Injectable, InternalServerErrorException, NotFoundException, Inject, forwardRef } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, HttpException, HttpStatus, Injectable, InternalServerErrorException, Logger, NotFoundException, Inject, forwardRef } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma } from '@prisma/client';
 import { JsonArray } from '@prisma/client/runtime/client';
@@ -25,6 +25,7 @@ import { QuestionAddedEvent } from './quiz.events';
 
 @Injectable()
 export class QuizService {
+  private readonly logger = new Logger(QuizService.name);
   private baseUrl = `${process.env.GO_ENDPOINT}/v1/quiz`;
   // private trackerBaseUrl = `${process.env.GO_ENDPOINT}/v1`;
 
@@ -49,6 +50,28 @@ export class QuizService {
     if (!value) return null;
     const parsed = new Date(String(value));
     return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  private rethrowGoProxyError(error: any, fallback: string): never {
+    const status = error?.response?.status;
+    const message =
+      error?.response?.data?.error?.message ||
+      error?.response?.data?.message ||
+      error?.response?.data?.error ||
+      error?.message ||
+      fallback;
+
+    if (status === HttpStatus.FORBIDDEN) {
+      throw new ForbiddenException(message);
+    }
+    if (status === HttpStatus.NOT_FOUND) {
+      throw new NotFoundException(message);
+    }
+    if (status === HttpStatus.BAD_REQUEST) {
+      throw new BadRequestException(message);
+    }
+
+    throw new HttpException(message, status || HttpStatus.INTERNAL_SERVER_ERROR);
   }
 
   private normalizeText(value: unknown): string {
@@ -2048,10 +2071,14 @@ async getOngoingQuizAnswers(userId: number) {
 }
 
   async updateLiveQuiz(updateData: any, id: string) {
-    const response = await firstValueFrom(
-      this.httpService.patch(`${this.baseUrl}/live/${id}`, updateData),
-    );
-    return response.data;
+    try {
+      const response = await firstValueFrom(
+        this.httpService.patch(`${this.baseUrl}/live/${id}`, updateData),
+      );
+      return response.data;
+    } catch (error) {
+      this.rethrowGoProxyError(error, 'Failed to update live quiz');
+    }
   }
 
   async getAllCategory() {
@@ -2062,10 +2089,56 @@ async getOngoingQuizAnswers(userId: number) {
   }
 
   async deleteLiveQuiz(id: string) {
-    const response = await firstValueFrom(
-      this.httpService.delete(`${this.baseUrl}/v1/quiz/live/${id}`),
-    );
-    return response.data;
+    try {
+      const response = await firstValueFrom(
+        this.httpService.delete(`${this.baseUrl}/live/${id}`),
+      );
+      return response.data;
+    } catch (error) {
+      this.rethrowGoProxyError(error, 'Failed to delete live quiz');
+    }
+  }
+
+  async closeExpiredLiveQuizSessions(): Promise<number> {
+    const sessions = await prisma.ongoingLiveQuiz.findMany({
+      where: { completed: false },
+    });
+
+    if (!sessions.length) {
+      return 0;
+    }
+
+    const now = this.getLagosNow();
+    let closed = 0;
+
+    for (const session of sessions) {
+      const questions = (session.questions as any[]) || [];
+      if (!questions.length) {
+        continue;
+      }
+
+      const allFinished = questions.every((question) => {
+        const finishAt = this.toDate(
+          question?.quizFinishDate ?? question?.quizScheduleDate,
+        );
+        return finishAt ? now >= finishAt : false;
+      });
+
+      if (!allFinished) {
+        continue;
+      }
+
+      try {
+        await this.submitLiveQuiz(String(session.userId));
+        closed += 1;
+      } catch (error) {
+        this.logger.warn(
+          `Failed to auto-close live quiz session for user ${session.userId}: ${error?.message}`,
+        );
+      }
+    }
+
+    return closed;
   }
 
   async createQuizCategory(createQuizCategoryData: CreateQuizCategoryDto) {

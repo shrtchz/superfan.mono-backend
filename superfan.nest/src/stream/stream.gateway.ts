@@ -11,7 +11,6 @@ import {
 import { Server, Socket } from 'socket.io';
 import { StreamingService } from './stream.service';
 
-
 @WebSocketGateway({
   cors: true,
 })
@@ -23,9 +22,17 @@ export class StreamGateway
 
   constructor(private readonly streamingService: StreamingService) {}
 
-  private users = new Map<number, string>(); // userId -> socketId
+  private users = new Map<number, string>();
 
-  // 🔌 When user connects
+  getStreamRoom(streamId: number | string) {
+    return `stream-${streamId}`;
+  }
+
+  broadcastToStream(streamId: number | string, event: string, payload: unknown) {
+    if (!this.server || streamId === undefined || streamId === null) return;
+    this.server.to(this.getStreamRoom(streamId)).emit(event, payload);
+  }
+
   handleConnection(client: Socket) {
     const userId = Number(client.handshake.query.userId);
 
@@ -35,7 +42,6 @@ export class StreamGateway
     }
   }
 
-  // ❌ When user disconnects
   handleDisconnect(client: Socket) {
     for (const [userId, socketId] of this.users.entries()) {
       if (socketId === client.id) {
@@ -46,173 +52,238 @@ export class StreamGateway
     }
   }
 
-  // 🏠 Join a task room
-  @SubscribeMessage('joinStreamRoom')
-  async joinTaskRoom(
-    @MessageBody() data: { userId: number },
+  @SubscribeMessage('joinStream')
+  async joinStream(
+    @MessageBody() streamId: string | number,
     @ConnectedSocket() client: Socket,
   ) {
-    const room = `user-${data.userId}`;
-    client.join(room);
-
+    const room = this.getStreamRoom(streamId);
+    await client.join(room);
     return { message: `Joined room ${room}` };
   }
 
-//   // ✍️ User starts typing
-// @SubscribeMessage('startTyping')
-// handleStartTyping(
-//   @MessageBody()
-//   data: {
-//     taskId: number;
-//     userId: number;
-//   },
-//   @ConnectedSocket() client: Socket,
-// ) {
-//   const room = `task-${data.taskId}`;
+  @SubscribeMessage('joinStreamRoom')
+  async joinStreamRoom(
+    @MessageBody() data: { streamId?: string | number; userId?: number },
+    @ConnectedSocket() client: Socket,
+  ) {
+    if (data?.streamId !== undefined && data?.streamId !== null) {
+      const room = this.getStreamRoom(data.streamId);
+      await client.join(room);
+      return { message: `Joined room ${room}` };
+    }
 
-//   // Emit to everyone except sender
-//   client.to(room).emit('userTyping', {
-//     userId: data.userId,
-//     isTyping: true,
-//   });
-// }
+    if (data?.userId) {
+      const room = `user-${data.userId}`;
+      await client.join(room);
+      return { message: `Joined room ${room}` };
+    }
 
-// // 🛑 User stops typing
-// @SubscribeMessage('stopTyping')
-// handleStopTyping(
-//   @MessageBody()
-//   data: {
-//     taskId: number;
-//     userId: number;
-//   },
-//   @ConnectedSocket() client: Socket,
-// ) {
-//   const room = `task-${data.taskId}`;
+    return { message: 'No room joined' };
+  }
 
-//   client.to(room).emit('userTyping', {
-//     userId: data.userId,
-//     isTyping: false,
-//   });
-// }
+  @SubscribeMessage('leaveStream')
+  async leaveStream(
+    @MessageBody() streamId: string | number,
+    @ConnectedSocket() client: Socket,
+  ) {
+    await client.leave(this.getStreamRoom(streamId));
+    return { message: 'Left stream room' };
+  }
 
-  // 💬 Send message
   @SubscribeMessage('sendComment')
   async sendMessage(
     @MessageBody()
     data: {
       userId: number;
       streamId: number;
-        comment: string;
+      comment: string;
     },
   ) {
-
-        const newMessage = await this.streamingService.commentOnStream(
+    const newMessage = await this.streamingService.commentOnStream(
       data.streamId,
       data.comment,
       data.userId,
     );
 
-    // 📡 Emit to room
-    this.server.to(`stream-${newMessage.id}`).emit('streamMessage', newMessage);
+    this.broadcastToStream(data.streamId, 'streamMessage', {
+      ...newMessage,
+      streamId: data.streamId,
+    });
 
     return newMessage;
   }
 
   getUserSocket(userId: number) {
-  return this.users.get(userId);
-}
+    return this.users.get(userId);
+  }
 
-@SubscribeMessage('replyComment')
-async replyMessage(
+  @SubscribeMessage('replyComment')
+  async replyMessage(
     @MessageBody()
     data: {
-        userId: number,
-        commentId: number,
-        comment: string
-    }
-) {
+      userId: number;
+      commentId: number;
+      comment: string;
+      streamId?: number;
+    },
+  ) {
     const reply = await this.streamingService.replyToComment(
       data.commentId,
       data.comment,
       data.userId,
     );
 
-    this.server.to(`comment-${data.commentId}`).emit('replyMessage', reply);
+    const streamId =
+      data.streamId ??
+      (await this.streamingService.getCommentStreamId(data.commentId));
+
+    if (streamId) {
+      this.broadcastToStream(streamId, 'replyMessage', {
+        ...reply,
+        streamId,
+      });
+    }
 
     return reply;
-}
+  }
 
-@SubscribeMessage('likeComment')
-async likeComment(
+  @SubscribeMessage('likeComment')
+  async likeComment(
     @MessageBody()
     data: {
-        userId: number,
-        commentId: number,
-    }
-) {
-    const reply = await this.streamingService.likeComment(
+      userId: number;
+      commentId: number;
+      streamId?: number;
+    },
+  ) {
+    const result = await this.streamingService.likeComment(
       data.commentId,
       data.userId,
     );
 
-    this.server.to(`comment-${data.commentId}`).emit('replyMessage', reply);
+    const streamId =
+      data.streamId ??
+      result?.data?.streamId ??
+      (await this.streamingService.getCommentStreamId(data.commentId));
 
-    return reply;
-}
+    if (streamId) {
+      this.broadcastToStream(streamId, 'likeComment', {
+        commentId: data.commentId,
+        streamId,
+        userId: data.userId,
+        likesCount: result?.data?.likesCount,
+        data: result?.data,
+      });
+    }
 
-@SubscribeMessage('unlikeComment')
-async unlikeComment(
+    return result;
+  }
+
+  @SubscribeMessage('unlikeComment')
+  async unlikeComment(
     @MessageBody()
     data: {
-        userId: number,
-        commentId: number,
-    }
-) {
-    const reply = await this.streamingService.unlikeComment(
+      userId: number;
+      commentId: number;
+      streamId?: number;
+    },
+  ) {
+    const result = await this.streamingService.unlikeComment(
       data.commentId,
       data.userId,
     );
 
-    this.server.to(`comment-${data.commentId}`).emit('replyMessage', reply);
+    const streamId =
+      data.streamId ??
+      result?.data?.streamId ??
+      (await this.streamingService.getCommentStreamId(data.commentId));
 
-    return reply;
-}
+    if (streamId) {
+      this.broadcastToStream(streamId, 'unlikeComment', {
+        commentId: data.commentId,
+        streamId,
+        userId: data.userId,
+        likesCount: result?.data?.likesCount,
+        data: result?.data,
+      });
+    }
 
-@SubscribeMessage('reportComment')
-async reportComment(
+    return result;
+  }
+
+  @SubscribeMessage('reportComment')
+  async reportComment(
     @MessageBody()
     data: {
-      commentId: number,
-      creatorId: number,
-        userId: number,
-        reason: string
-    }
-) {
-    const reply = await this.streamingService.reportComment(
+      commentId: number;
+      creatorId: number;
+      userId: number;
+      reason: string;
+      streamId?: number;
+    },
+  ) {
+    const result = await this.streamingService.reportComment(
       data.commentId,
       data.creatorId,
       data.userId,
-      data.reason
+      data.reason,
     );
 
-    this.server.to(`comment-${data.commentId}`).emit('replyMessage', reply);
+    const streamId =
+      data.streamId ??
+      (await this.streamingService.getCommentStreamId(data.commentId));
 
-    return reply;
-}
+    if (streamId) {
+      this.broadcastToStream(streamId, 'reportComment', {
+        commentId: data.commentId,
+        streamId,
+        userId: data.userId,
+        reportsCount: result?.reportsCount,
+      });
+    }
 
-@SubscribeMessage('deleteComment')
-async deleteComment(
+    return result;
+  }
+
+  @SubscribeMessage('deleteComment')
+  async deleteComment(
     @MessageBody()
     data: {
-      commentId: number,
+      commentId: number;
+      streamId?: number;
+    },
+  ) {
+    const deleted = await this.streamingService.deleteComment(data.commentId);
+
+    if (deleted?.streamId) {
+      this.broadcastToStream(deleted.streamId, 'deleteComment', {
+        commentId: data.commentId,
+        streamId: deleted.streamId,
+      });
     }
-) {
-    const delete_comment = await this.streamingService.deleteComment(
-      data.commentId,
-    );
 
-    this.server.to(`comment-${data.commentId}`).emit('deleteComment', delete_comment);
+    return deleted;
+  }
 
-    return delete_comment;
-}
+  @SubscribeMessage('pinComment')
+  async pinComment(
+    @MessageBody()
+    data: {
+      commentId: number;
+      streamId?: number;
+    },
+  ) {
+    const pinned = await this.streamingService.pinComment(data.commentId);
+    const streamId = data.streamId ?? pinned?.streamId;
+
+    if (streamId) {
+      this.broadcastToStream(streamId, 'pinComment', {
+        commentId: data.commentId,
+        streamId,
+      });
+    }
+
+    return pinned;
+  }
 }

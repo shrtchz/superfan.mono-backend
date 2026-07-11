@@ -127,6 +127,19 @@ export class ElasticsearchService implements OnModuleInit {
     return hits.hits.map((hit) => hit._source);
   }
 
+  async deleteComment(commentId: number) {
+    if (!this.client) return;
+
+    try {
+      await this.client.delete({
+        index: 'comments',
+        id: commentId.toString(),
+      });
+    } catch {
+      // Best-effort cleanup for search index.
+    }
+  }
+
   async indexComment(comment: {
     id: number;
     streamId: number;
