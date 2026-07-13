@@ -254,12 +254,15 @@ export class QuizService {
   }
 
   async createLiveQuiz(liveQuizData: CreateLiveQuizDto) {
-    const response = await firstValueFrom(
-      this.httpService.post(`${this.baseUrl}/live`,
-        liveQuizData,
-),
-    );
-    return response.data;
+    try {
+      const response = await firstValueFrom(
+        this.httpService.post(`${this.baseUrl}/live`, liveQuizData),
+      );
+      this.eventEmitter.emit('liveQuiz.changed', { action: 'created' });
+      return response.data;
+    } catch (error) {
+      this.rethrowGoProxyError(error, 'Failed to create live quiz');
+    }
   }
 
 
@@ -2075,6 +2078,7 @@ async getOngoingQuizAnswers(userId: number) {
       const response = await firstValueFrom(
         this.httpService.patch(`${this.baseUrl}/live/${id}`, updateData),
       );
+      this.eventEmitter.emit('liveQuiz.changed', { action: 'updated' });
       return response.data;
     } catch (error) {
       this.rethrowGoProxyError(error, 'Failed to update live quiz');
@@ -2093,6 +2097,7 @@ async getOngoingQuizAnswers(userId: number) {
       const response = await firstValueFrom(
         this.httpService.delete(`${this.baseUrl}/live/${id}`),
       );
+      this.eventEmitter.emit('liveQuiz.changed', { action: 'deleted' });
       return response.data;
     } catch (error) {
       this.rethrowGoProxyError(error, 'Failed to delete live quiz');
