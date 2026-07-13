@@ -7,9 +7,11 @@ import {
   WebSocketGateway,
   WebSocketServer,
 } from '@nestjs/websockets';
+import { OnEvent } from '@nestjs/event-emitter';
 
 import { Server, Socket } from 'socket.io';
 import { StreamingService } from './stream.service';
+import { QuizService } from '../quiz/quiz.service';
 
 @WebSocketGateway({
   cors: true,
@@ -20,17 +22,253 @@ export class StreamGateway
   @WebSocketServer()
   server: Server;
 
-  constructor(private readonly streamingService: StreamingService) {}
+  constructor(
+    private readonly streamingService: StreamingService,
+    private readonly quizService: QuizService,
+  ) {}
 
   private users = new Map<number, string>();
+  private viewerCountIntervals = new Map<string, ReturnType<typeof setInterval>>();
+
+  private toValidString(value: unknown): string {
+    return typeof value === 'string' && value.trim() ? value.trim() : '';
+  }
+
+  private toTimestamp(value: unknown): number {
+    const asString = this.toValidString(value);
+    if (!asString) return Number.NaN;
+    const parsed = new Date(asString).getTime();
+    return Number.isFinite(parsed) ? parsed : Number.NaN;
+  }
+
+  private toDisplayLiveQuiz(
+    source: Record<string, unknown> | null,
+  ): Record<string, unknown> | null {
+    if (!source) return null;
+
+    const question =
+      this.toValidString(source.question) ||
+      this.toValidString(source.quizQuestion) ||
+      this.toValidString(source.title);
+
+    if (!question) return null;
+
+    return {
+      id:
+        this.toValidString(source.id) ||
+        this.toValidString(source.idHex) ||
+        this.toValidString(source.quizId) ||
+        this.toValidString(source._id),
+      quizId:
+        this.toValidString(source.id) ||
+        this.toValidString(source.idHex) ||
+        this.toValidString(source.quizId) ||
+        this.toValidString(source._id),
+      question,
+      options: Array.isArray(source.options) ? source.options : [],
+      answer:
+        this.toValidString(source.answer) ||
+        this.toValidString(source.correctAnswer) ||
+        this.toValidString(source.selectedAnswer) ||
+        this.toValidString(source.typedAnswer),
+      typedAnswer: this.toValidString(source.typedAnswer) || undefined,
+      isTypedAnswer: Boolean(source.isTypedAnswer),
+      imageLink: Array.isArray(source.imageLink) ? source.imageLink : [],
+      status:
+        this.toValidString(source.status) ||
+        this.toValidString(source.quizStatus) ||
+        'scheduled',
+      quizScheduleDate:
+        this.toValidString(source.quizScheduleDate) ||
+        this.toValidString(source.scheduleDate),
+      quizFinishDate:
+        this.toValidString(source.quizFinishDate) ||
+        this.toValidString(source.finishDate),
+      totalPrize: Number(source.totalPrize ?? source.totalPrice ?? 0) || 0,
+      recipients: Number(source.recipients ?? 0) || 0,
+      unitPrize: Number(source.unitPrize ?? 0) || 0,
+      showAnswer: Boolean(source.showAnswer),
+    };
+  }
+
+  private pickCurrentLiveQuiz(
+    quizzes: Record<string, unknown>[],
+  ): Record<string, unknown> | null {
+    if (!quizzes.length) return null;
+    const now = Date.now();
+
+    const openQuizzes = quizzes.filter((quiz) => {
+      const finishAt = this.toTimestamp(
+        quiz.quizFinishDate ?? quiz.finishDate ?? quiz.endAt,
+      );
+      return !Number.isFinite(finishAt) || finishAt > now;
+    });
+
+    if (!openQuizzes.length) return null;
+
+    const liveQuiz = openQuizzes.find(
+      (quiz) => this.toValidString(quiz.status).toLowerCase() === 'live',
+    );
+    if (liveQuiz) return liveQuiz;
+
+    const scheduled = [...openQuizzes]
+      .filter((quiz) => {
+        const status = this.toValidString(quiz.status).toLowerCase();
+        return !status || status === 'scheduled';
+      })
+      .sort((a, b) => {
+        const aStart = this.toTimestamp(
+          a.quizScheduleDate ?? a.scheduleDate ?? a.startAt,
+        );
+        const bStart = this.toTimestamp(
+          b.quizScheduleDate ?? b.scheduleDate ?? b.startAt,
+        );
+        const safeA = Number.isFinite(aStart) ? aStart : Number.MAX_SAFE_INTEGER;
+        const safeB = Number.isFinite(bStart) ? bStart : Number.MAX_SAFE_INTEGER;
+        return safeA - safeB;
+      });
+
+    return scheduled[0] ?? openQuizzes[0] ?? null;
+  }
+
+  private extractLiveQuizArray(payload: unknown): Record<string, unknown>[] {
+    if (Array.isArray(payload)) {
+      return payload.filter(
+        (item): item is Record<string, unknown> =>
+          Boolean(item) && typeof item === 'object' && !Array.isArray(item),
+      );
+    }
+
+    if (!payload || typeof payload !== 'object') {
+      return [];
+    }
+
+    const root = payload as Record<string, unknown>;
+    const candidates = [root.data, root.result, root.quizzes, root.items];
+    for (const candidate of candidates) {
+      if (Array.isArray(candidate)) {
+        return candidate.filter(
+          (item): item is Record<string, unknown> =>
+            Boolean(item) && typeof item === 'object' && !Array.isArray(item),
+        );
+      }
+      if (candidate && typeof candidate === 'object') {
+        const nested = candidate as Record<string, unknown>;
+        if (Array.isArray(nested.data)) {
+          return nested.data.filter(
+            (item): item is Record<string, unknown> =>
+              Boolean(item) && typeof item === 'object' && !Array.isArray(item),
+          );
+        }
+      }
+    }
+
+    return [];
+  }
+
+  private async getCurrentLiveQuizSnapshot(): Promise<Record<string, unknown> | null> {
+    try {
+      const response = await this.quizService.getAllLiveQuiz();
+      const quizzes = this.extractLiveQuizArray(response);
+      const current = this.pickCurrentLiveQuiz(quizzes);
+      return this.toDisplayLiveQuiz(current);
+    } catch {
+      return null;
+    }
+  }
+
+  private async emitLiveQuizUpdate(
+    action: 'created' | 'updated' | 'deleted' | 'sync' = 'sync',
+    target: { streamId?: string | number; socket?: Socket } = {},
+  ) {
+    if (!this.server) return;
+
+    const quiz = await this.getCurrentLiveQuizSnapshot();
+    const payload = {
+      action,
+      quiz,
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (target.socket) {
+      target.socket.emit('liveQuizUpdated', payload);
+      return;
+    }
+
+    if (target.streamId !== undefined && target.streamId !== null) {
+      this.broadcastToStream(target.streamId, 'liveQuizUpdated', payload);
+      return;
+    }
+
+    this.server.emit('liveQuizUpdated', payload);
+  }
+
+  @OnEvent('liveQuiz.changed')
+  async handleLiveQuizChanged(event?: { action?: 'created' | 'updated' | 'deleted' }) {
+    const action = event?.action ?? 'updated';
+    await this.emitLiveQuizUpdate(action);
+  }
+
+  private normalizeStreamId(streamId: number | string) {
+    return String(streamId);
+  }
 
   getStreamRoom(streamId: number | string) {
-    return `stream-${streamId}`;
+    return `stream-${this.normalizeStreamId(streamId)}`;
   }
 
   broadcastToStream(streamId: number | string, event: string, payload: unknown) {
     if (!this.server || streamId === undefined || streamId === null) return;
     this.server.to(this.getStreamRoom(streamId)).emit(event, payload);
+  }
+
+  private getRoomMemberCount(streamId: number | string): number {
+    if (!this.server) return 0;
+    const roomState = this.server.sockets.adapter.rooms.get(this.getStreamRoom(streamId));
+    return roomState?.size ?? 0;
+  }
+
+  private async emitStreamViewerCount(streamId: number | string) {
+    if (!this.server || streamId === undefined || streamId === null) return;
+    const normalizedStreamId = this.normalizeStreamId(streamId);
+    const numericStreamId = Number(normalizedStreamId);
+    if (!Number.isFinite(numericStreamId)) return;
+
+    const youtubeCount =
+      await this.streamingService.getYoutubeViewerCountForStream(numericStreamId);
+    const safeCount = youtubeCount ?? 0;
+
+    this.broadcastToStream(normalizedStreamId, 'streamViewerCount', {
+      streamId: normalizedStreamId,
+      count: safeCount,
+      source: youtubeCount === null ? 'youtube_unavailable' : 'youtube',
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  private ensureViewerCountBroadcast(streamId: number | string) {
+    const normalizedStreamId = this.normalizeStreamId(streamId);
+    if (this.viewerCountIntervals.has(normalizedStreamId)) return;
+
+    void this.emitStreamViewerCount(normalizedStreamId);
+    const timer = setInterval(() => {
+      // Stop polling when nobody is in the room.
+      if (this.getRoomMemberCount(normalizedStreamId) <= 0) {
+        this.stopViewerCountBroadcast(normalizedStreamId);
+        return;
+      }
+      void this.emitStreamViewerCount(normalizedStreamId);
+    }, 15000);
+
+    this.viewerCountIntervals.set(normalizedStreamId, timer);
+  }
+
+  private stopViewerCountBroadcast(streamId: number | string) {
+    const normalizedStreamId = this.normalizeStreamId(streamId);
+    const timer = this.viewerCountIntervals.get(normalizedStreamId);
+    if (!timer) return;
+    clearInterval(timer);
+    this.viewerCountIntervals.delete(normalizedStreamId);
   }
 
   handleConnection(client: Socket) {
@@ -43,6 +281,12 @@ export class StreamGateway
   }
 
   handleDisconnect(client: Socket) {
+    const joinedStreams = (
+      client.data?.joinedStreams instanceof Set
+        ? Array.from(client.data.joinedStreams)
+        : []
+    ) as string[];
+
     for (const [userId, socketId] of this.users.entries()) {
       if (socketId === client.id) {
         this.users.delete(userId);
@@ -50,6 +294,18 @@ export class StreamGateway
         break;
       }
     }
+
+    // Socket.io removes room membership during disconnect;
+    // schedule broadcast after adapter state settles.
+    setTimeout(() => {
+      joinedStreams.forEach((streamId) => {
+        if (this.getRoomMemberCount(streamId) <= 0) {
+          this.stopViewerCountBroadcast(streamId);
+        } else {
+          void this.emitStreamViewerCount(streamId);
+        }
+      });
+    }, 0);
   }
 
   @SubscribeMessage('joinStream')
@@ -57,8 +313,14 @@ export class StreamGateway
     @MessageBody() streamId: string | number,
     @ConnectedSocket() client: Socket,
   ) {
-    const room = this.getStreamRoom(streamId);
+    const normalizedStreamId = this.normalizeStreamId(streamId);
+    const room = this.getStreamRoom(normalizedStreamId);
     await client.join(room);
+    const joinedStreams = (client.data.joinedStreams ?? new Set<string>()) as Set<string>;
+    joinedStreams.add(normalizedStreamId);
+    client.data.joinedStreams = joinedStreams;
+    this.ensureViewerCountBroadcast(normalizedStreamId);
+    void this.emitLiveQuizUpdate('sync', { socket: client });
     return { message: `Joined room ${room}` };
   }
 
@@ -68,8 +330,14 @@ export class StreamGateway
     @ConnectedSocket() client: Socket,
   ) {
     if (data?.streamId !== undefined && data?.streamId !== null) {
-      const room = this.getStreamRoom(data.streamId);
+      const normalizedStreamId = this.normalizeStreamId(data.streamId);
+      const room = this.getStreamRoom(normalizedStreamId);
       await client.join(room);
+      const joinedStreams = (client.data.joinedStreams ?? new Set<string>()) as Set<string>;
+      joinedStreams.add(normalizedStreamId);
+      client.data.joinedStreams = joinedStreams;
+      this.ensureViewerCountBroadcast(normalizedStreamId);
+      void this.emitLiveQuizUpdate('sync', { socket: client });
       return { message: `Joined room ${room}` };
     }
 
@@ -87,7 +355,15 @@ export class StreamGateway
     @MessageBody() streamId: string | number,
     @ConnectedSocket() client: Socket,
   ) {
-    await client.leave(this.getStreamRoom(streamId));
+    const normalizedStreamId = this.normalizeStreamId(streamId);
+    await client.leave(this.getStreamRoom(normalizedStreamId));
+    const joinedStreams = client.data?.joinedStreams as Set<string> | undefined;
+    joinedStreams?.delete(normalizedStreamId);
+    if (this.getRoomMemberCount(normalizedStreamId) <= 0) {
+      this.stopViewerCountBroadcast(normalizedStreamId);
+    } else {
+      void this.emitStreamViewerCount(normalizedStreamId);
+    }
     return { message: 'Left stream room' };
   }
 

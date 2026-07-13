@@ -1994,6 +1994,52 @@ async isWinner(commentId: number, winAmount: number) {
     }
   }
 
+  async getYoutubeViewerCountForStream(streamId: number): Promise<number | null> {
+    try {
+      const stream = await prisma.stream.findUnique({
+        where: { id: streamId },
+        select: {
+          id: true,
+          broadcastId: true,
+          networkPlatform: true,
+        },
+      });
+
+      if (!stream?.broadcastId) {
+        return null;
+      }
+
+      const network = String(stream.networkPlatform ?? '').toLowerCase();
+      if (network && network !== 'youtube') {
+        return null;
+      }
+
+      const videoData = await this.getVideoViews(stream.broadcastId);
+      const concurrentViewers = Number.parseInt(
+        videoData?.liveStreamingDetails?.concurrentViewers || '',
+        10,
+      );
+      if (Number.isFinite(concurrentViewers)) {
+        return concurrentViewers;
+      }
+
+      const viewCount = Number.parseInt(
+        videoData?.statistics?.viewCount || '',
+        10,
+      );
+      if (Number.isFinite(viewCount)) {
+        return viewCount;
+      }
+
+      return 0;
+    } catch (error: any) {
+      this.logger.warn(
+        `Failed to fetch YouTube viewer count for stream ${streamId}: ${error?.message || error}`,
+      );
+      return null;
+    }
+  }
+
   async getUserChatFeed(streamId: number) {
     const stream = await prisma.stream.findUnique({
       where: { id: streamId },
@@ -2022,6 +2068,7 @@ async isWinner(commentId: number, winAmount: number) {
           'unlikeComment',
           'deleteComment',
           'chatLockChanged',
+          'streamViewerCount',
         ],
       },
     };
