@@ -1532,14 +1532,29 @@ func (u *QuizServiceImpl) GetAllQuiz() ([]*models.Quiz, error) {
 
 func (u *QuizServiceImpl) UpdateQuiz(quiz *models.Quiz) error {
 	filter := bson.D{bson.E{Key: "_id", Value: quiz.ID}}
-	update := bson.D{bson.E{Key: "$set", Value: bson.D{
+	setFields := bson.D{
 		{Key: "question", Value: quiz.Question},
 		{Key: "options", Value: quiz.Options},
 		{Key: "imageLink", Value: quiz.ImageLink},
+		{Key: "isTypedAnswer", Value: quiz.IsTypedAnswer},
 		{Key: "typedAnswer", Value: quiz.TypedAnswer},
 		{Key: "earning", Value: quiz.Earning},
 		{Key: "answer", Value: quiz.Answer},
-	}}}
+	}
+	if strings.TrimSpace(quiz.TestQuiz) != "" {
+		setFields = append(setFields, bson.E{Key: "testQuiz", Value: quiz.TestQuiz})
+	}
+	if strings.TrimSpace(quiz.TestLevel) != "" {
+		setFields = append(setFields, bson.E{Key: "testLevel", Value: quiz.TestLevel})
+	}
+	if strings.TrimSpace(quiz.Subject) != "" {
+		setFields = append(setFields, bson.E{Key: "subject", Value: quiz.Subject})
+	}
+	if strings.TrimSpace(quiz.AirtableRecordID) != "" {
+		setFields = append(setFields, bson.E{Key: "airtableRecordId", Value: quiz.AirtableRecordID})
+	}
+
+	update := bson.D{bson.E{Key: "$set", Value: setFields}}
 
 	result, err := u.quizcollection.UpdateOne(u.ctx, filter, update)
 	if err != nil {

@@ -16,17 +16,7 @@ import (
 
 type AirtableRecord struct {
 	ID     string `json:"id"`
-	Fields struct {
-		QuestionText  string `json:"Question Text"`
-		OptionA       string `json:"Option A"`
-		OptionB       string `json:"Option B"`
-		OptionC       string `json:"Option C"`
-		OptionD       string `json:"Option D"`
-		CorrectAnswer string `json:"Correct Answer"`
-		Subject            string `json:"Subject"`
-		Difficulty         string `json:"Difficulty Level"`
-		EducationalProduct string `json:"Educational Product/Purpose"`
-	} `json:"fields"`
+	Fields map[string]interface{} `json:"fields"`
 }
 
 type AirtableResponse struct {
@@ -40,7 +30,7 @@ type AirtableCreateRequest struct {
 }
 
 type AirtableCreateRecord struct {
-	Fields map[string]string `json:"fields"`
+	Fields map[string]interface{} `json:"fields"`
 }
 
 func SyncFromAirtable(qs QuizService) {
@@ -66,7 +56,19 @@ func SyncFromAirtable(qs QuizService) {
 	airtableUrl := fmt.Sprintf("https://api.airtable.com/v0/%s/%s", baseId, url.PathEscape(tableName))
 	log.Printf("Fetching from Airtable base: %s, table: %s", baseId, tableName)
 
-	// Get existing quizzes to avoid duplicates.
+	imageFieldEnv := strings.TrimSpace(os.Getenv("AIRTABLE_IMAGE_FIELD"))
+	imageFieldCandidates := []string{
+		"Image Link",
+		"Image",
+		"Images",
+		"imageLink",
+		"image",
+	}
+	if imageFieldEnv != "" {
+		imageFieldCandidates = append([]string{imageFieldEnv}, imageFieldCandidates...)
+	}
+
+	// Load existing quizzes so we can create-or-update on every sync.
 	// Empty Mongo is normal on first boot — treat "no quizzes found" as [] so sync can seed.
 	log.Println("[Debug] Fetching existing quizzes from MongoDB...")
 	existingQuizzes, err := qs.GetAllQuiz()
@@ -81,14 +83,21 @@ func SyncFromAirtable(qs QuizService) {
 	}
 	log.Printf("[Debug] Fetched %d existing quizzes from MongoDB.", len(existingQuizzes))
 
-	existingMap := make(map[string]bool)
+	existingByQuestion := make(map[string]*models.Quiz)
+	existingByAirtableID := make(map[string]*models.Quiz)
 	for _, q := range existingQuizzes {
 		cleanQ := strings.TrimSpace(strings.ToLower(q.Question))
-		existingMap[cleanQ] = true
+		if cleanQ != "" {
+			existingByQuestion[cleanQ] = q
+		}
+		airtableID := strings.TrimSpace(q.AirtableRecordID)
+		if airtableID != "" {
+			existingByAirtableID[airtableID] = q
+		}
 	}
 
 	inserted := 0
-	skipped := 0
+	updated := 0
 	offset := ""
 	totalFetched := 0
 	client := &http.Client{Timeout: 30 * time.Second} // ADDED TIMEOUT
@@ -137,28 +146,32 @@ func SyncFromAirtable(qs QuizService) {
 
 		for _, record := range parsedRes.Records {
 			fields := record.Fields
-			if fields.QuestionText == "" {
+			questionText := strings.TrimSpace(firstStringField(fields, "Question Text", "question", "Question"))
+			if questionText == "" {
 				continue
 			}
 
-			cleanQText := strings.TrimSpace(strings.ToLower(fields.QuestionText))
-			if existingMap[cleanQText] {
-				skipped++
-				continue
-			}
+			cleanQText := strings.TrimSpace(strings.ToLower(questionText))
+			optionA := strings.TrimSpace(firstStringField(fields, "Option A", "optionA"))
+			optionB := strings.TrimSpace(firstStringField(fields, "Option B", "optionB"))
+			optionC := strings.TrimSpace(firstStringField(fields, "Option C", "optionC"))
+			optionD := strings.TrimSpace(firstStringField(fields, "Option D", "optionD"))
+			correctAnswer := strings.TrimSpace(firstStringField(fields, "Correct Answer", "correctAnswer", "Answer"))
+			subject := strings.TrimSpace(firstStringField(fields, "Subject", "subject"))
+			levelRaw := strings.ToLower(strings.TrimSpace(firstStringField(fields, "Difficulty Level", "difficulty", "Difficulty")))
+			testQuiz := strings.TrimSpace(firstStringField(fields, "Educational Product/Purpose", "educationalProduct", "testQuiz"))
+			imageLinks := extractImageLinksFromFields(fields, imageFieldCandidates)
 
 			var options []string
-			if fields.OptionA != "" { options = append(options, fields.OptionA) }
-			if fields.OptionB != "" { options = append(options, fields.OptionB) }
-			if fields.OptionC != "" { options = append(options, fields.OptionC) }
-			if fields.OptionD != "" { options = append(options, fields.OptionD) }
+			if optionA != "" { options = append(options, optionA) }
+			if optionB != "" { options = append(options, optionB) }
+			if optionC != "" { options = append(options, optionC) }
+			if optionD != "" { options = append(options, optionD) }
 
-			subject := fields.Subject
 			if subject == "" {
 				subject = "General"
 			}
 
-			levelRaw := strings.ToLower(strings.TrimSpace(fields.Difficulty))
 			level := "intermediate" // default
 
 			if levelRaw == "easy" || levelRaw == "basic" {
@@ -169,29 +182,51 @@ func SyncFromAirtable(qs QuizService) {
 				level = "intermediate"
 			}
 
-			testQuiz := fields.EducationalProduct
 			if testQuiz == "" {
 				testQuiz = "Unknown"
 			}
+			earning := earningForLevel(level)
 
-			quiz := &models.Quiz{
-				ID:            bson.NewObjectID(),
-				TestQuiz:      testQuiz,
-				TestLevel:     level,
-				Subject:       subject,
-				Earning:       "0",
-				Question:      fields.QuestionText,
-				Options:       options,
-				Answer:        fields.CorrectAnswer,
-				IsTypedAnswer: false,
+			upsertQuiz := &models.Quiz{
+				TestQuiz:         testQuiz,
+				TestLevel:        level,
+				Subject:          subject,
+				Earning:          earning,
+				Question:         questionText,
+				Options:          options,
+				Answer:           correctAnswer,
+				IsTypedAnswer:    false,
+				ImageLink:        imageLinks,
+				AirtableRecordID: record.ID,
 			}
-			quiz.IDHex = quiz.ID.Hex()
 
-			if err := qs.CreateQuiz(quiz); err != nil {
-				log.Println("Failed to insert quiz from Airtable:", err)
+			var existing *models.Quiz
+			if fromAirtableID, ok := existingByAirtableID[record.ID]; ok {
+				existing = fromAirtableID
+			} else if fromQuestion, ok := existingByQuestion[cleanQText]; ok {
+				existing = fromQuestion
+			}
+
+			if existing != nil {
+				upsertQuiz.ID = existing.ID
+				upsertQuiz.IDHex = existing.ID.Hex()
+				if err := qs.UpdateQuiz(upsertQuiz); err != nil {
+					log.Printf("Failed to update quiz from Airtable (record=%s): %v", record.ID, err)
+					continue
+				}
+				updated++
+				existingByAirtableID[record.ID] = upsertQuiz
+				existingByQuestion[cleanQText] = upsertQuiz
 			} else {
+				upsertQuiz.ID = bson.NewObjectID()
+				upsertQuiz.IDHex = upsertQuiz.ID.Hex()
+				if err := qs.CreateQuiz(upsertQuiz); err != nil {
+					log.Printf("Failed to insert quiz from Airtable (record=%s): %v", record.ID, err)
+					continue
+				}
 				inserted++
-				existingMap[cleanQText] = true
+				existingByAirtableID[record.ID] = upsertQuiz
+				existingByQuestion[cleanQText] = upsertQuiz
 			}
 		}
 
@@ -202,7 +237,7 @@ func SyncFromAirtable(qs QuizService) {
 	}
 
 	log.Printf("Fetched %d total records from Airtable.", totalFetched)
-	log.Printf("--- Airtable Sync Complete: %d inserted, %d duplicates skipped ---", inserted, skipped)
+	log.Printf("--- Airtable Sync Complete: %d inserted, %d updated ---", inserted, updated)
 }
 
 func PushToAirtable(quiz *models.Quiz) {
@@ -234,7 +269,7 @@ func PushToAirtable(quiz *models.Quiz) {
 		level = "Hard"
 	}
 
-	fields := map[string]string{
+	fields := map[string]interface{}{
 		"Question Text":               quiz.Question,
 		"Correct Answer":              quiz.Answer,
 		"Difficulty Level":            level,
@@ -246,6 +281,24 @@ func PushToAirtable(quiz *models.Quiz) {
 	if len(quiz.Options) > 1 { fields["Option B"] = quiz.Options[1] }
 	if len(quiz.Options) > 2 { fields["Option C"] = quiz.Options[2] }
 	if len(quiz.Options) > 3 { fields["Option D"] = quiz.Options[3] }
+
+	imageFieldName := strings.TrimSpace(os.Getenv("AIRTABLE_IMAGE_FIELD"))
+	if imageFieldName == "" {
+		imageFieldName = "Image Link"
+	}
+	if len(quiz.ImageLink) > 0 {
+		attachments := make([]map[string]string, 0, len(quiz.ImageLink))
+		for _, imageURL := range quiz.ImageLink {
+			trimmed := strings.TrimSpace(imageURL)
+			if trimmed == "" {
+				continue
+			}
+			attachments = append(attachments, map[string]string{"url": trimmed})
+		}
+		if len(attachments) > 0 {
+			fields[imageFieldName] = attachments
+		}
+	}
 
 	payload := AirtableCreateRequest{
 		Records: []AirtableCreateRecord{
@@ -285,4 +338,123 @@ func PushToAirtable(quiz *models.Quiz) {
 	}
 
 	log.Println("[Debug] Successfully pushed new question to Airtable!")
+}
+
+func firstStringField(fields map[string]interface{}, keys ...string) string {
+	for _, key := range keys {
+		value, ok := fields[key]
+		if !ok {
+			continue
+		}
+		if parsed := strings.TrimSpace(asString(value)); parsed != "" {
+			return parsed
+		}
+	}
+	return ""
+}
+
+func extractImageLinksFromFields(fields map[string]interface{}, preferredKeys []string) []string {
+	candidates := make([]string, 0, len(preferredKeys)+2)
+	candidates = append(candidates, preferredKeys...)
+	for key := range fields {
+		lower := strings.ToLower(strings.TrimSpace(key))
+		if strings.Contains(lower, "image") || strings.Contains(lower, "photo") {
+			candidates = append(candidates, key)
+		}
+	}
+
+	seen := make(map[string]bool)
+	links := make([]string, 0)
+	for _, key := range candidates {
+		value, ok := fields[key]
+		if !ok {
+			continue
+		}
+		appendImageCandidates(value, seen, &links)
+	}
+
+	return links
+}
+
+func appendImageCandidates(value interface{}, seen map[string]bool, links *[]string) {
+	switch typed := value.(type) {
+	case string:
+		addImageCandidate(typed, seen, links)
+	case []interface{}:
+		for _, item := range typed {
+			appendImageCandidates(item, seen, links)
+		}
+	case map[string]interface{}:
+		if rawURL, ok := typed["url"]; ok {
+			addImageCandidate(asString(rawURL), seen, links)
+		}
+		if thumbnailsRaw, ok := typed["thumbnails"].(map[string]interface{}); ok {
+			for _, sizeKey := range []string{"full", "large", "small"} {
+				if sizeRaw, exists := thumbnailsRaw[sizeKey].(map[string]interface{}); exists {
+					if thumbURL, exists := sizeRaw["url"]; exists {
+						addImageCandidate(asString(thumbURL), seen, links)
+					}
+				}
+			}
+		}
+	default:
+		addImageCandidate(asString(value), seen, links)
+	}
+}
+
+func addImageCandidate(candidate string, seen map[string]bool, links *[]string) {
+	trimmed := strings.TrimSpace(strings.Trim(candidate, "\"'`"))
+	if trimmed == "" {
+		return
+	}
+
+	if strings.HasPrefix(trimmed, "[") {
+		var parsed interface{}
+		if err := json.Unmarshal([]byte(trimmed), &parsed); err == nil {
+			appendImageCandidates(parsed, seen, links)
+			return
+		}
+	}
+
+	if strings.Contains(trimmed, ",") && !strings.HasPrefix(trimmed, "http") {
+		parts := strings.Split(trimmed, ",")
+		for _, part := range parts {
+			addImageCandidate(part, seen, links)
+		}
+		return
+	}
+
+	if !(strings.HasPrefix(trimmed, "http://") || strings.HasPrefix(trimmed, "https://")) {
+		return
+	}
+
+	if seen[trimmed] {
+		return
+	}
+	seen[trimmed] = true
+	*links = append(*links, trimmed)
+}
+
+func asString(value interface{}) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case fmt.Stringer:
+		return typed.String()
+	case nil:
+		return ""
+	default:
+		return fmt.Sprintf("%v", typed)
+	}
+}
+
+func earningForLevel(level string) string {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "basic":
+		return "400"
+	case "advanced":
+		return "800"
+	default:
+		return "600"
+	}
 }

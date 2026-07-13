@@ -30,9 +30,10 @@ type Quiz struct {
 	ID    bson.ObjectID `bson:"_id" json:"-"`
 	IDHex string        `bson:"-" json:"id"`
 
-	TestQuiz  string `json:"testQuiz" bson:"testQuiz"`
-	TestLevel string `json:"testLevel" bson:"testLevel"`
-	Subject   string `json:"subject" bson:"subject"`
+	TestQuiz         string `json:"testQuiz" bson:"testQuiz"`
+	TestLevel        string `json:"testLevel" bson:"testLevel"`
+	Subject          string `json:"subject" bson:"subject"`
+	AirtableRecordID string `json:"airtableRecordId,omitempty" bson:"airtableRecordId,omitempty"`
 
 	Earning       string   `json:"earning" bson:"earning"`
 	Question      string   `json:"question" bson:"question"`
