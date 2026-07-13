@@ -148,6 +148,7 @@ func SyncFromAirtable(qs QuizService) {
 			fields := record.Fields
 			questionText := strings.TrimSpace(firstStringField(fields, "Question Text", "question", "Question"))
 			if questionText == "" {
+				log.Printf("[Airtable Sync] skip record=%s reason=empty_question", record.ID)
 				continue
 			}
 
@@ -167,6 +168,15 @@ func SyncFromAirtable(qs QuizService) {
 			if optionB != "" { options = append(options, optionB) }
 			if optionC != "" { options = append(options, optionC) }
 			if optionD != "" { options = append(options, optionD) }
+			log.Printf(
+				"[Airtable Sync] record=%s question=%q level=%s subject=%s options=%d images=%d",
+				record.ID,
+				truncateForLog(questionText, 100),
+				levelRaw,
+				subject,
+				len(options),
+				len(imageLinks),
+			)
 
 			if subject == "" {
 				subject = "General"
@@ -214,6 +224,13 @@ func SyncFromAirtable(qs QuizService) {
 					log.Printf("Failed to update quiz from Airtable (record=%s): %v", record.ID, err)
 					continue
 				}
+				log.Printf(
+					"[Airtable Sync] action=updated record=%s mongoId=%s question=%q images=%d",
+					record.ID,
+					upsertQuiz.IDHex,
+					truncateForLog(upsertQuiz.Question, 100),
+					len(upsertQuiz.ImageLink),
+				)
 				updated++
 				existingByAirtableID[record.ID] = upsertQuiz
 				existingByQuestion[cleanQText] = upsertQuiz
@@ -224,6 +241,13 @@ func SyncFromAirtable(qs QuizService) {
 					log.Printf("Failed to insert quiz from Airtable (record=%s): %v", record.ID, err)
 					continue
 				}
+				log.Printf(
+					"[Airtable Sync] action=inserted record=%s mongoId=%s question=%q images=%d",
+					record.ID,
+					upsertQuiz.IDHex,
+					truncateForLog(upsertQuiz.Question, 100),
+					len(upsertQuiz.ImageLink),
+				)
 				inserted++
 				existingByAirtableID[record.ID] = upsertQuiz
 				existingByQuestion[cleanQText] = upsertQuiz
@@ -457,4 +481,15 @@ func earningForLevel(level string) string {
 	default:
 		return "600"
 	}
+}
+
+func truncateForLog(value string, maxLen int) string {
+	if maxLen <= 0 {
+		return ""
+	}
+	trimmed := strings.TrimSpace(value)
+	if len(trimmed) <= maxLen {
+		return trimmed
+	}
+	return strings.TrimSpace(trimmed[:maxLen]) + "..."
 }
