@@ -188,31 +188,25 @@ export class StreamingService {
   private initialize() {
     const configuredRedirectUri =
       this.configService.get<string>('YOUTUBE_REDIRECT_URI');
-
-    /**
-     * Support both web + installed credentials
-     */
-    const credentials = keys.web;
-    if (!credentials) {
-      throw new Error(
-        'Invalid credentials.json. Missing web or installed object',
-      );
-    }
+    const clientId =
+      this.configService.get<string>('YOUTUBE_CLIENT_ID') || keys.web?.client_id;
+    const clientSecret =
+      this.configService.get<string>('YOUTUBE_CLIENT_SECRET') || keys.web?.client_secret;
 
     const redirectUri =
       configuredRedirectUri ||
-      credentials.redirect_uris?.[0] ||
-      (credentials as any).redirectUri;
+      keys.web?.redirect_uris?.[0] ||
+      (keys.web as any)?.redirectUri;
 
-    if (!redirectUri) {
+    if (!clientId || !clientSecret || !redirectUri) {
       throw new Error(
-        'Invalid credentials.json. Missing redirect URI for OAuth2 client',
+        'Missing YouTube OAuth credentials. Provide YOUTUBE_CLIENT_ID, YOUTUBE_CLIENT_SECRET, and YOUTUBE_REDIRECT_URI in env, or supply credentials.json',
       );
     }
 
     this.oauth2Client = new google.auth.OAuth2(
-      credentials.client_id,
-      credentials.client_secret,
+      clientId,
+      clientSecret,
       redirectUri,
     );
 
