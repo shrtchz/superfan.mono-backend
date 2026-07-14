@@ -13,6 +13,7 @@ import { Server, Socket } from 'socket.io';
   cors: {
     origin: '*',
   },
+  path: '/api/v1/socket.io',
 })
 export class NotificationGateway
   implements OnGatewayConnection, OnGatewayDisconnect

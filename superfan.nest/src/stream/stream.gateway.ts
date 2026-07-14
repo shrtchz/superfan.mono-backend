@@ -15,6 +15,7 @@ import { QuizService } from '../quiz/quiz.service';
 
 @WebSocketGateway({
   cors: true,
+  path: '/api/v1/socket.io',
 })
 export class StreamGateway
   implements OnGatewayConnection, OnGatewayDisconnect

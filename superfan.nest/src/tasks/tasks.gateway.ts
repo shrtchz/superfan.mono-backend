@@ -14,6 +14,7 @@ import { prisma } from '../prisma/prisma';
 
 @WebSocketGateway({
   cors: true,
+  path: '/api/v1/socket.io',
 })
 export class TaskChatGateway
   implements OnGatewayConnection, OnGatewayDisconnect
