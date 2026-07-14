@@ -111,39 +111,75 @@ export class StreamGateway
   ): Record<string, unknown> | null {
     if (!quizzes.length) return null;
     const now = Date.now();
-
-    const openQuizzes = quizzes.filter((quiz) => {
-      const finishAt = this.toTimestamp(
-        quiz.quizFinishDate ?? quiz.finishDate ?? quiz.endAt,
+    const hasQuestion = (quiz: Record<string, unknown>) =>
+      Boolean(
+        this.toValidString(quiz.question) ||
+          this.toValidString(quiz.quizQuestion) ||
+          this.toValidString(quiz.title),
       );
+    const withQuestion = quizzes.filter(hasQuestion);
+    if (!withQuestion.length) return null;
+
+    const getStart = (quiz: Record<string, unknown>) =>
+      this.toTimestamp(quiz.quizScheduleDate ?? quiz.scheduleDate ?? quiz.startAt);
+    const getFinish = (quiz: Record<string, unknown>) =>
+      this.toTimestamp(quiz.quizFinishDate ?? quiz.finishDate ?? quiz.endAt);
+
+    // 1) Prefer quiz within the current duration window.
+    const activeQuizzes = withQuestion.filter((quiz) => {
+      const startAt = getStart(quiz);
+      const finishAt = getFinish(quiz);
+      if (Number.isFinite(startAt) && now < startAt) return false;
+      if (Number.isFinite(finishAt) && now >= finishAt) return false;
+      return true;
+    });
+
+    if (activeQuizzes.length) {
+      const liveQuiz = activeQuizzes.find(
+        (quiz) => this.toValidString(quiz.status).toLowerCase() === 'live',
+      );
+      if (liveQuiz) return liveQuiz;
+
+      return [...activeQuizzes].sort((a, b) => {
+        const aStart = getStart(a);
+        const bStart = getStart(b);
+        const safeA = Number.isFinite(aStart) ? aStart : Number.MIN_SAFE_INTEGER;
+        const safeB = Number.isFinite(bStart) ? bStart : Number.MIN_SAFE_INTEGER;
+        return safeB - safeA;
+      })[0];
+    }
+
+    // 2) If nothing active yet, return nearest upcoming/open question.
+    const openQuizzes = withQuestion.filter((quiz) => {
+      const finishAt = getFinish(quiz);
       return !Number.isFinite(finishAt) || finishAt > now;
     });
 
-    if (!openQuizzes.length) return null;
-
-    const liveQuiz = openQuizzes.find(
-      (quiz) => this.toValidString(quiz.status).toLowerCase() === 'live',
-    );
-    if (liveQuiz) return liveQuiz;
-
-    const scheduled = [...openQuizzes]
+    if (openQuizzes.length) {
+      const scheduled = [...openQuizzes]
       .filter((quiz) => {
         const status = this.toValidString(quiz.status).toLowerCase();
         return !status || status === 'scheduled';
       })
       .sort((a, b) => {
-        const aStart = this.toTimestamp(
-          a.quizScheduleDate ?? a.scheduleDate ?? a.startAt,
-        );
-        const bStart = this.toTimestamp(
-          b.quizScheduleDate ?? b.scheduleDate ?? b.startAt,
-        );
+        const aStart = getStart(a);
+        const bStart = getStart(b);
         const safeA = Number.isFinite(aStart) ? aStart : Number.MAX_SAFE_INTEGER;
         const safeB = Number.isFinite(bStart) ? bStart : Number.MAX_SAFE_INTEGER;
         return safeA - safeB;
       });
 
-    return scheduled[0] ?? openQuizzes[0] ?? null;
+      return scheduled[0] ?? openQuizzes[0] ?? null;
+    }
+
+    // 3) Never empty fallback: return latest question from history.
+    return [...withQuestion].sort((a, b) => {
+      const aUpdated = this.toTimestamp(a.updatedAt ?? a.createdAt);
+      const bUpdated = this.toTimestamp(b.updatedAt ?? b.createdAt);
+      const safeA = Number.isFinite(aUpdated) ? aUpdated : Number.MIN_SAFE_INTEGER;
+      const safeB = Number.isFinite(bUpdated) ? bUpdated : Number.MIN_SAFE_INTEGER;
+      return safeB - safeA;
+    })[0];
   }
 
   private extractLiveQuizArray(payload: unknown): Record<string, unknown>[] {
