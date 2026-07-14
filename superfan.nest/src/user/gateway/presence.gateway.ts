@@ -6,7 +6,9 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 
-@WebSocketGateway()
+@WebSocketGateway({
+  path: '/api/v1/socket.io',
+})
 export class PresenceGateway
   implements OnGatewayConnection, OnGatewayDisconnect
 {
