@@ -28,7 +28,6 @@ export class StreamGateway
   ) {}
 
   private users = new Map<number, string>();
-  private viewerCountIntervals = new Map<string, ReturnType<typeof setInterval>>();
 
   private toValidString(value: unknown): string {
     return typeof value === 'string' && value.trim() ? value.trim() : '';
@@ -228,47 +227,17 @@ export class StreamGateway
     return roomState?.size ?? 0;
   }
 
-  private async emitStreamViewerCount(streamId: number | string) {
+  private emitStreamViewerCount(streamId: number | string) {
     if (!this.server || streamId === undefined || streamId === null) return;
     const normalizedStreamId = this.normalizeStreamId(streamId);
-    const numericStreamId = Number(normalizedStreamId);
-    if (!Number.isFinite(numericStreamId)) return;
-
-    const youtubeCount =
-      await this.streamingService.getYoutubeViewerCountForStream(numericStreamId);
-    const safeCount = youtubeCount ?? 0;
+    const safeCount = this.getRoomMemberCount(normalizedStreamId);
 
     this.broadcastToStream(normalizedStreamId, 'streamViewerCount', {
       streamId: normalizedStreamId,
       count: safeCount,
-      source: youtubeCount === null ? 'youtube_unavailable' : 'youtube',
+      source: 'socket',
       updatedAt: new Date().toISOString(),
     });
-  }
-
-  private ensureViewerCountBroadcast(streamId: number | string) {
-    const normalizedStreamId = this.normalizeStreamId(streamId);
-    if (this.viewerCountIntervals.has(normalizedStreamId)) return;
-
-    void this.emitStreamViewerCount(normalizedStreamId);
-    const timer = setInterval(() => {
-      // Stop polling when nobody is in the room.
-      if (this.getRoomMemberCount(normalizedStreamId) <= 0) {
-        this.stopViewerCountBroadcast(normalizedStreamId);
-        return;
-      }
-      void this.emitStreamViewerCount(normalizedStreamId);
-    }, 15000);
-
-    this.viewerCountIntervals.set(normalizedStreamId, timer);
-  }
-
-  private stopViewerCountBroadcast(streamId: number | string) {
-    const normalizedStreamId = this.normalizeStreamId(streamId);
-    const timer = this.viewerCountIntervals.get(normalizedStreamId);
-    if (!timer) return;
-    clearInterval(timer);
-    this.viewerCountIntervals.delete(normalizedStreamId);
   }
 
   handleConnection(client: Socket) {
@@ -299,11 +268,7 @@ export class StreamGateway
     // schedule broadcast after adapter state settles.
     setTimeout(() => {
       joinedStreams.forEach((streamId) => {
-        if (this.getRoomMemberCount(streamId) <= 0) {
-          this.stopViewerCountBroadcast(streamId);
-        } else {
-          void this.emitStreamViewerCount(streamId);
-        }
+        this.emitStreamViewerCount(streamId);
       });
     }, 0);
   }
@@ -319,7 +284,7 @@ export class StreamGateway
     const joinedStreams = (client.data.joinedStreams ?? new Set<string>()) as Set<string>;
     joinedStreams.add(normalizedStreamId);
     client.data.joinedStreams = joinedStreams;
-    this.ensureViewerCountBroadcast(normalizedStreamId);
+    this.emitStreamViewerCount(normalizedStreamId);
     void this.emitLiveQuizUpdate('sync', { socket: client });
     return { message: `Joined room ${room}` };
   }
@@ -336,7 +301,7 @@ export class StreamGateway
       const joinedStreams = (client.data.joinedStreams ?? new Set<string>()) as Set<string>;
       joinedStreams.add(normalizedStreamId);
       client.data.joinedStreams = joinedStreams;
-      this.ensureViewerCountBroadcast(normalizedStreamId);
+      this.emitStreamViewerCount(normalizedStreamId);
       void this.emitLiveQuizUpdate('sync', { socket: client });
       return { message: `Joined room ${room}` };
     }
@@ -359,11 +324,7 @@ export class StreamGateway
     await client.leave(this.getStreamRoom(normalizedStreamId));
     const joinedStreams = client.data?.joinedStreams as Set<string> | undefined;
     joinedStreams?.delete(normalizedStreamId);
-    if (this.getRoomMemberCount(normalizedStreamId) <= 0) {
-      this.stopViewerCountBroadcast(normalizedStreamId);
-    } else {
-      void this.emitStreamViewerCount(normalizedStreamId);
-    }
+    this.emitStreamViewerCount(normalizedStreamId);
     return { message: 'Left stream room' };
   }
 
