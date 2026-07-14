@@ -1,13 +1,13 @@
 import {
   ConnectedSocket,
   MessageBody,
-  Logger,
   OnGatewayConnection,
   OnGatewayDisconnect,
   SubscribeMessage,
   WebSocketGateway,
   WebSocketServer,
 } from '@nestjs/websockets';
+import { Logger } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 
 import { Server, Socket } from 'socket.io';
