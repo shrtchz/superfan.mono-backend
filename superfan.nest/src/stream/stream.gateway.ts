@@ -1,6 +1,7 @@
 import {
   ConnectedSocket,
   MessageBody,
+  Logger,
   OnGatewayConnection,
   OnGatewayDisconnect,
   SubscribeMessage,
@@ -37,6 +38,7 @@ export class StreamGateway
 {
   @WebSocketServer()
   server: Server;
+  private readonly logger = new Logger(StreamGateway.name);
 
   constructor(
     private readonly streamingService: StreamingService,
@@ -183,38 +185,56 @@ export class StreamGateway
   }
 
   private extractLiveQuizArray(payload: unknown): Record<string, unknown>[] {
-    if (Array.isArray(payload)) {
-      return payload.filter(
-        (item): item is Record<string, unknown> =>
-          Boolean(item) && typeof item === 'object' && !Array.isArray(item),
-      );
-    }
-
-    if (!payload || typeof payload !== 'object') {
-      return [];
-    }
-
-    const root = payload as Record<string, unknown>;
-    const candidates = [root.data, root.result, root.quizzes, root.items];
-    for (const candidate of candidates) {
-      if (Array.isArray(candidate)) {
-        return candidate.filter(
-          (item): item is Record<string, unknown> =>
-            Boolean(item) && typeof item === 'object' && !Array.isArray(item),
-        );
-      }
-      if (candidate && typeof candidate === 'object') {
-        const nested = candidate as Record<string, unknown>;
-        if (Array.isArray(nested.data)) {
-          return nested.data.filter(
+    const asRecords = (value: unknown): Record<string, unknown>[] =>
+      Array.isArray(value)
+        ? value.filter(
             (item): item is Record<string, unknown> =>
               Boolean(item) && typeof item === 'object' && !Array.isArray(item),
-          );
+          )
+        : [];
+
+    const tryCollect = (value: unknown): Record<string, unknown>[] => {
+      const direct = asRecords(value);
+      if (direct.length) return direct;
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+
+      const node = value as Record<string, unknown>;
+      const nextCandidates = [
+        node.data,
+        node.result,
+        node.quizzes,
+        node.items,
+        node.questions,
+      ];
+
+      for (const candidate of nextCandidates) {
+        const nested = asRecords(candidate);
+        if (nested.length) return nested;
+      }
+
+      // Try one more level deep for shapes like { data: { result: { quizzes: [] } } }
+      for (const candidate of nextCandidates) {
+        if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+          continue;
+        }
+        const deepNode = candidate as Record<string, unknown>;
+        const deepCandidates = [
+          deepNode.data,
+          deepNode.result,
+          deepNode.quizzes,
+          deepNode.items,
+          deepNode.questions,
+        ];
+        for (const deep of deepCandidates) {
+          const deepRecords = asRecords(deep);
+          if (deepRecords.length) return deepRecords;
         }
       }
-    }
 
-    return [];
+      return [];
+    };
+
+    return tryCollect(payload);
   }
 
   private async getCurrentLiveQuizSnapshot(): Promise<Record<string, unknown> | null> {
@@ -222,8 +242,13 @@ export class StreamGateway
       const response = await this.quizService.getAllLiveQuiz();
       const quizzes = this.extractLiveQuizArray(response);
       const current = this.pickCurrentLiveQuiz(quizzes);
-      return this.toDisplayLiveQuiz(current);
+      const displayQuiz = this.toDisplayLiveQuiz(current);
+      this.logger.log(
+        `[LiveQuiz] fetched=${quizzes.length} selectedId=${displayQuiz?.id ?? 'none'} question=${displayQuiz?.question ?? 'none'}`,
+      );
+      return displayQuiz;
     } catch {
+      this.logger.warn('[LiveQuiz] failed to fetch current snapshot');
       return null;
     }
   }
@@ -240,6 +265,11 @@ export class StreamGateway
       quiz,
       updatedAt: new Date().toISOString(),
     };
+    this.logger.log(
+      `[LiveQuiz] emit action=${action} target=${
+        target.streamId ?? (target.socket ? 'socket' : 'broadcast')
+      } quizId=${(quiz as any)?.id ?? 'none'}`,
+    );
 
     if (target.socket) {
       target.socket.emit('liveQuizUpdated', payload);
