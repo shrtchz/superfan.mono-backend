@@ -9,9 +9,22 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 
+const SOCKET_CORS_ORIGINS = [
+  'http://localhost:9050',
+  'http://localhost:9090',
+  'https://api.superfan.ng',
+  'https://superfan-admin.vercel.app',
+  'https://superfan-client.vercel.app',
+  'https://sn1.superfan.ng',
+  'https://s1.superfan.ng',
+  'https://sg1.superfan.ng',
+  'https://sa1.superfan.ng',
+];
+
 @WebSocketGateway({
   cors: {
-    origin: '*',
+    origin: SOCKET_CORS_ORIGINS,
+    credentials: true,
   },
   path: '/api/v1/socket.io',
 })
