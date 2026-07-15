@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 	"quiz.superfan.com/apis/middleware"
 	"quiz.superfan.com/apis/models"
 	"quiz.superfan.com/apis/services"
@@ -350,9 +351,11 @@ func (qc *QuizController) GetQuizAnswerById(ctx *gin.Context) {
 	answer, err := qc.QuizService.GetQuizAnswerById(id)
 	if err != nil {
 		status := http.StatusInternalServerError
-
-		if err.Error() == "invalid quiz id" || err.Error() == "quiz not found" {
+		switch {
+		case err.Error() == "invalid quiz id":
 			status = http.StatusBadRequest
+		case err.Error() == "quiz not found", errors.Is(err, mongo.ErrNoDocuments):
+			status = http.StatusNotFound
 		}
 
 		utils.SendError(ctx, status, "ERROR", err.Error())
@@ -372,13 +375,12 @@ func (qc *QuizController) GetLiveQuizAnswerById(ctx *gin.Context) {
 
 	answer, err := qc.QuizService.GetLiveQuizAnswerById(id)
 	if err != nil {
-
 		status := http.StatusInternalServerError
-
-		if err.Error() == "invalid live quiz id" ||
-			err.Error() == "live quiz not found" {
-
+		switch {
+		case err.Error() == "invalid live quiz id":
 			status = http.StatusBadRequest
+		case err.Error() == "live quiz not found", errors.Is(err, mongo.ErrNoDocuments):
+			status = http.StatusNotFound
 		}
 
 		utils.SendError(ctx, status, "ERROR", err.Error())
