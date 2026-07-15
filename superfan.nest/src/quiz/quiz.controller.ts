@@ -29,6 +29,7 @@ import {
   GetQuizWithPreferencesDto,
   RecordAnswerDto,
   SubmitLiveAnswerDto,
+  SubmitQuizDto,
   startRandomQuiz,
   UpdateLiveAnswerDto,
   UpdateLiveQuizDto,
@@ -103,22 +104,15 @@ export class QuizController {
   }
 
   @Post('/submit-quiz')
-  async submitQuiz(
-    @Body()
-    body: {
-      userId: string;
-      rewardType: string;
-      quizTime: string;
-  ad_bonuses: number,
-      responses: { quizId: string; selectedAnswer: string;}[];
-    },
-  ) {
-    try {
-      const { userId, rewardType, quizTime, responses, ad_bonuses } = body;
-      return this.quizService.submitQuiz(userId, rewardType, quizTime, ad_bonuses, responses);
-    } catch (error) {
-      throw failureResponse(error.message || 'Failed to submit quiz');
-    }
+  async submitQuiz(@Body() body: SubmitQuizDto) {
+    const { userId, rewardType, quizTime, responses, ad_bonuses = 0 } = body;
+    return this.quizService.submitQuiz(
+      userId,
+      rewardType,
+      quizTime,
+      ad_bonuses,
+      responses,
+    );
   }
 
     @Post('submit/:userId')
@@ -196,11 +190,17 @@ export class QuizController {
         body.isRandom === true ||
         body.isRandom === 'true' ||
         body.isRandom === '1';
-      const { isRandom: _ignored, ...pack } = body;
+      const replaceExisting =
+        body.replaceExisting === true ||
+        body.replaceExisting === 'true' ||
+        body.replaceExisting === '1';
+      const { isRandom: _ignored, replaceExisting: _replaceIgnored, ...pack } =
+        body;
       return await this.quizService.startQuickQuizSession(
         req.user.id,
         pack,
         isRandom,
+        replaceExisting,
       );
     } catch (error) {
       throw failureResponse(

@@ -8,6 +8,8 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  Matches,
+  ValidateNested,
 } from 'class-validator';
 
 export class CreateQuizDto {
@@ -243,4 +245,38 @@ export class CreateQuizCategoryDto {
 
   @IsString()
   subject: string;
+}
+
+export class SubmitQuizResponseItemDto {
+  @IsString()
+  @IsNotEmpty()
+  @Matches(/^[a-f\d]{24}$/i, { message: 'quizId must be a valid ObjectId' })
+  quizId: string;
+
+  @IsString()
+  selectedAnswer: string;
+}
+
+export class SubmitQuizDto {
+  @IsString()
+  @IsNotEmpty()
+  userId: string;
+
+  @IsString()
+  @IsNotEmpty()
+  rewardType: string;
+
+  @IsString()
+  @IsNotEmpty()
+  quizTime: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  ad_bonuses?: number;
+
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => SubmitQuizResponseItemDto)
+  responses: SubmitQuizResponseItemDto[];
 }
