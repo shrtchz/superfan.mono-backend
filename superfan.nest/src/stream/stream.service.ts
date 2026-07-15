@@ -1165,15 +1165,29 @@ async editStream(
         },
       });
 
-      let index_comment = await this.elasticSearch.indexComment({
-        id: stream_comment.id,
-        streamId,
-        content: comment,
-        parentId: 'comment'
-      });
+      await this.redis.del(`stream:${streamId}:comments`);
 
-      if (!(await this.hasSubmittedLiveQuizForStream(streamId, userId))) {
-        await this.submitLiveQuizAnswerFromMessage(streamId, comment, userId);
+      try {
+        await this.elasticSearch.indexComment({
+          id: stream_comment.id,
+          streamId,
+          content: comment,
+          parentId: 'comment',
+        });
+      } catch (indexError: any) {
+        this.logger.warn(
+          `Failed to index stream comment ${stream_comment.id}: ${indexError?.message || indexError}`,
+        );
+      }
+
+      try {
+        if (!(await this.hasSubmittedLiveQuizForStream(streamId, userId))) {
+          await this.submitLiveQuizAnswerFromMessage(streamId, comment, userId);
+        }
+      } catch (quizError: any) {
+        this.logger.warn(
+          `Failed live quiz side-effect for stream comment ${stream_comment.id}: ${quizError?.message || quizError}`,
+        );
       }
 
       const author = await this.getUserPublicProfile(userId);
@@ -1189,6 +1203,12 @@ async editStream(
         avatar: author.avatarUrl,
       };
     } catch(error) {
+      if (
+        error instanceof ForbiddenException ||
+        error instanceof NotFoundException
+      ) {
+        throw error;
+      }
       throw new InternalServerErrorException(
         `Failed to comment on stream: ${error.message}`,
       );
@@ -1321,23 +1341,37 @@ async editStream(
         },
       });
 
-            let index_comment = await this.elasticSearch.indexComment({
-        id: reply_comment.id,
-        streamId: parentComment.streamId,
-        content: comment,
-        parentId: 'reply'
-      });
+      await this.redis.del(`stream:${parentComment.streamId}:comments`);
 
-      if (
-        !(await this.hasSubmittedLiveQuizForStream(
-          parentComment.streamId,
-          userId,
-        ))
-      ) {
-        await this.submitLiveQuizAnswerFromMessage(
-          parentComment.streamId,
-          comment,
-          userId,
+      try {
+        await this.elasticSearch.indexComment({
+          id: reply_comment.id,
+          streamId: parentComment.streamId,
+          content: comment,
+          parentId: 'reply',
+        });
+      } catch (indexError: any) {
+        this.logger.warn(
+          `Failed to index reply ${reply_comment.id}: ${indexError?.message || indexError}`,
+        );
+      }
+
+      try {
+        if (
+          !(await this.hasSubmittedLiveQuizForStream(
+            parentComment.streamId,
+            userId,
+          ))
+        ) {
+          await this.submitLiveQuizAnswerFromMessage(
+            parentComment.streamId,
+            comment,
+            userId,
+          );
+        }
+      } catch (quizError: any) {
+        this.logger.warn(
+          `Failed live quiz side-effect for reply ${reply_comment.id}: ${quizError?.message || quizError}`,
         );
       }
 
@@ -1374,6 +1408,12 @@ async editStream(
       };
 
     } catch (error) {
+      if (
+        error instanceof ForbiddenException ||
+        error instanceof NotFoundException
+      ) {
+        throw error;
+      }
       throw new InternalServerErrorException(
         `Failed to comment on stream: ${error.message}`,
       );
@@ -1690,7 +1730,7 @@ async getStreamChatStatus(streamId: number) {
 
   return {
     streamId: stream.id,
-    locked: stream.lockChat,
+    locked: Boolean(stream.lockChat),
   };
 }
 
@@ -1729,7 +1769,7 @@ async setStreamChatLock(streamId: number, locked: boolean, adminId: number) {
 
     return {
       streamId: updated.id,
-      locked: updated.lockChat,
+      locked: Boolean(updated.lockChat),
       action: locked ? 'lock' : 'unlock',
       adminId,
       timestamp,
@@ -1994,6 +2034,52 @@ async isWinner(commentId: number, winAmount: number) {
     }
   }
 
+  async getYoutubeViewerCountForStream(streamId: number): Promise<number | null> {
+    try {
+      const stream = await prisma.stream.findUnique({
+        where: { id: streamId },
+        select: {
+          id: true,
+          broadcastId: true,
+          networkPlatform: true,
+        },
+      });
+
+      if (!stream?.broadcastId) {
+        return null;
+      }
+
+      const network = String(stream.networkPlatform ?? '').toLowerCase();
+      if (network && network !== 'youtube') {
+        return null;
+      }
+
+      const videoData = await this.getVideoViews(stream.broadcastId);
+      const concurrentViewers = Number.parseInt(
+        videoData?.liveStreamingDetails?.concurrentViewers || '',
+        10,
+      );
+      if (Number.isFinite(concurrentViewers)) {
+        return concurrentViewers;
+      }
+
+      const viewCount = Number.parseInt(
+        videoData?.statistics?.viewCount || '',
+        10,
+      );
+      if (Number.isFinite(viewCount)) {
+        return viewCount;
+      }
+
+      return 0;
+    } catch (error: any) {
+      this.logger.warn(
+        `Failed to fetch YouTube viewer count for stream ${streamId}: ${error?.message || error}`,
+      );
+      return null;
+    }
+  }
+
   async getUserChatFeed(streamId: number) {
     const stream = await prisma.stream.findUnique({
       where: { id: streamId },
@@ -2022,6 +2108,7 @@ async isWinner(commentId: number, winAmount: number) {
           'unlikeComment',
           'deleteComment',
           'chatLockChanged',
+          'streamViewerCount',
         ],
       },
     };

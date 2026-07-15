@@ -35,7 +35,7 @@ async function bootstrap() {
   app.use(helmet());
 
   app.enableCors({
-    origin: ["http://localhost:9090", "http://localhost:9050", "https://api.superfan.ng", "https://superfan-admin.vercel.app", "https://superfan-client.vercel.app", "https://sn1.superfan.ng", "https://sg1.superfan.ng", "https://sa1.superfan.ng"],
+    origin: ["http://localhost:9090", "http://localhost:9050", "https://api.superfan.ng", "https://superfan-admin.vercel.app", "https://superfan-client.vercel.app", "https://sn1.superfan.ng", "https://s1.superfan.ng", "https://sg1.superfan.ng", "https://sa1.superfan.ng"],
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
     credentials: true,
     preflightContinue: false,
