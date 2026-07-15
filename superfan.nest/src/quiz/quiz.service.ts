@@ -436,12 +436,6 @@ async submitQuiz(
   }
 
   // 7. Mark quiz as completed
-
-        const now = new Date(
-    new Date().toLocaleString("en-US", {
-      timeZone: "Africa/Lagos",
-    })
-  )
   // let updateResult = await prisma.ongoingQuiz.update({
   //   where: { id: get_ongoing_quiz?.id },
   //   data: {
