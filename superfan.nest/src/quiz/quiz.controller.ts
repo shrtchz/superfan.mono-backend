@@ -445,11 +445,11 @@ async getOngoingLiveQuiz(@Param('id', ParseIntPipe) id: number) {
 
   @Public()
   @Get('/get-quiz-answer/:id')
-  getQuizAnswer(@Param('id') id: string) {
+  async getQuizAnswer(@Param('id') id: string) {
     try {
-      return this.quizService.getQuizAnswer(id);
+      return await this.quizService.getQuizAnswer(id);
     } catch (error) {
-      throw failureResponse(error.message || 'Failed to get quiz answer');
+      throw failureResponse(error || 'Failed to get quiz answer');
     }
   }
 

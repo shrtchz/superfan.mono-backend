@@ -1254,7 +1254,7 @@ func (u *QuizServiceImpl) GetQuizAnswerById(id string) (map[string]interface{}, 
 	var quiz models.Quiz
 	err = u.quizcollection.FindOne(u.ctx, filter).Decode(&quiz)
 	if err != nil {
-		if err == mongo.ErrNoDocuments {
+		if errors.Is(err, mongo.ErrNoDocuments) {
 			return nil, errors.New("quiz not found")
 		}
 		return nil, err
@@ -1283,11 +1283,9 @@ func (u *QuizServiceImpl) GetLiveQuizAnswerById(id string) (map[string]interface
 
 	err = u.liveQuizCollection.FindOne(u.ctx, filter).Decode(&liveQuiz)
 	if err != nil {
-
-		if err == mongo.ErrNoDocuments {
+		if errors.Is(err, mongo.ErrNoDocuments) {
 			return nil, errors.New("live quiz not found")
 		}
-
 		return nil, err
 	}
 

@@ -1,6 +1,8 @@
 import { HttpService } from '@nestjs/axios';
 import { BadRequestException, ConflictException, ForbiddenException, HttpException, HttpStatus, Injectable, InternalServerErrorException, Logger, NotFoundException, Inject, forwardRef } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { JwtService } from '@nestjs/jwt';
 import { Prisma } from '@prisma/client';
 import { JsonArray } from '@prisma/client/runtime/client';
 import { firstValueFrom } from 'rxjs';
@@ -34,9 +36,24 @@ export class QuizService {
     private readonly walletService: WalletService,
     private readonly paymentService: PaymentService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly jwtService: JwtService,
+    private readonly configService: ConfigService,
     @Inject(forwardRef(() => UserService))
     private readonly userService: UserService,
   ) {}
+
+  /** Service JWT for server-to-server calls to the Go quiz API (AuthRequired routes). */
+  private getGoServiceAuthHeaders(): Record<string, string> {
+    const token = this.jwtService.sign(
+      { id: 0, email: 'system@superfan.internal', role: 'SYSTEM' },
+      {
+        secret:
+          this.configService.get<string>('AT_SECRET') || 'superfan_secret_key',
+        expiresIn: '5m',
+      },
+    );
+    return { Authorization: `Bearer ${token}` };
+  }
 
   private getLagosNow(): Date {
     return new Date(
@@ -1337,17 +1354,55 @@ async hasSubmittedLiveQuizForStream(
   }
 
   async getQuizAnswer(id: string) {
-    const response = await firstValueFrom(
-      this.httpService.get(`${this.baseUrl}/quiz-answer/${id}`),
-    );
-    return response.data;
+    try {
+      const response = await firstValueFrom(
+        this.httpService.get(`${this.baseUrl}/quiz-answer/${id}`, {
+          headers: this.getGoServiceAuthHeaders(),
+        }),
+      );
+      return response.data;
+    } catch (error: any) {
+      const status = error?.response?.status;
+      const message =
+        error?.response?.data?.error?.message ||
+        error?.response?.data?.message ||
+        error?.message ||
+        'Failed to get quiz answer';
+
+      if (status === 404) {
+        throw new NotFoundException(message);
+      }
+      if (status === 400) {
+        throw new BadRequestException(message);
+      }
+      throw new InternalServerErrorException(message);
+    }
   }
 
     async getLiveQuizAnswer(id: string) {
-    const response = await firstValueFrom(
-      this.httpService.get(`${this.baseUrl}/live-answer/${id}`),
-    );
-    return response.data;
+    try {
+      const response = await firstValueFrom(
+        this.httpService.get(`${this.baseUrl}/live-answer/${id}`, {
+          headers: this.getGoServiceAuthHeaders(),
+        }),
+      );
+      return response.data;
+    } catch (error: any) {
+      const status = error?.response?.status;
+      const message =
+        error?.response?.data?.error?.message ||
+        error?.response?.data?.message ||
+        error?.message ||
+        'Failed to get live quiz answer';
+
+      if (status === 404) {
+        throw new NotFoundException(message);
+      }
+      if (status === 400) {
+        throw new BadRequestException(message);
+      }
+      throw new InternalServerErrorException(message);
+    }
   }
 
   async getCompletedLiveQuiz(userId: number) {
