@@ -52,6 +52,7 @@ func FetchOngoingQuiz(userID int) (*OngoingQuizFetchResult, error) {
 			return &OngoingQuizFetchResult{
 				MissingQuizAttempt: true,
 				QuizID:             ongoingQuiz.ID,
+				OngoingQuiz:        &ongoingQuiz,
 			}, nil
 		}
 
