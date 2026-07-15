@@ -21,6 +21,7 @@ import {
   GetQuizWithPreferencesDto,
   RecordAnswerDto,
   startRandomQuiz,
+  SubmitQuizDto,
   UpdateLiveAnswerDto,
 } from './quiz.dto';
 import { QuestionAddedEvent } from './quiz.events';
@@ -288,18 +289,27 @@ async submitQuiz(
   rewardType: string,
   quizTime: string,
   ad_bonuses: number,
-  responses: { quizId: string; selectedAnswer: string }[],
+  responses: SubmitQuizDto['responses'],
 ) {
+  if (!Array.isArray(responses) || responses.length === 0) {
+    throw new BadRequestException('At least one quiz response is required');
+  }
+
+  const objectIdPattern = /^[a-f\d]{24}$/i;
+  for (const response of responses) {
+    if (!objectIdPattern.test(response.quizId)) {
+      throw new BadRequestException(`Invalid quizId: ${response.quizId}`);
+    }
+  }
+
   // 1. Validate user
   const check_user_id = await prisma.user.findUnique({
     where: { id: Number(userId) },
   });
 
   if (!check_user_id) {
-    throw new InternalServerErrorException('Invalid user ID');
+    throw new BadRequestException('Invalid user ID');
   }
-
-  // check if quiz is already submitted
 
   const checkQuiz = await prisma.ongoingQuiz.findFirst({
     where: {
@@ -309,21 +319,66 @@ async submitQuiz(
   });
 
   if (!checkQuiz) {
-    throw new InternalServerErrorException('Quiz already submitted');
+    throw new NotFoundException('No active quiz session found.');
   }
 
-  // 2. Submit quiz to external service
-  const response = await firstValueFrom(
-    this.httpService.post(`${this.baseUrl}/submit`, {
-      userId,
-      responses,
-      rewardType,
-      quizTime,
+  const now = new Date(
+    new Date().toLocaleString('en-US', {
+      timeZone: 'Africa/Lagos',
     }),
   );
 
+  if (checkQuiz.expiresAt && checkQuiz.expiresAt <= now) {
+    throw new HttpException(
+      { expired: true, message: 'Quiz session has expired.' },
+      HttpStatus.GONE,
+    );
+  }
+
+  let response;
+  try {
+    response = await firstValueFrom(
+      this.httpService.post(`${this.baseUrl}/submit`, {
+        userId,
+        responses,
+        rewardType,
+        quizTime,
+      }),
+    );
+  } catch (error: any) {
+    const message =
+      error?.response?.data?.error?.message ||
+      error?.response?.data?.message ||
+      error?.message ||
+      'Failed to submit quiz to quiz service';
+    const status = error?.response?.status;
+
+    if (status === 400) {
+      throw new BadRequestException(message);
+    }
+    if (status === 404) {
+      throw new NotFoundException(message);
+    }
+
+    this.logger.error(`Go submit failed for user ${userId}: ${message}`);
+    throw new InternalServerErrorException(message);
+  }
+
   const submission = response.data?.data?.submission;
-  const { score, subject, totalEarning, responses: submissionResponses, submittedAt } = submission;
+  if (!submission) {
+    this.logger.error(
+      `Go submit returned unexpected payload for user ${userId}: ${JSON.stringify(response.data)}`,
+    );
+    throw new InternalServerErrorException('Invalid submission response from quiz service');
+  }
+
+  const {
+    score,
+    subject,
+    totalEarning,
+    responses: submissionResponses,
+    submittedAt,
+  } = submission;
 
   // 3. Get test level from first quiz
   let testLevel = '';
@@ -404,7 +459,7 @@ async submitQuiz(
   // });
 
   let updateResult = await prisma.ongoingQuiz.update({
-  where: { id: get_ongoing_quiz?.id },
+  where: { id: checkQuiz.id },
   data: {
     isCompleted: true,
     completedAt: now,
@@ -424,7 +479,7 @@ async submitQuiz(
 });
 
   let get_currencies = await prisma.ongoingQuiz.findUnique({
-    where: { id: get_ongoing_quiz?.id },
+    where: { id: checkQuiz.id },
     select: {
       totalEarninginUSDC: true,
       totalEarninginUSDT: true,
@@ -1456,14 +1511,34 @@ async startQuickQuizSession(
   userId: number,
   pack: Record<string, any>,
   isRandom = true,
+  replaceExisting = false,
 ) {
   try {
-    await prisma.ongoingQuiz.deleteMany({
+    const existingOngoingQuiz = await prisma.ongoingQuiz.findFirst({
       where: {
         userId,
         isCompleted: false,
       },
     });
+
+    if (existingOngoingQuiz && !replaceExisting) {
+      throw new HttpException(
+        'You already have an ongoing quiz. Please complete or quit it before starting a new one.',
+        HttpStatus.CONFLICT,
+      );
+    }
+
+    if (existingOngoingQuiz && replaceExisting) {
+      await prisma.quizAttempt.deleteMany({
+        where: { quizId: existingOngoingQuiz.id },
+      });
+      await prisma.ongoingQuiz.deleteMany({
+        where: {
+          userId,
+          isCompleted: false,
+        },
+      });
+    }
 
     const subscription =
       await this.userService.checkSubscriptionStatusbyUserId(userId);
