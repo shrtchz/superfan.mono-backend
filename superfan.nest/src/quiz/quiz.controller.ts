@@ -15,26 +15,31 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { Public } from '../common/decorators';
+import { Public, Roles } from '../common/decorators';
 import { ApiRoutes } from '../common/enums/routes.enum';
+import { Role } from '../common/enums/role.enum';
 import { JwtGuard } from '../common/guards';
+import { RoleGuard } from '../common/guards/roles.guard';
 import { failureResponse, successResponse } from '../common/interceptors/response.interceptor';
-import { AirtableService } from '../elasticsearch/airtable.service';
+
 import {
   CreateLiveQuizDto,
   CreateQuizCategoryDto,
   CreateQuizDto,
   GetQuizWithPreferencesDto,
   RecordAnswerDto,
+  SubmitLiveAnswerDto,
+  SubmitQuizDto,
   startRandomQuiz,
   UpdateLiveAnswerDto,
+  UpdateLiveQuizDto,
 } from './quiz.dto';
 import { QuizService } from './quiz.service';
 
 @UseGuards(JwtGuard)
 @Controller(ApiRoutes.QUIZ)
 export class QuizController {
-  constructor(private readonly quizService: QuizService, private readonly airtableService: AirtableService) {}
+  constructor(private readonly quizService: QuizService) {}
 
   @Public()
   @Post('/create')
@@ -56,23 +61,58 @@ export class QuizController {
     }
   }
 
-  @Post('/submit-quiz')
-  async submitQuiz(
-    @Body()
-    body: {
-      userId: string;
-      rewardType: string;
-      quizTime: string;
-  ad_bonuses: number,
-      responses: { quizId: string; selectedAnswer: string;}[];
-    },
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin, Role.moderator)
+  @Post('live')
+  createLiveQuizSpec(@Body() liveQuizData: CreateLiveQuizDto) {
+    try {
+      return this.quizService.createLiveQuiz(liveQuizData);
+    } catch (error) {
+      throw failureResponse(error.message || 'Failed to create live quiz');
+    }
+  }
+
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin, Role.moderator)
+  @Patch('live/:id')
+  async updateLiveQuizSpec(
+    @Param('id') id: string,
+    @Body() updateData: UpdateLiveQuizDto,
   ) {
     try {
-      const { userId, rewardType, quizTime, responses, ad_bonuses } = body;
-      return this.quizService.submitQuiz(userId, rewardType, quizTime, ad_bonuses, responses);
+      return await this.quizService.updateLiveQuiz(updateData, id);
     } catch (error) {
-      throw failureResponse(error.message || 'Failed to submit quiz');
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      throw failureResponse(error.message || 'Failed to update live quiz');
     }
+  }
+
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin, Role.moderator)
+  @Delete('live/:id')
+  async deleteLiveQuizSpec(@Param('id') id: string) {
+    try {
+      return await this.quizService.deleteLiveQuiz(id);
+    } catch (error) {
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      throw failureResponse(error.message || 'Failed to delete live quiz');
+    }
+  }
+
+  @Post('/submit-quiz')
+  async submitQuiz(@Body() body: SubmitQuizDto) {
+    const { userId, rewardType, quizTime, responses, ad_bonuses = 0 } = body;
+    return this.quizService.submitQuiz(
+      userId,
+      rewardType,
+      quizTime,
+      ad_bonuses,
+      responses,
+    );
   }
 
     @Post('submit/:userId')
@@ -116,9 +156,56 @@ export class QuizController {
     try {
       return await this.quizService.getQuizWithPreferences(dto, req.user.id);
     } catch (error) {
-      console.log('Error fetching quiz with preferences:', error);
+      console.error('CRITICAL Error fetching quiz with preferences:', error);
+      if (error.response) {
+        console.error('CRITICAL Axios Response Data:', error.response.data);
+      }
       throw failureResponse(
         error || 'Failed to get quiz with preferences',
+      );
+    }
+  }
+
+  /**
+   * Start a quick-start session with a quiz pack already loaded from Go.
+   * Body: { quizzes, totalEarning?, totalTime?, languagePreference?, ... , isRandom? }
+   */
+  @Post('start-quick-session')
+  async startQuickSession(
+    @Body()
+    body: {
+      quizzes?: any[];
+      totalEarning?: number;
+      totalTime?: number;
+      languagePreference?: string;
+      subjectPreference?: string;
+      testLevel?: string;
+      isRandom?: boolean | string;
+      replaceExisting?: boolean | string;
+      [key: string]: any;
+    },
+    @Req() req: any,
+  ) {
+    try {
+      const isRandom =
+        body.isRandom === true ||
+        body.isRandom === 'true' ||
+        body.isRandom === '1';
+      const replaceExisting =
+        body.replaceExisting === true ||
+        body.replaceExisting === 'true' ||
+        body.replaceExisting === '1';
+      const { isRandom: _ignored, replaceExisting: _replaceIgnored, ...pack } =
+        body;
+      return await this.quizService.startQuickQuizSession(
+        req.user.id,
+        pack,
+        isRandom,
+        replaceExisting,
+      );
+    } catch (error) {
+      throw failureResponse(
+        error || 'Failed to start quick quiz session',
       );
     }
   }
@@ -279,11 +366,6 @@ async getOngoingLiveQuiz(@Param('id', ParseIntPipe) id: number) {
     }
   }
 
-  @Public()
-  @Get('/get-records')
-  getRecord(@Query('tableName') tableName: string) {
-    return this.airtableService.findAll(tableName)
-  }
 
     @Public()
   @Get('/get-live-quiz-answer/:id')
@@ -304,13 +386,39 @@ async getOngoingLiveQuiz(@Param('id', ParseIntPipe) id: number) {
     }
   }
 
+  /**
+   * Start a live quiz session with questions already loaded from Go.
+   * Body: { streamId: number, questions: GoLiveQuiz[] }
+   */
+  @Post('/start-live-session')
+  startLiveSession(
+    @Body()
+    body: {
+      streamId: number;
+      questions: any[];
+    },
+    @Req() req: any,
+  ) {
+    try {
+      return this.quizService.startLiveQuizSession(
+        req.user.id,
+        Number(body.streamId),
+        body.questions || [],
+      );
+    } catch (error) {
+      throw failureResponse(error.message || 'Failed to start live quiz session');
+    }
+  }
+
     @Put('live-quiz-answer')
   async updateAnswer(
+    @Req() req: any,
     @Body() dto: UpdateLiveAnswerDto,
   ) {
     const data =
       await this.quizService.updateLiveQuizAnswer(
         dto,
+        req.user.id,
       );
 
     return {
@@ -318,13 +426,31 @@ async getOngoingLiveQuiz(@Param('id', ParseIntPipe) id: number) {
     };
   }
 
+  @Post('live/:id/answer')
+  async submitLiveAnswerByQuizId(
+    @Req() req: any,
+    @Param('id') quizId: string,
+    @Body() dto: SubmitLiveAnswerDto,
+  ) {
+    const data = await this.quizService.submitLiveAnswerByQuizId(
+      req.user.id,
+      quizId,
+      dto.selectedAnswer,
+    );
+
+    return {
+      data,
+      message: 'Live quiz answer submitted',
+    };
+  }
+
   @Public()
   @Get('/get-quiz-answer/:id')
-  getQuizAnswer(@Param('id') id: string) {
+  async getQuizAnswer(@Param('id') id: string) {
     try {
-      return this.quizService.getQuizAnswer(id);
+      return await this.quizService.getQuizAnswer(id);
     } catch (error) {
-      throw failureResponse(error.message || 'Failed to get quiz answer');
+      throw failureResponse(error || 'Failed to get quiz answer');
     }
   }
 
@@ -364,18 +490,24 @@ async getOngoingLiveQuiz(@Param('id', ParseIntPipe) id: number) {
   @Patch('/update/:id')
   async updateLiveQuiz(@Param('id') id: string, @Body() updateData: any) {
     try {
-      return this.quizService.updateLiveQuiz(updateData, id);
+      return await this.quizService.updateLiveQuiz(updateData, id);
     } catch (error) {
+      if (error instanceof HttpException) {
+        throw error;
+      }
       throw failureResponse(error.message || 'Failed to update live quiz');
     }
   }
 
   @Public()
   @Delete('/delete-live-quiz/:id')
-  deleteLiveQuiz(@Param('id') id: string) {
+  async deleteLiveQuiz(@Param('id') id: string) {
     try {
-      return this.quizService.deleteLiveQuiz(id);
+      return await this.quizService.deleteLiveQuiz(id);
     } catch (error) {
+      if (error instanceof HttpException) {
+        throw error;
+      }
       throw failureResponse(error.message || 'Failed to delete live quiz');
     }
   }
@@ -426,12 +558,15 @@ async getOngoingLiveQuiz(@Param('id', ParseIntPipe) id: number) {
 
   @Public()
   @Get('/getall')
-  getAllQuiz() {
+  async getAllQuiz() {
     try {
-      return this.quizService.getAllQuiz();
+      return await this.quizService.getAllQuiz();
     } catch (error) {
+      if (error.response && error.response.data) {
+        throw new HttpException(error.response.data, error.response.status);
+      }
       throw failureResponse(
-        error.message || 'Failed to get all quiz submissions',
+        error.message || 'Failed to get all quizzes',
       );
     }
   }

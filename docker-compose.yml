@@ -63,6 +63,8 @@ services:
     ports:
       - '3001:3000'
     env_file:
+      - path: ./.env
+        required: false
       - path: ./superfan.nest/.env
         required: false
     environment:
@@ -86,16 +88,20 @@ services:
     ports:
       - '7190:7190'
     env_file:
+      - path: ./.env
+        required: false
       - path: ./superfan.go/.env
         required: false
     environment:
       - MONGO_URI=mongodb://mongo:27017/quizdb
+      - DATABASE_URL=postgresql://postgres:password@db:5432/superfan
       - PORT=7190
       - GIN_MODE=debug
     volumes:
       - ./superfan.go:/app
     depends_on:
       - mongo
+      - db
     restart: unless-stopped
 
 volumes:

@@ -74,6 +74,21 @@ export class UserController {
     return this.userService.signupUser(dto);
   }
 
+  @Public()
+  @Post('/auth/login')
+  @HttpCode(HttpStatus.OK)
+  async loginUser(@Body() dto: LoginDto) {
+    return this.userService.signinUser(dto);
+  }
+
+  @Post('/clerk-login')
+  @HttpCode(HttpStatus.OK)
+  async clerkLogin(@Req() req: any) {
+    return {
+      ...req.user,
+      role: req.user.roleName,
+    };
+  }
   @Get(':id/login-method')
   async getLoginMethod(@Param('id', ParseIntPipe) userId: number) {
     return this.userService.getUserLoginMethod(userId);

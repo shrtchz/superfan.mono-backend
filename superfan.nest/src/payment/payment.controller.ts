@@ -182,7 +182,10 @@ export class PaymentController {
   }
 
   @Get('/banks')
-  async getBanks() {
+  async getBanks(@Query('country') country?: string) {
+    if (country) {
+      return this.flutterwaveService.getBanks(country);
+    }
     return this.monnifyService.getBanks();
   }
 
@@ -502,10 +505,7 @@ async getWalletTransactions(
     return this.flutterwaveService.createflwPayment(body);
   }
 
-  @Get('banks')
-  async getflwBanks(@Query('country') country: string) {
-    return this.flutterwaveService.getBanks(country);
-  }
+
 
   @Patch('/cancel-mandate')
   async cancelMandate(@Body() dto: CancelMandateDto) {

@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -10,21 +11,25 @@ import {
   Post,
   Query,
   Req,
-  UseGuards
+  UseGuards,
 } from '@nestjs/common';
 import { ApiRoutes } from '../common/enums/routes.enum';
+import { Roles } from '../common/decorators';
+import { Role } from '../common/enums/role.enum';
 import { JwtGuard } from '../common/guards';
-import { ElasticsearchService } from '../elasticsearch/elasticsearch.service';
+import { RoleGuard } from '../common/guards/roles.guard';
 import { EditStreamDto, StartStreamDto } from './stream.dto';
 import { StreamingService, StreamSession } from './stream.service';
+import { StreamGateway } from './stream.gateway';
 
 @UseGuards(JwtGuard)
 @Controller(ApiRoutes.STREAMING)
 export class StreamingController {
-  constructor(private readonly streamingService: StreamingService, private readonly elasticsearchService: ElasticsearchService) {}
+  constructor(
+    private readonly streamingService: StreamingService,
+    private readonly streamGateway: StreamGateway,
+  ) {}
 
-
-  // store youtube access_token
   @Post('save_tokens')
   async saveToken(
     @Body() tokens: {
@@ -35,56 +40,22 @@ export class StreamingController {
       token_type?: string;
       service?: string;
     },
-    @Req() req,
   ) {
-    const userId = req.user?.id;
-
-    // Ensure a service name is present for the DB upsert
-    const payload = { ...tokens, service: tokens.service ?? 'youtube' };
-
-    await this.streamingService.persistYoutubeTokens(payload);
-
-    return { message: 'YouTube tokens saved', userId };
-  }
-  /**
-   * Visit this URL in your browser to kick off the OAuth flow.
-   * Redirects you to Google's consent screen.
-   */
-  @Get('auth')
-  startAuth() {
-    return {
-      authUrl: this.streamingService.generateAuthUrl(),
-    };
+    return this.streamingService.persistYoutubeTokens({
+      ...tokens,
+      service: tokens.service || 'youtube',
+    });
   }
 
-  /**
-   * Google redirects here after the user grants permission.
-   * YOUTUBE_REDIRECT_URI in your .env must match this exactly:
-   * e.g. http://localhost:3000/streaming/oauth2callback
-   */
-  @Get('oauth2callback')
-  async handleCallback(@Query('code') code: string) {
-    const tokens = await this.streamingService.handleOAuthCallback(code);
-
-    // In production: save tokens to your DB here
-    return tokens;
+  @Get('streams')
+  async getStreams() {
+    return this.streamingService.getStream();
   }
 
-  @Get('refresh-token')
-  async refreshToken(@Query('code') code: string) {
-    const tokens = await this.streamingService.refreshAccessToken(code);
-
-    // In production: save tokens to your DB here
-    return tokens;
-  }
-
-  /** POST /streams/start — create broadcast + stream in one call */
   @Post('start')
-  @HttpCode(HttpStatus.CREATED)
   async start(@Body() dto: StartStreamDto, @Req() req): Promise<StreamSession> {
-    const userId = req.user?.id;
     return this.streamingService.startStream(
-      Number(userId),
+      Number(req.user?.id),
       dto.title,
       dto.description,
       dto.network_platform,
@@ -97,78 +68,85 @@ export class StreamingController {
       dto.preRecordedTiming,
       dto.recordedVideoUrl,
       dto.duration,
-      {
-        privacyStatus: dto.privacyStatus,
-      },
+      { privacyStatus: dto.privacyStatus },
     );
   }
 
-  @Patch(':streamId')
-async editStream(
-  @Param('streamId', ParseIntPipe) streamId: number,
-  @Body() editStreamDto: EditStreamDto,
-  @Req() req: any,
-): Promise<StreamSession> {
-  const userId = req.user.id;
-
-  return this.streamingService.editStream(
-    userId,
-    streamId,
-    editStreamDto.title,
-    editStreamDto.description,
-    editStreamDto.network_platform,
-    editStreamDto.stream_url,
-    editStreamDto.status,
-    editStreamDto.scheduledDate,
-    editStreamDto.category,
-    editStreamDto.thumbnailUrl,
-    editStreamDto.liveTiming,
-    editStreamDto.preRecordedTiming,
-    editStreamDto.recordedVideoUrl,
-    editStreamDto.duration,
-    editStreamDto.privacyStatus,
-  );
-}
-
-  @Get('streams')
-  async getStreams() {
-    return this.streamingService.getStream();
+  @Patch(':id')
+  async editStream(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() editStreamDto: EditStreamDto,
+    @Req() req,
+  ) {
+    return this.streamingService.editStream(
+      Number(req.user?.id),
+      id,
+      editStreamDto.title,
+      editStreamDto.description,
+      editStreamDto.network_platform,
+      editStreamDto.stream_url,
+      editStreamDto.status,
+      editStreamDto.scheduledDate,
+      editStreamDto.category,
+      editStreamDto.thumbnailUrl,
+      editStreamDto.liveTiming,
+      editStreamDto.preRecordedTiming,
+      editStreamDto.recordedVideoUrl,
+      editStreamDto.duration,
+      editStreamDto.privacyStatus,
+    );
   }
 
-  /** POST /streams/:broadcastId/live — transition to live after encoder connects */
   @Post(':broadcastId/live')
-  @HttpCode(HttpStatus.NO_CONTENT)
   async goLive(@Param('broadcastId') broadcastId: string): Promise<void> {
     return this.streamingService.goLive(broadcastId);
   }
 
-  /** POST /streams/:broadcastId/end — end a live stream */
   @Post(':broadcastId/end')
-  @HttpCode(HttpStatus.NO_CONTENT)
   async end(@Param('broadcastId') broadcastId: string): Promise<void> {
     return this.streamingService.endStream(broadcastId);
   }
 
   @Post(':streamId/comment')
   async comment(
-    @Param('streamId') streamId: number,
+    @Param('streamId', ParseIntPipe) streamId: number,
     @Body('comment') comment: string,
     @Req() req,
   ) {
     const userId = req.user?.id;
-    return this.streamingService.commentOnStream(
+    const created = await this.streamingService.commentOnStream(
       streamId,
       comment,
       Number(userId),
     );
+    this.streamGateway.broadcastToStream(streamId, 'streamMessage', {
+      ...created,
+      streamId,
+    });
+    return created;
   }
 
-    @Post('/lock-comment')
-  async lockChat(@Query('streamId') streamId: number, @Query('lock') lock: boolean) {
-    return this.streamingService.lockandUnlockChat(streamId, lock);
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin, Role.moderator)
+  @Post('/lock-comment')
+  async lockChat(
+    @Query('streamId') streamId: number,
+    @Query('lock') lock: boolean,
+    @Req() req,
+  ) {
+    const result = await this.streamingService.setStreamChatLock(
+      Number(streamId),
+      Boolean(lock),
+      Number(req.user?.id),
+    );
+    this.streamGateway.broadcastToStream(Number(streamId), 'chatLockChanged', result);
+    return {
+      lock_chat: result.locked,
+      ...result,
+    };
   }
 
-    @Get('/video-stats')
+  @Get('/video-stats')
   async getVideos(@Query('videoId') videoId: string) {
     return this.streamingService.getVideoViews(videoId);
   }
@@ -178,101 +156,232 @@ async editStream(
     return this.streamingService.getStreamCommentsandReplies(streamId);
   }
 
-     @Get('search')
-    async searchcommentAndReply(
-      @Query('streamId') streamId: number,
-      @Query('q') query: string,
-    ) {
-      return this.elasticsearchService.searchCommentAndReply(streamId, query);
-    }
+  @Get(':id/chat/search')
+  async searchStreamChat(
+    @Param('id', ParseIntPipe) streamId: number,
+    @Query('q') query: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.streamingService.searchStreamChatComments(
+      streamId,
+      query,
+      Number.parseInt(page || '1', 10),
+      Number.parseInt(limit || '20', 10),
+    );
+  }
 
+  @Get('search')
+  async searchcommentAndReply(
+    @Query('streamId') streamId: number,
+    @Query('q') query: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.streamingService.searchStreamChatComments(
+      Number(streamId),
+      query,
+      Number.parseInt(page || '1', 10),
+      Number.parseInt(limit || '20', 10),
+    );
+  }
 
   @Post('comment/:commentId/reply')
   async reply(
-    @Param('commentId') commentId: number,
+    @Param('commentId', ParseIntPipe) commentId: number,
     @Body('comment') comment: string,
     @Req() req,
   ) {
     const userId = req.user?.id;
-    return this.streamingService.replyToComment(
+    const created = await this.streamingService.replyToComment(
       commentId,
       comment,
       Number(userId),
     );
+    if (created?.streamId) {
+      this.streamGateway.broadcastToStream(created.streamId, 'replyMessage', created);
+    }
+    return created;
   }
 
-    @Post('pin-comment/:commentId')
-  async pinComment(
-    @Param('commentId') commentId: number,
-  ) {
-    // const userId = req.user?.id;
-    return this.streamingService.pinComment(
-      commentId,
-    );
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin, Role.moderator)
+  @Post('pin-comment/:commentId')
+  async pinComment(@Param('commentId', ParseIntPipe) commentId: number) {
+    const pinned = await this.streamingService.pinComment(commentId);
+    if (pinned?.streamId) {
+      this.streamGateway.broadcastToStream(pinned.streamId, 'pinComment', {
+        commentId,
+        streamId: pinned.streamId,
+      });
+    }
+    return pinned;
   }
 
-      @Post('tag-winner/:commentId')
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin, Role.moderator)
+  @Delete('pin-comment/:commentId')
+  async unpinComment(@Param('commentId', ParseIntPipe) commentId: number) {
+    return this.streamingService.unpinComment(commentId);
+  }
+
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin, Role.moderator)
+  @Post('tag-winner/:commentId')
   async tagWInner(
-    @Param('commentId') commentId: number,
+    @Param('commentId', ParseIntPipe) commentId: number,
     @Body('winAmount') winAmount: number,
   ) {
-    // const userId = req.user?.id;
-    return this.streamingService.isWinner(
-      commentId,
-      winAmount
-    );
+    return this.streamingService.isWinner(commentId, winAmount);
   }
 
   @Post('comment/:commentId/report')
   async report(
-    @Param('commentId') commentId: number,
-     @Param('userId') userId: number,
+    @Param('commentId', ParseIntPipe) commentId: number,
     @Body('reason') reason: string,
     @Req() req,
   ) {
     const creatorId = req.user?.id;
-    return this.streamingService.reportComment(
+    const userId = req.user?.id;
+    const result = await this.streamingService.reportComment(
       commentId,
-      userId,
       Number(creatorId),
+      Number(userId),
       reason,
     );
+    const streamId = await this.streamingService.getCommentStreamId(commentId);
+    if (streamId) {
+      this.streamGateway.broadcastToStream(streamId, 'reportComment', {
+        commentId,
+        streamId,
+        userId,
+        reportsCount: result?.reportsCount,
+      });
+    }
+    return result;
   }
 
   @Post('comment/:commentId/like')
   async likeComment(
-    @Param('commentId') commentId: number,
-    @Body('reason') reason: string,
+    @Param('commentId', ParseIntPipe) commentId: number,
     @Req() req,
   ) {
     const userId = req.user?.id;
-    return this.streamingService.likeComment(commentId, Number(userId));
+    const result = await this.streamingService.likeComment(commentId, Number(userId));
+    const streamId = result?.data?.streamId ?? (await this.streamingService.getCommentStreamId(commentId));
+    if (streamId) {
+      this.streamGateway.broadcastToStream(streamId, 'likeComment', {
+        commentId,
+        streamId,
+        userId,
+        likesCount: result?.data?.likesCount,
+        data: result?.data,
+      });
+    }
+    return result;
   }
 
   @Post('comment/:commentId/unlike')
-  async unlikeComment(@Param('commentId') commentId: number, @Req() req) {
+  async unlikeComment(
+    @Param('commentId', ParseIntPipe) commentId: number,
+    @Req() req,
+  ) {
     const userId = req.user?.id;
-    let deleteComment = this.streamingService.unlikeComment(
+    const result = await this.streamingService.unlikeComment(
       commentId,
       Number(userId),
     );
-
-    return { message: 'stream successfully deleted', data: deleteComment };
+    const streamId = result?.data?.streamId ?? (await this.streamingService.getCommentStreamId(commentId));
+    if (streamId) {
+      this.streamGateway.broadcastToStream(streamId, 'unlikeComment', {
+        commentId,
+        streamId,
+        userId,
+        likesCount: result?.data?.likesCount,
+        data: result?.data,
+      });
+    }
+    return { message: 'stream successfully deleted', data: result };
   }
 
-
-
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin, Role.moderator)
   @Post('comment/:replyId')
   @HttpCode(HttpStatus.OK)
-  async deleteReply(@Param('replyId') replyId: number) {
-    // const userId = req.user?.id;
+  async deleteReply(@Param('replyId', ParseIntPipe) replyId: number) {
     return this.streamingService.deleteReply(replyId);
   }
 
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin, Role.moderator)
+  @Delete('comment/:replyId/reply')
+  @HttpCode(HttpStatus.OK)
+  async deleteReplyByDelete(@Param('replyId', ParseIntPipe) replyId: number) {
+    return this.streamingService.deleteReply(replyId);
+  }
+
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin, Role.moderator)
   @Post('comment/:commentId')
   @HttpCode(HttpStatus.OK)
-  async deleteComment(@Param('commentId') commentId: number) {
-    // const userId = req.user?.id;
-    return this.streamingService.deleteComment(commentId);
+  async deleteComment(@Param('commentId', ParseIntPipe) commentId: number) {
+    const deleted = await this.streamingService.deleteComment(commentId);
+    if (deleted?.streamId) {
+      this.streamGateway.broadcastToStream(deleted.streamId, 'deleteComment', {
+        commentId,
+        streamId: deleted.streamId,
+      });
+    }
+    return deleted;
+  }
+
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin, Role.moderator)
+  @Delete('comment/:commentId')
+  @HttpCode(HttpStatus.OK)
+  async deleteCommentByDelete(@Param('commentId', ParseIntPipe) commentId: number) {
+    const deleted = await this.streamingService.deleteComment(commentId);
+    if (deleted?.streamId) {
+      this.streamGateway.broadcastToStream(deleted.streamId, 'deleteComment', {
+        commentId,
+        streamId: deleted.streamId,
+      });
+    }
+    return deleted;
+  }
+
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin, Role.moderator)
+  @Post(':streamId/user/:userId/ban')
+  async banUserFromStream(
+    @Param('streamId', ParseIntPipe) streamId: number,
+    @Param('userId', ParseIntPipe) userId: number,
+    @Body() body: { banReason?: string },
+    @Req() req,
+  ) {
+    const bannedBy = Number(req.user?.id);
+    const result = await this.streamingService.banUserFromStream(
+      streamId,
+      userId,
+      bannedBy,
+      body?.banReason,
+    );
+    this.streamGateway.broadcastToStream(streamId, 'userBanToggled', result);
+    return result;
+  }
+
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin, Role.moderator)
+  @Post(':streamId/user/:userId/unban')
+  async unbanUserFromStream(
+    @Param('streamId', ParseIntPipe) streamId: number,
+    @Param('userId', ParseIntPipe) userId: number,
+  ) {
+    const result = await this.streamingService.unbanUserFromStream(
+      streamId,
+      userId,
+    );
+    this.streamGateway.broadcastToStream(streamId, 'userBanToggled', result);
+    return result;
   }
 }

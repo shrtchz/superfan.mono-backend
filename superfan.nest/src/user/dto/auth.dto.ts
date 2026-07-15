@@ -285,16 +285,7 @@ export class SubAdminDto {
 
 export class LoginDto {
   @IsString()
-  @IsOptional()
-  email?: string;
-
-  @IsString()
-  @IsOptional()
-  phone?: string;
-
-  @IsString()
-  @IsOptional()
-  username?: string;
+  identifier: string;
 
   @IsString()
   @IsOptional()

@@ -1,7 +1,8 @@
 import * as argon from 'argon2';
+import crypto from 'crypto';
 import { generateReferralCode } from '../../src/common/shared/lib';
 import { prisma } from "../../src/prisma/prisma";
-
+import { createClerkClient } from '@clerk/backend';
 export enum SubscriptionPlan {
   FREE = "FREE",
   PREMIUM_PRO = "PREMIUM_PRO",
@@ -16,7 +17,7 @@ async function seedAll() {
       firstName: "ridwan",
       lastName: "surajudeen",
       email: "ridwan.1095@outlook.com",
-      password: "Password@1234#",
+      password: "SF_dev_pass_9872#@!",
       phone: "+2348012345678",
       username: "ridwanSuraj",
       subscriptionPlan: SubscriptionPlan.FREE,
@@ -27,7 +28,7 @@ async function seedAll() {
       firstName: "mike",
       lastName: "oketunde",
       email: "michael.5820@outlook.com",
-      password: "Password@1234#",
+      password: "SF_dev_pass_9872#@!",
       phone: "+2348046573479",
       username: "mikOutlook",
       subscriptionPlan: SubscriptionPlan.FREE,
@@ -38,7 +39,7 @@ async function seedAll() {
       firstName: "admin",
       lastName: "user",
       email: "superfanng@superfan.ng",
-      password: "Password@1234#",
+      password: "SF_dev_pass_9872#@!",
       phone: "+2348098765432",
       username: "adminUser",
       subscriptionPlan: SubscriptionPlan.FREE,
@@ -136,6 +137,7 @@ if (!existingRole) {
         subscriptionPlan: user.subscriptionPlan,
         roleName: role.name, // safer
         referral_code: user.referral_code,
+        password: hashedPassword,
       },
       create: {
         firstName: user.firstName,
@@ -161,7 +163,47 @@ if (!existingRole) {
     });
   }
 
-  console.log("Users seeded");
+  console.log("Users seeded in DB");
+
+  // ✅ Seed users in Clerk
+  const clerkClient = createClerkClient({
+    secretKey: process.env.CLERK_SECRET_KEY,
+  });
+
+  // Helper to generate a random strong password (base64 + symbols) that avoids pwned lists.
+  function generateSafePassword(): string {
+    // 12 random bytes => 16 base64 chars, then remove URL‑unsafe chars and append extra symbols.
+    const raw = crypto.randomBytes(12).toString('base64');
+    const sanitized = raw.replace(/[+/=]/g, '');
+    // Ensure we have at least 12 characters and add a symbol/number for extra strength.
+    return `${sanitized}!A1`;
+  }
+
+  for (const user of users) {
+    try {
+      const clerkUsers = await clerkClient.users.getUserList({ emailAddress: [user.email] });
+      const existingClerkUser = clerkUsers?.data?.[0] || clerkUsers?.[0];
+      const clerkPassword = user.password;
+      if (existingClerkUser) {
+        // Update Clerk user with the configured password.
+        await clerkClient.users.updateUser(existingClerkUser.id, { password: clerkPassword });
+        console.log(`Updated Clerk password for ${user.email}`);
+      } else {
+        // Create Clerk user with the configured password.
+        await clerkClient.users.createUser({
+          emailAddress: [user.email],
+          password: clerkPassword,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          username: user.username,
+        });
+        console.log(`Created Clerk user for ${user.email}`);
+      }
+    } catch (e) {
+      console.error(`Error syncing ${user.email} to Clerk:`, e);
+    }
+  }
+  console.log('✅ All seeded users have been synced to Clerk');
 }
 
 // ✅ Run everything
