@@ -181,6 +181,7 @@ export class QuizController {
       subjectPreference?: string;
       testLevel?: string;
       isRandom?: boolean | string;
+      replaceExisting?: boolean | string;
       [key: string]: any;
     },
     @Req() req: any,
