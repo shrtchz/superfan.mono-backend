@@ -1787,6 +1787,7 @@ async fetchOngoingQuiz(userId: number) {
     // QuizAttempt was somehow deleted or never created
     if (!ongoingQuiz.quizAttempt) {
       return {
+        ...ongoingQuiz,
         missingQuizAttempt: true,
         quizId: ongoingQuiz.id,
       };

@@ -204,6 +204,7 @@ export class QuizController {
         replaceExisting,
       );
     } catch (error) {
+      if (error instanceof HttpException) throw error;
       throw failureResponse(
         error || 'Failed to start quick quiz session',
       );
