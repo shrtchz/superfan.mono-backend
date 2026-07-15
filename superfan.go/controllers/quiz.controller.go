@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -283,10 +284,22 @@ func (qc *QuizController) GetOngoingQuiz(ctx *gin.Context) {
 	}
 
 	if result.MissingQuizAttempt {
-		utils.Success(ctx, http.StatusOK, "Ongoing quiz fetched successfully", gin.H{
+		payload := gin.H{
 			"missingQuizAttempt": true,
 			"quizId":             result.QuizID,
-		})
+		}
+		if result.OngoingQuiz != nil {
+			raw, err := json.Marshal(result.OngoingQuiz)
+			if err == nil {
+				var ongoing map[string]interface{}
+				if json.Unmarshal(raw, &ongoing) == nil {
+					for key, value := range ongoing {
+						payload[key] = value
+					}
+				}
+			}
+		}
+		utils.Success(ctx, http.StatusOK, "Ongoing quiz fetched successfully", payload)
 		return
 	}
 
