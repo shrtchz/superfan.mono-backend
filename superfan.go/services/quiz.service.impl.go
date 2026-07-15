@@ -845,10 +845,10 @@ func (u *QuizServiceImpl) GetQuizByPreferences(
 
 	if count == 0 {
 		if len(filter) == 0 {
-			return nil, utils.NewAppError(http.StatusNotFound, "NO_QUIZZES",
+			return nil, utils.NewAppError(http.StatusServiceUnavailable, "QUIZ_CATALOG_EMPTY",
 				"no quizzes exist in the database")
 		}
-		return nil, utils.NewAppError(http.StatusNotFound, "NO_QUIZZES",
+		return nil, utils.NewAppError(http.StatusUnprocessableEntity, "NO_QUIZZES",
 			fmt.Sprintf("no quizzes found for: language=%s, subject=%s, level=%s",
 				lang, subj, level))
 	}
@@ -924,7 +924,7 @@ func (u *QuizServiceImpl) GetQuizByPreferences(
 	}
 
 	if len(quizResponses) == 0 {
-		return nil, utils.NewAppError(http.StatusNotFound, "NO_QUIZZES",
+		return nil, utils.NewAppError(http.StatusUnprocessableEntity, "NO_QUIZZES",
 			"no quizzes found after sampling")
 	}
 

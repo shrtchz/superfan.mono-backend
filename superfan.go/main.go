@@ -192,6 +192,9 @@ func main() {
 		qsc,
 	)
 
+	v2path := server.Group("/v2")
+	controllers.RegisterQuizSessionV2Routes(v2path, qs)
+
 	// Register REST routes for the streaming proxy (auth required — same tokens as Nest)
 	controllers.RegisterStreamRoutes(basepath)
 
