@@ -190,11 +190,17 @@ export class QuizController {
         body.isRandom === true ||
         body.isRandom === 'true' ||
         body.isRandom === '1';
-      const { isRandom: _ignored, ...pack } = body;
+      const replaceExisting =
+        body.replaceExisting === true ||
+        body.replaceExisting === 'true' ||
+        body.replaceExisting === '1';
+      const { isRandom: _ignored, replaceExisting: _replaceIgnored, ...pack } =
+        body;
       return await this.quizService.startQuickQuizSession(
         req.user.id,
         pack,
         isRandom,
+        replaceExisting,
       );
     } catch (error) {
       throw failureResponse(

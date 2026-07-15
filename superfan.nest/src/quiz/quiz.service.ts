@@ -1511,14 +1511,34 @@ async startQuickQuizSession(
   userId: number,
   pack: Record<string, any>,
   isRandom = true,
+  replaceExisting = false,
 ) {
   try {
-    await prisma.ongoingQuiz.deleteMany({
+    const existingOngoingQuiz = await prisma.ongoingQuiz.findFirst({
       where: {
         userId,
         isCompleted: false,
       },
     });
+
+    if (existingOngoingQuiz && !replaceExisting) {
+      throw new HttpException(
+        'You already have an ongoing quiz. Please complete or quit it before starting a new one.',
+        HttpStatus.CONFLICT,
+      );
+    }
+
+    if (existingOngoingQuiz && replaceExisting) {
+      await prisma.quizAttempt.deleteMany({
+        where: { quizId: existingOngoingQuiz.id },
+      });
+      await prisma.ongoingQuiz.deleteMany({
+        where: {
+          userId,
+          isCompleted: false,
+        },
+      });
+    }
 
     const subscription =
       await this.userService.checkSubscriptionStatusbyUserId(userId);
