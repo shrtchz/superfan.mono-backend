@@ -1049,6 +1049,20 @@ async editStream(
     );
   }
 
+  private getStreamUserBanDelegate() {
+    const banDelegate = (prisma as { streamUserBan?: {
+      findUnique: Function;
+      upsert: Function;
+      deleteMany: Function;
+    } }).streamUserBan;
+
+    if (!banDelegate?.findUnique || !banDelegate?.upsert || !banDelegate?.deleteMany) {
+      return null;
+    }
+
+    return banDelegate;
+  }
+
   private async assertStreamParticipation(
     streamId: number,
     userId: number,
@@ -1067,17 +1081,36 @@ async editStream(
       throw new ForbiddenException('Chat is locked for this stream');
     }
 
-    const streamBan = await prisma.streamUserBan.findUnique({
-      where: {
-        streamId_userId: {
-          streamId,
-          userId,
-        },
-      },
-    });
+    const banDelegate = this.getStreamUserBanDelegate();
+    if (!banDelegate) {
+      this.logger.warn(
+        'prisma.streamUserBan is unavailable; skipping stream ban check (run prisma generate)',
+      );
+      return;
+    }
 
-    if (streamBan) {
-      throw new ForbiddenException('You are banned from this stream');
+    try {
+      const streamBan = await banDelegate.findUnique({
+        where: {
+          streamId_userId: {
+            streamId,
+            userId,
+          },
+        },
+      });
+
+      if (streamBan) {
+        throw new ForbiddenException('You are banned from this stream');
+      }
+    } catch (error) {
+      if (error instanceof ForbiddenException) {
+        throw error;
+      }
+      this.logger.warn(
+        `Stream ban check failed for stream=${streamId} user=${userId}: ${
+          (error as Error)?.message || error
+        }`,
+      );
     }
   }
 
@@ -1096,7 +1129,14 @@ async editStream(
       throw new NotFoundException(`Stream with ID ${streamId} not found.`);
     }
 
-    await prisma.streamUserBan.upsert({
+    const banDelegate = this.getStreamUserBanDelegate();
+    if (!banDelegate) {
+      throw new InternalServerErrorException(
+        'Stream ban model is unavailable. Run prisma generate / migrate and restart.',
+      );
+    }
+
+    await banDelegate.upsert({
       where: {
         streamId_userId: {
           streamId,
@@ -1124,7 +1164,14 @@ async editStream(
   }
 
   async unbanUserFromStream(streamId: number, userId: number) {
-    await prisma.streamUserBan.deleteMany({
+    const banDelegate = this.getStreamUserBanDelegate();
+    if (!banDelegate) {
+      throw new InternalServerErrorException(
+        'Stream ban model is unavailable. Run prisma generate / migrate and restart.',
+      );
+    }
+
+    await banDelegate.deleteMany({
       where: { streamId, userId },
     });
 
@@ -1136,7 +1183,15 @@ async editStream(
   }
 
   async clearStreamBans(streamId: number) {
-    await prisma.streamUserBan.deleteMany({
+    const banDelegate = this.getStreamUserBanDelegate();
+    if (!banDelegate) {
+      this.logger.warn(
+        'prisma.streamUserBan is unavailable; skipping clearStreamBans',
+      );
+      return;
+    }
+
+    await banDelegate.deleteMany({
       where: { streamId },
     });
   }
@@ -1154,7 +1209,9 @@ async editStream(
 
   async commentOnStream(streamId: number, comment: string, userId: number): Promise<any> {
     try {
-      await this.assertStreamParticipation(streamId, userId);
+      await this.assertStreamParticipation(streamId, userId, {
+        bypassChatLock: await this.isStreamModerator(userId),
+      });
 
       let stream_comment = await prisma.streamComment.create({
         data: {
@@ -1166,6 +1223,7 @@ async editStream(
       });
 
       await this.redis.del(`stream:${streamId}:comments`);
+      await this.redis.del('stream:global:comments');
 
       try {
         await this.elasticSearch.indexComment({
@@ -1234,6 +1292,9 @@ async editStream(
         },
       });
 
+      await this.redis.del(`stream:${findComment.streamId}:comments`);
+      await this.redis.del('stream:global:comments');
+
       return {
         commentId: findComment.id,
         streamId: findComment.streamId,
@@ -1273,6 +1334,7 @@ async editStream(
     ]);
 
     await this.redis.del(`stream:${comment.streamId}:comments`);
+    await this.redis.del('stream:global:comments');
 
     await Promise.all([
       this.elasticSearch.deleteComment(commentId),
@@ -1342,6 +1404,7 @@ async editStream(
       });
 
       await this.redis.del(`stream:${parentComment.streamId}:comments`);
+      await this.redis.del('stream:global:comments');
 
       try {
         await this.elasticSearch.indexComment({
@@ -1579,8 +1642,9 @@ async reportComment(commentId: number, creatorId: number, userId: number, reason
   }
 }
 
-async getStreamCommentsandReplies(streamId: number) {
-  const cacheKey = `stream:${streamId}:comments`;
+async getStreamCommentsandReplies(streamId?: number) {
+  // Live chat is shared across streams — serve one global recent feed.
+  const cacheKey = 'stream:global:comments';
 
   const cached = await this.redis.get(cacheKey);
 
@@ -1588,45 +1652,41 @@ async getStreamCommentsandReplies(streamId: number) {
     return JSON.parse(cached);
   }
 
-  const [pinnedComment, comments] = await Promise.all([
-    prisma.streamComment.findFirst({
-      where: {
-        streamId,
-        isPinned: true,
+  const comments = await prisma.streamComment.findMany({
+    where: {
+      isDeleted: false,
+    },
+    include: {
+      replies: {
+        where: { isDeleted: false },
       },
-      include: {
-        replies: true,
-        stream: {
-          select: {
-            id: true,
-            title: true,
-          },
+      stream: {
+        select: {
+          id: true,
+          title: true,
         },
       },
-    }),
-    prisma.streamComment.findMany({
-      where: {
-        streamId,
-        isPinned: false,
-      },
-      include: {
-        replies: true,
-        stream: {
-          select: {
-            id: true,
-            title: true,
-          },
-        },
-      },
-      orderBy: {
-        createdAt: 'desc',
-      },
-    }),
-  ]);
+    },
+    orderBy: [
+      { isPinned: 'desc' },
+      { createdAt: 'desc' },
+    ],
+    take: 500,
+  });
 
-  const result = pinnedComment
-    ? [pinnedComment, ...comments]
-    : comments;
+  // Prefer a pinned comment for the active stream at the front when present.
+  let result = comments;
+  if (streamId) {
+    const pinnedForStream = comments.find(
+      (comment) => comment.streamId === streamId && comment.isPinned,
+    );
+    if (pinnedForStream) {
+      result = [
+        pinnedForStream,
+        ...comments.filter((comment) => comment.id !== pinnedForStream.id),
+      ];
+    }
+  }
 
   const allUserIds = Array.from(
     new Set(
@@ -1760,6 +1820,7 @@ async setStreamChatLock(streamId: number, locked: boolean, adminId: number) {
     });
 
     await this.redis.del(`stream:${streamId}:comments`);
+    await this.redis.del('stream:global:comments');
 
     const timestamp = new Date().toISOString();
 
