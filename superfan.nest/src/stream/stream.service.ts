@@ -1154,7 +1154,9 @@ async editStream(
 
   async commentOnStream(streamId: number, comment: string, userId: number): Promise<any> {
     try {
-      await this.assertStreamParticipation(streamId, userId);
+      await this.assertStreamParticipation(streamId, userId, {
+        bypassChatLock: await this.isStreamModerator(userId),
+      });
 
       let stream_comment = await prisma.streamComment.create({
         data: {
@@ -1166,6 +1168,7 @@ async editStream(
       });
 
       await this.redis.del(`stream:${streamId}:comments`);
+      await this.redis.del('stream:global:comments');
 
       try {
         await this.elasticSearch.indexComment({
@@ -1234,6 +1237,9 @@ async editStream(
         },
       });
 
+      await this.redis.del(`stream:${findComment.streamId}:comments`);
+      await this.redis.del('stream:global:comments');
+
       return {
         commentId: findComment.id,
         streamId: findComment.streamId,
@@ -1273,6 +1279,7 @@ async editStream(
     ]);
 
     await this.redis.del(`stream:${comment.streamId}:comments`);
+    await this.redis.del('stream:global:comments');
 
     await Promise.all([
       this.elasticSearch.deleteComment(commentId),
@@ -1342,6 +1349,7 @@ async editStream(
       });
 
       await this.redis.del(`stream:${parentComment.streamId}:comments`);
+      await this.redis.del('stream:global:comments');
 
       try {
         await this.elasticSearch.indexComment({
@@ -1579,8 +1587,9 @@ async reportComment(commentId: number, creatorId: number, userId: number, reason
   }
 }
 
-async getStreamCommentsandReplies(streamId: number) {
-  const cacheKey = `stream:${streamId}:comments`;
+async getStreamCommentsandReplies(streamId?: number) {
+  // Live chat is shared across streams — serve one global recent feed.
+  const cacheKey = 'stream:global:comments';
 
   const cached = await this.redis.get(cacheKey);
 
@@ -1589,25 +1598,28 @@ async getStreamCommentsandReplies(streamId: number) {
   }
 
   const [pinnedComment, comments] = await Promise.all([
-    prisma.streamComment.findFirst({
-      where: {
-        streamId,
-        isPinned: true,
-      },
-      include: {
-        replies: true,
-        stream: {
-          select: {
-            id: true,
-            title: true,
+    streamId
+      ? prisma.streamComment.findFirst({
+          where: {
+            streamId,
+            isPinned: true,
+            isDeleted: false,
           },
-        },
-      },
-    }),
+          include: {
+            replies: true,
+            stream: {
+              select: {
+                id: true,
+                title: true,
+              },
+            },
+          },
+        })
+      : Promise.resolve(null),
     prisma.streamComment.findMany({
       where: {
-        streamId,
-        isPinned: false,
+        isDeleted: false,
+        ...(streamId ? { isPinned: false } : {}),
       },
       include: {
         replies: true,
@@ -1621,12 +1633,18 @@ async getStreamCommentsandReplies(streamId: number) {
       orderBy: {
         createdAt: 'desc',
       },
+      take: 150,
     }),
   ]);
 
-  const result = pinnedComment
-    ? [pinnedComment, ...comments]
+  const pinnedId = pinnedComment?.id;
+  const unpinned = pinnedId
+    ? comments.filter((comment) => comment.id !== pinnedId)
     : comments;
+
+  const result = pinnedComment
+    ? [pinnedComment, ...unpinned]
+    : unpinned;
 
   const allUserIds = Array.from(
     new Set(
@@ -1760,6 +1778,7 @@ async setStreamChatLock(streamId: number, locked: boolean, adminId: number) {
     });
 
     await this.redis.del(`stream:${streamId}:comments`);
+    await this.redis.del('stream:global:comments');
 
     const timestamp = new Date().toISOString();
 
