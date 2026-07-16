@@ -140,7 +140,7 @@ if (!existingRole) {
 
   console.log("Payment processors seeded");
 
-  // ✅ Seed users
+  // ✅ Seed users (safe against email/username unique conflicts)
   for (const user of users) {
     const hashedPassword = await argon.hash(user.password);
 
@@ -148,30 +148,54 @@ if (!existingRole) {
       where: { name: user.roleName },
     });
 
-    const createdUser = await prisma.user.upsert({
+    const existingByEmail = await prisma.user.findUnique({
       where: { email: user.email },
-      update: {
-        firstName: user.firstName,
-        lastName: user.lastName,
-        phone: user.phone,
-        username: user.username,
-        subscriptionPlan: user.subscriptionPlan,
-        roleName: role.name, // safer
-        referral_code: user.referral_code,
-        password: hashedPassword,
-      },
-      create: {
-        firstName: user.firstName,
-        lastName: user.lastName,
-        email: user.email,
-        password: hashedPassword,
-        phone: user.phone,
-        username: user.username,
-        subscriptionPlan: user.subscriptionPlan,
-        roleName: role.name,
-        referral_code: user.referral_code,
-      },
     });
+    const existingByUsername = await prisma.user.findUnique({
+      where: { username: user.username },
+    });
+
+    const sharedUpdate = {
+      firstName: user.firstName,
+      lastName: user.lastName,
+      phone: user.phone,
+      subscriptionPlan: user.subscriptionPlan,
+      roleName: role.name,
+      referral_code: user.referral_code,
+      password: hashedPassword,
+    };
+
+    let createdUser;
+
+    if (existingByEmail) {
+      const usernameTakenByOther =
+        existingByUsername && existingByUsername.id !== existingByEmail.id;
+
+      createdUser = await prisma.user.update({
+        where: { id: existingByEmail.id },
+        data: {
+          ...sharedUpdate,
+          // Avoid P2002 when username already belongs to a different row.
+          ...(usernameTakenByOther ? {} : { username: user.username }),
+        },
+      });
+    } else if (existingByUsername) {
+      createdUser = await prisma.user.update({
+        where: { id: existingByUsername.id },
+        data: {
+          ...sharedUpdate,
+          email: user.email,
+        },
+      });
+    } else {
+      createdUser = await prisma.user.create({
+        data: {
+          ...sharedUpdate,
+          email: user.email,
+          username: user.username,
+        },
+      });
+    }
 
     // ✅ Create wallet for user
     await prisma.wallet.upsert({
