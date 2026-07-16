@@ -691,7 +691,7 @@ func mapToLiveQuiz(raw map[string]interface{}) (*models.LiveQuiz, error) {
 func defaultWeekdayNoon() time.Time {
 	location, err := time.LoadLocation("Africa/Lagos")
 	if err != nil {
-		return time.Now().UTC()
+		location = time.FixedZone("WAT", 3600)
 	}
 	now := time.Now().In(location)
 	next := time.Date(now.Year(), now.Month(), now.Day(), 12, 0, 0, 0, location)

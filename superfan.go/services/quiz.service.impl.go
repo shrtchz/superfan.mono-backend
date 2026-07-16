@@ -42,12 +42,17 @@ func NewQuizService(quizcollection *mongo.Collection, quizCategoryCollection *mo
 	}
 }
 
-func lagosNow() (time.Time, error) {
+func lagosLocation() *time.Location {
 	location, err := time.LoadLocation("Africa/Lagos")
 	if err != nil {
-		return time.Now().UTC(), err
+		// Alpine images without tzdata fail LoadLocation; WAT is fixed UTC+1 (no DST).
+		return time.FixedZone("WAT", 3600)
 	}
-	return time.Now().In(location), nil
+	return location
+}
+
+func lagosNow() (time.Time, error) {
+	return time.Now().In(lagosLocation()), nil
 }
 
 func computeLiveQuizStatus(startAt, finishAt, now time.Time) string {
