@@ -13,9 +13,10 @@ import (
 func CORSMiddleware() gin.HandlerFunc {
 	defaultAllowed := []string{
 		"http://localhost:9090",
+		"http://localhost:9050",
 		"http://localhost:3000",
-		"http://localhost:3001",
 		"http://127.0.0.1:9090",
+		"http://127.0.0.1:9050",
 		"http://127.0.0.1:3000",
 		"https://api.superfan.ng",
 		"https://superfan-admin.vercel.app",

@@ -15,7 +15,6 @@ import { google, youtube_v3 } from 'googleapis';
 import keys from '../../credentials.json';
 import { ElasticsearchService } from '../elasticsearch/elasticsearch.service';
 import { Role } from '../common/enums/role.enum';
-import { RedisService } from '../mail/redis.service';
 import { NotificationService } from '../notification/notification.service';
 import { prisma } from '../prisma/prisma';
 import { QuizService } from '../quiz/quiz.service';
@@ -46,7 +45,6 @@ export class StreamingService {
   constructor(
     private readonly configService: ConfigService,
     private readonly notificationService: NotificationService,
-    private readonly redis: RedisService,
     private readonly quizService: QuizService,
     private readonly elasticSearch: ElasticsearchService
   ) {
@@ -1165,8 +1163,6 @@ async editStream(
         },
       });
 
-      await this.redis.del(`stream:${streamId}:comments`);
-
       try {
         await this.elasticSearch.indexComment({
           id: stream_comment.id,
@@ -1272,8 +1268,6 @@ async editStream(
       prisma.streamComment.delete({ where: { id: commentId } }),
     ]);
 
-    await this.redis.del(`stream:${comment.streamId}:comments`);
-
     await Promise.all([
       this.elasticSearch.deleteComment(commentId),
       ...replies.map((reply) => this.elasticSearch.deleteComment(reply.id)),
@@ -1340,8 +1334,6 @@ async editStream(
           isDeleted: false,
         },
       });
-
-      await this.redis.del(`stream:${parentComment.streamId}:comments`);
 
       try {
         await this.elasticSearch.indexComment({
@@ -1580,14 +1572,7 @@ async reportComment(commentId: number, creatorId: number, userId: number, reason
 }
 
 async getStreamCommentsandReplies(streamId: number) {
-  const cacheKey = `stream:${streamId}:comments`;
-
-  const cached = await this.redis.get(cacheKey);
-
-  if (cached) {
-    return JSON.parse(cached);
-  }
-
+  try {
   const [pinnedComment, comments] = await Promise.all([
     prisma.streamComment.findFirst({
       where: {
@@ -1709,13 +1694,15 @@ async getStreamCommentsandReplies(streamId: number) {
     };
   });
 
-  await this.redis.set(
-    cacheKey,
-    JSON.stringify(enriched),
-    60, // 1 minute
-  );
-
   return enriched;
+  } catch (error: any) {
+    this.logger.error(
+      `Failed to load stream ${streamId} comments: ${error?.message || error}`,
+    );
+    throw new InternalServerErrorException(
+      `Failed to load stream comments: ${error?.message || error}`,
+    );
+  }
 }
 
 async getStreamChatStatus(streamId: number) {
@@ -1758,8 +1745,6 @@ async setStreamChatLock(streamId: number, locked: boolean, adminId: number) {
         action: locked ? 'lock' : 'unlock',
       },
     });
-
-    await this.redis.del(`stream:${streamId}:comments`);
 
     const timestamp = new Date().toISOString();
 
