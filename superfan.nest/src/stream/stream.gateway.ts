@@ -303,6 +303,12 @@ export class StreamGateway
     this.server.to(this.getStreamRoom(streamId)).emit(event, payload);
   }
 
+  /** Live chat is shared across streams — emit to every connected socket. */
+  broadcastChat(event: string, payload: unknown) {
+    if (!this.server) return;
+    this.server.emit(event, payload);
+  }
+
   private getRoomMemberCount(streamId: number | string): number {
     if (!this.server) return 0;
     const roomState = this.server.sockets.adapter.rooms.get(this.getStreamRoom(streamId));
@@ -425,7 +431,7 @@ export class StreamGateway
       data.userId,
     );
 
-    this.broadcastToStream(data.streamId, 'streamMessage', {
+    this.broadcastChat('streamMessage', {
       ...newMessage,
       streamId: data.streamId,
     });
@@ -458,7 +464,7 @@ export class StreamGateway
       (await this.streamingService.getCommentStreamId(data.commentId));
 
     if (streamId) {
-      this.broadcastToStream(streamId, 'replyMessage', {
+      this.broadcastChat('replyMessage', {
         ...reply,
         streamId,
       });
@@ -486,15 +492,13 @@ export class StreamGateway
       result?.data?.streamId ??
       (await this.streamingService.getCommentStreamId(data.commentId));
 
-    if (streamId) {
-      this.broadcastToStream(streamId, 'likeComment', {
-        commentId: data.commentId,
-        streamId,
-        userId: data.userId,
-        likesCount: result?.data?.likesCount,
-        data: result?.data,
-      });
-    }
+    this.broadcastChat('likeComment', {
+      commentId: data.commentId,
+      streamId,
+      userId: data.userId,
+      likesCount: result?.data?.likesCount,
+      data: result?.data,
+    });
 
     return result;
   }
@@ -518,15 +522,13 @@ export class StreamGateway
       result?.data?.streamId ??
       (await this.streamingService.getCommentStreamId(data.commentId));
 
-    if (streamId) {
-      this.broadcastToStream(streamId, 'unlikeComment', {
-        commentId: data.commentId,
-        streamId,
-        userId: data.userId,
-        likesCount: result?.data?.likesCount,
-        data: result?.data,
-      });
-    }
+    this.broadcastChat('unlikeComment', {
+      commentId: data.commentId,
+      streamId,
+      userId: data.userId,
+      likesCount: result?.data?.likesCount,
+      data: result?.data,
+    });
 
     return result;
   }
@@ -553,14 +555,12 @@ export class StreamGateway
       data.streamId ??
       (await this.streamingService.getCommentStreamId(data.commentId));
 
-    if (streamId) {
-      this.broadcastToStream(streamId, 'reportComment', {
-        commentId: data.commentId,
-        streamId,
-        userId: data.userId,
-        reportsCount: result?.reportsCount,
-      });
-    }
+    this.broadcastChat('reportComment', {
+      commentId: data.commentId,
+      streamId,
+      userId: data.userId,
+      reportsCount: result?.reportsCount,
+    });
 
     return result;
   }
@@ -576,7 +576,7 @@ export class StreamGateway
     const deleted = await this.streamingService.deleteComment(data.commentId);
 
     if (deleted?.streamId) {
-      this.broadcastToStream(deleted.streamId, 'deleteComment', {
+      this.broadcastChat('deleteComment', {
         commentId: data.commentId,
         streamId: deleted.streamId,
       });
@@ -596,12 +596,10 @@ export class StreamGateway
     const pinned = await this.streamingService.pinComment(data.commentId);
     const streamId = data.streamId ?? pinned?.streamId;
 
-    if (streamId) {
-      this.broadcastToStream(streamId, 'pinComment', {
-        commentId: data.commentId,
-        streamId,
-      });
-    }
+    this.broadcastChat('pinComment', {
+      commentId: data.commentId,
+      streamId,
+    });
 
     return pinned;
   }

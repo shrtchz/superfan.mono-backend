@@ -1,8 +1,8 @@
+import { createClerkClient } from '@clerk/backend';
 import * as argon from 'argon2';
 import crypto from 'crypto';
 import { generateReferralCode } from '../../src/common/shared/lib';
 import { prisma } from "../../src/prisma/prisma";
-import { createClerkClient } from '@clerk/backend';
 export enum SubscriptionPlan {
   FREE = "FREE",
   PREMIUM_PRO = "PREMIUM_PRO",
@@ -45,6 +45,27 @@ async function seedAll() {
       subscriptionPlan: SubscriptionPlan.FREE,
       roleName: "superadmin",
       referral_code: generateReferralCode("admin"),
+    },{
+      firstName: "Samuel",
+      lastName: "Clement",
+      email:"samuel.7421@outlook.com",
+      password: "Shortchase@11",
+      phone: "+2349112074341",
+      username: "thesamclem",
+      subscriptionPlan: SubscriptionPlan.FREE,
+      roleName: "client",
+      referral_code: generateReferralCode("samuel"),
+    },
+    {
+      firstName: "Sola",
+      lastName: "Sola",
+      email: "sola.8519@outlook.com",
+      password: "Shortchase@11",
+      phone: "+2349012345678",
+      username: "soladebayo",
+      subscriptionPlan: SubscriptionPlan.FREE,
+      roleName: "client",
+      referral_code: generateReferralCode("sola"),
     },
   ];
 
