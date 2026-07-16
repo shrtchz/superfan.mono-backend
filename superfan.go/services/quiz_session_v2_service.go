@@ -509,7 +509,7 @@ func (s *QuizSessionV2Service) resolvePreferences(
 		subject:            "general",
 		level:              "basic",
 		questionPreference: "25",
-		timePreference:     "15",
+		timePreference:     "5",
 	}
 
 	if mode == sessionModeRandom {

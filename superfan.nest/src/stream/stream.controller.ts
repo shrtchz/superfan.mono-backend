@@ -119,7 +119,7 @@ export class StreamingController {
       comment,
       Number(userId),
     );
-    this.streamGateway.broadcastToStream(streamId, 'streamMessage', {
+    this.streamGateway.broadcastChat('streamMessage', {
       ...created,
       streamId,
     });
@@ -139,7 +139,7 @@ export class StreamingController {
       Boolean(lock),
       Number(req.user?.id),
     );
-    this.streamGateway.broadcastToStream(Number(streamId), 'chatLockChanged', result);
+    this.streamGateway.broadcastChat('chatLockChanged', result);
     return {
       lock_chat: result.locked,
       ...result,
@@ -199,7 +199,7 @@ export class StreamingController {
       Number(userId),
     );
     if (created?.streamId) {
-      this.streamGateway.broadcastToStream(created.streamId, 'replyMessage', created);
+      this.streamGateway.broadcastChat('replyMessage', created);
     }
     return created;
   }
@@ -210,7 +210,7 @@ export class StreamingController {
   async pinComment(@Param('commentId', ParseIntPipe) commentId: number) {
     const pinned = await this.streamingService.pinComment(commentId);
     if (pinned?.streamId) {
-      this.streamGateway.broadcastToStream(pinned.streamId, 'pinComment', {
+      this.streamGateway.broadcastChat('pinComment', {
         commentId,
         streamId: pinned.streamId,
       });
@@ -251,7 +251,7 @@ export class StreamingController {
     );
     const streamId = await this.streamingService.getCommentStreamId(commentId);
     if (streamId) {
-      this.streamGateway.broadcastToStream(streamId, 'reportComment', {
+      this.streamGateway.broadcastChat('reportComment', {
         commentId,
         streamId,
         userId,
@@ -269,15 +269,13 @@ export class StreamingController {
     const userId = req.user?.id;
     const result = await this.streamingService.likeComment(commentId, Number(userId));
     const streamId = result?.data?.streamId ?? (await this.streamingService.getCommentStreamId(commentId));
-    if (streamId) {
-      this.streamGateway.broadcastToStream(streamId, 'likeComment', {
-        commentId,
-        streamId,
-        userId,
-        likesCount: result?.data?.likesCount,
-        data: result?.data,
-      });
-    }
+    this.streamGateway.broadcastChat('likeComment', {
+      commentId,
+      streamId,
+      userId,
+      likesCount: result?.data?.likesCount,
+      data: result?.data,
+    });
     return result;
   }
 
@@ -292,15 +290,13 @@ export class StreamingController {
       Number(userId),
     );
     const streamId = result?.data?.streamId ?? (await this.streamingService.getCommentStreamId(commentId));
-    if (streamId) {
-      this.streamGateway.broadcastToStream(streamId, 'unlikeComment', {
-        commentId,
-        streamId,
-        userId,
-        likesCount: result?.data?.likesCount,
-        data: result?.data,
-      });
-    }
+    this.streamGateway.broadcastChat('unlikeComment', {
+      commentId,
+      streamId,
+      userId,
+      likesCount: result?.data?.likesCount,
+      data: result?.data,
+    });
     return { message: 'stream successfully deleted', data: result };
   }
 
@@ -327,7 +323,7 @@ export class StreamingController {
   async deleteComment(@Param('commentId', ParseIntPipe) commentId: number) {
     const deleted = await this.streamingService.deleteComment(commentId);
     if (deleted?.streamId) {
-      this.streamGateway.broadcastToStream(deleted.streamId, 'deleteComment', {
+      this.streamGateway.broadcastChat('deleteComment', {
         commentId,
         streamId: deleted.streamId,
       });
@@ -342,7 +338,7 @@ export class StreamingController {
   async deleteCommentByDelete(@Param('commentId', ParseIntPipe) commentId: number) {
     const deleted = await this.streamingService.deleteComment(commentId);
     if (deleted?.streamId) {
-      this.streamGateway.broadcastToStream(deleted.streamId, 'deleteComment', {
+      this.streamGateway.broadcastChat('deleteComment', {
         commentId,
         streamId: deleted.streamId,
       });
@@ -366,7 +362,7 @@ export class StreamingController {
       bannedBy,
       body?.banReason,
     );
-    this.streamGateway.broadcastToStream(streamId, 'userBanToggled', result);
+    this.streamGateway.broadcastChat('userBanToggled', result);
     return result;
   }
 
@@ -381,7 +377,7 @@ export class StreamingController {
       streamId,
       userId,
     );
-    this.streamGateway.broadcastToStream(streamId, 'userBanToggled', result);
+    this.streamGateway.broadcastChat('userBanToggled', result);
     return result;
   }
 }

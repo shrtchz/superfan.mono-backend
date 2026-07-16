@@ -2098,9 +2098,7 @@ async isWinner(commentId: number, winAmount: number) {
       comments,
       realtime: {
         transport: 'websocket',
-        room: `stream-${streamId}`,
-        joinEvent: 'joinStream',
-        leaveEvent: 'leaveStream',
+        scope: 'global',
         events: [
           'streamMessage',
           'replyMessage',
@@ -2110,6 +2108,11 @@ async isWinner(commentId: number, winAmount: number) {
           'chatLockChanged',
           'streamViewerCount',
         ],
+        viewerCount: {
+          room: `stream-${streamId}`,
+          joinEvent: 'joinStream',
+          leaveEvent: 'leaveStream',
+        },
       },
     };
   }

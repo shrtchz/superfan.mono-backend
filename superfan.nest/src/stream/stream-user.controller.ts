@@ -53,7 +53,7 @@ export class StreamUserController {
       true,
       Number(req.user?.id),
     );
-    this.streamGateway.broadcastToStream(dto.streamId, 'chatLockChanged', result);
+    this.streamGateway.broadcastChat('chatLockChanged', result);
     return result;
   }
 
@@ -66,7 +66,7 @@ export class StreamUserController {
       false,
       Number(req.user?.id),
     );
-    this.streamGateway.broadcastToStream(dto.streamId, 'chatLockChanged', result);
+    this.streamGateway.broadcastChat('chatLockChanged', result);
     return result;
   }
 
@@ -82,7 +82,7 @@ export class StreamUserController {
       userId,
     );
 
-    this.streamGateway.broadcastToStream(dto.streamId, 'streamMessage', {
+    this.streamGateway.broadcastChat('streamMessage', {
       ...created,
       streamId: dto.streamId,
     });
@@ -101,14 +101,12 @@ export class StreamUserController {
       result?.data?.streamId ??
       (await this.streamingService.getCommentStreamId(commentId));
 
-    if (streamId) {
-      this.streamGateway.broadcastToStream(streamId, 'likeComment', {
-        commentId,
-        streamId,
-        userId,
-        likesCount: result?.data?.likesCount,
-      });
-    }
+    this.streamGateway.broadcastChat('likeComment', {
+      commentId,
+      streamId,
+      userId,
+      likesCount: result?.data?.likesCount,
+    });
 
     return {
       commentId,
@@ -147,7 +145,7 @@ export class StreamUserController {
     );
 
     if (deleted?.streamId) {
-      this.streamGateway.broadcastToStream(deleted.streamId, 'deleteComment', {
+      this.streamGateway.broadcastChat('deleteComment', {
         commentId,
         streamId: deleted.streamId,
       });
