@@ -30,6 +30,7 @@ import { QuestionAddedEvent } from './quiz.events';
 export class QuizService {
   private readonly logger = new Logger(QuizService.name);
   private baseUrl = `${process.env.GO_ENDPOINT}/v1/quiz`;
+  private liveQuizGoBaseUrl = `${process.env.GO_ENDPOINT}/v2/quiz`;
   // private trackerBaseUrl = `${process.env.GO_ENDPOINT}/v1`;
 
   constructor(
@@ -274,7 +275,7 @@ export class QuizService {
   async createLiveQuiz(liveQuizData: CreateLiveQuizDto) {
     try {
       const response = await firstValueFrom(
-        this.httpService.post(`${this.baseUrl}/live`, liveQuizData),
+        this.httpService.post(`${this.liveQuizGoBaseUrl}/live`, liveQuizData),
       );
       this.eventEmitter.emit('liveQuiz.changed', { action: 'created' });
       return response.data;
@@ -1376,14 +1377,14 @@ async hasSubmittedLiveQuizForStream(
 
   async getLiveQuiz(id: string) {
     const response = await firstValueFrom(
-      this.httpService.get(`${this.baseUrl}/live/${id}`),
+      this.httpService.get(`${this.liveQuizGoBaseUrl}/live/${id}`),
     );
     return response.data;
   }
 
   async getAllLiveQuiz() {
     const response = await firstValueFrom(
-      this.httpService.get(`${this.baseUrl}/live`),
+      this.httpService.get(`${this.liveQuizGoBaseUrl}/live`),
     );
     return response.data;
   }
@@ -1431,7 +1432,7 @@ async hasSubmittedLiveQuizForStream(
     async getLiveQuizAnswer(id: string) {
     try {
       const response = await firstValueFrom(
-        this.httpService.get(`${this.baseUrl}/live-answer/${id}`, {
+        this.httpService.get(`${this.liveQuizGoBaseUrl}/live-answer/${id}`, {
           headers: this.getGoServiceAuthHeaders(),
         }),
       );
@@ -2214,7 +2215,7 @@ async getOngoingQuizAnswers(userId: number) {
   async updateLiveQuiz(updateData: any, id: string) {
     try {
       const response = await firstValueFrom(
-        this.httpService.patch(`${this.baseUrl}/live/${id}`, updateData),
+        this.httpService.patch(`${this.liveQuizGoBaseUrl}/live/${id}`, updateData),
       );
       this.eventEmitter.emit('liveQuiz.changed', { action: 'updated' });
       return response.data;
@@ -2233,7 +2234,7 @@ async getOngoingQuizAnswers(userId: number) {
   async deleteLiveQuiz(id: string) {
     try {
       const response = await firstValueFrom(
-        this.httpService.delete(`${this.baseUrl}/live/${id}`),
+        this.httpService.delete(`${this.liveQuizGoBaseUrl}/live/${id}`),
       );
       this.eventEmitter.emit('liveQuiz.changed', { action: 'deleted' });
       return response.data;
