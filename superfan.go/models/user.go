@@ -6,6 +6,8 @@ import "time"
 type User struct {
 	ID                 int        `gorm:"column:id;primaryKey" json:"id"`
 	Email              string     `gorm:"column:email" json:"email"`
+	ClerkUserID        *string    `gorm:"column:clerkUserId" json:"clerkUserId"`
+	RoleName           *string    `gorm:"column:roleName" json:"roleName"`
 	SubscriptionPlan   *string    `gorm:"column:subscriptionPlan" json:"subscriptionPlan"`
 	LanguagePreference *string    `gorm:"column:languagePreference" json:"languagePreference"`
 	SubjectPreference  *string    `gorm:"column:subjectPreference" json:"subjectPreference"`

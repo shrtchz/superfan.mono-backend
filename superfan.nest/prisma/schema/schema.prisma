@@ -18,7 +18,7 @@ model User {
   username               String              @unique
   referral_code          String?             @unique
   phone                  String?
-  hashedRt               String?
+  clerkUserId            String?             @unique
   roleName               String
   login_timestamp        DateTime?
   active                 Boolean             @default(false)
