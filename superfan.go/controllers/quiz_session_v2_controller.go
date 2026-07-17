@@ -160,7 +160,7 @@ func (c *QuizSessionV2Controller) QuitSession(ctx *gin.Context) {
 	}
 
 	message := "Quiz has been quit successfully"
-	if !result.Submitted {
+	if result.Result == nil && !result.Submitted {
 		message = "Quiz ended with no answers"
 	}
 

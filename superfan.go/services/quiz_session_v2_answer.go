@@ -285,6 +285,23 @@ func buildSubmitResponsesFromSession(record *models.OngoingQuiz) []models.QuizAn
 	return responses
 }
 
+func buildAllStoredSubmitResponses(record *models.OngoingQuiz) []models.QuizAnswerRequest {
+	answers := parseStoredSessionAnswers(record.Answers)
+	responses := make([]models.QuizAnswerRequest, 0, len(answers))
+	for _, answer := range answers {
+		quizID := strings.TrimSpace(answer.QuizID)
+		selected := strings.TrimSpace(answer.SelectedAnswer)
+		if quizID == "" || selected == "" {
+			continue
+		}
+		responses = append(responses, models.QuizAnswerRequest{
+			QuizID:         quizID,
+			SelectedAnswer: selected,
+		})
+	}
+	return responses
+}
+
 func mapSubmissionResponses(submission models.QuizSubmission) []map[string]interface{} {
 	items := make([]map[string]interface{}, 0, len(submission.Responses))
 	for _, response := range submission.Responses {
