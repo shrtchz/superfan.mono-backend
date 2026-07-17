@@ -9,14 +9,16 @@ import (
 func RegisterLiveQuizV2Routes(rg *gin.RouterGroup, qc *QuizController) {
 	quizroute := rg.Group("/quiz")
 
+	// Public reads — stream player polling, no Clerk JWT required.
+	quizroute.GET("/live", qc.GetAllLiveQuiz)
+	quizroute.GET("/live/random/:number", qc.GetRandomLiveQuiz)
+	quizroute.GET("/live/:id", qc.GetLiveQuiz)
+	quizroute.GET("/live-answer/:id", qc.GetLiveQuizAnswerById)
+
 	protected := quizroute.Group("")
 	protected.Use(middleware.AuthRequired())
 	{
 		protected.POST("/live", qc.CreateLiveQuiz)
-		protected.GET("/live", qc.GetAllLiveQuiz)
-		protected.GET("/live/random/:number", qc.GetRandomLiveQuiz)
-		protected.GET("/live/:id", qc.GetLiveQuiz)
-		protected.GET("/live-answer/:id", qc.GetLiveQuizAnswerById)
 		protected.PATCH("/live/:id", qc.UpdateLiveQuiz)
 		protected.PUT("/live/:id", qc.UpdateLiveQuiz)
 		protected.DELETE("/live/:id", qc.DeleteLiveQuiz)
