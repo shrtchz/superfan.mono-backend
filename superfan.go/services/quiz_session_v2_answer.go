@@ -91,6 +91,31 @@ func answersMatch(selectedAnswer string, correctAnswer string) bool {
 	return normalizeAnswerText(selectedAnswer) == normalizeAnswerText(correctAnswer)
 }
 
+func gradeAnswer(selectedAnswer, correctAnswer string, options []string) bool {
+	if answersMatch(selectedAnswer, correctAnswer) {
+		return true
+	}
+
+	correctIndex := resolveCorrectOptionIndex(correctAnswer, options)
+	if correctIndex < 0 {
+		return false
+	}
+
+	if len(options) > correctIndex && answersMatch(selectedAnswer, options[correctIndex]) {
+		return true
+	}
+
+	normalizedSelected := strings.TrimSpace(strings.ToLower(selectedAnswer))
+	if len(normalizedSelected) >= 1 {
+		letter := normalizedSelected[0]
+		if letter >= 'a' && letter <= 'z' {
+			return int(letter-'a') == correctIndex
+		}
+	}
+
+	return false
+}
+
 func resolveCorrectOptionIndex(correctAnswer string, options []string) int {
 	normalizedCorrect := normalizeAnswerText(correctAnswer)
 	for index, option := range options {
@@ -98,6 +123,17 @@ func resolveCorrectOptionIndex(correctAnswer string, options []string) int {
 			return index
 		}
 	}
+
+	if len(normalizedCorrect) == 1 {
+		letter := normalizedCorrect[0]
+		if letter >= 'a' && letter <= 'z' {
+			index := int(letter - 'a')
+			if index >= 0 && index < len(options) {
+				return index
+			}
+		}
+	}
+
 	return -1
 }
 
@@ -166,7 +202,7 @@ func (s *QuizSessionV2Service) SaveAnswer(sessionID string, req models.SaveAnswe
 	}
 
 	options := stringSliceField(question["options"])
-	isCorrect := answersMatch(selectedAnswer, correctAnswer)
+	isCorrect := gradeAnswer(selectedAnswer, correctAnswer, options)
 	correctDisplay := buildCorrectAnswerDisplay(correctAnswer, options)
 	earning := questionEarningValue(question, isCorrect)
 

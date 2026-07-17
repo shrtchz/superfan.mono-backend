@@ -168,10 +168,11 @@ func (s *QuizSessionV2Service) finalizeSession(
 	}
 
 	result := map[string]interface{}{
-		"sessionId":       sessionID,
-		"score":           submission.Score,
-		"totalQuestions":  totalQuestions,
-		"correctAnswers":  correctAnswers,
+		"sessionId":        sessionID,
+		"score":            submission.Score,
+		"totalQuestions":   totalQuestions,
+		"correctAnswers":   correctAnswers,
+		"attemptedAnswers": len(responses),
 		"baseEarning":     baseScore,
 		"totalPoints":     totalPoints,
 		"amountInNaira":   amountInNaira,

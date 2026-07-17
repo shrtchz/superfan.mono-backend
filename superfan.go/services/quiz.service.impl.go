@@ -977,11 +977,7 @@ func (u *QuizServiceImpl) SubmitQuiz(
 
 		correctAnswer := quiz.Answer
 
-		isCorrect := strings.TrimSpace(
-			strings.ToLower(response.SelectedAnswer),
-		) == strings.TrimSpace(
-			strings.ToLower(correctAnswer),
-		)
+		isCorrect := gradeAnswer(response.SelectedAnswer, correctAnswer, quiz.Options)
 
 		earning := 0
 
