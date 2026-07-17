@@ -12,6 +12,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { ScheduleModule } from '@nestjs/schedule';
 import { FlutterwaveModule } from '@scwar/nestjs-flutterwave';
 import { SentryGlobalFilter, SentryModule } from '@sentry/nestjs/setup';
+import { ClerkModule } from './common/clerk/clerk.module';
 import { AdminModule } from './admin/admin.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { AppController } from './app.controller';
@@ -65,6 +66,7 @@ import { WaitlistModule } from './waitlist/waitlist.module';
     }),
     ScheduleModule.forRoot(),
     EventEmitterModule.forRoot(),
+    ClerkModule,
     ElasticsearchModule,
     DatabaseModule,
     HealthModule,

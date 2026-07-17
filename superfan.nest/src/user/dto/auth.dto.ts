@@ -371,6 +371,20 @@ export class ResetPasswordDto {
   newPassword: string;
 }
 
+export class SyncUserDto {
+  @IsOptional()
+  @IsString()
+  referralCode?: string;
+
+  @IsOptional()
+  @IsString()
+  ip_address?: string;
+
+  @IsOptional()
+  @IsString()
+  location?: string;
+}
+
 export class RewardPaymentDto {
   @IsInt()
   amount: number;  

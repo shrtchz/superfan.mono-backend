@@ -3,11 +3,11 @@ package middleware
 import (
 	"net/http"
 	"strings"
-	"time"
+
+	"quiz.superfan.com/apis/services"
 
 	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt/v5"
-	"quiz.superfan.com/apis/utils"
+	"gorm.io/gorm"
 )
 
 const (
@@ -17,18 +17,7 @@ const (
 	ContextAuthSource   = "authSource"
 )
 
-type AppTokenClaims struct {
-	ID    any    `json:"id"`
-	Email string `json:"email"`
-	Role  string `json:"role"`
-	jwt.RegisteredClaims
-}
-
-// AuthRequired mirrors Nest JwtGuard:
-// 1) Authorization: Bearer <token> or __session cookie
-// 2) Reject sit_* Clerk sign-in tickets
-// 3) Accept app access token signed with AT_SECRET
-// 4) Accept Clerk session JWT (verified via Clerk Frontend API JWKS)
+// AuthRequired accepts only Clerk session JWTs (Bearer header, __session cookie, or ?token=).
 func AuthRequired() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := extractBearerToken(c.GetHeader("Authorization"))
@@ -37,7 +26,6 @@ func AuthRequired() gin.HandlerFunc {
 				token = strings.TrimSpace(cookie)
 			}
 		}
-		// Also allow ?token= for WebSocket clients
 		if token == "" {
 			token = strings.TrimSpace(c.Query("token"))
 		}
@@ -50,7 +38,7 @@ func AuthRequired() gin.HandlerFunc {
 		}
 		if token == "undefined" || token == "null" {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-				"error": "Invalid token value. Expected a Clerk session JWT or app access token.",
+				"error": "Invalid token value. Expected a Clerk session JWT.",
 			})
 			return
 		}
@@ -61,31 +49,39 @@ func AuthRequired() gin.HandlerFunc {
 			return
 		}
 
-		// 1) App access token (from Nest /auth/login)
-		if claims, ok := verifyAppToken(token); ok {
-			c.Set(ContextUserIDKey, claims.ID)
-			c.Set(ContextUserEmailKey, claims.Email)
-			c.Set(ContextUserRoleKey, claims.Role)
-			c.Set(ContextAuthSource, "app")
-			c.Next()
+		claims, ok := verifyClerkToken(token)
+		if !ok {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"error": "Invalid token. Use a Clerk session JWT.",
+			})
 			return
 		}
 
-		// 2) Clerk session JWT
-		if claims, ok := verifyClerkToken(token); ok {
-			sub, _ := claims["sub"].(string)
-			c.Set(ContextUserIDKey, sub)
-			if email, ok := claims["email"].(string); ok {
-				c.Set(ContextUserEmailKey, email)
+		sub, _ := claims["sub"].(string)
+		email, _ := claims["email"].(string)
+
+		localUserID, err := services.ResolveLocalUserID(sub, email)
+		if err != nil {
+			if err == gorm.ErrRecordNotFound {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+					"error":   "User not provisioned. Call POST /user/sync first.",
+					"code":    "USER_NOT_PROVISIONED",
+					"clerkId": sub,
+				})
+				return
 			}
-			c.Set(ContextAuthSource, "clerk")
-			c.Next()
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to resolve user identity",
+			})
 			return
 		}
 
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-			"error": "Invalid token. Use a Clerk session JWT or the token returned by /auth/login.",
-		})
+		c.Set(ContextUserIDKey, localUserID)
+		if email != "" {
+			c.Set(ContextUserEmailKey, email)
+		}
+		c.Set(ContextAuthSource, "clerk")
+		c.Next()
 	}
 }
 
@@ -101,26 +97,4 @@ func extractBearerToken(authorizationHeader string) string {
 		return ""
 	}
 	return strings.TrimSpace(parts[1])
-}
-
-func verifyAppToken(tokenString string) (*AppTokenClaims, bool) {
-	secret := utils.GetEnvWithKey("AT_SECRET")
-	if secret == "" {
-		secret = "superfan_secret_key"
-	}
-
-	claims := &AppTokenClaims{}
-	parsed, err := jwt.ParseWithClaims(tokenString, claims, func(t *jwt.Token) (interface{}, error) {
-		if t.Method == nil || t.Method.Alg() != jwt.SigningMethodHS256.Alg() {
-			return nil, jwt.ErrTokenSignatureInvalid
-		}
-		return []byte(secret), nil
-	}, jwt.WithLeeway(5*time.Minute))
-	if err != nil || !parsed.Valid {
-		return nil, false
-	}
-	if claims.ID == nil && claims.Email == "" {
-		return nil, false
-	}
-	return claims, true
 }
