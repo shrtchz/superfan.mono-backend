@@ -278,11 +278,48 @@ export class StreamGateway
   }
 
   handleConnection(client: Socket) {
-    // Connection handled - no chat room management
+    const queryUserId = Number(client.handshake?.query?.userId);
+    if (Number.isFinite(queryUserId) && queryUserId > 0) {
+      (client.data as { userId?: number }).userId = queryUserId;
+    }
   }
 
   handleDisconnect(client: Socket) {
     // Disconnect handled - no chat room cleanup needed
+  }
+
+  private resolveSocketUserId(
+    client: Socket,
+    payloadUserId?: string | number | null,
+  ): number | null {
+    const candidates = [
+      payloadUserId,
+      (client.data as { userId?: number })?.userId,
+      client.handshake?.query?.userId,
+    ];
+    for (const candidate of candidates) {
+      const parsed = Number(candidate);
+      if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    }
+    return null;
+  }
+
+  @SubscribeMessage('register')
+  handleRegister(
+    @MessageBody() payload: unknown,
+    @ConnectedSocket() client: Socket,
+  ) {
+    const userId =
+      typeof payload === 'object' && payload !== null
+        ? Number(
+            (payload as { userId?: string | number }).userId ??
+              (payload as { id?: string | number }).id,
+          )
+        : Number(payload);
+    if (Number.isFinite(userId) && userId > 0) {
+      (client.data as { userId?: number }).userId = userId;
+    }
+    return { status: 'success' };
   }
 
   @SubscribeMessage('joinStream')
@@ -323,28 +360,77 @@ export class StreamGateway
 
   @SubscribeMessage('sendComment')
   async sendComment(
-    @MessageBody() payload: { streamId: string | number; message: string },
+    @MessageBody()
+    payload: {
+      streamId?: string | number;
+      message?: string;
+      comment?: string;
+      userId?: string | number;
+      parentCommentId?: string | number | null;
+    },
     @ConnectedSocket() client: Socket,
   ) {
     try {
-      const { streamId, message } = payload;
-      this.logger.log(`[StreamGateway] sendComment streamId=${streamId} message=${message}`);
-      
-      // Emit the comment to all clients in the stream room
-      const room = `stream-${String(streamId)}`;
-      const commentPayload = {
-        id: `temp-${Date.now()}`,
-        streamId,
-        message,
-        createdAt: new Date().toISOString(),
-      };
-      
-      this.server.to(room).emit('newComment', commentPayload);
-      
-      return { status: 'success' };
+      const streamId = Number(payload?.streamId);
+      const message = String(payload?.message ?? payload?.comment ?? '').trim();
+      const userId = this.resolveSocketUserId(client, payload?.userId);
+      const parentCommentId =
+        payload?.parentCommentId !== undefined && payload?.parentCommentId !== null
+          ? Number(payload.parentCommentId)
+          : null;
+
+      this.logger.log(
+        `[StreamGateway] sendComment streamId=${streamId} userId=${userId} message=${message}`,
+      );
+
+      if (!message) {
+        return { status: 'error', error: 'Comment message is required' };
+      }
+      if (!userId) {
+        return { status: 'error', error: 'User is not registered on socket' };
+      }
+
+      let commentPayload: Record<string, unknown>;
+
+      if (Number.isFinite(parentCommentId) && (parentCommentId as number) > 0) {
+        const created = await this.streamingService.replyToComment(
+          parentCommentId as number,
+          message,
+          userId,
+        );
+        commentPayload = {
+          ...created,
+          streamId: created?.streamId ?? streamId,
+          parentCommentId: created?.parentCommentId ?? parentCommentId,
+        };
+        // Live chat is shared — broadcast to every connected client.
+        this.broadcastChat('newComment', commentPayload);
+        this.broadcastChat('replyMessage', commentPayload);
+      } else {
+        if (!Number.isFinite(streamId) || streamId <= 0) {
+          return { status: 'error', error: 'Valid streamId is required' };
+        }
+        const created = await this.streamingService.commentOnStream(
+          streamId,
+          message,
+          userId,
+        );
+        commentPayload = {
+          ...created,
+          streamId,
+        };
+        this.broadcastChat('newComment', commentPayload);
+        this.broadcastChat('streamMessage', commentPayload);
+      }
+
+      return { status: 'success', comment: commentPayload };
     } catch (error) {
       this.logger.error('[StreamGateway] sendComment error:', error);
-      return { status: 'error', error: 'Failed to send comment' };
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : 'Failed to send comment';
+      return { status: 'error', error: message };
     }
   }
 
