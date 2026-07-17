@@ -41,6 +41,7 @@ import {
   UpdateUserDto,
   UserDto,
   VerifyEmailDto,
+  SyncUserDto,
 } from './dto/auth.dto';
 import { PresenceGateway } from './gateway/presence.gateway';
 import { UserService } from './user.service';
@@ -81,13 +82,23 @@ export class UserController {
     return this.userService.signinUser(dto);
   }
 
+  @Public()
+  @Post('/sync')
+  @HttpCode(HttpStatus.OK)
+  async syncUser(@Req() req: any, @Body() dto: SyncUserDto) {
+    const user = await this.userService.syncFromClerkToken(
+      req.headers.authorization,
+      dto,
+    );
+    return successResponse('User synced successfully', user);
+  }
+
+  /** @deprecated Use POST /user/sync */
+  @Public()
   @Post('/clerk-login')
   @HttpCode(HttpStatus.OK)
-  async clerkLogin(@Req() req: any) {
-    return {
-      ...req.user,
-      role: req.user.roleName,
-    };
+  async clerkLogin(@Req() req: any, @Body() dto: SyncUserDto) {
+    return this.syncUser(req, dto);
   }
   @Get(':id/login-method')
   async getLoginMethod(@Param('id', ParseIntPipe) userId: number) {

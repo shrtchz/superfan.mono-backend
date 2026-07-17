@@ -11,6 +11,7 @@ export enum SubscriptionPlan {
 
 
 
+
 async function seedAll() {
   const users = [
         {
@@ -23,6 +24,7 @@ async function seedAll() {
       subscriptionPlan: SubscriptionPlan.FREE,
       roleName: "client",
       referral_code: generateReferralCode("ridwan"),
+      profilePicture:"https://cloudflare-b2.shrtchz.workers.dev/Screenshot 2025-07-04 153317.png",
     },
     {
       firstName: "mike",
@@ -34,6 +36,7 @@ async function seedAll() {
       subscriptionPlan: SubscriptionPlan.FREE,
       roleName: "client",
       referral_code: generateReferralCode("mike"),
+      profilePicture:null
     },
     {
       firstName: "admin",
@@ -45,6 +48,7 @@ async function seedAll() {
       subscriptionPlan: SubscriptionPlan.FREE,
       roleName: "superadmin",
       referral_code: generateReferralCode("admin"),
+      profilePicture:null
     },{
       firstName: "Samuel",
       lastName: "Clement",
@@ -55,6 +59,7 @@ async function seedAll() {
       subscriptionPlan: SubscriptionPlan.FREE,
       roleName: "client",
       referral_code: generateReferralCode("samuel"),
+      profilePicture:null
     },
     {
       firstName: "Sola",
@@ -66,6 +71,7 @@ async function seedAll() {
       subscriptionPlan: SubscriptionPlan.FREE,
       roleName: "client",
       referral_code: generateReferralCode("sola"),
+      profilePicture:null
     },
   ];
 
@@ -163,6 +169,7 @@ if (!existingRole) {
       roleName: role.name,
       referral_code: user.referral_code,
       password: hashedPassword,
+      profilePicture: user.profilePicture || null,
     };
 
     let createdUser;

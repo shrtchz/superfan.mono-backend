@@ -1562,32 +1562,46 @@ async startQuickQuizSession(
       });
 
       if (completedToday >= 5) {
-        const lastCompletedQuiz = await prisma.ongoingQuiz.findFirst({
-          where: {
-            userId: Number(userId),
-            isCompleted: true,
-            totalQuestions: 25,
-            completedAt: {
-              gte: startOfDay,
-              lt: endOfDay,
-            },
-          },
-          orderBy: [{ completedAt: 'desc' }, { createdAt: 'desc' }],
-        });
+        // Return the NEW quiz questions but mark as limit reached
+        // so user can see what they would get but cannot submit
+        const quizzes = Array.isArray(pack?.quizzes) ? pack.quizzes : [];
+        const languagePreference = pack.languagePreference || null;
+        const subjectPreference = pack.subjectPreference || null;
+        const testLevel = pack.testLevel || quizzes[0]?.testLevel || null;
 
-        const limitQuizzes = Array.isArray(lastCompletedQuiz?.questions)
-          ? lastCompletedQuiz.questions
-          : [];
+        const totalQuestions: number = quizzes.length || 25;
+        const totalEarning: number =
+          Number(pack.totalEarning) ||
+          quizzes.reduce(
+            (sum: number, q: any) => sum + Number(q.earning ?? 0),
+            0,
+          );
+
+        const amountInNaira = totalEarning / 1000;
+
+        // Still fetch exchange rates for consistency
+        const convertToUSDC = await this.paymentService.getExchangeRate('USDC');
+        const convertToUSDT = await this.paymentService.getExchangeRate('USDT');
+
+        const amountInUSDC = amountInNaira / Number(convertToUSDC.rate);
+        const amountInUSDT = amountInNaira / Number(convertToUSDT.rate);
+        const totalTime: number = pack.totalTime ?? totalQuestions * 2;
 
         return {
           data: {
-            quizzes: limitQuizzes,
-            totalEarning: lastCompletedQuiz?.totalEarning ?? 0,
-            totalQuestions: lastCompletedQuiz?.totalQuestions ?? 25,
-            totalTime: lastCompletedQuiz?.totalTime ?? null,
-            quizId: lastCompletedQuiz?.id ?? null,
-            message: 'Upgrade your plan to get daily tests.',
+            quizzes,
+            totalEarning,
+            totalQuestions,
+            totalTime,
+            amountInNaira,
+            amountInUSDC,
+            amountInUSDT,
+            languagePreference,
+            subjectPreference,
+            testLevel,
+            message: 'Daily quiz limit reached. Upgrade your plan to get more tests.',
             limitReached: true,
+            quizId: null, // No quiz ID since we didn't create an ongoing quiz
           },
         };
       }
