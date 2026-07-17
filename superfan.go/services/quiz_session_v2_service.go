@@ -207,7 +207,18 @@ func (s *QuizSessionV2Service) createNewSession(req models.CreateSessionV2Reques
 	}
 
 	if err := s.guardDailyLimit(user); err != nil {
-		return nil, err
+		preview, previewErr := s.buildPreviewSession(req, user)
+		if previewErr != nil {
+			return nil, err
+		}
+		return nil, utils.NewAppErrorWithData(
+			http.StatusTooManyRequests,
+			"DAILY_LIMIT_REACHED",
+			"Daily quiz limit reached. Upgrade your plan to get more tests.",
+			map[string]interface{}{
+				"previewSession": preview,
+			},
+		)
 	}
 
 	resolved, err := s.resolvePreferences(mode, user, req.Preferences)
@@ -461,6 +472,76 @@ func deleteIncompleteSession(sessionID string, userID int) error {
 		return utils.NewAppError(http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to replace active session")
 	}
 	return nil
+}
+
+func (s *QuizSessionV2Service) buildPreviewSession(
+	req models.CreateSessionV2Request,
+	user *models.User,
+) (models.SessionV2, error) {
+	mode := strings.ToLower(strings.TrimSpace(req.Mode))
+	if mode != sessionModeRandom && mode != sessionModeCustom {
+		mode = sessionModeRandom
+	}
+
+	resolved, err := s.resolvePreferences(mode, user, req.Preferences)
+	if err != nil {
+		return models.SessionV2{}, err
+	}
+
+	pack, err := s.quizService.GetQuizByPreferences(
+		resolved.language,
+		resolved.subject,
+		resolved.level,
+		resolved.questionPreference,
+		resolved.timePreference,
+	)
+	if err != nil {
+		return models.SessionV2{}, err
+	}
+
+	quizzes, totalQuestions, _, totalTimeMinutes, err := extractQuizPack(pack)
+	if err != nil {
+		return models.SessionV2{}, err
+	}
+
+	questionsJSON, err := json.Marshal(quizzes)
+	if err != nil {
+		return models.SessionV2{}, utils.NewAppError(http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to serialize preview quiz questions")
+	}
+
+	now, err := lagosNow()
+	if err != nil {
+		return models.SessionV2{}, err
+	}
+
+	isRandom := mode == sessionModeRandom
+	var sessionTotalTime *int
+	if !resolved.timefree {
+		minutes := totalTimeMinutes
+		sessionTotalTime = &minutes
+	}
+
+	previewRecord := &models.OngoingQuiz{
+		ID:             "",
+		UserID:         req.UserID,
+		TestQuiz:       stringField(quizzes[0], "testQuiz"),
+		Subject:        stringField(quizzes[0], "subject"),
+		TestLevel:      stringField(quizzes[0], "testLevel"),
+		TotalQuestions: totalQuestions,
+		TotalTime:      sessionTotalTime,
+		IsRandom:       isRandom,
+		Questions:      questionsJSON,
+		Answers:        json.RawMessage("[]"),
+		CurrentIndex:   0,
+		IsCompleted:    false,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+
+	session := mapOngoingQuizToSessionV2(previewRecord, false)
+	session.Status = "preview"
+	session.ID = ""
+	return session, nil
 }
 
 func (s *QuizSessionV2Service) guardDailyLimit(user *models.User) error {

@@ -188,6 +188,12 @@ func parseRequiredUserID(raw string) (int, error) {
 }
 
 func sendServiceError(ctx *gin.Context, err error) {
+	var dataErr *utils.AppErrorWithData
+	if errors.As(err, &dataErr) {
+		utils.SendErrorWithData(ctx, dataErr.Status, dataErr.Code, dataErr.Message, dataErr.Data)
+		return
+	}
+
 	var appErr *utils.AppError
 	if errors.As(err, &appErr) {
 		utils.SendError(ctx, appErr.Status, appErr.Code, appErr.Message)

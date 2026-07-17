@@ -982,21 +982,14 @@ async fetchAllLiveQuiz() {
 
 async getLiveQuizLeaderboard() {
   try {
-    const [activeQuizzesResponse, leaderboardEntries, ongoingQuizzes] =
-      await Promise.all([
-        this.getAllLiveQuiz(), // expected: { data: Quiz[] } or Quiz[]
-        prisma.liveQuizLeaderboard.findMany({
-          orderBy: {
-            createdAt: 'desc',
-          },
-        }),
-        prisma.ongoingLiveQuiz.findMany(),
-      ]);
-
-    // ✅ FIX: normalize response from getAllLiveQuiz()
-    const activeQuizzes = Array.isArray(activeQuizzesResponse)
-      ? activeQuizzesResponse
-      : activeQuizzesResponse?.data ?? [];
+    const [leaderboardEntries, ongoingQuizzes] = await Promise.all([
+      prisma.liveQuizLeaderboard.findMany({
+        orderBy: {
+          createdAt: 'desc',
+        },
+      }),
+      prisma.ongoingLiveQuiz.findMany(),
+    ]);
 
     const participantMap = new Map<string, Set<string>>();
 
@@ -1010,51 +1003,54 @@ async getLiveQuizLeaderboard() {
       });
     });
 
+    const entriesByQuizId = new Map<string, typeof leaderboardEntries>();
+    leaderboardEntries.forEach((entry) => {
+      const existing = entriesByQuizId.get(entry.quizId) ?? [];
+      existing.push(entry);
+      entriesByQuizId.set(entry.quizId, existing);
+    });
+
     let totalRewardDistributed = 0;
 
-    const leaderboard = activeQuizzes.map((quiz) => {
-      const quizEntries = leaderboardEntries.filter(
-        (entry) => entry.quizId === quiz.id || entry.quizId === quiz.quizId,
-      );
+    const leaderboard = Array.from(entriesByQuizId.entries()).map(
+      ([quizId, quizEntries]) => {
+        const sortedEntries = [...quizEntries].sort(
+          (a, b) =>
+            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+        );
+        const latestEntry = sortedEntries[0] ?? null;
 
-      const winners = [
-        ...new Set(
-          quizEntries
-            .filter((entry) => entry.isWinner)
-            .map((entry) => entry.userId),
-        ),
-      ];
+        const winners = [
+          ...new Set(
+            quizEntries
+              .filter((entry) => entry.isWinner)
+              .map((entry) => entry.userId),
+          ),
+        ];
 
-      const latestEntry =
-        quizEntries.length > 0
-          ? [...quizEntries].sort(
-              (a, b) =>
-                new Date(b.createdAt).getTime() -
-                new Date(a.createdAt).getTime(),
-            )[0]
-          : null;
+        totalRewardDistributed += quizEntries.reduce(
+          (sum, entry) => sum + Number(entry.unitPrize || 0),
+          0,
+        );
 
-      totalRewardDistributed += quizEntries.reduce(
-        (sum, entry) => sum + Number(entry.unitPrize || 0),
-        0,
-      );
+        const recordedParticipants = quizEntries.reduce(
+          (max, entry) => Math.max(max, Number(entry.participants || 0)),
+          0,
+        );
 
-      return {
-        quizDate: quiz.quizScheduleDate,
-        quizId: quiz.id || quiz.quizId,
-        question: quiz.question,
-        answer: quiz.answer ?? null,
-
-        participants:
-          participantMap.get(quiz.id || quiz.quizId)?.size || 0,
-
-        quizWinners: winners,
-
-        reward: latestEntry?.rewardType ?? null,
-
-        status: latestEntry?.rewardStatus ?? 'NONE',
-      };
-    });
+        return {
+          quizDate: latestEntry?.quizDate ?? null,
+          quizId,
+          question: latestEntry?.question ?? '',
+          answer: latestEntry?.answer ?? null,
+          participants:
+            participantMap.get(quizId)?.size || recordedParticipants || 0,
+          quizWinners: winners,
+          reward: latestEntry?.rewardType ?? null,
+          status: latestEntry?.rewardStatus ?? 'NONE',
+        };
+      },
+    );
 
     const totalParticipants = leaderboard.reduce(
       (sum, quiz) => sum + (quiz.participants || 0),
