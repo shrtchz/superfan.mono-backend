@@ -35,37 +35,29 @@ export class StreamingService {
     this.configService.get<string>('DEFAULT_AVATAR_URL') ||
     'https://ui-avatars.com/api/?name=User&background=e5e7eb&color=111827';
 
-  private readonly SCOPES = [
-
-  ];
-
-  private oauth2Client: OAuth2Client;
-  private youtube: youtube_v3.Youtube;
-  private youtubeTokensLoaded = false;
-
-  constructor(
-    private readonly configService: ConfigService,
-    private readonly notificationService: NotificationService,
-    private readonly redis: RedisService,
-    private readonly quizService: QuizService,
-    private readonly elasticSearch: ElasticsearchService
-  ) {
-     this.initialize();
-    this.logger.log('YouTube service initialized successfully');
-  }
-
-  private normalizeQuizOption(value: unknown): string {
-    return String(value ?? '').trim().toLowerCase();
-  }
-
-  private toHttpsAvatarUrl(value?: string | null): string {
+  private toHttpsAvatarUrl(value?: string | null, displayName?: string): string {
     const raw = String(value ?? '').trim();
-    if (!raw) return this.defaultAvatarUrl;
+    const fallbackName = encodeURIComponent((displayName || 'User').slice(0, 40));
+    const fallback = `https://ui-avatars.com/api/?name=${fallbackName}&background=e5e7eb&color=111827`;
+    if (!raw) return fallback;
     if (raw.startsWith('https://')) return raw;
     if (raw.startsWith('//')) return `https:${raw}`;
     if (raw.startsWith('http://')) return raw.replace(/^http:\/\//i, 'https://');
-    // Non-URL or relative path: do not expose unsafe URL to clients
-    return this.defaultAvatarUrl;
+
+    const cdnBase = (
+      this.configService.get<string>('CDN_BASE_URL') ||
+      this.configService.get<string>('NEXT_PUBLIC_CDN_URL') ||
+      this.configService.get<string>('FILE_CDN_BASE_URL') ||
+      ''
+    ).replace(/\/+$/, '');
+    if (cdnBase && !raw.includes('://')) {
+      return `${cdnBase}/${raw.replace(/^\/+/, '')}`;
+    }
+    // Bare host/path like "cdn.example.com/a.png"
+    if (/^[a-z0-9.-]+\.[a-z]{2,}([/:?]|$)/i.test(raw)) {
+      return `https://${raw.replace(/^\/+/, '')}`;
+    }
+    return fallback;
   }
 
   private buildDisplayName(user?: {
@@ -76,7 +68,7 @@ export class StreamingService {
     const fullName = `${user?.firstName || ''} ${user?.lastName || ''}`.trim();
     if (fullName) return fullName;
     if (user?.username) return user.username;
-    return `User${fallbackUserId || ''}`.trim() || 'User';
+    return fallbackUserId ? `User${fallbackUserId}` : 'User';
   }
 
   private async getUserPublicProfile(userId: number): Promise<{
@@ -84,6 +76,9 @@ export class StreamingService {
     displayName: string;
     avatarUrl: string;
     username: string;
+    firstName?: string;
+    lastName?: string;
+    profilePicture?: string | null;
   }> {
     const user = await prisma.user.findUnique({
       where: { id: userId },
@@ -96,12 +91,93 @@ export class StreamingService {
       },
     });
 
+    const displayName = this.buildDisplayName(user || undefined, userId);
     return {
       id: userId,
-      displayName: this.buildDisplayName(user || undefined, userId),
-      avatarUrl: this.toHttpsAvatarUrl(user?.profilePicture),
-      username: user?.username || this.buildDisplayName(user || undefined, userId),
+      displayName,
+      avatarUrl: this.toHttpsAvatarUrl(user?.profilePicture, displayName),
+      username: user?.username || displayName,
+      firstName: user?.firstName || undefined,
+      lastName: user?.lastName || undefined,
+      profilePicture: user?.profilePicture,
     };
+  }
+
+  private toCommentBroadcastPayload(
+    comment: Record<string, any>,
+    author: {
+      displayName: string;
+      avatarUrl: string;
+      username: string;
+      firstName?: string;
+      lastName?: string;
+    },
+    extras?: Record<string, unknown>,
+  ) {
+    const createdAt =
+      comment.createdAt instanceof Date
+        ? comment.createdAt.toISOString()
+        : comment.createdAt;
+    const updatedAt =
+      comment.updatedAt instanceof Date
+        ? comment.updatedAt.toISOString()
+        : comment.updatedAt;
+
+    return {
+      id: comment.id,
+      streamId: comment.streamId,
+      userId: comment.userId,
+      message: comment.message,
+      likesCount: comment.likesCount ?? 0,
+      reportsCount: comment.reportsCount ?? 0,
+      isDeleted: Boolean(comment.isDeleted),
+      createdAt,
+      updatedAt,
+      parentCommentId: comment.parentCommentId ?? comment.commentId ?? null,
+      displayName: author.displayName,
+      username: author.username,
+      firstName: author.firstName,
+      lastName: author.lastName,
+      name: author.displayName,
+      fullName: author.displayName,
+      avatarUrl: author.avatarUrl,
+      image: author.avatarUrl,
+      profileImage: author.avatarUrl,
+      avatar: author.avatarUrl,
+      profilePicture: author.avatarUrl,
+      user: {
+        id: comment.userId,
+        firstName: author.firstName,
+        lastName: author.lastName,
+        username: author.username,
+        displayName: author.displayName,
+        avatarUrl: author.avatarUrl,
+        profileImage: author.avatarUrl,
+        profilePicture: author.avatarUrl,
+      },
+      ...extras,
+    };
+  }
+
+  private readonly SCOPES = [];
+
+  private oauth2Client: OAuth2Client;
+  private youtube: youtube_v3.Youtube;
+  private youtubeTokensLoaded = false;
+
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly notificationService: NotificationService,
+    private readonly redis: RedisService,
+    private readonly quizService: QuizService,
+    private readonly elasticSearch: ElasticsearchService,
+  ) {
+    this.initialize();
+    this.logger.log('YouTube service initialized successfully');
+  }
+
+  private normalizeQuizOption(value: unknown): string {
+    return String(value ?? '').trim().toLowerCase();
   }
 
   private extractLiveQuizOptions(liveQuiz: any): string[] {
@@ -1249,17 +1325,7 @@ async editStream(
       }
 
       const author = await this.getUserPublicProfile(userId);
-      return {
-        ...stream_comment,
-        displayName: author.displayName,
-        avatarUrl: author.avatarUrl,
-        username: author.username,
-        name: author.displayName,
-        fullName: author.displayName,
-        image: author.avatarUrl,
-        profileImage: author.avatarUrl,
-        avatar: author.avatarUrl,
-      };
+      return this.toCommentBroadcastPayload(stream_comment, author);
     } catch(error) {
       if (
         error instanceof ForbiddenException ||
@@ -1456,19 +1522,14 @@ async editStream(
       }
 
       const author = await this.getUserPublicProfile(userId);
-      return {
-        ...reply_comment,
-        streamId: parentComment.streamId,
-        parentCommentId: reply_comment.commentId,
-        displayName: author.displayName,
-        avatarUrl: author.avatarUrl,
-        username: author.username,
-        name: author.displayName,
-        fullName: author.displayName,
-        image: author.avatarUrl,
-        profileImage: author.avatarUrl,
-        avatar: author.avatarUrl,
-      };
+      return this.toCommentBroadcastPayload(
+        {
+          ...reply_comment,
+          streamId: parentComment.streamId,
+          parentCommentId: reply_comment.commentId,
+        },
+        author,
+      );
 
     } catch (error) {
       if (
@@ -1717,8 +1778,13 @@ async getStreamCommentsandReplies(streamId?: number) {
       user.id,
       {
         displayName: this.buildDisplayName(user, user.id),
-        avatarUrl: this.toHttpsAvatarUrl(user.profilePicture),
+        avatarUrl: this.toHttpsAvatarUrl(
+          user.profilePicture,
+          this.buildDisplayName(user, user.id),
+        ),
         username: user.username || this.buildDisplayName(user, user.id),
+        firstName: user.firstName || undefined,
+        lastName: user.lastName || undefined,
       },
     ]),
   );
@@ -1727,8 +1793,10 @@ async getStreamCommentsandReplies(streamId?: number) {
     const commentUser =
       userMap.get(comment.userId) || {
         displayName: `User${comment.userId}`,
-        avatarUrl: this.defaultAvatarUrl,
+        avatarUrl: this.toHttpsAvatarUrl(null, `User${comment.userId}`),
         username: `User${comment.userId}`,
+        firstName: undefined as string | undefined,
+        lastName: undefined as string | undefined,
       };
 
     const replies = Array.isArray(comment.replies)
@@ -1736,8 +1804,10 @@ async getStreamCommentsandReplies(streamId?: number) {
           const replyUser =
             userMap.get(reply.userId) || {
               displayName: `User${reply.userId}`,
-              avatarUrl: this.defaultAvatarUrl,
+              avatarUrl: this.toHttpsAvatarUrl(null, `User${reply.userId}`),
               username: `User${reply.userId}`,
+              firstName: undefined as string | undefined,
+              lastName: undefined as string | undefined,
             };
 
           return {
@@ -1746,11 +1816,22 @@ async getStreamCommentsandReplies(streamId?: number) {
             displayName: replyUser.displayName,
             avatarUrl: replyUser.avatarUrl,
             username: replyUser.username,
+            firstName: replyUser.firstName,
+            lastName: replyUser.lastName,
             name: replyUser.displayName,
             fullName: replyUser.displayName,
             image: replyUser.avatarUrl,
             profileImage: replyUser.avatarUrl,
             avatar: replyUser.avatarUrl,
+            user: {
+              id: reply.userId,
+              firstName: replyUser.firstName,
+              lastName: replyUser.lastName,
+              username: replyUser.username,
+              displayName: replyUser.displayName,
+              avatarUrl: replyUser.avatarUrl,
+              profilePicture: replyUser.avatarUrl,
+            },
           };
         })
       : [];
@@ -1761,11 +1842,22 @@ async getStreamCommentsandReplies(streamId?: number) {
       displayName: commentUser.displayName,
       avatarUrl: commentUser.avatarUrl,
       username: commentUser.username,
+      firstName: commentUser.firstName,
+      lastName: commentUser.lastName,
       name: commentUser.displayName,
       fullName: commentUser.displayName,
       image: commentUser.avatarUrl,
       profileImage: commentUser.avatarUrl,
       avatar: commentUser.avatarUrl,
+      user: {
+        id: comment.userId,
+        firstName: commentUser.firstName,
+        lastName: commentUser.lastName,
+        username: commentUser.username,
+        displayName: commentUser.displayName,
+        avatarUrl: commentUser.avatarUrl,
+        profilePicture: commentUser.avatarUrl,
+      },
     };
   });
 
@@ -2000,7 +2092,10 @@ async unpinComment(commentId: number) {
         user.id,
         {
           displayName: this.buildDisplayName(user, user.id),
-          avatarUrl: this.toHttpsAvatarUrl(user.profilePicture),
+          avatarUrl: this.toHttpsAvatarUrl(
+            user.profilePicture,
+            this.buildDisplayName(user, user.id),
+          ),
         },
       ]),
     );
@@ -2008,7 +2103,7 @@ async unpinComment(commentId: number) {
     const items = comments.map((comment) => {
       const profile = usersById.get(comment.userId) || {
         displayName: `User${comment.userId}`,
-        avatarUrl: this.defaultAvatarUrl,
+        avatarUrl: this.toHttpsAvatarUrl(null, `User${comment.userId}`),
       };
 
       return {
