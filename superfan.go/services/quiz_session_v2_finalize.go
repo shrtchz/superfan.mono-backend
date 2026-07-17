@@ -51,7 +51,7 @@ func (s *QuizSessionV2Service) finalizeSession(
 		if quit {
 			return s.completeSessionWithoutSubmission(sessionID, req.UserID)
 		}
-		return nil, utils.NewAppError(http.StatusBadRequest, "INVALID_ANSWER", "No answers to submit.")
+		return s.completeSessionWithZeroAnswers(sessionID, req, lookup)
 	}
 
 	submitPayload := models.SubmitQuizRequest{
@@ -203,6 +203,109 @@ func (s *QuizSessionV2Service) finalizeSession(
 		Session: models.SessionV2Summary{
 			ID:     sessionID,
 			Status: status,
+		},
+		Submitted: true,
+	}, nil
+}
+
+func (s *QuizSessionV2Service) completeSessionWithZeroAnswers(
+	sessionID string,
+	req models.FinalizeSessionV2Request,
+	lookup *activeSessionLookup,
+) (*models.FinalizeSessionV2Result, error) {
+	now, err := lagosNow()
+	if err != nil {
+		return nil, utils.NewAppError(http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to resolve timezone")
+	}
+
+	totalQuestions := lookup.record.TotalQuestions
+	if totalQuestions <= 0 && len(lookup.record.Questions) > 0 {
+		var questions []json.RawMessage
+		if err := json.Unmarshal(lookup.record.Questions, &questions); err == nil {
+			totalQuestions = len(questions)
+		}
+	}
+
+	dailyStreak, err := updateDailyStreak(req.UserID, now)
+	if err != nil {
+		return nil, err
+	}
+	streakBonus := getStreakBonusPoints(dailyStreak)
+
+	if err := utils.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&models.OngoingQuiz{}).
+			Where(`"id" = ? AND "userId" = ?`, sessionID, req.UserID).
+			Updates(map[string]interface{}{
+				"isCompleted":      true,
+				"completedAt":      now,
+				"totalEarning":     0,
+				"quizTime":         strconv.Itoa(req.QuizTimeSeconds),
+				"baseScore":        0,
+				"accuracyBonus":    0,
+				"speedBonus":       0,
+				"streakMultiplier": streakBonus,
+				"adBonuses":        req.AdBonuses,
+				"earnedAmount":     0,
+				"timeRemaining":    0,
+				"updatedAt":        now,
+			}).Error; err != nil {
+			return err
+		}
+
+		if lookup.record.IsRandom {
+			if err := tx.Model(&models.QuizAttempt{}).
+				Where(`"quizId" = ? AND "userId" = ?`, sessionID, req.UserID).
+				Updates(map[string]interface{}{
+					"isCompleted": true,
+					"completedAt": now,
+					"startedAt":   now,
+					"expiresAt":   now,
+				}).Error; err != nil {
+				return err
+			}
+		}
+
+		return nil
+	}); err != nil {
+		return nil, utils.NewAppError(http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to finalize quiz session")
+	}
+
+	streakMessage := "Streak saved! You completed a test just in time"
+	if dailyStreak == 3 || dailyStreak == 7 || dailyStreak == 14 || dailyStreak == 30 {
+		streakMessage = fmt.Sprintf("🔥 %d-day streak! Bonus applied.", dailyStreak)
+	}
+
+	result := map[string]interface{}{
+		"sessionId":       sessionID,
+		"score":           0,
+		"totalQuestions":  totalQuestions,
+		"correctAnswers":  0,
+		"baseEarning":     0,
+		"totalPoints":     streakBonus + req.AdBonuses,
+		"amountInNaira":   0.0,
+		"rewardType":      req.RewardType,
+		"quizTimeSeconds": req.QuizTimeSeconds,
+		"submittedAt":     isoTime(now),
+		"bonuses": map[string]interface{}{
+			"accuracy": map[string]interface{}{"percent": 0, "points": 0},
+			"speed":    map[string]interface{}{"percent": 0, "points": 0},
+			"streak":   map[string]interface{}{"days": dailyStreak, "points": streakBonus},
+			"ads":      map[string]interface{}{"points": req.AdBonuses},
+		},
+	}
+
+	return &models.FinalizeSessionV2Result{
+		Result:    result,
+		Responses: []map[string]interface{}{},
+		Streak: map[string]interface{}{
+			"current":     dailyStreak,
+			"bonusPoints": streakBonus,
+			"flameIcon":   "🔥",
+			"message":     streakMessage,
+		},
+		Session: models.SessionV2Summary{
+			ID:     sessionID,
+			Status: "completed",
 		},
 		Submitted: true,
 	}, nil
