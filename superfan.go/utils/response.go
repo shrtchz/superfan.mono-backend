@@ -22,9 +22,10 @@ type ErrorDetail struct {
 
 // ErrorResponse defines the standard error payload
 type ErrorResponse struct {
-	Success   bool        `json:"success"`
-	Error     ErrorDetail `json:"error"`
-	Timestamp string      `json:"timestamp"`
+	Success   bool         `json:"success"`
+	Error     ErrorDetail  `json:"error"`
+	Data      interface{}  `json:"data,omitempty"`
+	Timestamp string       `json:"timestamp"`
 }
 
 // Success sends a standard success JSON response
@@ -40,11 +41,24 @@ func Success(c *gin.Context, statusCode int, message string, data interface{}) {
 // SendError sends a standard error JSON response
 func SendError(c *gin.Context, statusCode int, code string, message string) {
 	c.JSON(statusCode, ErrorResponse{
-		Success:   false,
+		Success: false,
 		Error: ErrorDetail{
 			Code:    code,
 			Message: message,
 		},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+// SendErrorWithData sends an error response with optional structured data.
+func SendErrorWithData(c *gin.Context, statusCode int, code, message string, data interface{}) {
+	c.JSON(statusCode, ErrorResponse{
+		Success: false,
+		Error: ErrorDetail{
+			Code:    code,
+			Message: message,
+		},
+		Data:      data,
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	})
 }
