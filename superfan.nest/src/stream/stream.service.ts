@@ -1782,6 +1782,7 @@ async getStreamCommentsandReplies(streamId?: number) {
           user.profilePicture,
           this.buildDisplayName(user, user.id),
         ),
+        profilePicture: user.profilePicture || undefined,
         username: user.username || this.buildDisplayName(user, user.id),
         firstName: user.firstName || undefined,
         lastName: user.lastName || undefined,
@@ -1815,6 +1816,7 @@ async getStreamCommentsandReplies(streamId?: number) {
             parentCommentId: reply.commentId,
             displayName: replyUser.displayName,
             avatarUrl: replyUser.avatarUrl,
+            profilePicture: replyUser.profilePicture,
             username: replyUser.username,
             firstName: replyUser.firstName,
             lastName: replyUser.lastName,
@@ -1830,7 +1832,7 @@ async getStreamCommentsandReplies(streamId?: number) {
               username: replyUser.username,
               displayName: replyUser.displayName,
               avatarUrl: replyUser.avatarUrl,
-              profilePicture: replyUser.avatarUrl,
+              profilePicture: replyUser.profilePicture,
             },
           };
         })
@@ -1841,6 +1843,7 @@ async getStreamCommentsandReplies(streamId?: number) {
       replies,
       displayName: commentUser.displayName,
       avatarUrl: commentUser.avatarUrl,
+      profilePicture: commentUser.profilePicture,
       username: commentUser.username,
       firstName: commentUser.firstName,
       lastName: commentUser.lastName,
@@ -1856,7 +1859,7 @@ async getStreamCommentsandReplies(streamId?: number) {
         username: commentUser.username,
         displayName: commentUser.displayName,
         avatarUrl: commentUser.avatarUrl,
-        profilePicture: commentUser.avatarUrl,
+        profilePicture: commentUser.profilePicture,
       },
     };
   });
