@@ -30,6 +30,7 @@ import { QuestionAddedEvent } from './quiz.events';
 export class QuizService {
   private readonly logger = new Logger(QuizService.name);
   private baseUrl = `${process.env.GO_ENDPOINT}/v1/quiz`;
+  private liveQuizGoBaseUrl = `${process.env.GO_ENDPOINT}/v2/quiz`;
   // private trackerBaseUrl = `${process.env.GO_ENDPOINT}/v1`;
 
   constructor(
@@ -274,7 +275,7 @@ export class QuizService {
   async createLiveQuiz(liveQuizData: CreateLiveQuizDto) {
     try {
       const response = await firstValueFrom(
-        this.httpService.post(`${this.baseUrl}/live`, liveQuizData),
+        this.httpService.post(`${this.liveQuizGoBaseUrl}/live`, liveQuizData),
       );
       this.eventEmitter.emit('liveQuiz.changed', { action: 'created' });
       return response.data;
@@ -981,21 +982,14 @@ async fetchAllLiveQuiz() {
 
 async getLiveQuizLeaderboard() {
   try {
-    const [activeQuizzesResponse, leaderboardEntries, ongoingQuizzes] =
-      await Promise.all([
-        this.getAllLiveQuiz(), // expected: { data: Quiz[] } or Quiz[]
-        prisma.liveQuizLeaderboard.findMany({
-          orderBy: {
-            createdAt: 'desc',
-          },
-        }),
-        prisma.ongoingLiveQuiz.findMany(),
-      ]);
-
-    // ✅ FIX: normalize response from getAllLiveQuiz()
-    const activeQuizzes = Array.isArray(activeQuizzesResponse)
-      ? activeQuizzesResponse
-      : activeQuizzesResponse?.data ?? [];
+    const [leaderboardEntries, ongoingQuizzes] = await Promise.all([
+      prisma.liveQuizLeaderboard.findMany({
+        orderBy: {
+          createdAt: 'desc',
+        },
+      }),
+      prisma.ongoingLiveQuiz.findMany(),
+    ]);
 
     const participantMap = new Map<string, Set<string>>();
 
@@ -1009,51 +1003,54 @@ async getLiveQuizLeaderboard() {
       });
     });
 
+    const entriesByQuizId = new Map<string, typeof leaderboardEntries>();
+    leaderboardEntries.forEach((entry) => {
+      const existing = entriesByQuizId.get(entry.quizId) ?? [];
+      existing.push(entry);
+      entriesByQuizId.set(entry.quizId, existing);
+    });
+
     let totalRewardDistributed = 0;
 
-    const leaderboard = activeQuizzes.map((quiz) => {
-      const quizEntries = leaderboardEntries.filter(
-        (entry) => entry.quizId === quiz.id || entry.quizId === quiz.quizId,
-      );
+    const leaderboard = Array.from(entriesByQuizId.entries()).map(
+      ([quizId, quizEntries]) => {
+        const sortedEntries = [...quizEntries].sort(
+          (a, b) =>
+            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+        );
+        const latestEntry = sortedEntries[0] ?? null;
 
-      const winners = [
-        ...new Set(
-          quizEntries
-            .filter((entry) => entry.isWinner)
-            .map((entry) => entry.userId),
-        ),
-      ];
+        const winners = [
+          ...new Set(
+            quizEntries
+              .filter((entry) => entry.isWinner)
+              .map((entry) => entry.userId),
+          ),
+        ];
 
-      const latestEntry =
-        quizEntries.length > 0
-          ? [...quizEntries].sort(
-              (a, b) =>
-                new Date(b.createdAt).getTime() -
-                new Date(a.createdAt).getTime(),
-            )[0]
-          : null;
+        totalRewardDistributed += quizEntries.reduce(
+          (sum, entry) => sum + Number(entry.unitPrize || 0),
+          0,
+        );
 
-      totalRewardDistributed += quizEntries.reduce(
-        (sum, entry) => sum + Number(entry.unitPrize || 0),
-        0,
-      );
+        const recordedParticipants = quizEntries.reduce(
+          (max, entry) => Math.max(max, Number(entry.participants || 0)),
+          0,
+        );
 
-      return {
-        quizDate: quiz.quizScheduleDate,
-        quizId: quiz.id || quiz.quizId,
-        question: quiz.question,
-        answer: quiz.answer ?? null,
-
-        participants:
-          participantMap.get(quiz.id || quiz.quizId)?.size || 0,
-
-        quizWinners: winners,
-
-        reward: latestEntry?.rewardType ?? null,
-
-        status: latestEntry?.rewardStatus ?? 'NONE',
-      };
-    });
+        return {
+          quizDate: latestEntry?.quizDate ?? null,
+          quizId,
+          question: latestEntry?.question ?? '',
+          answer: latestEntry?.answer ?? null,
+          participants:
+            participantMap.get(quizId)?.size || recordedParticipants || 0,
+          quizWinners: winners,
+          reward: latestEntry?.rewardType ?? null,
+          status: latestEntry?.rewardStatus ?? 'NONE',
+        };
+      },
+    );
 
     const totalParticipants = leaderboard.reduce(
       (sum, quiz) => sum + (quiz.participants || 0),
@@ -1376,14 +1373,14 @@ async hasSubmittedLiveQuizForStream(
 
   async getLiveQuiz(id: string) {
     const response = await firstValueFrom(
-      this.httpService.get(`${this.baseUrl}/live/${id}`),
+      this.httpService.get(`${this.liveQuizGoBaseUrl}/live/${id}`),
     );
     return response.data;
   }
 
   async getAllLiveQuiz() {
     const response = await firstValueFrom(
-      this.httpService.get(`${this.baseUrl}/live`),
+      this.httpService.get(`${this.liveQuizGoBaseUrl}/live`),
     );
     return response.data;
   }
@@ -1431,7 +1428,7 @@ async hasSubmittedLiveQuizForStream(
     async getLiveQuizAnswer(id: string) {
     try {
       const response = await firstValueFrom(
-        this.httpService.get(`${this.baseUrl}/live-answer/${id}`, {
+        this.httpService.get(`${this.liveQuizGoBaseUrl}/live-answer/${id}`, {
           headers: this.getGoServiceAuthHeaders(),
         }),
       );
@@ -1562,32 +1559,46 @@ async startQuickQuizSession(
       });
 
       if (completedToday >= 5) {
-        const lastCompletedQuiz = await prisma.ongoingQuiz.findFirst({
-          where: {
-            userId: Number(userId),
-            isCompleted: true,
-            totalQuestions: 25,
-            completedAt: {
-              gte: startOfDay,
-              lt: endOfDay,
-            },
-          },
-          orderBy: [{ completedAt: 'desc' }, { createdAt: 'desc' }],
-        });
+        // Return the NEW quiz questions but mark as limit reached
+        // so user can see what they would get but cannot submit
+        const quizzes = Array.isArray(pack?.quizzes) ? pack.quizzes : [];
+        const languagePreference = pack.languagePreference || null;
+        const subjectPreference = pack.subjectPreference || null;
+        const testLevel = pack.testLevel || quizzes[0]?.testLevel || null;
 
-        const limitQuizzes = Array.isArray(lastCompletedQuiz?.questions)
-          ? lastCompletedQuiz.questions
-          : [];
+        const totalQuestions: number = quizzes.length || 25;
+        const totalEarning: number =
+          Number(pack.totalEarning) ||
+          quizzes.reduce(
+            (sum: number, q: any) => sum + Number(q.earning ?? 0),
+            0,
+          );
+
+        const amountInNaira = totalEarning / 1000;
+
+        // Still fetch exchange rates for consistency
+        const convertToUSDC = await this.paymentService.getExchangeRate('USDC');
+        const convertToUSDT = await this.paymentService.getExchangeRate('USDT');
+
+        const amountInUSDC = amountInNaira / Number(convertToUSDC.rate);
+        const amountInUSDT = amountInNaira / Number(convertToUSDT.rate);
+        const totalTime: number = pack.totalTime ?? totalQuestions * 2;
 
         return {
           data: {
-            quizzes: limitQuizzes,
-            totalEarning: lastCompletedQuiz?.totalEarning ?? 0,
-            totalQuestions: lastCompletedQuiz?.totalQuestions ?? 25,
-            totalTime: lastCompletedQuiz?.totalTime ?? null,
-            quizId: lastCompletedQuiz?.id ?? null,
-            message: 'Upgrade your plan to get daily tests.',
+            quizzes,
+            totalEarning,
+            totalQuestions,
+            totalTime,
+            amountInNaira,
+            amountInUSDC,
+            amountInUSDT,
+            languagePreference,
+            subjectPreference,
+            testLevel,
+            message: 'Daily quiz limit reached. Upgrade your plan to get more tests.',
             limitReached: true,
+            quizId: null, // No quiz ID since we didn't create an ongoing quiz
           },
         };
       }
@@ -2201,7 +2212,7 @@ async getOngoingQuizAnswers(userId: number) {
   async updateLiveQuiz(updateData: any, id: string) {
     try {
       const response = await firstValueFrom(
-        this.httpService.patch(`${this.baseUrl}/live/${id}`, updateData),
+        this.httpService.patch(`${this.liveQuizGoBaseUrl}/live/${id}`, updateData),
       );
       this.eventEmitter.emit('liveQuiz.changed', { action: 'updated' });
       return response.data;
@@ -2220,7 +2231,7 @@ async getOngoingQuizAnswers(userId: number) {
   async deleteLiveQuiz(id: string) {
     try {
       const response = await firstValueFrom(
-        this.httpService.delete(`${this.baseUrl}/live/${id}`),
+        this.httpService.delete(`${this.liveQuizGoBaseUrl}/live/${id}`),
       );
       this.eventEmitter.emit('liveQuiz.changed', { action: 'deleted' });
       return response.data;

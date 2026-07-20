@@ -42,12 +42,17 @@ func NewQuizService(quizcollection *mongo.Collection, quizCategoryCollection *mo
 	}
 }
 
-func lagosNow() (time.Time, error) {
+func lagosLocation() *time.Location {
 	location, err := time.LoadLocation("Africa/Lagos")
 	if err != nil {
-		return time.Now().UTC(), err
+		// Alpine images without tzdata fail LoadLocation; WAT is fixed UTC+1 (no DST).
+		return time.FixedZone("WAT", 3600)
 	}
-	return time.Now().In(location), nil
+	return location
+}
+
+func lagosNow() (time.Time, error) {
+	return time.Now().In(lagosLocation()), nil
 }
 
 func computeLiveQuizStatus(startAt, finishAt, now time.Time) string {
@@ -845,10 +850,10 @@ func (u *QuizServiceImpl) GetQuizByPreferences(
 
 	if count == 0 {
 		if len(filter) == 0 {
-			return nil, utils.NewAppError(http.StatusNotFound, "NO_QUIZZES",
+			return nil, utils.NewAppError(http.StatusServiceUnavailable, "QUIZ_CATALOG_EMPTY",
 				"no quizzes exist in the database")
 		}
-		return nil, utils.NewAppError(http.StatusNotFound, "NO_QUIZZES",
+		return nil, utils.NewAppError(http.StatusUnprocessableEntity, "NO_QUIZZES",
 			fmt.Sprintf("no quizzes found for: language=%s, subject=%s, level=%s",
 				lang, subj, level))
 	}
@@ -924,7 +929,7 @@ func (u *QuizServiceImpl) GetQuizByPreferences(
 	}
 
 	if len(quizResponses) == 0 {
-		return nil, utils.NewAppError(http.StatusNotFound, "NO_QUIZZES",
+		return nil, utils.NewAppError(http.StatusUnprocessableEntity, "NO_QUIZZES",
 			"no quizzes found after sampling")
 	}
 
@@ -972,11 +977,7 @@ func (u *QuizServiceImpl) SubmitQuiz(
 
 		correctAnswer := quiz.Answer
 
-		isCorrect := strings.TrimSpace(
-			strings.ToLower(response.SelectedAnswer),
-		) == strings.TrimSpace(
-			strings.ToLower(correctAnswer),
-		)
+		isCorrect := gradeAnswer(response.SelectedAnswer, correctAnswer, quiz.Options)
 
 		earning := 0
 

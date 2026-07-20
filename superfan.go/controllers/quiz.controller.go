@@ -691,7 +691,7 @@ func mapToLiveQuiz(raw map[string]interface{}) (*models.LiveQuiz, error) {
 func defaultWeekdayNoon() time.Time {
 	location, err := time.LoadLocation("Africa/Lagos")
 	if err != nil {
-		return time.Now().UTC()
+		location = time.FixedZone("WAT", 3600)
 	}
 	now := time.Now().In(location)
 	next := time.Date(now.Year(), now.Month(), now.Day(), 12, 0, 0, 0, location)
@@ -841,6 +841,12 @@ func RegisterQuizRoutes(
 	// Airtable Webhook stays public
 	quizroute.POST("/airtable-webhook", qc.AirtableWebhook)
 
+	// Live quiz reads — public (stream player + schedule polling).
+	quizroute.GET("/live", qc.GetAllLiveQuiz)
+	quizroute.GET("/live/random/:number", qc.GetRandomLiveQuiz)
+	quizroute.GET("/live/:id", qc.GetLiveQuiz)
+	quizroute.GET("/live-answer/:id", qc.GetLiveQuizAnswerById)
+
 	// Everything else requires the same tokens as Nest JwtGuard
 	protected := quizroute.Group("")
 	protected.Use(middleware.AuthRequired())
@@ -865,12 +871,8 @@ func RegisterQuizRoutes(
 		protected.GET("/get-quiz-submissions", qsc.GetAllSubmissions)
 		protected.GET("/get-user-submissions/:userId", qsc.GetUserSubmissions)
 
-		// ── Live Quiz ──────────────────────────────────────────
+		// ── Live Quiz writes ───────────────────────────────────
 		protected.POST("/live", qc.CreateLiveQuiz)
-		protected.GET("/live", qc.GetAllLiveQuiz)
-		protected.GET("/live/random/:number", qc.GetRandomLiveQuiz)
-		protected.GET("/live/:id", qc.GetLiveQuiz)
-		protected.GET("/live-answer/:id", qc.GetLiveQuizAnswerById)
 		protected.PATCH("/live/:id", qc.UpdateLiveQuiz)
 		protected.PUT("/live/:id", qc.UpdateLiveQuiz)
 		protected.DELETE("/live/:id", qc.DeleteLiveQuiz)

@@ -1,3 +1,5 @@
+import { Logger } from '@nestjs/common';
+import { OnEvent } from '@nestjs/event-emitter';
 import {
   ConnectedSocket,
   MessageBody,
@@ -7,12 +9,10 @@ import {
   WebSocketGateway,
   WebSocketServer,
 } from '@nestjs/websockets';
-import { Logger } from '@nestjs/common';
-import { OnEvent } from '@nestjs/event-emitter';
 
 import { Server, Socket } from 'socket.io';
-import { StreamingService } from './stream.service';
 import { QuizService } from '../quiz/quiz.service';
+import { StreamingService } from './stream.service';
 
 const SOCKET_CORS_ORIGINS = [
   'http://localhost:9050',
@@ -44,8 +44,6 @@ export class StreamGateway
     private readonly streamingService: StreamingService,
     private readonly quizService: QuizService,
   ) {}
-
-  private users = new Map<number, string>();
 
   private toValidString(value: unknown): string {
     return typeof value === 'string' && value.trim() ? value.trim() : '';
@@ -127,7 +125,6 @@ export class StreamGateway
     const getFinish = (quiz: Record<string, unknown>) =>
       this.toTimestamp(quiz.quizFinishDate ?? quiz.finishDate ?? quiz.endAt);
 
-    // 1) Prefer quiz within the current duration window.
     const activeQuizzes = withQuestion.filter((quiz) => {
       const startAt = getStart(quiz);
       const finishAt = getFinish(quiz);
@@ -151,7 +148,6 @@ export class StreamGateway
       })[0];
     }
 
-    // 2) If nothing active yet, return nearest upcoming/open question.
     const openQuizzes = withQuestion.filter((quiz) => {
       const finishAt = getFinish(quiz);
       return !Number.isFinite(finishAt) || finishAt > now;
@@ -174,7 +170,6 @@ export class StreamGateway
       return scheduled[0] ?? openQuizzes[0] ?? null;
     }
 
-    // 3) Never empty fallback: return latest question from history.
     return [...withQuestion].sort((a, b) => {
       const aUpdated = this.toTimestamp(a.updatedAt ?? a.createdAt);
       const bUpdated = this.toTimestamp(b.updatedAt ?? b.createdAt);
@@ -212,7 +207,6 @@ export class StreamGateway
         if (nested.length) return nested;
       }
 
-      // Try one more level deep for shapes like { data: { result: { quizzes: [] } } }
       for (const candidate of nextCandidates) {
         if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
           continue;
@@ -255,7 +249,7 @@ export class StreamGateway
 
   private async emitLiveQuizUpdate(
     action: 'created' | 'updated' | 'deleted' | 'sync' = 'sync',
-    target: { streamId?: string | number; socket?: Socket } = {},
+    socket?: Socket,
   ) {
     if (!this.server) return;
 
@@ -266,18 +260,11 @@ export class StreamGateway
       updatedAt: new Date().toISOString(),
     };
     this.logger.log(
-      `[LiveQuiz] emit action=${action} target=${
-        target.streamId ?? (target.socket ? 'socket' : 'broadcast')
-      } quizId=${(quiz as any)?.id ?? 'none'}`,
+      `[LiveQuiz] emit action=${action} quizId=${(quiz as any)?.id ?? 'none'}`,
     );
 
-    if (target.socket) {
-      target.socket.emit('liveQuizUpdated', payload);
-      return;
-    }
-
-    if (target.streamId !== undefined && target.streamId !== null) {
-      this.broadcastToStream(target.streamId, 'liveQuizUpdated', payload);
+    if (socket) {
+      socket.emit('liveQuizUpdated', payload);
       return;
     }
 
@@ -290,69 +277,49 @@ export class StreamGateway
     await this.emitLiveQuizUpdate(action);
   }
 
-  private normalizeStreamId(streamId: number | string) {
-    return String(streamId);
-  }
-
-  getStreamRoom(streamId: number | string) {
-    return `stream-${this.normalizeStreamId(streamId)}`;
-  }
-
-  broadcastToStream(streamId: number | string, event: string, payload: unknown) {
-    if (!this.server || streamId === undefined || streamId === null) return;
-    this.server.to(this.getStreamRoom(streamId)).emit(event, payload);
-  }
-
-  private getRoomMemberCount(streamId: number | string): number {
-    if (!this.server) return 0;
-    const roomState = this.server.sockets.adapter.rooms.get(this.getStreamRoom(streamId));
-    return roomState?.size ?? 0;
-  }
-
-  private emitStreamViewerCount(streamId: number | string) {
-    if (!this.server || streamId === undefined || streamId === null) return;
-    const normalizedStreamId = this.normalizeStreamId(streamId);
-    const safeCount = this.getRoomMemberCount(normalizedStreamId);
-
-    this.broadcastToStream(normalizedStreamId, 'streamViewerCount', {
-      streamId: normalizedStreamId,
-      count: safeCount,
-      source: 'socket',
-      updatedAt: new Date().toISOString(),
-    });
-  }
-
   handleConnection(client: Socket) {
-    const userId = Number(client.handshake.query.userId);
-
-    if (userId) {
-      this.users.set(userId, client.id);
-      console.log(`User ${userId} connected`);
+    const queryUserId = Number(client.handshake?.query?.userId);
+    if (Number.isFinite(queryUserId) && queryUserId > 0) {
+      (client.data as { userId?: number }).userId = queryUserId;
     }
   }
 
   handleDisconnect(client: Socket) {
-    const joinedStreams = (
-      client.data?.joinedStreams instanceof Set
-        ? Array.from(client.data.joinedStreams)
-        : []
-    ) as string[];
+    // Disconnect handled - no chat room cleanup needed
+  }
 
-    for (const [userId, socketId] of this.users.entries()) {
-      if (socketId === client.id) {
-        this.users.delete(userId);
-        console.log(`User ${userId} disconnected`);
-        break;
-      }
+  private resolveSocketUserId(
+    client: Socket,
+    payloadUserId?: string | number | null,
+  ): number | null {
+    const candidates = [
+      payloadUserId,
+      (client.data as { userId?: number })?.userId,
+      client.handshake?.query?.userId,
+    ];
+    for (const candidate of candidates) {
+      const parsed = Number(candidate);
+      if (Number.isFinite(parsed) && parsed > 0) return parsed;
     }
+    return null;
+  }
 
-    // Socket.io removes room membership during disconnect;
-    // schedule broadcast after adapter state settles.
-    setTimeout(() => {
-      joinedStreams.forEach((streamId) => {
-        this.emitStreamViewerCount(streamId);
-      });
-    }, 0);
+  @SubscribeMessage('register')
+  handleRegister(
+    @MessageBody() payload: unknown,
+    @ConnectedSocket() client: Socket,
+  ) {
+    const userId =
+      typeof payload === 'object' && payload !== null
+        ? Number(
+            (payload as { userId?: string | number }).userId ??
+              (payload as { id?: string | number }).id,
+          )
+        : Number(payload);
+    if (Number.isFinite(userId) && userId > 0) {
+      (client.data as { userId?: number }).userId = userId;
+    }
+    return { status: 'success' };
   }
 
   @SubscribeMessage('joinStream')
@@ -360,41 +327,12 @@ export class StreamGateway
     @MessageBody() streamId: string | number,
     @ConnectedSocket() client: Socket,
   ) {
-    const normalizedStreamId = this.normalizeStreamId(streamId);
-    const room = this.getStreamRoom(normalizedStreamId);
+    // Join stream for quiz updates
+    const normalizedStreamId = String(streamId);
+    const room = `stream-${normalizedStreamId}`;
     await client.join(room);
-    const joinedStreams = (client.data.joinedStreams ?? new Set<string>()) as Set<string>;
-    joinedStreams.add(normalizedStreamId);
-    client.data.joinedStreams = joinedStreams;
-    this.emitStreamViewerCount(normalizedStreamId);
-    void this.emitLiveQuizUpdate('sync', { socket: client });
+    void this.emitLiveQuizUpdate('sync', client);
     return { message: `Joined room ${room}` };
-  }
-
-  @SubscribeMessage('joinStreamRoom')
-  async joinStreamRoom(
-    @MessageBody() data: { streamId?: string | number; userId?: number },
-    @ConnectedSocket() client: Socket,
-  ) {
-    if (data?.streamId !== undefined && data?.streamId !== null) {
-      const normalizedStreamId = this.normalizeStreamId(data.streamId);
-      const room = this.getStreamRoom(normalizedStreamId);
-      await client.join(room);
-      const joinedStreams = (client.data.joinedStreams ?? new Set<string>()) as Set<string>;
-      joinedStreams.add(normalizedStreamId);
-      client.data.joinedStreams = joinedStreams;
-      this.emitStreamViewerCount(normalizedStreamId);
-      void this.emitLiveQuizUpdate('sync', { socket: client });
-      return { message: `Joined room ${room}` };
-    }
-
-    if (data?.userId) {
-      const room = `user-${data.userId}`;
-      await client.join(room);
-      return { message: `Joined room ${room}` };
-    }
-
-    return { message: 'No room joined' };
   }
 
   @SubscribeMessage('leaveStream')
@@ -402,207 +340,116 @@ export class StreamGateway
     @MessageBody() streamId: string | number,
     @ConnectedSocket() client: Socket,
   ) {
-    const normalizedStreamId = this.normalizeStreamId(streamId);
-    await client.leave(this.getStreamRoom(normalizedStreamId));
-    const joinedStreams = client.data?.joinedStreams as Set<string> | undefined;
-    joinedStreams?.delete(normalizedStreamId);
-    this.emitStreamViewerCount(normalizedStreamId);
+    const normalizedStreamId = String(streamId);
+    await client.leave(`stream-${normalizedStreamId}`);
     return { message: 'Left stream room' };
   }
 
+  broadcastChat(event: string, payload: any, streamId?: string | number) {
+    if (!this.server) return;
+
+    if (streamId) {
+      const room = `stream-${String(streamId)}`;
+      this.server.to(room).emit(event, payload);
+      this.logger.log(`[StreamGateway] broadcastChat event=${event} room=${room}`);
+    } else {
+      this.server.emit(event, payload);
+      this.logger.log(`[StreamGateway] broadcastChat event=${event} global`);
+    }
+  }
+
   @SubscribeMessage('sendComment')
-  async sendMessage(
+  async sendComment(
     @MessageBody()
-    data: {
-      userId: number;
-      streamId: number;
-      comment: string;
+    payload: {
+      streamId?: string | number;
+      message?: string;
+      comment?: string;
+      userId?: string | number;
+      parentCommentId?: string | number | null;
     },
+    @ConnectedSocket() client: Socket,
   ) {
-    const newMessage = await this.streamingService.commentOnStream(
-      data.streamId,
-      data.comment,
-      data.userId,
-    );
+    try {
+      const streamId = Number(payload?.streamId);
+      const message = String(payload?.message ?? payload?.comment ?? '').trim();
+      const userId = this.resolveSocketUserId(client, payload?.userId);
+      const parentCommentId =
+        payload?.parentCommentId !== undefined && payload?.parentCommentId !== null
+          ? Number(payload.parentCommentId)
+          : null;
 
-    this.broadcastToStream(data.streamId, 'streamMessage', {
-      ...newMessage,
-      streamId: data.streamId,
-    });
+      this.logger.log(
+        `[StreamGateway] sendComment streamId=${streamId} userId=${userId} message=${message}`,
+      );
 
-    return newMessage;
-  }
+      if (!message) {
+        return { status: 'error', error: 'Comment message is required' };
+      }
+      if (!userId) {
+        return { status: 'error', error: 'User is not registered on socket' };
+      }
 
-  getUserSocket(userId: number) {
-    return this.users.get(userId);
-  }
+      let commentPayload: Record<string, unknown>;
 
-  @SubscribeMessage('replyComment')
-  async replyMessage(
-    @MessageBody()
-    data: {
-      userId: number;
-      commentId: number;
-      comment: string;
-      streamId?: number;
-    },
-  ) {
-    const reply = await this.streamingService.replyToComment(
-      data.commentId,
-      data.comment,
-      data.userId,
-    );
+      if (Number.isFinite(parentCommentId) && (parentCommentId as number) > 0) {
+        const created = await this.streamingService.replyToComment(
+          parentCommentId as number,
+          message,
+          userId,
+        );
+        commentPayload = {
+          ...created,
+          streamId: created?.streamId ?? streamId,
+          parentCommentId: created?.parentCommentId ?? parentCommentId,
+        };
+        // Live chat is shared — broadcast to every connected client.
+        this.broadcastChat('newComment', commentPayload);
+        this.broadcastChat('replyMessage', commentPayload);
+      } else {
+        if (!Number.isFinite(streamId) || streamId <= 0) {
+          return { status: 'error', error: 'Valid streamId is required' };
+        }
+        const created = await this.streamingService.commentOnStream(
+          streamId,
+          message,
+          userId,
+        );
+        commentPayload = {
+          ...created,
+          streamId,
+        };
+        this.broadcastChat('newComment', commentPayload);
+        this.broadcastChat('streamMessage', commentPayload);
+      }
 
-    const streamId =
-      data.streamId ??
-      (await this.streamingService.getCommentStreamId(data.commentId));
-
-    if (streamId) {
-      this.broadcastToStream(streamId, 'replyMessage', {
-        ...reply,
-        streamId,
-      });
+      return { status: 'success', comment: commentPayload };
+    } catch (error) {
+      this.logger.error('[StreamGateway] sendComment error:', error);
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : 'Failed to send comment';
+      return { status: 'error', error: message };
     }
-
-    return reply;
   }
 
-  @SubscribeMessage('likeComment')
-  async likeComment(
-    @MessageBody()
-    data: {
-      userId: number;
-      commentId: number;
-      streamId?: number;
-    },
+  @SubscribeMessage('fetchComments')
+  async fetchComments(
+    @MessageBody() payload: { streamId: string | number },
+    @ConnectedSocket() client: Socket,
   ) {
-    const result = await this.streamingService.likeComment(
-      data.commentId,
-      data.userId,
-    );
-
-    const streamId =
-      data.streamId ??
-      result?.data?.streamId ??
-      (await this.streamingService.getCommentStreamId(data.commentId));
-
-    if (streamId) {
-      this.broadcastToStream(streamId, 'likeComment', {
-        commentId: data.commentId,
-        streamId,
-        userId: data.userId,
-        likesCount: result?.data?.likesCount,
-        data: result?.data,
-      });
+    try {
+      const { streamId } = payload;
+      this.logger.log(`[StreamGateway] fetchComments streamId=${streamId}`);
+      
+      // Return empty array for now - this should fetch from database
+      const comments = await this.streamingService.getStreamCommentsandReplies(Number(streamId));
+      
+      return { status: 'success', comments };
+    } catch (error) {
+      this.logger.error('[StreamGateway] fetchComments error:', error);
+      return { status: 'error', error: 'Failed to fetch comments', comments: [] };
     }
-
-    return result;
-  }
-
-  @SubscribeMessage('unlikeComment')
-  async unlikeComment(
-    @MessageBody()
-    data: {
-      userId: number;
-      commentId: number;
-      streamId?: number;
-    },
-  ) {
-    const result = await this.streamingService.unlikeComment(
-      data.commentId,
-      data.userId,
-    );
-
-    const streamId =
-      data.streamId ??
-      result?.data?.streamId ??
-      (await this.streamingService.getCommentStreamId(data.commentId));
-
-    if (streamId) {
-      this.broadcastToStream(streamId, 'unlikeComment', {
-        commentId: data.commentId,
-        streamId,
-        userId: data.userId,
-        likesCount: result?.data?.likesCount,
-        data: result?.data,
-      });
-    }
-
-    return result;
-  }
-
-  @SubscribeMessage('reportComment')
-  async reportComment(
-    @MessageBody()
-    data: {
-      commentId: number;
-      creatorId: number;
-      userId: number;
-      reason: string;
-      streamId?: number;
-    },
-  ) {
-    const result = await this.streamingService.reportComment(
-      data.commentId,
-      data.creatorId,
-      data.userId,
-      data.reason,
-    );
-
-    const streamId =
-      data.streamId ??
-      (await this.streamingService.getCommentStreamId(data.commentId));
-
-    if (streamId) {
-      this.broadcastToStream(streamId, 'reportComment', {
-        commentId: data.commentId,
-        streamId,
-        userId: data.userId,
-        reportsCount: result?.reportsCount,
-      });
-    }
-
-    return result;
-  }
-
-  @SubscribeMessage('deleteComment')
-  async deleteComment(
-    @MessageBody()
-    data: {
-      commentId: number;
-      streamId?: number;
-    },
-  ) {
-    const deleted = await this.streamingService.deleteComment(data.commentId);
-
-    if (deleted?.streamId) {
-      this.broadcastToStream(deleted.streamId, 'deleteComment', {
-        commentId: data.commentId,
-        streamId: deleted.streamId,
-      });
-    }
-
-    return deleted;
-  }
-
-  @SubscribeMessage('pinComment')
-  async pinComment(
-    @MessageBody()
-    data: {
-      commentId: number;
-      streamId?: number;
-    },
-  ) {
-    const pinned = await this.streamingService.pinComment(data.commentId);
-    const streamId = data.streamId ?? pinned?.streamId;
-
-    if (streamId) {
-      this.broadcastToStream(streamId, 'pinComment', {
-        commentId: data.commentId,
-        streamId,
-      });
-    }
-
-    return pinned;
   }
 }

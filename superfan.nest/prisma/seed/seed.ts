@@ -1,13 +1,14 @@
+import { createClerkClient } from '@clerk/backend';
 import * as argon from 'argon2';
 import crypto from 'crypto';
 import { generateReferralCode } from '../../src/common/shared/lib';
 import { prisma } from "../../src/prisma/prisma";
-import { createClerkClient } from '@clerk/backend';
 export enum SubscriptionPlan {
   FREE = "FREE",
   PREMIUM_PRO = "PREMIUM_PRO",
   PREMIUM_PRO_MAX = "PREMIUM_PRO_MAX",
 }
+
 
 
 
@@ -17,12 +18,13 @@ async function seedAll() {
       firstName: "ridwan",
       lastName: "surajudeen",
       email: "ridwan.1095@outlook.com",
-      password: "SF_dev_pass_9872#@!",
+      password: "Shortchase@11",
       phone: "+2348012345678",
       username: "ridwanSuraj",
       subscriptionPlan: SubscriptionPlan.FREE,
       roleName: "client",
       referral_code: generateReferralCode("ridwan"),
+      profilePicture:"https://cloudflare-b2.shrtchz.workers.dev/Screenshot 2025-07-04 153317.png",
     },
     {
       firstName: "mike",
@@ -34,17 +36,42 @@ async function seedAll() {
       subscriptionPlan: SubscriptionPlan.FREE,
       roleName: "client",
       referral_code: generateReferralCode("mike"),
+      profilePicture:null
     },
     {
       firstName: "admin",
       lastName: "user",
       email: "superfanng@superfan.ng",
-      password: "SF_dev_pass_9872#@!",
+      password: "Shortchase#2019@",
       phone: "+2348098765432",
       username: "adminUser",
       subscriptionPlan: SubscriptionPlan.FREE,
       roleName: "superadmin",
       referral_code: generateReferralCode("admin"),
+      profilePicture:null
+    },{
+      firstName: "Samuel",
+      lastName: "Clement",
+      email:"samuel.7421@outlook.com",
+      password: "Shortchase@11",
+      phone: "+2349112074341",
+      username: "thesamclem",
+      subscriptionPlan: SubscriptionPlan.FREE,
+      roleName: "client",
+      referral_code: generateReferralCode("samuel"),
+      profilePicture:null
+    },
+    {
+      firstName: "Sola",
+      lastName: "Sola",
+      email: "sola.8519@outlook.com",
+      password: "Shortchase@11",
+      phone: "+2349012345678",
+      username: "soladebayo",
+      subscriptionPlan: SubscriptionPlan.FREE,
+      roleName: "client",
+      referral_code: generateReferralCode("sola"),
+      profilePicture:null
     },
   ];
 
@@ -119,7 +146,7 @@ if (!existingRole) {
 
   console.log("Payment processors seeded");
 
-  // ✅ Seed users
+  // ✅ Seed users (safe against email/username unique conflicts)
   for (const user of users) {
     const hashedPassword = await argon.hash(user.password);
 
@@ -127,30 +154,55 @@ if (!existingRole) {
       where: { name: user.roleName },
     });
 
-    const createdUser = await prisma.user.upsert({
+    const existingByEmail = await prisma.user.findUnique({
       where: { email: user.email },
-      update: {
-        firstName: user.firstName,
-        lastName: user.lastName,
-        phone: user.phone,
-        username: user.username,
-        subscriptionPlan: user.subscriptionPlan,
-        roleName: role.name, // safer
-        referral_code: user.referral_code,
-        password: hashedPassword,
-      },
-      create: {
-        firstName: user.firstName,
-        lastName: user.lastName,
-        email: user.email,
-        password: hashedPassword,
-        phone: user.phone,
-        username: user.username,
-        subscriptionPlan: user.subscriptionPlan,
-        roleName: role.name,
-        referral_code: user.referral_code,
-      },
     });
+    const existingByUsername = await prisma.user.findUnique({
+      where: { username: user.username },
+    });
+
+    const sharedUpdate = {
+      firstName: user.firstName,
+      lastName: user.lastName,
+      phone: user.phone,
+      subscriptionPlan: user.subscriptionPlan,
+      roleName: role.name,
+      referral_code: user.referral_code,
+      password: hashedPassword,
+      profilePicture: user.profilePicture || null,
+    };
+
+    let createdUser;
+
+    if (existingByEmail) {
+      const usernameTakenByOther =
+        existingByUsername && existingByUsername.id !== existingByEmail.id;
+
+      createdUser = await prisma.user.update({
+        where: { id: existingByEmail.id },
+        data: {
+          ...sharedUpdate,
+          // Avoid P2002 when username already belongs to a different row.
+          ...(usernameTakenByOther ? {} : { username: user.username }),
+        },
+      });
+    } else if (existingByUsername) {
+      createdUser = await prisma.user.update({
+        where: { id: existingByUsername.id },
+        data: {
+          ...sharedUpdate,
+          email: user.email,
+        },
+      });
+    } else {
+      createdUser = await prisma.user.create({
+        data: {
+          ...sharedUpdate,
+          email: user.email,
+          username: user.username,
+        },
+      });
+    }
 
     // ✅ Create wallet for user
     await prisma.wallet.upsert({
