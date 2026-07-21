@@ -129,6 +129,29 @@ func (qc *QuizController) GetAllQuiz(ctx *gin.Context) {
 	utils.Success(ctx, http.StatusOK, "success", quizzes)
 }
 
+func (qc *QuizController) SearchQuizzes(ctx *gin.Context) {
+	q := strings.TrimSpace(ctx.Query("q"))
+	limit := 10
+	if l := strings.TrimSpace(ctx.Query("limit")); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+
+	if q == "" {
+		utils.Success(ctx, http.StatusOK, "success", []map[string]interface{}{})
+		return
+	}
+
+	results, err := qc.QuizService.SearchQuizzes(q, limit)
+	if err != nil {
+		utils.SendError(ctx, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
+		return
+	}
+
+	utils.Success(ctx, http.StatusOK, "success", results)
+}
+
 
 type QuizPreferencesRequest struct {
 	LanguagePreference string `form:"languagePreference" validate:"omitempty"`
@@ -858,6 +881,7 @@ func RegisterQuizRoutes(
 		protected.GET("/quiz-answer/:id", qc.GetQuizAnswerById)
 		protected.GET("/get/:id", qc.GetQuiz)
 		protected.GET("/getall", qc.GetAllQuiz)
+		protected.GET("/search", qc.SearchQuizzes)
 		protected.PATCH("/update/:id", qc.UpdateQuiz)
 		protected.DELETE("/delete/:id", qc.DeleteQuiz)
 

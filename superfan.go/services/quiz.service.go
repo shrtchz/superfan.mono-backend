@@ -9,6 +9,7 @@ type QuizService interface {
 	GetAllQuiz() ([]*models.Quiz, error)
 	UpdateQuiz(*models.Quiz) error
 	DeleteQuiz(string) error
+	SearchQuizzes(query string, limit int) ([]map[string]interface{}, error)
 
 	// LIVE QUIZ
 	GetQuizByPreferences(
