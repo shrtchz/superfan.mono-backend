@@ -189,6 +189,7 @@ export class UserController {
     return this.userService.checkSubscriptionStatusbyUserId(userId);
   }
 
+  @Public()
   @Patch('/update-profile')
   async updateProfile(@Req() req: any, @Body() dto: UpdateUserDto) {
     return this.userService.updateUserDetails(req.user.id, dto);
