@@ -1496,6 +1496,56 @@ func (u *QuizServiceImpl) GetQuiz(id string) (*models.Quiz, error) {
 	return &quiz, nil
 }
 
+func (u *QuizServiceImpl) SearchQuizzes(query string, limit int) ([]map[string]interface{}, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 50 {
+		limit = 50
+	}
+
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return []map[string]interface{}{}, nil
+	}
+
+	filter := bson.M{
+		"question": bson.M{"$regex": query, "$options": "i"},
+	}
+
+	findOptions := options.Find().
+		SetSort(bson.D{{Key: "question", Value: 1}}).
+		SetLimit(int64(limit))
+
+	cursor, err := u.quizcollection.Find(context.Background(), filter, findOptions)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(context.Background())
+
+	var quizzes []models.Quiz
+	if err := cursor.All(context.Background(), &quizzes); err != nil {
+		return nil, err
+	}
+
+	results := make([]map[string]interface{}, 0, len(quizzes))
+	for _, q := range quizzes {
+		results = append(results, map[string]interface{}{
+			"id":        q.ID.Hex(),
+			"question":  q.Question,
+			"testQuiz":  q.TestQuiz,
+			"testLevel": q.TestLevel,
+			"subject":   q.Subject,
+			"answer":    q.Answer,
+			"options":   q.Options,
+			"earning":   q.Earning,
+			"imageLink": q.ImageLink,
+		})
+	}
+
+	return results, nil
+}
+
 func (u *QuizServiceImpl) GetAllQuiz() ([]*models.Quiz, error) {
 	var quizzes []*models.Quiz
 
