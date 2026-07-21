@@ -1794,6 +1794,7 @@ async getStreamCommentsandReplies(streamId?: number) {
     const commentUser =
       userMap.get(comment.userId) || {
         displayName: `User${comment.userId}`,
+        profilePicture: this.toHttpsAvatarUrl(null, `User${comment.userId}`),
         avatarUrl: this.toHttpsAvatarUrl(null, `User${comment.userId}`),
         username: `User${comment.userId}`,
         firstName: undefined as string | undefined,
@@ -1805,6 +1806,7 @@ async getStreamCommentsandReplies(streamId?: number) {
           const replyUser =
             userMap.get(reply.userId) || {
               displayName: `User${reply.userId}`,
+              profilePicture: this.toHttpsAvatarUrl(null, `User${reply.userId}`),
               avatarUrl: this.toHttpsAvatarUrl(null, `User${reply.userId}`),
               username: `User${reply.userId}`,
               firstName: undefined as string | undefined,
