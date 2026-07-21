@@ -870,6 +870,9 @@ func RegisterQuizRoutes(
 	quizroute.GET("/live/:id", qc.GetLiveQuiz)
 	quizroute.GET("/live-answer/:id", qc.GetLiveQuizAnswerById)
 
+	// Quiz search — public (used by admin create-quiz autocomplete)
+	quizroute.GET("/search", qc.SearchQuizzes)
+
 	// Everything else requires the same tokens as Nest JwtGuard
 	protected := quizroute.Group("")
 	protected.Use(middleware.AuthRequired())
@@ -881,7 +884,6 @@ func RegisterQuizRoutes(
 		protected.GET("/quiz-answer/:id", qc.GetQuizAnswerById)
 		protected.GET("/get/:id", qc.GetQuiz)
 		protected.GET("/getall", qc.GetAllQuiz)
-		protected.GET("/search", qc.SearchQuizzes)
 		protected.PATCH("/update/:id", qc.UpdateQuiz)
 		protected.DELETE("/delete/:id", qc.DeleteQuiz)
 
