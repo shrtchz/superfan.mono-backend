@@ -21,7 +21,7 @@ COPY . .
 # Create dummy credentials.json if missing to satisfy TypeScript compilation
 RUN [ -f credentials.json ] || echo '{"web":{"client_id":"dummy","client_secret":"dummy","redirect_uris":["http://localhost:3000"]}}' > credentials.json
 
-ENV DATABASE_URL="postgresql://1TdILekB7Rc5:cZei5SOTDSNA5yQsM1bxMBjXu@marine-ship.igris.cloud:14999/pipeops"
+ENV DATABASE_URL="postgresql://neondb_owner:npg_mct1L3EGhNjO@ep-wispy-breeze-atpun0yq-pooler.c-9.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
 
 ENV NODE_OPTIONS="--max-old-space-size=4096"
 
@@ -39,7 +39,7 @@ FROM node:22-slim AS production
 WORKDIR /app
 
 ENV NODE_ENV=production
-ENV DATABASE_URL="postgresql://1TdILekB7Rc5:cZei5SOTDSNA5yQsM1bxMBjXu@marine-ship.igris.cloud:14999/pipeops"
+ENV DATABASE_URL="postgresql://neondb_owner:npg_mct1L3EGhNjO@ep-wispy-breeze-atpun0yq-pooler.c-9.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
 
 COPY --from=build /app/package.json ./
 COPY --from=build /app/node_modules ./node_modules
