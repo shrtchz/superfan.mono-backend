@@ -142,7 +142,7 @@ func resolveQuizCountdownLabel(defaultLabel, phase, overrideBefore, overrideDuri
 	return defaultLabel
 }
 
-func buildLiveQuizCountdownLabel(startAt, finishAt time.Time, now time.Time, overrideBefore, overrideDuring, overrideAfter string) string {
+func BuildLiveQuizCountdownLabel(startAt, finishAt time.Time, now time.Time, overrideBefore, overrideDuring, overrideAfter string) string {
 	if startAt.IsZero() || finishAt.IsZero() {
 		return resolveQuizCountdownLabel("Waiting for Live Quiz to start.", "before", overrideBefore, overrideDuring, overrideAfter)
 	}

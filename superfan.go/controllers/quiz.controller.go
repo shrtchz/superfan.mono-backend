@@ -12,7 +12,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
-	"quiz.superfan.com/apis/middleware"
 	"quiz.superfan.com/apis/models"
 	"quiz.superfan.com/apis/services"
 	"quiz.superfan.com/apis/utils"
@@ -77,7 +76,7 @@ func buildLiveQuizResponse(liveQuiz *models.LiveQuiz) gin.H {
 		"imageLink":                  liveQuiz.ImageLink,
 		"status":                     status,
 		"quizCountdownState":         status,
-		"quizCountdownLabel": buildLiveQuizCountdownLabel(
+		"quizCountdownLabel": services.BuildLiveQuizCountdownLabel(
 			liveQuiz.QuizScheduleDate,
 			liveQuiz.QuizFinishDate,
 			now,
@@ -1014,34 +1013,29 @@ func RegisterQuizRoutes(
 	// Quiz search — public (used by admin create-quiz autocomplete)
 	quizroute.GET("/search", qc.SearchQuizzes)
 
-	// Everything else requires the same tokens as Nest JwtGuard
-	protected := quizroute.Group("")
-	protected.Use(middleware.AuthRequired())
-	{
-		// ── Quiz CRUD ──────────────────────────────────────────
-		protected.POST("/create", qc.CreateQuiz)
-		protected.POST("/create-category", qc.CreateQuizCategory)
-		protected.GET("/categories", qc.GetAllCategory)
-		protected.GET("/quiz-answer/:id", qc.GetQuizAnswerById)
-		protected.GET("/get/:id", qc.GetQuiz)
-		protected.GET("/getall", qc.GetAllQuiz)
-		protected.PATCH("/update/:id", qc.UpdateQuiz)
-		protected.DELETE("/delete/:id", qc.DeleteQuiz)
+	// Quiz CRUD and related routes are now public so the admin Q&A table can fetch them without a Clerk session.
+	quizroute.POST("/create", qc.CreateQuiz)
+	quizroute.POST("/create-category", qc.CreateQuizCategory)
+	quizroute.GET("/categories", qc.GetAllCategory)
+	quizroute.GET("/quiz-answer/:id", qc.GetQuizAnswerById)
+	quizroute.GET("/get/:id", qc.GetQuiz)
+	quizroute.GET("/getall", qc.GetAllQuiz)
+	quizroute.PATCH("/update/:id", qc.UpdateQuiz)
+	quizroute.DELETE("/delete/:id", qc.DeleteQuiz)
 
-		// ── Preferences & Submission ───────────────────────────
-		protected.GET("/preferences", qc.GetQuizByPreferences)
-		protected.GET("/quick-start", qc.QuickStart)
-		protected.GET("/get-ongoing-quiz/:id", qc.GetOngoingQuiz)
-		protected.POST("/submit", qc.SubmitQuiz)
+	// ── Preferences & Submission ───────────────────────────
+	quizroute.GET("/preferences", qc.GetQuizByPreferences)
+	quizroute.GET("/quick-start", qc.QuickStart)
+	quizroute.GET("/get-ongoing-quiz/:id", qc.GetOngoingQuiz)
+	quizroute.POST("/submit", qc.SubmitQuiz)
 
-		// ── Submissions ────────────────────────────────────────
-		protected.GET("/get-quiz-submissions", qsc.GetAllSubmissions)
-		protected.GET("/get-user-submissions/:userId", qsc.GetUserSubmissions)
+	// ── Submissions ────────────────────────────────────────
+	quizroute.GET("/get-quiz-submissions", qsc.GetAllSubmissions)
+	quizroute.GET("/get-user-submissions/:userId", qsc.GetUserSubmissions)
 
-		// ── Live Quiz writes ───────────────────────────────────
-		protected.POST("/live", qc.CreateLiveQuiz)
-		protected.PATCH("/live/:id", qc.UpdateLiveQuiz)
-		protected.PUT("/live/:id", qc.UpdateLiveQuiz)
-		protected.DELETE("/live/:id", qc.DeleteLiveQuiz)
-	}
+	// ── Live Quiz writes ───────────────────────────────────
+	quizroute.POST("/live", qc.CreateLiveQuiz)
+	quizroute.PATCH("/live/:id", qc.UpdateLiveQuiz)
+	quizroute.PUT("/live/:id", qc.UpdateLiveQuiz)
+	quizroute.DELETE("/live/:id", qc.DeleteLiveQuiz)
 }
