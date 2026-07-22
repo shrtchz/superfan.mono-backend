@@ -55,7 +55,7 @@ func lagosNow() (time.Time, error) {
 	return time.Now().In(lagosLocation()), nil
 }
 
-func computeLiveQuizStatus(startAt, finishAt, now time.Time) string {
+func ComputeLiveQuizStatus(startAt, finishAt, now time.Time) string {
 	if now.Before(startAt) {
 		return "scheduled"
 	}
@@ -177,7 +177,7 @@ func buildLiveQuizResponseMap(raw bson.M, now time.Time) map[string]interface{} 
 	finishAt := rawTime(raw["quizFinishDate"])
 	status := "scheduled"
 	if !startAt.IsZero() && !finishAt.IsZero() {
-		status = computeLiveQuizStatus(startAt, finishAt, now)
+		status = ComputeLiveQuizStatus(startAt, finishAt, now)
 	}
 	jackpotAmount := rawFloat(raw["jackpotAmount"])
 	if jackpotAmount <= 0 {

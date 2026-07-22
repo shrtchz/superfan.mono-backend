@@ -53,7 +53,7 @@ func buildLiveQuizResponse(liveQuiz *models.LiveQuiz) gin.H {
 	now := time.Now().UTC()
 	status := "scheduled"
 	if !liveQuiz.QuizScheduleDate.IsZero() && !liveQuiz.QuizFinishDate.IsZero() {
-		status = computeLiveQuizStatus(liveQuiz.QuizScheduleDate, liveQuiz.QuizFinishDate, now)
+		status = services.ComputeLiveQuizStatus(liveQuiz.QuizScheduleDate, liveQuiz.QuizFinishDate, now)
 	}
 
 	return gin.H{
@@ -551,7 +551,7 @@ func (q *QuizController) GetRandomLiveQuiz(c *gin.Context) {
 	response := make([]gin.H, 0, len(quizzes))
 	for i := range quizzes {
 		quizzes[i].IDHex = quizzes[i].ID.Hex()
-		status := computeLiveQuizStatus(quizzes[i].QuizScheduleDate, quizzes[i].QuizFinishDate, now)
+		status := services.ComputeLiveQuizStatus(quizzes[i].QuizScheduleDate, quizzes[i].QuizFinishDate, now)
 		response = append(response, gin.H{
 			"id":                   quizzes[i].IDHex,
 			"question":             quizzes[i].Question,
@@ -569,7 +569,7 @@ func (q *QuizController) GetRandomLiveQuiz(c *gin.Context) {
 			"imageLink":            quizzes[i].ImageLink,
 			"status":               status,
 			"quizCountdownState":   status,
-			"quizCountdownLabel": buildLiveQuizCountdownLabel(
+			"quizCountdownLabel": services.BuildLiveQuizCountdownLabel(
 				quizzes[i].QuizScheduleDate,
 				quizzes[i].QuizFinishDate,
 				now,
