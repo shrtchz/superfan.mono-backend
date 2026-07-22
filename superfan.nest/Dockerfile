@@ -25,6 +25,9 @@ ENV DATABASE_URL="postgresql://neondb_owner:npg_mct1L3EGhNjO@ep-wispy-breeze-atp
 
 ENV NODE_OPTIONS="--max-old-space-size=4096"
 
+# Resolve any previously failed migrations before applying new ones
+RUN pnpm prisma migrate resolve --rolled-back 20260305104620_initial_username 2>/dev/null || true
+
 # Apply existing migrations safely
 RUN pnpm prisma migrate deploy
 
