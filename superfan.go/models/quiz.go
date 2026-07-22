@@ -45,22 +45,25 @@ type Quiz struct {
 }
 
 type LiveQuiz struct {
-	ID               bson.ObjectID `bson:"_id" json:"-"`
-	IDHex            string        `bson:"-" json:"id"`
-	Question         string        `json:"question" bson:"question"`
-	Options          []string      `json:"options" bson:"options"`
-	Answer           string        `bson:"answer,omitempty" json:"answer,omitempty"`
-	CustomCountdownLabel string    `json:"customCountdownLabel,omitempty" bson:"customCountdownLabel,omitempty"`
-	IsTypedAnswer    bool          `json:"isTypedAnswer,omitempty" bson:"isTypedAnswer,omitempty"`
-	TypedAnswer      string        `json:"typedAnswer,omitempty" bson:"typedAnswer,omitempty"`
-	JackpotAmount    float64       `json:"jackpotAmount,omitempty" bson:"jackpotAmount,omitempty"`
-	TotalPrize       float64       `json:"totalPrize" bson:"totalPrize"`
-	Recipients       int           `json:"recipients" bson:"recipients"`
-	UnitPrize        float64       `json:"unitPrize" bson:"unitPrize"`
-	ShowAnswer       bool          `json:"showAnswer" bson:"showAnswer"`
-	QuizScheduleDate time.Time     `json:"quizScheduleDate" bson:"quizScheduleDate"`
-	QuizFinishDate   time.Time     `json:"quizFinishDate" bson:"quizFinishDate"`
-	ImageLink        []string      `json:"imageLink,omitempty" bson:"imageLink,omitempty"`
+	ID                         bson.ObjectID `bson:"_id" json:"-"`
+	IDHex                      string        `bson:"-" json:"id"`
+	Question                   string        `json:"question" bson:"question"`
+	Options                    []string      `json:"options" bson:"options"`
+	Answer                     string        `bson:"answer,omitempty" json:"answer,omitempty"`
+	CustomCountdownLabel       string        `json:"customCountdownLabel,omitempty" bson:"customCountdownLabel,omitempty"`
+	CustomCountdownLabelBefore string        `json:"customCountdownLabelBefore,omitempty" bson:"customCountdownLabelBefore,omitempty"`
+	CustomCountdownLabelDuring string        `json:"customCountdownLabelDuring,omitempty" bson:"customCountdownLabelDuring,omitempty"`
+	CustomCountdownLabelAfter  string        `json:"customCountdownLabelAfter,omitempty" bson:"customCountdownLabelAfter,omitempty"`
+	IsTypedAnswer              bool          `json:"isTypedAnswer,omitempty" bson:"isTypedAnswer,omitempty"`
+	TypedAnswer                string        `json:"typedAnswer,omitempty" bson:"typedAnswer,omitempty"`
+	JackpotAmount              float64       `json:"jackpotAmount,omitempty" bson:"jackpotAmount,omitempty"`
+	TotalPrize                 float64       `json:"totalPrize" bson:"totalPrize"`
+	Recipients                 int           `json:"recipients" bson:"recipients"`
+	UnitPrize                  float64       `json:"unitPrize" bson:"unitPrize"`
+	ShowAnswer                 bool          `json:"showAnswer" bson:"showAnswer"`
+	QuizScheduleDate           time.Time     `json:"quizScheduleDate" bson:"quizScheduleDate"`
+	QuizFinishDate             time.Time     `json:"quizFinishDate" bson:"quizFinishDate"`
+	ImageLink                  []string      `json:"imageLink,omitempty" bson:"imageLink,omitempty"`
 }
 
 type QuizAnswer struct {
@@ -99,21 +102,20 @@ type SubmitQuizRequest struct {
 	Responses  []QuizAnswerRequest `json:"responses"`
 }
 
-
 type QuizCategory struct {
-    ID bson.ObjectID `bson:"_id" json:"id"`
+	ID bson.ObjectID `bson:"_id" json:"id"`
 
-    TestQuiz string `json:"testQuiz" bson:"testQuiz"`
-    Subject  string `json:"subject" bson:"subject"`
+	TestQuiz string `json:"testQuiz" bson:"testQuiz"`
+	Subject  string `json:"subject" bson:"subject"`
 }
 
 func (qc *QuizCategory) ToQuiz() *Quiz {
-    return &Quiz{
-        ID:       qc.ID,
-        IDHex:    qc.ID.Hex(),
-        TestQuiz: qc.TestQuiz,
-        Subject:  qc.Subject,
-    }
+	return &Quiz{
+		ID:       qc.ID,
+		IDHex:    qc.ID.Hex(),
+		TestQuiz: qc.TestQuiz,
+		Subject:  qc.Subject,
+	}
 }
 
 // Mirrors the flat DB document — used only for decoding

@@ -12,7 +12,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
-	"quiz.superfan.com/apis/middleware"
 	"quiz.superfan.com/apis/models"
 	"quiz.superfan.com/apis/services"
 	"quiz.superfan.com/apis/utils"
@@ -27,7 +26,10 @@ type QuizSubmissionController struct {
 }
 
 type liveQuizCountdownLabelPayload struct {
-	CustomCountdownLabel string `json:"customCountdownLabel"`
+	CustomCountdownLabel       string `json:"customCountdownLabel"`
+	CustomCountdownLabelBefore string `json:"customCountdownLabelBefore"`
+	CustomCountdownLabelDuring string `json:"customCountdownLabelDuring"`
+	CustomCountdownLabelAfter  string `json:"customCountdownLabelAfter"`
 }
 
 func NewQuizController(quizService services.QuizService) *QuizController {
@@ -54,27 +56,33 @@ func buildLiveQuizResponse(liveQuiz *models.LiveQuiz) gin.H {
 	}
 
 	return gin.H{
-		"id":                   liveQuiz.IDHex,
-		"question":             liveQuiz.Question,
-		"options":              liveQuiz.Options,
-		"answer":               liveQuiz.Answer,
-		"typedAnswer":          liveQuiz.TypedAnswer,
-		"isTypedAnswer":        liveQuiz.IsTypedAnswer,
-		"customCountdownLabel": strings.TrimSpace(liveQuiz.CustomCountdownLabel),
-		"jackpotAmount":        liveQuiz.JackpotAmount,
-		"totalPrize":           liveQuiz.TotalPrize,
-		"recipients":           liveQuiz.Recipients,
-		"unitPrize":            liveQuiz.UnitPrize,
-		"showAnswer":           liveQuiz.ShowAnswer,
-		"quizScheduleDate":     liveQuiz.QuizScheduleDate.UTC().Format(time.RFC3339),
-		"quizFinishDate":       liveQuiz.QuizFinishDate.UTC().Format(time.RFC3339),
-		"imageLink":            liveQuiz.ImageLink,
-		"status":               status,
-		"quizCountdownState":   status,
+		"id":                         liveQuiz.IDHex,
+		"question":                   liveQuiz.Question,
+		"options":                    liveQuiz.Options,
+		"answer":                     liveQuiz.Answer,
+		"typedAnswer":                liveQuiz.TypedAnswer,
+		"isTypedAnswer":              liveQuiz.IsTypedAnswer,
+		"customCountdownLabel":       strings.TrimSpace(liveQuiz.CustomCountdownLabel),
+		"customCountdownLabelBefore": strings.TrimSpace(liveQuiz.CustomCountdownLabelBefore),
+		"customCountdownLabelDuring": strings.TrimSpace(liveQuiz.CustomCountdownLabelDuring),
+		"customCountdownLabelAfter":  strings.TrimSpace(liveQuiz.CustomCountdownLabelAfter),
+		"jackpotAmount":              liveQuiz.JackpotAmount,
+		"totalPrize":                 liveQuiz.TotalPrize,
+		"recipients":                 liveQuiz.Recipients,
+		"unitPrize":                  liveQuiz.UnitPrize,
+		"showAnswer":                 liveQuiz.ShowAnswer,
+		"quizScheduleDate":           liveQuiz.QuizScheduleDate.UTC().Format(time.RFC3339),
+		"quizFinishDate":             liveQuiz.QuizFinishDate.UTC().Format(time.RFC3339),
+		"imageLink":                  liveQuiz.ImageLink,
+		"status":                     status,
+		"quizCountdownState":         status,
 		"quizCountdownLabel": services.BuildLiveQuizCountdownLabel(
 			liveQuiz.QuizScheduleDate,
 			liveQuiz.QuizFinishDate,
 			now,
+			strings.TrimSpace(liveQuiz.CustomCountdownLabelBefore),
+			strings.TrimSpace(liveQuiz.CustomCountdownLabelDuring),
+			strings.TrimSpace(liveQuiz.CustomCountdownLabelAfter),
 		),
 	}
 }
@@ -188,7 +196,6 @@ func (qc *QuizController) SearchQuizzes(ctx *gin.Context) {
 
 	utils.Success(ctx, http.StatusOK, "success", results)
 }
-
 
 type QuizPreferencesRequest struct {
 	LanguagePreference string `form:"languagePreference" validate:"omitempty"`
@@ -565,6 +572,9 @@ func (q *QuizController) GetRandomLiveQuiz(c *gin.Context) {
 				quizzes[i].QuizScheduleDate,
 				quizzes[i].QuizFinishDate,
 				now,
+				strings.TrimSpace(quizzes[i].CustomCountdownLabelBefore),
+				strings.TrimSpace(quizzes[i].CustomCountdownLabelDuring),
+				strings.TrimSpace(quizzes[i].CustomCountdownLabelAfter),
 			),
 		})
 	}
@@ -673,6 +683,15 @@ func (qc *QuizController) UpdateLiveQuiz(c *gin.Context) {
 	if _, ok := raw["customCountdownLabel"]; ok {
 		liveQuiz.CustomCountdownLabel = patchQuiz.CustomCountdownLabel
 	}
+	if _, ok := raw["customCountdownLabelBefore"]; ok {
+		liveQuiz.CustomCountdownLabelBefore = patchQuiz.CustomCountdownLabelBefore
+	}
+	if _, ok := raw["customCountdownLabelDuring"]; ok {
+		liveQuiz.CustomCountdownLabelDuring = patchQuiz.CustomCountdownLabelDuring
+	}
+	if _, ok := raw["customCountdownLabelAfter"]; ok {
+		liveQuiz.CustomCountdownLabelAfter = patchQuiz.CustomCountdownLabelAfter
+	}
 
 	liveQuiz.ID = objectId
 
@@ -715,7 +734,7 @@ func (qc *QuizController) UpdateLiveQuizCustomCountdownLabel(c *gin.Context) {
 	}
 
 	response := buildLiveQuizResponse(liveQuiz)
-	
+
 	// Broadcast the updated quiz to all connected clients via WebSocket
 	broadcastEvent := gin.H{
 		"event": "liveQuizUpdated",
@@ -741,7 +760,7 @@ func (qc *QuizController) DeleteLiveQuizCustomCountdownLabel(c *gin.Context) {
 	}
 
 	response := buildLiveQuizResponse(liveQuiz)
-	
+
 	// Broadcast the updated quiz to all connected clients via WebSocket
 	broadcastEvent := gin.H{
 		"event": "liveQuizUpdated",
@@ -775,6 +794,9 @@ func mapToLiveQuiz(raw map[string]interface{}) (*models.LiveQuiz, error) {
 	quiz.Options = asStringSlice(raw["options"])
 	quiz.ImageLink = asStringSlice(raw["imageLink"])
 	quiz.CustomCountdownLabel = strings.TrimSpace(asString(raw["customCountdownLabel"]))
+	quiz.CustomCountdownLabelBefore = strings.TrimSpace(asString(raw["customCountdownLabelBefore"]))
+	quiz.CustomCountdownLabelDuring = strings.TrimSpace(asString(raw["customCountdownLabelDuring"]))
+	quiz.CustomCountdownLabelAfter = strings.TrimSpace(asString(raw["customCountdownLabelAfter"]))
 
 	recipients, err := asInt(raw["recipients"])
 	if err != nil {
@@ -991,34 +1013,29 @@ func RegisterQuizRoutes(
 	// Quiz search — public (used by admin create-quiz autocomplete)
 	quizroute.GET("/search", qc.SearchQuizzes)
 
-	// Everything else requires the same tokens as Nest JwtGuard
-	protected := quizroute.Group("")
-	protected.Use(middleware.AuthRequired())
-	{
-		// ── Quiz CRUD ──────────────────────────────────────────
-		protected.POST("/create", qc.CreateQuiz)
-		protected.POST("/create-category", qc.CreateQuizCategory)
-		protected.GET("/categories", qc.GetAllCategory)
-		protected.GET("/quiz-answer/:id", qc.GetQuizAnswerById)
-		protected.GET("/get/:id", qc.GetQuiz)
-		protected.GET("/getall", qc.GetAllQuiz)
-		protected.PATCH("/update/:id", qc.UpdateQuiz)
-		protected.DELETE("/delete/:id", qc.DeleteQuiz)
+	// Quiz CRUD and related routes are now public so the admin Q&A table can fetch them without a Clerk session.
+	quizroute.POST("/create", qc.CreateQuiz)
+	quizroute.POST("/create-category", qc.CreateQuizCategory)
+	quizroute.GET("/categories", qc.GetAllCategory)
+	quizroute.GET("/quiz-answer/:id", qc.GetQuizAnswerById)
+	quizroute.GET("/get/:id", qc.GetQuiz)
+	quizroute.GET("/getall", qc.GetAllQuiz)
+	quizroute.PATCH("/update/:id", qc.UpdateQuiz)
+	quizroute.DELETE("/delete/:id", qc.DeleteQuiz)
 
-		// ── Preferences & Submission ───────────────────────────
-		protected.GET("/preferences", qc.GetQuizByPreferences)
-		protected.GET("/quick-start", qc.QuickStart)
-		protected.GET("/get-ongoing-quiz/:id", qc.GetOngoingQuiz)
-		protected.POST("/submit", qc.SubmitQuiz)
+	// ── Preferences & Submission ───────────────────────────
+	quizroute.GET("/preferences", qc.GetQuizByPreferences)
+	quizroute.GET("/quick-start", qc.QuickStart)
+	quizroute.GET("/get-ongoing-quiz/:id", qc.GetOngoingQuiz)
+	quizroute.POST("/submit", qc.SubmitQuiz)
 
-		// ── Submissions ────────────────────────────────────────
-		protected.GET("/get-quiz-submissions", qsc.GetAllSubmissions)
-		protected.GET("/get-user-submissions/:userId", qsc.GetUserSubmissions)
+	// ── Submissions ────────────────────────────────────────
+	quizroute.GET("/get-quiz-submissions", qsc.GetAllSubmissions)
+	quizroute.GET("/get-user-submissions/:userId", qsc.GetUserSubmissions)
 
-		// ── Live Quiz writes ───────────────────────────────────
-		protected.POST("/live", qc.CreateLiveQuiz)
-		protected.PATCH("/live/:id", qc.UpdateLiveQuiz)
-		protected.PUT("/live/:id", qc.UpdateLiveQuiz)
-		protected.DELETE("/live/:id", qc.DeleteLiveQuiz)
-	}
+	// ── Live Quiz writes ───────────────────────────────────
+	quizroute.POST("/live", qc.CreateLiveQuiz)
+	quizroute.PATCH("/live/:id", qc.UpdateLiveQuiz)
+	quizroute.PUT("/live/:id", qc.UpdateLiveQuiz)
+	quizroute.DELETE("/live/:id", qc.DeleteLiveQuiz)
 }

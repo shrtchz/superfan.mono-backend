@@ -123,25 +123,52 @@ func formatLiveQuizElapsed(target, now time.Time) string {
 	return fmt.Sprintf("%d seconds ago", seconds)
 }
 
-func BuildLiveQuizCountdownLabel(startAt, finishAt time.Time, now time.Time) string {
-	if startAt.IsZero() || finishAt.IsZero() {
-		return "Waiting for Live Quiz to start."
+func resolveQuizCountdownLabel(defaultLabel, phase, overrideBefore, overrideDuring, overrideAfter string) string {
+	switch strings.ToLower(strings.TrimSpace(phase)) {
+	case "before":
+		if trimmedOverride := strings.TrimSpace(overrideBefore); trimmedOverride != "" {
+			return trimmedOverride
+		}
+	case "during":
+		if trimmedOverride := strings.TrimSpace(overrideDuring); trimmedOverride != "" {
+			return trimmedOverride
+		}
+	case "after":
+		if trimmedOverride := strings.TrimSpace(overrideAfter); trimmedOverride != "" {
+			return trimmedOverride
+		}
 	}
+
+	return defaultLabel
+}
+
+func BuildLiveQuizCountdownLabel(startAt, finishAt time.Time, now time.Time, overrideBefore, overrideDuring, overrideAfter string) string {
+	if startAt.IsZero() || finishAt.IsZero() {
+		return resolveQuizCountdownLabel("Waiting for Live Quiz to start.", "before", overrideBefore, overrideDuring, overrideAfter)
+	}
+
+	var defaultLabel string
+	var phase string
 
 	switch ComputeLiveQuizStatus(startAt, finishAt, now) {
 	case "scheduled":
-		return fmt.Sprintf(
+		defaultLabel = fmt.Sprintf(
 			"Waiting for Live Quiz to start; starts in %s.",
 			formatLiveQuizCountdown(startAt, now),
 		)
+		phase = "before"
 	case "live":
-		return "Select an answer by clicking on the 3 dots in front of the live quiz."
+		defaultLabel = "Select an answer by clicking on the 3 dots in front of the live quiz."
+		phase = "during"
 	default:
-		return fmt.Sprintf(
+		defaultLabel = fmt.Sprintf(
 			"Quiz window closed %s",
 			formatLiveQuizElapsed(finishAt, now),
 		)
+		phase = "after"
 	}
+
+	return resolveQuizCountdownLabel(defaultLabel, phase, overrideBefore, overrideDuring, overrideAfter)
 }
 
 func buildLiveQuizResponseMap(raw bson.M, now time.Time) map[string]interface{} {
@@ -158,27 +185,43 @@ func buildLiveQuizResponseMap(raw bson.M, now time.Time) map[string]interface{} 
 	}
 	isActive := status == "live"
 
+	overrideBefore := rawString(raw["customCountdownLabelBefore"])
+	if overrideBefore == "" {
+		overrideBefore = rawString(raw["customCountdownLabel"])
+	}
+	overrideDuring := rawString(raw["customCountdownLabelDuring"])
+	if overrideDuring == "" {
+		overrideDuring = rawString(raw["customCountdownLabel"])
+	}
+	overrideAfter := rawString(raw["customCountdownLabelAfter"])
+	if overrideAfter == "" {
+		overrideAfter = rawString(raw["customCountdownLabel"])
+	}
+
 	return map[string]interface{}{
-		"id":                   id,
-		"question":             rawString(raw["question"]),
-		"options":              rawStringSlice(raw["options"]),
-		"answer":               rawString(raw["answer"]),
-		"typedAnswer":          rawString(raw["typedAnswer"]),
-		"isTypedAnswer":        rawBool(raw["isTypedAnswer"]),
-		"jackpotAmount":        jackpotAmount,
-		"totalPrize":           rawFloat(raw["totalPrize"]),
-		"recipients":           rawInt(raw["recipients"]),
-		"unitPrize":            rawFloat(raw["unitPrize"]),
-		"showAnswer":           rawBool(raw["showAnswer"]),
-		"quizScheduleDate":     rawTimeString(raw["quizScheduleDate"]),
-		"quizFinishDate":       rawTimeString(raw["quizFinishDate"]),
-		"status":               status,
-		"isEditable":           !isActive,
-		"isDeletable":          !isActive,
-		"imageLink":            rawStringSlice(raw["imageLink"]),
-		"quizCountdownState":   status,
-		"quizCountdownLabel":   BuildLiveQuizCountdownLabel(startAt, finishAt, now),
-		"customCountdownLabel": strings.TrimSpace(rawString(raw["customCountdownLabel"])),
+		"id":                         id,
+		"question":                   rawString(raw["question"]),
+		"options":                    rawStringSlice(raw["options"]),
+		"answer":                     rawString(raw["answer"]),
+		"typedAnswer":                rawString(raw["typedAnswer"]),
+		"isTypedAnswer":              rawBool(raw["isTypedAnswer"]),
+		"jackpotAmount":              jackpotAmount,
+		"totalPrize":                 rawFloat(raw["totalPrize"]),
+		"recipients":                 rawInt(raw["recipients"]),
+		"unitPrize":                  rawFloat(raw["unitPrize"]),
+		"showAnswer":                 rawBool(raw["showAnswer"]),
+		"quizScheduleDate":           rawTimeString(raw["quizScheduleDate"]),
+		"quizFinishDate":             rawTimeString(raw["quizFinishDate"]),
+		"status":                     status,
+		"isEditable":                 !isActive,
+		"isDeletable":                !isActive,
+		"imageLink":                  rawStringSlice(raw["imageLink"]),
+		"quizCountdownState":         status,
+		"quizCountdownLabel":         BuildLiveQuizCountdownLabel(startAt, finishAt, now, overrideBefore, overrideDuring, overrideAfter),
+		"customCountdownLabel":       strings.TrimSpace(rawString(raw["customCountdownLabel"])),
+		"customCountdownLabelBefore": strings.TrimSpace(overrideBefore),
+		"customCountdownLabelDuring": strings.TrimSpace(overrideDuring),
+		"customCountdownLabelAfter":  strings.TrimSpace(overrideAfter),
 	}
 }
 
@@ -299,21 +342,21 @@ func (u *QuizServiceImpl) CreateLiveQuiz(liveQuiz *models.LiveQuiz) error {
 	liveQuiz.IDHex = liveQuiz.ID.Hex()
 
 	doc := bson.M{
-		"_id":              liveQuiz.ID,
-		"question":         liveQuiz.Question,
-		"options":          liveQuiz.Options,
-		"answer":           liveQuiz.Answer,
+		"_id":                  liveQuiz.ID,
+		"question":             liveQuiz.Question,
+		"options":              liveQuiz.Options,
+		"answer":               liveQuiz.Answer,
 		"customCountdownLabel": strings.TrimSpace(liveQuiz.CustomCountdownLabel),
-		"isTypedAnswer":    liveQuiz.IsTypedAnswer,
-		"typedAnswer":      liveQuiz.TypedAnswer,
-		"jackpotAmount":    liveQuiz.JackpotAmount,
-		"totalPrize":       liveQuiz.TotalPrize,
-		"recipients":       liveQuiz.Recipients,
-		"unitPrize":        liveQuiz.UnitPrize,
-		"showAnswer":       liveQuiz.ShowAnswer,
-		"quizScheduleDate": liveQuiz.QuizScheduleDate,
-		"quizFinishDate":   liveQuiz.QuizFinishDate,
-		"imageLink":        liveQuiz.ImageLink,
+		"isTypedAnswer":        liveQuiz.IsTypedAnswer,
+		"typedAnswer":          liveQuiz.TypedAnswer,
+		"jackpotAmount":        liveQuiz.JackpotAmount,
+		"totalPrize":           liveQuiz.TotalPrize,
+		"recipients":           liveQuiz.Recipients,
+		"unitPrize":            liveQuiz.UnitPrize,
+		"showAnswer":           liveQuiz.ShowAnswer,
+		"quizScheduleDate":     liveQuiz.QuizScheduleDate,
+		"quizFinishDate":       liveQuiz.QuizFinishDate,
+		"imageLink":            liveQuiz.ImageLink,
 	}
 
 	_, err := u.liveQuizCollection.InsertOne(u.ctx, doc)
@@ -338,7 +381,6 @@ func (u *QuizServiceImpl) GetLiveQuiz(id string) (*models.LiveQuiz, error) {
 	liveQuiz.IDHex = liveQuiz.ID.Hex()
 	return &liveQuiz, nil
 }
-
 
 func (u *QuizServiceImpl) GetRandomLiveQuiz(number string) ([]models.LiveQuiz, error) {
 	limit, err := strconv.Atoi(strings.TrimSpace(number))
