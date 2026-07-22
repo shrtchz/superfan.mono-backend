@@ -34,6 +34,8 @@ RUN pnpm prisma migrate deploy
 
 # Generate Prisma Client
 RUN pnpm prisma generate
+# Seed roles, permissions, and initial users (idempotent — safe to re-run)
+RUN pnpm exec tsx prisma/seed/seed.ts
 # Build NestJS
 RUN pnpm build
 
