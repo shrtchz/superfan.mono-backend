@@ -29,6 +29,8 @@ type QuizService interface {
 	GetLiveQuizAnswerById(id string) (map[string]interface{}, error)
 	UpdateLiveQuiz(*models.LiveQuiz) error
 	DeleteLiveQuiz(string) error
+	UpdateLiveQuizCustomCountdownLabel(id string, label string) error
+	DeleteLiveQuizCustomCountdownLabel(id string) error
 
 	// QUIZ CATEGORY
 	CreateQuizCategory(category *models.QuizCategory) (*models.QuizCategory, error)
