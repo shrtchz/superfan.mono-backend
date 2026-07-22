@@ -44,7 +44,7 @@ async function seedAll() {
       email: "superfanng@superfan.ng",
       password: "Shortchase#2019@",
       phone: "+2348098765432",
-      username: "superfan_admin",
+      username: "odofin",
       subscriptionPlan: SubscriptionPlan.FREE,
       roleName: "superadmin",
       referral_code: generateReferralCode("admin"),
