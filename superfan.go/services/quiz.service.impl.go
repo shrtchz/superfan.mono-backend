@@ -150,7 +150,7 @@ func BuildLiveQuizCountdownLabel(startAt, finishAt time.Time, now time.Time, ove
 	var defaultLabel string
 	var phase string
 
-	switch computeLiveQuizStatus(startAt, finishAt, now) {
+	switch ComputeLiveQuizStatus(startAt, finishAt, now) {
 	case "scheduled":
 		defaultLabel = fmt.Sprintf(
 			"Waiting for Live Quiz to start; starts in %s.",
@@ -217,7 +217,7 @@ func buildLiveQuizResponseMap(raw bson.M, now time.Time) map[string]interface{} 
 		"isDeletable":                !isActive,
 		"imageLink":                  rawStringSlice(raw["imageLink"]),
 		"quizCountdownState":         status,
-		"quizCountdownLabel":         buildLiveQuizCountdownLabel(startAt, finishAt, now, overrideBefore, overrideDuring, overrideAfter),
+		"quizCountdownLabel":         BuildLiveQuizCountdownLabel(startAt, finishAt, now, overrideBefore, overrideDuring, overrideAfter),
 		"customCountdownLabel":       strings.TrimSpace(rawString(raw["customCountdownLabel"])),
 		"customCountdownLabelBefore": strings.TrimSpace(overrideBefore),
 		"customCountdownLabelDuring": strings.TrimSpace(overrideDuring),
