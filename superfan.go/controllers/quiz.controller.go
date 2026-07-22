@@ -27,7 +27,10 @@ type QuizSubmissionController struct {
 }
 
 type liveQuizCountdownLabelPayload struct {
-	CustomCountdownLabel string `json:"customCountdownLabel"`
+	CustomCountdownLabel       string `json:"customCountdownLabel"`
+	CustomCountdownLabelBefore string `json:"customCountdownLabelBefore"`
+	CustomCountdownLabelDuring string `json:"customCountdownLabelDuring"`
+	CustomCountdownLabelAfter  string `json:"customCountdownLabelAfter"`
 }
 
 func NewQuizController(quizService services.QuizService) *QuizController {
@@ -54,27 +57,33 @@ func buildLiveQuizResponse(liveQuiz *models.LiveQuiz) gin.H {
 	}
 
 	return gin.H{
-		"id":                   liveQuiz.IDHex,
-		"question":             liveQuiz.Question,
-		"options":              liveQuiz.Options,
-		"answer":               liveQuiz.Answer,
-		"typedAnswer":          liveQuiz.TypedAnswer,
-		"isTypedAnswer":        liveQuiz.IsTypedAnswer,
-		"customCountdownLabel": strings.TrimSpace(liveQuiz.CustomCountdownLabel),
-		"jackpotAmount":        liveQuiz.JackpotAmount,
-		"totalPrize":           liveQuiz.TotalPrize,
-		"recipients":           liveQuiz.Recipients,
-		"unitPrize":            liveQuiz.UnitPrize,
-		"showAnswer":           liveQuiz.ShowAnswer,
-		"quizScheduleDate":     liveQuiz.QuizScheduleDate.UTC().Format(time.RFC3339),
-		"quizFinishDate":       liveQuiz.QuizFinishDate.UTC().Format(time.RFC3339),
-		"imageLink":            liveQuiz.ImageLink,
-		"status":               status,
-		"quizCountdownState":   status,
+		"id":                         liveQuiz.IDHex,
+		"question":                   liveQuiz.Question,
+		"options":                    liveQuiz.Options,
+		"answer":                     liveQuiz.Answer,
+		"typedAnswer":                liveQuiz.TypedAnswer,
+		"isTypedAnswer":              liveQuiz.IsTypedAnswer,
+		"customCountdownLabel":       strings.TrimSpace(liveQuiz.CustomCountdownLabel),
+		"customCountdownLabelBefore": strings.TrimSpace(liveQuiz.CustomCountdownLabelBefore),
+		"customCountdownLabelDuring": strings.TrimSpace(liveQuiz.CustomCountdownLabelDuring),
+		"customCountdownLabelAfter":  strings.TrimSpace(liveQuiz.CustomCountdownLabelAfter),
+		"jackpotAmount":              liveQuiz.JackpotAmount,
+		"totalPrize":                 liveQuiz.TotalPrize,
+		"recipients":                 liveQuiz.Recipients,
+		"unitPrize":                  liveQuiz.UnitPrize,
+		"showAnswer":                 liveQuiz.ShowAnswer,
+		"quizScheduleDate":           liveQuiz.QuizScheduleDate.UTC().Format(time.RFC3339),
+		"quizFinishDate":             liveQuiz.QuizFinishDate.UTC().Format(time.RFC3339),
+		"imageLink":                  liveQuiz.ImageLink,
+		"status":                     status,
+		"quizCountdownState":         status,
 		"quizCountdownLabel": buildLiveQuizCountdownLabel(
 			liveQuiz.QuizScheduleDate,
 			liveQuiz.QuizFinishDate,
 			now,
+			strings.TrimSpace(liveQuiz.CustomCountdownLabelBefore),
+			strings.TrimSpace(liveQuiz.CustomCountdownLabelDuring),
+			strings.TrimSpace(liveQuiz.CustomCountdownLabelAfter),
 		),
 	}
 }
@@ -188,7 +197,6 @@ func (qc *QuizController) SearchQuizzes(ctx *gin.Context) {
 
 	utils.Success(ctx, http.StatusOK, "success", results)
 }
-
 
 type QuizPreferencesRequest struct {
 	LanguagePreference string `form:"languagePreference" validate:"omitempty"`
@@ -565,6 +573,9 @@ func (q *QuizController) GetRandomLiveQuiz(c *gin.Context) {
 				quizzes[i].QuizScheduleDate,
 				quizzes[i].QuizFinishDate,
 				now,
+				strings.TrimSpace(quizzes[i].CustomCountdownLabelBefore),
+				strings.TrimSpace(quizzes[i].CustomCountdownLabelDuring),
+				strings.TrimSpace(quizzes[i].CustomCountdownLabelAfter),
 			),
 		})
 	}
@@ -673,6 +684,15 @@ func (qc *QuizController) UpdateLiveQuiz(c *gin.Context) {
 	if _, ok := raw["customCountdownLabel"]; ok {
 		liveQuiz.CustomCountdownLabel = patchQuiz.CustomCountdownLabel
 	}
+	if _, ok := raw["customCountdownLabelBefore"]; ok {
+		liveQuiz.CustomCountdownLabelBefore = patchQuiz.CustomCountdownLabelBefore
+	}
+	if _, ok := raw["customCountdownLabelDuring"]; ok {
+		liveQuiz.CustomCountdownLabelDuring = patchQuiz.CustomCountdownLabelDuring
+	}
+	if _, ok := raw["customCountdownLabelAfter"]; ok {
+		liveQuiz.CustomCountdownLabelAfter = patchQuiz.CustomCountdownLabelAfter
+	}
 
 	liveQuiz.ID = objectId
 
@@ -715,7 +735,7 @@ func (qc *QuizController) UpdateLiveQuizCustomCountdownLabel(c *gin.Context) {
 	}
 
 	response := buildLiveQuizResponse(liveQuiz)
-	
+
 	// Broadcast the updated quiz to all connected clients via WebSocket
 	broadcastEvent := gin.H{
 		"event": "liveQuizUpdated",
@@ -741,7 +761,7 @@ func (qc *QuizController) DeleteLiveQuizCustomCountdownLabel(c *gin.Context) {
 	}
 
 	response := buildLiveQuizResponse(liveQuiz)
-	
+
 	// Broadcast the updated quiz to all connected clients via WebSocket
 	broadcastEvent := gin.H{
 		"event": "liveQuizUpdated",
@@ -775,6 +795,9 @@ func mapToLiveQuiz(raw map[string]interface{}) (*models.LiveQuiz, error) {
 	quiz.Options = asStringSlice(raw["options"])
 	quiz.ImageLink = asStringSlice(raw["imageLink"])
 	quiz.CustomCountdownLabel = strings.TrimSpace(asString(raw["customCountdownLabel"]))
+	quiz.CustomCountdownLabelBefore = strings.TrimSpace(asString(raw["customCountdownLabelBefore"]))
+	quiz.CustomCountdownLabelDuring = strings.TrimSpace(asString(raw["customCountdownLabelDuring"]))
+	quiz.CustomCountdownLabelAfter = strings.TrimSpace(asString(raw["customCountdownLabelAfter"]))
 
 	recipients, err := asInt(raw["recipients"])
 	if err != nil {
