@@ -19,4 +19,6 @@ func RegisterLiveQuizV2Routes(rg *gin.RouterGroup, qc *QuizController) {
 	quizroute.PATCH("/live/:id", qc.UpdateLiveQuiz)
 	quizroute.PUT("/live/:id", qc.UpdateLiveQuiz)
 	quizroute.DELETE("/live/:id", qc.DeleteLiveQuiz)
+	quizroute.PATCH("/live/:id/custom-countdown-label", qc.UpdateLiveQuizCustomCountdownLabel)
+	quizroute.DELETE("/live/:id/custom-countdown-label", qc.DeleteLiveQuizCustomCountdownLabel)
 }

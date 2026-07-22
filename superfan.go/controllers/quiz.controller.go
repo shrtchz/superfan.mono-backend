@@ -26,6 +26,10 @@ type QuizSubmissionController struct {
 	service *services.QuizServiceImpl
 }
 
+type liveQuizCountdownLabelPayload struct {
+	CustomCountdownLabel string `json:"customCountdownLabel"`
+}
+
 func NewQuizController(quizService services.QuizService) *QuizController {
 	return &QuizController{QuizService: quizService}
 }
@@ -39,6 +43,39 @@ func NewQuizSubmissionController(service *services.QuizServiceImpl) *QuizSubmiss
 func New(quizservice services.QuizService) QuizController {
 	return QuizController{
 		QuizService: quizservice,
+	}
+}
+
+func buildLiveQuizResponse(liveQuiz *models.LiveQuiz) gin.H {
+	now := time.Now().UTC()
+	status := "scheduled"
+	if !liveQuiz.QuizScheduleDate.IsZero() && !liveQuiz.QuizFinishDate.IsZero() {
+		status = computeLiveQuizStatus(liveQuiz.QuizScheduleDate, liveQuiz.QuizFinishDate, now)
+	}
+
+	return gin.H{
+		"id":                   liveQuiz.IDHex,
+		"question":             liveQuiz.Question,
+		"options":              liveQuiz.Options,
+		"answer":               liveQuiz.Answer,
+		"typedAnswer":          liveQuiz.TypedAnswer,
+		"isTypedAnswer":        liveQuiz.IsTypedAnswer,
+		"customCountdownLabel": strings.TrimSpace(liveQuiz.CustomCountdownLabel),
+		"jackpotAmount":        liveQuiz.JackpotAmount,
+		"totalPrize":           liveQuiz.TotalPrize,
+		"recipients":           liveQuiz.Recipients,
+		"unitPrize":            liveQuiz.UnitPrize,
+		"showAnswer":           liveQuiz.ShowAnswer,
+		"quizScheduleDate":     liveQuiz.QuizScheduleDate.UTC().Format(time.RFC3339),
+		"quizFinishDate":       liveQuiz.QuizFinishDate.UTC().Format(time.RFC3339),
+		"imageLink":            liveQuiz.ImageLink,
+		"status":               status,
+		"quizCountdownState":   status,
+		"quizCountdownLabel": buildLiveQuizCountdownLabel(
+			liveQuiz.QuizScheduleDate,
+			liveQuiz.QuizFinishDate,
+			now,
+		),
 	}
 }
 
@@ -477,23 +514,7 @@ func (qc *QuizController) CreateLiveQuiz(c *gin.Context) {
 		return
 	}
 
-	// Return a plain map so bson.ObjectID never goes through JSON encoding.
-	utils.Success(c, http.StatusCreated, "live quiz created successfully", gin.H{
-		"id":               liveQuiz.IDHex,
-		"question":         liveQuiz.Question,
-		"options":          liveQuiz.Options,
-		"answer":           liveQuiz.Answer,
-		"typedAnswer":      liveQuiz.TypedAnswer,
-		"isTypedAnswer":    liveQuiz.IsTypedAnswer,
-		"jackpotAmount":    liveQuiz.JackpotAmount,
-		"totalPrize":       liveQuiz.TotalPrize,
-		"recipients":       liveQuiz.Recipients,
-		"unitPrize":        liveQuiz.UnitPrize,
-		"showAnswer":       liveQuiz.ShowAnswer,
-		"quizScheduleDate": liveQuiz.QuizScheduleDate.UTC().Format(time.RFC3339),
-		"quizFinishDate":   liveQuiz.QuizFinishDate.UTC().Format(time.RFC3339),
-		"imageLink":        liveQuiz.ImageLink,
-	})
+	utils.Success(c, http.StatusCreated, "live quiz created successfully", buildLiveQuizResponse(liveQuiz))
 }
 
 // GET SINGLE LIVE QUIZ
@@ -506,7 +527,7 @@ func (qc *QuizController) GetLiveQuiz(c *gin.Context) {
 		return
 	}
 
-	utils.Success(c, http.StatusOK, "success", liveQuiz)
+	utils.Success(c, http.StatusOK, "success", buildLiveQuizResponse(liveQuiz))
 }
 
 func (q *QuizController) GetRandomLiveQuiz(c *gin.Context) {
@@ -518,7 +539,37 @@ func (q *QuizController) GetRandomLiveQuiz(c *gin.Context) {
 		return
 	}
 
-	utils.Success(c, http.StatusOK, "success", quizzes)
+	now := time.Now().UTC()
+	response := make([]gin.H, 0, len(quizzes))
+	for i := range quizzes {
+		quizzes[i].IDHex = quizzes[i].ID.Hex()
+		status := computeLiveQuizStatus(quizzes[i].QuizScheduleDate, quizzes[i].QuizFinishDate, now)
+		response = append(response, gin.H{
+			"id":                   quizzes[i].IDHex,
+			"question":             quizzes[i].Question,
+			"options":              quizzes[i].Options,
+			"isTypedAnswer":        quizzes[i].IsTypedAnswer,
+			"typedAnswer":          quizzes[i].TypedAnswer,
+			"customCountdownLabel": strings.TrimSpace(quizzes[i].CustomCountdownLabel),
+			"jackpotAmount":        quizzes[i].JackpotAmount,
+			"totalPrize":           quizzes[i].TotalPrize,
+			"recipients":           quizzes[i].Recipients,
+			"unitPrize":            quizzes[i].UnitPrize,
+			"showAnswer":           quizzes[i].ShowAnswer,
+			"quizScheduleDate":     quizzes[i].QuizScheduleDate.UTC().Format(time.RFC3339),
+			"quizFinishDate":       quizzes[i].QuizFinishDate.UTC().Format(time.RFC3339),
+			"imageLink":            quizzes[i].ImageLink,
+			"status":               status,
+			"quizCountdownState":   status,
+			"quizCountdownLabel": buildLiveQuizCountdownLabel(
+				quizzes[i].QuizScheduleDate,
+				quizzes[i].QuizFinishDate,
+				now,
+			),
+		})
+	}
+
+	utils.Success(c, http.StatusOK, "success", response)
 }
 
 // GET ALL LIVE QUIZZES
@@ -619,6 +670,9 @@ func (qc *QuizController) UpdateLiveQuiz(c *gin.Context) {
 	if _, ok := raw["imageLink"]; ok {
 		liveQuiz.ImageLink = patchQuiz.ImageLink
 	}
+	if _, ok := raw["customCountdownLabel"]; ok {
+		liveQuiz.CustomCountdownLabel = patchQuiz.CustomCountdownLabel
+	}
 
 	liveQuiz.ID = objectId
 
@@ -633,6 +687,69 @@ func (qc *QuizController) UpdateLiveQuiz(c *gin.Context) {
 	}
 
 	utils.Success(c, http.StatusOK, "live quiz updated successfully", nil)
+}
+
+func (qc *QuizController) UpdateLiveQuizCustomCountdownLabel(c *gin.Context) {
+	id := c.Param("id")
+
+	var payload liveQuizCountdownLabelPayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+
+	if strings.TrimSpace(payload.CustomCountdownLabel) == "" {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "custom countdown label is required")
+		return
+	}
+
+	if err := qc.QuizService.UpdateLiveQuizCustomCountdownLabel(id, payload.CustomCountdownLabel); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+
+	liveQuiz, err := qc.QuizService.GetLiveQuiz(id)
+	if err != nil {
+		utils.SendError(c, http.StatusNotFound, "NOT_FOUND", err.Error())
+		return
+	}
+
+	response := buildLiveQuizResponse(liveQuiz)
+	
+	// Broadcast the updated quiz to all connected clients via WebSocket
+	broadcastEvent := gin.H{
+		"event": "liveQuizUpdated",
+		"quiz":  response,
+	}
+	BroadcastToRoom(fmt.Sprintf("stream:%s", id), broadcastEvent)
+
+	utils.Success(c, http.StatusOK, "live quiz custom countdown label updated successfully", response)
+}
+
+func (qc *QuizController) DeleteLiveQuizCustomCountdownLabel(c *gin.Context) {
+	id := c.Param("id")
+
+	if err := qc.QuizService.DeleteLiveQuizCustomCountdownLabel(id); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+
+	liveQuiz, err := qc.QuizService.GetLiveQuiz(id)
+	if err != nil {
+		utils.SendError(c, http.StatusNotFound, "NOT_FOUND", err.Error())
+		return
+	}
+
+	response := buildLiveQuizResponse(liveQuiz)
+	
+	// Broadcast the updated quiz to all connected clients via WebSocket
+	broadcastEvent := gin.H{
+		"event": "liveQuizUpdated",
+		"quiz":  response,
+	}
+	BroadcastToRoom(fmt.Sprintf("stream:%s", id), broadcastEvent)
+
+	utils.Success(c, http.StatusOK, "live quiz custom countdown label deleted successfully", response)
 }
 
 func (qc *QuizController) DeleteQuiz(ctx *gin.Context) {
@@ -657,6 +774,7 @@ func mapToLiveQuiz(raw map[string]interface{}) (*models.LiveQuiz, error) {
 	quiz.ShowAnswer = asBool(raw["showAnswer"])
 	quiz.Options = asStringSlice(raw["options"])
 	quiz.ImageLink = asStringSlice(raw["imageLink"])
+	quiz.CustomCountdownLabel = strings.TrimSpace(asString(raw["customCountdownLabel"]))
 
 	recipients, err := asInt(raw["recipients"])
 	if err != nil {

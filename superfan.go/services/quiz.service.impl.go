@@ -65,6 +65,123 @@ func computeLiveQuizStatus(startAt, finishAt, now time.Time) string {
 	return "closed"
 }
 
+func formatLiveQuizCountdown(target, now time.Time) string {
+	if target.Before(now) {
+		return "0s"
+	}
+
+	remaining := target.Sub(now).Round(time.Second)
+	totalSeconds := int(remaining / time.Second)
+	if totalSeconds < 0 {
+		totalSeconds = 0
+	}
+
+	hours := totalSeconds / 3600
+	minutes := (totalSeconds % 3600) / 60
+	seconds := totalSeconds % 60
+
+	parts := make([]string, 0, 3)
+	if hours > 0 {
+		parts = append(parts, fmt.Sprintf("%dh", hours))
+	}
+	if minutes > 0 {
+		parts = append(parts, fmt.Sprintf("%dm", minutes))
+	}
+	if seconds > 0 || len(parts) == 0 {
+		parts = append(parts, fmt.Sprintf("%ds", seconds))
+	}
+
+	return strings.Join(parts, " ")
+}
+
+func formatLiveQuizElapsed(target, now time.Time) string {
+	if now.Before(target) {
+		return "just now"
+	}
+
+	elapsed := now.Sub(target)
+	hours := int(elapsed.Hours())
+	if hours >= 1 {
+		if hours == 1 {
+			return "1 hour ago"
+		}
+		return fmt.Sprintf("%d hours ago", hours)
+	}
+
+	minutes := int(elapsed.Minutes())
+	if minutes >= 1 {
+		if minutes == 1 {
+			return "1 minute ago"
+		}
+		return fmt.Sprintf("%d minutes ago", minutes)
+	}
+
+	seconds := int(elapsed.Seconds())
+	if seconds <= 1 {
+		return "just now"
+	}
+	return fmt.Sprintf("%d seconds ago", seconds)
+}
+
+func buildLiveQuizCountdownLabel(startAt, finishAt time.Time, now time.Time) string {
+	if startAt.IsZero() || finishAt.IsZero() {
+		return "Waiting for Live Quiz to start."
+	}
+
+	switch computeLiveQuizStatus(startAt, finishAt, now) {
+	case "scheduled":
+		return fmt.Sprintf(
+			"Waiting for Live Quiz to start; starts in %s.",
+			formatLiveQuizCountdown(startAt, now),
+		)
+	case "live":
+		return "Select an answer by clicking on the 3 dots in front of the live quiz."
+	default:
+		return fmt.Sprintf(
+			"Quiz window closed %s",
+			formatLiveQuizElapsed(finishAt, now),
+		)
+	}
+}
+
+func buildLiveQuizResponseMap(raw bson.M, now time.Time) map[string]interface{} {
+	id := rawObjectIDHex(raw["_id"])
+	startAt := rawTime(raw["quizScheduleDate"])
+	finishAt := rawTime(raw["quizFinishDate"])
+	status := "scheduled"
+	if !startAt.IsZero() && !finishAt.IsZero() {
+		status = computeLiveQuizStatus(startAt, finishAt, now)
+	}
+	jackpotAmount := rawFloat(raw["jackpotAmount"])
+	if jackpotAmount <= 0 {
+		jackpotAmount = rawFloat(raw["totalPrize"])
+	}
+	isActive := status == "live"
+
+	return map[string]interface{}{
+		"id":                   id,
+		"question":             rawString(raw["question"]),
+		"options":              rawStringSlice(raw["options"]),
+		"answer":               rawString(raw["answer"]),
+		"typedAnswer":          rawString(raw["typedAnswer"]),
+		"isTypedAnswer":        rawBool(raw["isTypedAnswer"]),
+		"jackpotAmount":        jackpotAmount,
+		"totalPrize":           rawFloat(raw["totalPrize"]),
+		"recipients":           rawInt(raw["recipients"]),
+		"unitPrize":            rawFloat(raw["unitPrize"]),
+		"showAnswer":           rawBool(raw["showAnswer"]),
+		"quizScheduleDate":     rawTimeString(raw["quizScheduleDate"]),
+		"quizFinishDate":       rawTimeString(raw["quizFinishDate"]),
+		"status":               status,
+		"isEditable":           !isActive,
+		"isDeletable":          !isActive,
+		"imageLink":            rawStringSlice(raw["imageLink"]),
+		"quizCountdownState":   status,
+		"quizCountdownLabel":   buildLiveQuizCountdownLabel(startAt, finishAt, now),
+		"customCountdownLabel": strings.TrimSpace(rawString(raw["customCountdownLabel"])),
+	}
+}
+
 // func NewQuizSubmissionService(collection *mongo.Collection, ctx context.Context) QuizSubmissionService {
 // 	return &QuizServiceImpl{
 // 		quizSubmissionCollection: collection,
@@ -186,6 +303,7 @@ func (u *QuizServiceImpl) CreateLiveQuiz(liveQuiz *models.LiveQuiz) error {
 		"question":         liveQuiz.Question,
 		"options":          liveQuiz.Options,
 		"answer":           liveQuiz.Answer,
+		"customCountdownLabel": strings.TrimSpace(liveQuiz.CustomCountdownLabel),
 		"isTypedAnswer":    liveQuiz.IsTypedAnswer,
 		"typedAnswer":      liveQuiz.TypedAnswer,
 		"jackpotAmount":    liveQuiz.JackpotAmount,
@@ -298,40 +416,7 @@ func (u *QuizServiceImpl) GetAllLiveQuiz() ([]map[string]interface{}, error) {
 			continue
 		}
 
-		id := rawObjectIDHex(raw["_id"])
-		startAt := rawTime(raw["quizScheduleDate"])
-		finishAt := rawTime(raw["quizFinishDate"])
-		status := "scheduled"
-		if !startAt.IsZero() && !finishAt.IsZero() {
-			status = computeLiveQuizStatus(startAt, finishAt, now)
-		}
-		jackpotAmount := rawFloat(raw["jackpotAmount"])
-		if jackpotAmount <= 0 {
-			jackpotAmount = rawFloat(raw["totalPrize"])
-		}
-		isActive := status == "live"
-
-		quizResponse := map[string]interface{}{
-			"id":               id,
-			"question":         rawString(raw["question"]),
-			"options":          rawStringSlice(raw["options"]),
-			"answer":           rawString(raw["answer"]),
-			"typedAnswer":      rawString(raw["typedAnswer"]),
-			"isTypedAnswer":    rawBool(raw["isTypedAnswer"]),
-			"jackpotAmount":    jackpotAmount,
-			"totalPrize":       rawFloat(raw["totalPrize"]),
-			"recipients":       rawInt(raw["recipients"]),
-			"unitPrize":        rawFloat(raw["unitPrize"]),
-			"showAnswer":       rawBool(raw["showAnswer"]),
-			"quizScheduleDate": rawTimeString(raw["quizScheduleDate"]),
-			"quizFinishDate":   rawTimeString(raw["quizFinishDate"]),
-			"status":           status,
-			"isEditable":       !isActive,
-			"isDeletable":      !isActive,
-			"imageLink":        rawStringSlice(raw["imageLink"]),
-		}
-
-		liveQuizzes = append(liveQuizzes, quizResponse)
+		liveQuizzes = append(liveQuizzes, buildLiveQuizResponseMap(raw, now))
 	}
 
 	if err := cursor.Err(); err != nil {
@@ -1331,6 +1416,54 @@ func (u *QuizServiceImpl) DeleteLiveQuiz(id string) error {
 	return nil
 }
 
+func (u *QuizServiceImpl) UpdateLiveQuizCustomCountdownLabel(id string, label string) error {
+	objectId, err := bson.ObjectIDFromHex(id)
+	if err != nil {
+		return errors.New("invalid id format")
+	}
+
+	result, err := u.liveQuizCollection.UpdateOne(
+		u.ctx,
+		bson.M{"_id": objectId},
+		bson.M{
+			"$set": bson.M{
+				"customCountdownLabel": strings.TrimSpace(label),
+			},
+		},
+	)
+	if err != nil {
+		return err
+	}
+	if result.MatchedCount == 0 {
+		return errors.New("live quiz not found")
+	}
+	return nil
+}
+
+func (u *QuizServiceImpl) DeleteLiveQuizCustomCountdownLabel(id string) error {
+	objectId, err := bson.ObjectIDFromHex(id)
+	if err != nil {
+		return errors.New("invalid id format")
+	}
+
+	result, err := u.liveQuizCollection.UpdateOne(
+		u.ctx,
+		bson.M{"_id": objectId},
+		bson.M{
+			"$unset": bson.M{
+				"customCountdownLabel": "",
+			},
+		},
+	)
+	if err != nil {
+		return err
+	}
+	if result.MatchedCount == 0 {
+		return errors.New("live quiz not found")
+	}
+	return nil
+}
+
 func (u *QuizServiceImpl) UpdateLiveQuiz(quiz *models.LiveQuiz) error {
 	var existing models.LiveQuiz
 	if err := u.liveQuizCollection.FindOne(u.ctx, bson.M{"_id": quiz.ID}).Decode(&existing); err != nil {
@@ -1382,6 +1515,7 @@ func (u *QuizServiceImpl) UpdateLiveQuiz(quiz *models.LiveQuiz) error {
 				{Key: "quizScheduleDate", Value: quiz.QuizScheduleDate},
 				{Key: "quizFinishDate", Value: quiz.QuizFinishDate},
 				{Key: "imageLink", Value: quiz.ImageLink},
+				{Key: "customCountdownLabel", Value: strings.TrimSpace(quiz.CustomCountdownLabel)},
 			},
 		},
 	}

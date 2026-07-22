@@ -39,6 +39,7 @@ export class StreamGateway
   @WebSocketServer()
   server: Server;
   private readonly logger = new Logger(StreamGateway.name);
+  private liveQuizTicker: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     private readonly streamingService: StreamingService,
@@ -89,10 +90,19 @@ export class StreamGateway
       typedAnswer: this.toValidString(source.typedAnswer) || undefined,
       isTypedAnswer: Boolean(source.isTypedAnswer),
       imageLink: Array.isArray(source.imageLink) ? source.imageLink : [],
+      customCountdownLabel:
+        this.toValidString(source.customCountdownLabel) || '',
       status:
         this.toValidString(source.status) ||
         this.toValidString(source.quizStatus) ||
         'scheduled',
+      quizCountdownState:
+        this.toValidString(source.quizCountdownState) ||
+        this.toValidString(source.status) ||
+        'scheduled',
+      quizCountdownLabel:
+        this.toValidString(source.quizCountdownLabel) ||
+        'Waiting for Live Quiz to start.',
       quizScheduleDate:
         this.toValidString(source.quizScheduleDate) ||
         this.toValidString(source.scheduleDate),
@@ -277,15 +287,35 @@ export class StreamGateway
     await this.emitLiveQuizUpdate(action);
   }
 
+  private startLiveQuizTicker() {
+    if (this.liveQuizTicker) return;
+    this.liveQuizTicker = setInterval(() => {
+      if (!this.server || this.server.sockets.sockets.size === 0) {
+        return;
+      }
+      void this.emitLiveQuizUpdate('sync');
+    }, 1000);
+  }
+
+  private stopLiveQuizTicker() {
+    if (!this.liveQuizTicker) return;
+    clearInterval(this.liveQuizTicker);
+    this.liveQuizTicker = null;
+  }
+
   handleConnection(client: Socket) {
     const queryUserId = Number(client.handshake?.query?.userId);
     if (Number.isFinite(queryUserId) && queryUserId > 0) {
       (client.data as { userId?: number }).userId = queryUserId;
     }
+    this.startLiveQuizTicker();
   }
 
   handleDisconnect(client: Socket) {
     // Disconnect handled - no chat room cleanup needed
+    if (this.server?.sockets?.sockets.size === 0) {
+      this.stopLiveQuizTicker();
+    }
   }
 
   private resolveSocketUserId(

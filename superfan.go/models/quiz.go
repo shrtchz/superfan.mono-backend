@@ -50,6 +50,7 @@ type LiveQuiz struct {
 	Question         string        `json:"question" bson:"question"`
 	Options          []string      `json:"options" bson:"options"`
 	Answer           string        `bson:"answer,omitempty" json:"answer,omitempty"`
+	CustomCountdownLabel string    `json:"customCountdownLabel,omitempty" bson:"customCountdownLabel,omitempty"`
 	IsTypedAnswer    bool          `json:"isTypedAnswer,omitempty" bson:"isTypedAnswer,omitempty"`
 	TypedAnswer      string        `json:"typedAnswer,omitempty" bson:"typedAnswer,omitempty"`
 	JackpotAmount    float64       `json:"jackpotAmount,omitempty" bson:"jackpotAmount,omitempty"`
