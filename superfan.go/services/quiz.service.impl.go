@@ -55,7 +55,7 @@ func lagosNow() (time.Time, error) {
 	return time.Now().In(lagosLocation()), nil
 }
 
-func computeLiveQuizStatus(startAt, finishAt, now time.Time) string {
+func ComputeLiveQuizStatus(startAt, finishAt, now time.Time) string {
 	if now.Before(startAt) {
 		return "scheduled"
 	}
@@ -123,12 +123,12 @@ func formatLiveQuizElapsed(target, now time.Time) string {
 	return fmt.Sprintf("%d seconds ago", seconds)
 }
 
-func buildLiveQuizCountdownLabel(startAt, finishAt time.Time, now time.Time) string {
+func BuildLiveQuizCountdownLabel(startAt, finishAt time.Time, now time.Time) string {
 	if startAt.IsZero() || finishAt.IsZero() {
 		return "Waiting for Live Quiz to start."
 	}
 
-	switch computeLiveQuizStatus(startAt, finishAt, now) {
+	switch ComputeLiveQuizStatus(startAt, finishAt, now) {
 	case "scheduled":
 		return fmt.Sprintf(
 			"Waiting for Live Quiz to start; starts in %s.",
@@ -150,7 +150,7 @@ func buildLiveQuizResponseMap(raw bson.M, now time.Time) map[string]interface{} 
 	finishAt := rawTime(raw["quizFinishDate"])
 	status := "scheduled"
 	if !startAt.IsZero() && !finishAt.IsZero() {
-		status = computeLiveQuizStatus(startAt, finishAt, now)
+		status = ComputeLiveQuizStatus(startAt, finishAt, now)
 	}
 	jackpotAmount := rawFloat(raw["jackpotAmount"])
 	if jackpotAmount <= 0 {
@@ -177,7 +177,7 @@ func buildLiveQuizResponseMap(raw bson.M, now time.Time) map[string]interface{} 
 		"isDeletable":          !isActive,
 		"imageLink":            rawStringSlice(raw["imageLink"]),
 		"quizCountdownState":   status,
-		"quizCountdownLabel":   buildLiveQuizCountdownLabel(startAt, finishAt, now),
+		"quizCountdownLabel":   BuildLiveQuizCountdownLabel(startAt, finishAt, now),
 		"customCountdownLabel": strings.TrimSpace(rawString(raw["customCountdownLabel"])),
 	}
 }
