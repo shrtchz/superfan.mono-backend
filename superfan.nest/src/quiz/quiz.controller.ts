@@ -368,16 +368,6 @@ async getOngoingLiveQuiz(@Param('id', ParseIntPipe) id: number) {
   }
 
 
-    @Public()
-  @Get('/get-live-quiz-answer/:id')
-  getCompletedLiveQuizAnswer(@Param('id') id: string) {
-    try {
-      return this.quizService.getLiveQuizAnswer(id);
-    } catch (error) {
-      throw failureResponse(error.message || 'Failed to get live quiz answer');
-    }
-  }
-
   @Get('/get-random-live-quiz/:id/:streamId')
   getRandomLiveQuiz(@Param('id', ParseIntPipe) id: number, @Param('streamId', ParseIntPipe) streamId: number, @Req() req: any) {
     try {
