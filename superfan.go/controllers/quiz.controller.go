@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"quiz.superfan.com/apis/middleware"
 	"quiz.superfan.com/apis/models"
 	"quiz.superfan.com/apis/services"
 	"quiz.superfan.com/apis/utils"
@@ -468,6 +469,61 @@ func (qc *QuizController) GetLiveQuizAnswerById(ctx *gin.Context) {
 	}
 
 	utils.Success(ctx, http.StatusOK, "success", answer)
+}
+
+func (qc *QuizController) SubmitLiveQuizAnswer(ctx *gin.Context) {
+	quizID := strings.TrimSpace(ctx.Param("id"))
+	if quizID == "" {
+		utils.SendError(ctx, http.StatusBadRequest, "BAD_REQUEST", "live quiz id is required")
+		return
+	}
+
+	userIDValue, ok := ctx.Get(middleware.ContextUserIDKey)
+	if !ok {
+		utils.SendError(ctx, http.StatusUnauthorized, "UNAUTHORIZED", "user authentication is required")
+		return
+	}
+
+	userID, ok := userIDValue.(int)
+	if !ok || userID <= 0 {
+		utils.SendError(ctx, http.StatusUnauthorized, "UNAUTHORIZED", "invalid authenticated user")
+		return
+	}
+
+	var body struct {
+		SelectedAnswer string `json:"selectedAnswer"`
+	}
+	if err := ctx.ShouldBindJSON(&body); err != nil {
+		utils.SendError(ctx, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+	if strings.TrimSpace(body.SelectedAnswer) == "" {
+		utils.SendError(ctx, http.StatusBadRequest, "BAD_REQUEST", "selectedAnswer is required")
+		return
+	}
+
+	sessionID, err := services.FindActiveSessionIDByUserAndQuestion(userID, quizID)
+	if err != nil {
+		if errors.Is(err, services.ErrOngoingQuizNotFound) {
+			utils.SendError(ctx, http.StatusNotFound, "NOT_FOUND", "Active live quiz not found")
+			return
+		}
+		utils.SendError(ctx, http.StatusInternalServerError, "ERROR", err.Error())
+		return
+	}
+
+	sessionService := services.NewQuizSessionV2Service(qc.QuizService)
+	result, err := sessionService.SaveAnswer(sessionID, models.SaveAnswerV2Request{
+		UserID:         userID,
+		QuestionID:     quizID,
+		SelectedAnswer: body.SelectedAnswer,
+	})
+	if err != nil {
+		sendServiceError(ctx, err)
+		return
+	}
+
+	utils.Success(ctx, http.StatusOK, "Live quiz answer submitted", gin.H{"answer": result.Answer})
 }
 
 func (qc *QuizController) UpdateQuiz(ctx *gin.Context) {

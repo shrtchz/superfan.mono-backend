@@ -15,11 +15,11 @@ var (
 )
 
 type OngoingQuizFetchResult struct {
-	Expired             bool
-	ExpiredMessage      string
-	MissingQuizAttempt  bool
-	QuizID              string
-	OngoingQuiz         *models.OngoingQuiz
+	Expired            bool
+	ExpiredMessage     string
+	MissingQuizAttempt bool
+	QuizID             string
+	OngoingQuiz        *models.OngoingQuiz
 }
 
 // FetchOngoingQuiz mirrors Nest quizService.fetchOngoingQuiz(userId).
@@ -77,4 +77,25 @@ func FetchOngoingQuiz(userID int) (*OngoingQuizFetchResult, error) {
 	}
 
 	return &OngoingQuizFetchResult{OngoingQuiz: &ongoingQuiz}, nil
+}
+
+func FindActiveSessionIDByUserAndQuestion(userID int, quizID string) (string, error) {
+	if utils.DB == nil {
+		return "", ErrPostgresUnavailable
+	}
+
+	var ongoingQuiz models.OngoingQuiz
+	err := utils.DB.
+		Where(`"userId" = ? AND "isCompleted" = ?`, userID, false).
+		Where(`"questions" @> ?`, fmt.Sprintf(`[{"id":"%s"}]`, quizID)).
+		First(&ongoingQuiz).Error
+
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", ErrOngoingQuizNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("find active session by quiz id: %w", err)
+	}
+
+	return ongoingQuiz.ID, nil
 }
