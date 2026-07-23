@@ -15,11 +15,11 @@ var (
 )
 
 type OngoingQuizFetchResult struct {
-	Expired             bool
-	ExpiredMessage      string
-	MissingQuizAttempt  bool
-	QuizID              string
-	OngoingQuiz         *models.OngoingQuiz
+	Expired            bool
+	ExpiredMessage     string
+	MissingQuizAttempt bool
+	QuizID             string
+	OngoingQuiz        *models.OngoingQuiz
 }
 
 // FetchOngoingQuiz mirrors Nest quizService.fetchOngoingQuiz(userId).
