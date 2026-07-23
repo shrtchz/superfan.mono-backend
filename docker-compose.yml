@@ -63,10 +63,12 @@ services:
     ports:
       - '3001:3000'
     env_file:
+      - path: ./.env
+        required: false
       - path: ./superfan.nest/.env
         required: false
     environment:
-      - DATABASE_URL=postgresql://postgres:password@db:5432/superfan?connection_limit=10&pool_timeout=20
+      - DATABASE_URL=postgresql://neondb_owner:npg_mct1L3EGhNjO@ep-wispy-breeze-atpun0yq-pooler.c-9.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require&connection_limit=10&pool_timeout=20
       - LOCAL_REDIS_HOST=redis
       - GO_ENDPOINT=http://superfan-go:7190
     volumes:
@@ -86,16 +88,20 @@ services:
     ports:
       - '7190:7190'
     env_file:
+      - path: ./.env
+        required: false
       - path: ./superfan.go/.env
         required: false
     environment:
       - MONGO_URI=mongodb://mongo:27017/quizdb
+      - DATABASE_URL=postgresql://neondb_owner:npg_mct1L3EGhNjO@ep-wispy-breeze-atpun0yq-pooler.c-9.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require
       - PORT=7190
       - GIN_MODE=debug
     volumes:
       - ./superfan.go:/app
     depends_on:
       - mongo
+      - db
     restart: unless-stopped
 
 volumes:

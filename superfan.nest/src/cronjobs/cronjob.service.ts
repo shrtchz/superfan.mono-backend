@@ -269,7 +269,22 @@ async handleExpiredQuizzes() {
     }
   }
 
-@Cron(CronExpression.EVERY_30_MINUTES)
+  @Cron(CronExpression.EVERY_5_MINUTES)
+  async handleAutoCloseLiveQuizSessions() {
+    try {
+      const closed = await this.quizService.closeExpiredLiveQuizSessions();
+      if (closed > 0) {
+        this.logger.log(`Auto-closed ${closed} expired live quiz session(s).`);
+      }
+    } catch (error) {
+      this.logger.error(
+        'Live quiz auto-close cron failed',
+        error?.stack,
+      );
+    }
+  }
+
+  @Cron(CronExpression.EVERY_30_MINUTES)
 async handleUpdateCryptoPrices() {
   try {
     this.logger.log('Updating cryptocurrency prices...');
