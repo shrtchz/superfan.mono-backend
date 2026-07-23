@@ -151,6 +151,11 @@ func init() {
 	// Launch Airtable sync in the background
 	go services.SyncFromAirtable(qs)
 
+	// Launch live quiz finaliser (one-shot timers based on quizFinishDate)
+	finaliser := services.NewLiveQuizFinaliser(liveQuizc)
+	services.LiveQuizFinaliserInstance = finaliser
+	finaliser.Start()
+
 	server = gin.New()
 	server.Use(gin.Logger())
 	server.Use(middleware.CORSMiddleware())

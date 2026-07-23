@@ -370,7 +370,11 @@ func (u *QuizServiceImpl) CreateLiveQuiz(liveQuiz *models.LiveQuiz) error {
 		"imageLink":            liveQuiz.ImageLink,
 	}
 
-	_, err = u.liveQuizCollection.InsertOne(u.ctx, doc)
+	_, err := u.liveQuizCollection.InsertOne(u.ctx, doc)
+	if err == nil && LiveQuizFinaliserInstance != nil {
+		// Schedule the one-shot timer for when this quiz expires
+		LiveQuizFinaliserInstance.ScheduleFromCreate(doc)
+	}
 	return err
 }
 
