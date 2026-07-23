@@ -13,7 +13,7 @@ func RegisterLiveQuizV2Routes(rg *gin.RouterGroup, qc *QuizController) {
 	quizroute.GET("/live", qc.GetAllLiveQuiz)
 	quizroute.GET("/live/random/:number", qc.GetRandomLiveQuiz)
 	quizroute.GET("/live/:id", qc.GetLiveQuiz)
-	quizroute.GET("/live-answer/:id", qc.GetLiveQuizAnswerById)
+	quizroute.GET("/live-answer/:id", middleware.OptionalAuth(), qc.GetLiveQuizAnswerById)
 
 	// Live quiz answer submission requires auth and is routed through Go.
 	quizroute.POST("/live/:id/answer", middleware.AuthRequired(), qc.SubmitLiveQuizAnswer)

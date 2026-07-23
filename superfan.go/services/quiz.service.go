@@ -26,7 +26,7 @@ type QuizService interface {
 	GetLiveQuiz(string) (*models.LiveQuiz, error)
 	GetRandomLiveQuiz(string) ([]models.LiveQuiz, error)
 	GetAllLiveQuiz() ([]map[string]interface{}, error)
-	GetLiveQuizAnswerById(id string) (map[string]interface{}, error)
+	GetLiveQuizAnswerById(userID int, id string) (map[string]interface{}, error)
 	UpdateLiveQuiz(*models.LiveQuiz) error
 	DeleteLiveQuiz(string) error
 	UpdateLiveQuizCustomCountdownLabel(id string, label string) error
