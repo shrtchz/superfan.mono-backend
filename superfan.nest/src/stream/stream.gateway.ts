@@ -1,3 +1,5 @@
+import { Logger } from '@nestjs/common';
+import { OnEvent } from '@nestjs/event-emitter';
 import {
   ConnectedSocket,
   MessageBody,
@@ -9,210 +11,475 @@ import {
 } from '@nestjs/websockets';
 
 import { Server, Socket } from 'socket.io';
+import { QuizService } from '../quiz/quiz.service';
 import { StreamingService } from './stream.service';
 
+const SOCKET_CORS_ORIGINS = [
+  'http://localhost:9050',
+  'http://localhost:9090',
+  'https://api.superfan.ng',
+  'https://superfan-admin.vercel.app',
+  'https://superfan-client.vercel.app',
+  'https://sn1.superfan.ng',
+  'https://s1.superfan.ng',
+  'https://sg1.superfan.ng',
+  'https://sa1.superfan.ng',
+];
 
 @WebSocketGateway({
-  cors: true,
+  cors: {
+    origin: SOCKET_CORS_ORIGINS,
+    credentials: true,
+  },
+  path: '/api/v1/socket.io',
 })
 export class StreamGateway
   implements OnGatewayConnection, OnGatewayDisconnect
 {
   @WebSocketServer()
   server: Server;
+  private readonly logger = new Logger(StreamGateway.name);
+  private liveQuizTicker: ReturnType<typeof setInterval> | null = null;
 
-  constructor(private readonly streamingService: StreamingService) {}
+  constructor(
+    private readonly streamingService: StreamingService,
+    private readonly quizService: QuizService,
+  ) {}
 
-  private users = new Map<number, string>(); // userId -> socketId
-
-  // 🔌 When user connects
-  handleConnection(client: Socket) {
-    const userId = Number(client.handshake.query.userId);
-
-    if (userId) {
-      this.users.set(userId, client.id);
-      console.log(`User ${userId} connected`);
-    }
+  private toValidString(value: unknown): string {
+    return typeof value === 'string' && value.trim() ? value.trim() : '';
   }
 
-  // ❌ When user disconnects
-  handleDisconnect(client: Socket) {
-    for (const [userId, socketId] of this.users.entries()) {
-      if (socketId === client.id) {
-        this.users.delete(userId);
-        console.log(`User ${userId} disconnected`);
-        break;
+  private toTimestamp(value: unknown): number {
+    const asString = this.toValidString(value);
+    if (!asString) return Number.NaN;
+    const parsed = new Date(asString).getTime();
+    return Number.isFinite(parsed) ? parsed : Number.NaN;
+  }
+
+  private toDisplayLiveQuiz(
+    source: Record<string, unknown> | null,
+  ): Record<string, unknown> | null {
+    if (!source) return null;
+
+    const question =
+      this.toValidString(source.question) ||
+      this.toValidString(source.quizQuestion) ||
+      this.toValidString(source.title);
+
+    if (!question) return null;
+
+    return {
+      id:
+        this.toValidString(source.id) ||
+        this.toValidString(source.idHex) ||
+        this.toValidString(source.quizId) ||
+        this.toValidString(source._id),
+      quizId:
+        this.toValidString(source.id) ||
+        this.toValidString(source.idHex) ||
+        this.toValidString(source.quizId) ||
+        this.toValidString(source._id),
+      question,
+      options: Array.isArray(source.options) ? source.options : [],
+      answer:
+        this.toValidString(source.answer) ||
+        this.toValidString(source.correctAnswer) ||
+        this.toValidString(source.selectedAnswer) ||
+        this.toValidString(source.typedAnswer),
+      typedAnswer: this.toValidString(source.typedAnswer) || undefined,
+      isTypedAnswer: Boolean(source.isTypedAnswer),
+      imageLink: Array.isArray(source.imageLink) ? source.imageLink : [],
+      customCountdownLabel:
+        this.toValidString(source.customCountdownLabel) || '',
+      status:
+        this.toValidString(source.status) ||
+        this.toValidString(source.quizStatus) ||
+        'scheduled',
+      quizCountdownState:
+        this.toValidString(source.quizCountdownState) ||
+        this.toValidString(source.status) ||
+        'scheduled',
+      quizCountdownLabel:
+        this.toValidString(source.quizCountdownLabel) ||
+        'Waiting for Live Quiz to start.',
+      quizScheduleDate:
+        this.toValidString(source.quizScheduleDate) ||
+        this.toValidString(source.scheduleDate),
+      quizFinishDate:
+        this.toValidString(source.quizFinishDate) ||
+        this.toValidString(source.finishDate),
+      totalPrize: Number(source.totalPrize ?? source.totalPrice ?? 0) || 0,
+      recipients: Number(source.recipients ?? 0) || 0,
+      unitPrize: Number(source.unitPrize ?? 0) || 0,
+      showAnswer: Boolean(source.showAnswer),
+    };
+  }
+
+  private pickCurrentLiveQuiz(
+    quizzes: Record<string, unknown>[],
+  ): Record<string, unknown> | null {
+    if (!quizzes.length) return null;
+    const now = Date.now();
+    const hasQuestion = (quiz: Record<string, unknown>) =>
+      Boolean(
+        this.toValidString(quiz.question) ||
+          this.toValidString(quiz.quizQuestion) ||
+          this.toValidString(quiz.title),
+      );
+    const withQuestion = quizzes.filter(hasQuestion);
+    if (!withQuestion.length) return null;
+
+    const getStart = (quiz: Record<string, unknown>) =>
+      this.toTimestamp(quiz.quizScheduleDate ?? quiz.scheduleDate ?? quiz.startAt);
+    const getFinish = (quiz: Record<string, unknown>) =>
+      this.toTimestamp(quiz.quizFinishDate ?? quiz.finishDate ?? quiz.endAt);
+
+    const activeQuizzes = withQuestion.filter((quiz) => {
+      const startAt = getStart(quiz);
+      const finishAt = getFinish(quiz);
+      if (Number.isFinite(startAt) && now < startAt) return false;
+      if (Number.isFinite(finishAt) && now >= finishAt) return false;
+      return true;
+    });
+
+    if (activeQuizzes.length) {
+      const liveQuiz = activeQuizzes.find(
+        (quiz) => this.toValidString(quiz.status).toLowerCase() === 'live',
+      );
+      if (liveQuiz) return liveQuiz;
+
+      return [...activeQuizzes].sort((a, b) => {
+        const aStart = getStart(a);
+        const bStart = getStart(b);
+        const safeA = Number.isFinite(aStart) ? aStart : Number.MIN_SAFE_INTEGER;
+        const safeB = Number.isFinite(bStart) ? bStart : Number.MIN_SAFE_INTEGER;
+        return safeB - safeA;
+      })[0];
+    }
+
+    const openQuizzes = withQuestion.filter((quiz) => {
+      const finishAt = getFinish(quiz);
+      return !Number.isFinite(finishAt) || finishAt > now;
+    });
+
+    if (openQuizzes.length) {
+      const scheduled = [...openQuizzes]
+      .filter((quiz) => {
+        const status = this.toValidString(quiz.status).toLowerCase();
+        return !status || status === 'scheduled';
+      })
+      .sort((a, b) => {
+        const aStart = getStart(a);
+        const bStart = getStart(b);
+        const safeA = Number.isFinite(aStart) ? aStart : Number.MAX_SAFE_INTEGER;
+        const safeB = Number.isFinite(bStart) ? bStart : Number.MAX_SAFE_INTEGER;
+        return safeA - safeB;
+      });
+
+      return scheduled[0] ?? openQuizzes[0] ?? null;
+    }
+
+    return [...withQuestion].sort((a, b) => {
+      const aUpdated = this.toTimestamp(a.updatedAt ?? a.createdAt);
+      const bUpdated = this.toTimestamp(b.updatedAt ?? b.createdAt);
+      const safeA = Number.isFinite(aUpdated) ? aUpdated : Number.MIN_SAFE_INTEGER;
+      const safeB = Number.isFinite(bUpdated) ? bUpdated : Number.MIN_SAFE_INTEGER;
+      return safeB - safeA;
+    })[0];
+  }
+
+  private extractLiveQuizArray(payload: unknown): Record<string, unknown>[] {
+    const asRecords = (value: unknown): Record<string, unknown>[] =>
+      Array.isArray(value)
+        ? value.filter(
+            (item): item is Record<string, unknown> =>
+              Boolean(item) && typeof item === 'object' && !Array.isArray(item),
+          )
+        : [];
+
+    const tryCollect = (value: unknown): Record<string, unknown>[] => {
+      const direct = asRecords(value);
+      if (direct.length) return direct;
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+
+      const node = value as Record<string, unknown>;
+      const nextCandidates = [
+        node.data,
+        node.result,
+        node.quizzes,
+        node.items,
+        node.questions,
+      ];
+
+      for (const candidate of nextCandidates) {
+        const nested = asRecords(candidate);
+        if (nested.length) return nested;
       }
+
+      for (const candidate of nextCandidates) {
+        if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+          continue;
+        }
+        const deepNode = candidate as Record<string, unknown>;
+        const deepCandidates = [
+          deepNode.data,
+          deepNode.result,
+          deepNode.quizzes,
+          deepNode.items,
+          deepNode.questions,
+        ];
+        for (const deep of deepCandidates) {
+          const deepRecords = asRecords(deep);
+          if (deepRecords.length) return deepRecords;
+        }
+      }
+
+      return [];
+    };
+
+    return tryCollect(payload);
+  }
+
+  private async getCurrentLiveQuizSnapshot(): Promise<Record<string, unknown> | null> {
+    try {
+      const response = await this.quizService.getAllLiveQuiz();
+      const quizzes = this.extractLiveQuizArray(response);
+      const current = this.pickCurrentLiveQuiz(quizzes);
+      const displayQuiz = this.toDisplayLiveQuiz(current);
+      this.logger.log(
+        `[LiveQuiz] fetched=${quizzes.length} selectedId=${displayQuiz?.id ?? 'none'} question=${displayQuiz?.question ?? 'none'}`,
+      );
+      return displayQuiz;
+    } catch {
+      this.logger.warn('[LiveQuiz] failed to fetch current snapshot');
+      return null;
     }
   }
 
-  // 🏠 Join a task room
-  @SubscribeMessage('joinStreamRoom')
-  async joinTaskRoom(
-    @MessageBody() data: { userId: number },
+  private async emitLiveQuizUpdate(
+    action: 'created' | 'updated' | 'deleted' | 'sync' = 'sync',
+    socket?: Socket,
+  ) {
+    if (!this.server) return;
+
+    const quiz = await this.getCurrentLiveQuizSnapshot();
+    const payload = {
+      action,
+      quiz,
+      updatedAt: new Date().toISOString(),
+    };
+    this.logger.log(
+      `[LiveQuiz] emit action=${action} quizId=${(quiz as any)?.id ?? 'none'}`,
+    );
+
+    if (socket) {
+      socket.emit('liveQuizUpdated', payload);
+      return;
+    }
+
+    this.server.emit('liveQuizUpdated', payload);
+  }
+
+  @OnEvent('liveQuiz.changed')
+  async handleLiveQuizChanged(event?: { action?: 'created' | 'updated' | 'deleted' }) {
+    const action = event?.action ?? 'updated';
+    await this.emitLiveQuizUpdate(action);
+  }
+
+  private startLiveQuizTicker() {
+    if (this.liveQuizTicker) return;
+    this.liveQuizTicker = setInterval(() => {
+      if (!this.server || this.server.sockets.sockets.size === 0) {
+        return;
+      }
+      void this.emitLiveQuizUpdate('sync');
+    }, 1000);
+  }
+
+  private stopLiveQuizTicker() {
+    if (!this.liveQuizTicker) return;
+    clearInterval(this.liveQuizTicker);
+    this.liveQuizTicker = null;
+  }
+
+  handleConnection(client: Socket) {
+    const queryUserId = Number(client.handshake?.query?.userId);
+    if (Number.isFinite(queryUserId) && queryUserId > 0) {
+      (client.data as { userId?: number }).userId = queryUserId;
+    }
+    this.startLiveQuizTicker();
+  }
+
+  handleDisconnect(client: Socket) {
+    // Disconnect handled - no chat room cleanup needed
+    if (this.server?.sockets?.sockets.size === 0) {
+      this.stopLiveQuizTicker();
+    }
+  }
+
+  private resolveSocketUserId(
+    client: Socket,
+    payloadUserId?: string | number | null,
+  ): number | null {
+    const candidates = [
+      payloadUserId,
+      (client.data as { userId?: number })?.userId,
+      client.handshake?.query?.userId,
+    ];
+    for (const candidate of candidates) {
+      const parsed = Number(candidate);
+      if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    }
+    return null;
+  }
+
+  @SubscribeMessage('register')
+  handleRegister(
+    @MessageBody() payload: unknown,
     @ConnectedSocket() client: Socket,
   ) {
-    const room = `user-${data.userId}`;
-    client.join(room);
+    const userId =
+      typeof payload === 'object' && payload !== null
+        ? Number(
+            (payload as { userId?: string | number }).userId ??
+              (payload as { id?: string | number }).id,
+          )
+        : Number(payload);
+    if (Number.isFinite(userId) && userId > 0) {
+      (client.data as { userId?: number }).userId = userId;
+    }
+    return { status: 'success' };
+  }
 
+  @SubscribeMessage('joinStream')
+  async joinStream(
+    @MessageBody() streamId: string | number,
+    @ConnectedSocket() client: Socket,
+  ) {
+    // Join stream for quiz updates
+    const normalizedStreamId = String(streamId);
+    const room = `stream-${normalizedStreamId}`;
+    await client.join(room);
+    void this.emitLiveQuizUpdate('sync', client);
     return { message: `Joined room ${room}` };
   }
 
-//   // ✍️ User starts typing
-// @SubscribeMessage('startTyping')
-// handleStartTyping(
-//   @MessageBody()
-//   data: {
-//     taskId: number;
-//     userId: number;
-//   },
-//   @ConnectedSocket() client: Socket,
-// ) {
-//   const room = `task-${data.taskId}`;
-
-//   // Emit to everyone except sender
-//   client.to(room).emit('userTyping', {
-//     userId: data.userId,
-//     isTyping: true,
-//   });
-// }
-
-// // 🛑 User stops typing
-// @SubscribeMessage('stopTyping')
-// handleStopTyping(
-//   @MessageBody()
-//   data: {
-//     taskId: number;
-//     userId: number;
-//   },
-//   @ConnectedSocket() client: Socket,
-// ) {
-//   const room = `task-${data.taskId}`;
-
-//   client.to(room).emit('userTyping', {
-//     userId: data.userId,
-//     isTyping: false,
-//   });
-// }
-
-  // 💬 Send message
-  @SubscribeMessage('sendComment')
-  async sendMessage(
-    @MessageBody()
-    data: {
-      userId: number;
-      streamId: number;
-        comment: string;
-    },
+  @SubscribeMessage('leaveStream')
+  async leaveStream(
+    @MessageBody() streamId: string | number,
+    @ConnectedSocket() client: Socket,
   ) {
-
-        const newMessage = await this.streamingService.commentOnStream(
-      data.streamId,
-      data.comment,
-      data.userId,
-    );
-
-    // 📡 Emit to room
-    this.server.to(`stream-${newMessage.id}`).emit('streamMessage', newMessage);
-
-    return newMessage;
+    const normalizedStreamId = String(streamId);
+    await client.leave(`stream-${normalizedStreamId}`);
+    return { message: 'Left stream room' };
   }
 
-  getUserSocket(userId: number) {
-  return this.users.get(userId);
-}
+  broadcastChat(event: string, payload: any, streamId?: string | number) {
+    if (!this.server) return;
 
-@SubscribeMessage('replyComment')
-async replyMessage(
-    @MessageBody()
-    data: {
-        userId: number,
-        commentId: number,
-        comment: string
+    if (streamId) {
+      const room = `stream-${String(streamId)}`;
+      this.server.to(room).emit(event, payload);
+      this.logger.log(`[StreamGateway] broadcastChat event=${event} room=${room}`);
+    } else {
+      this.server.emit(event, payload);
+      this.logger.log(`[StreamGateway] broadcastChat event=${event} global`);
     }
-) {
-    const reply = await this.streamingService.replyToComment(
-      data.commentId,
-      data.comment,
-      data.userId,
-    );
+  }
 
-    this.server.to(`comment-${data.commentId}`).emit('replyMessage', reply);
-
-    return reply;
-}
-
-@SubscribeMessage('likeComment')
-async likeComment(
+  @SubscribeMessage('sendComment')
+  async sendComment(
     @MessageBody()
-    data: {
-        userId: number,
-        commentId: number,
+    payload: {
+      streamId?: string | number;
+      message?: string;
+      comment?: string;
+      userId?: string | number;
+      parentCommentId?: string | number | null;
+    },
+    @ConnectedSocket() client: Socket,
+  ) {
+    try {
+      const streamId = Number(payload?.streamId);
+      const message = String(payload?.message ?? payload?.comment ?? '').trim();
+      const userId = this.resolveSocketUserId(client, payload?.userId);
+      const parentCommentId =
+        payload?.parentCommentId !== undefined && payload?.parentCommentId !== null
+          ? Number(payload.parentCommentId)
+          : null;
+
+      this.logger.log(
+        `[StreamGateway] sendComment streamId=${streamId} userId=${userId} message=${message}`,
+      );
+
+      if (!message) {
+        return { status: 'error', error: 'Comment message is required' };
+      }
+      if (!userId) {
+        return { status: 'error', error: 'User is not registered on socket' };
+      }
+
+      let commentPayload: Record<string, unknown>;
+
+      if (Number.isFinite(parentCommentId) && (parentCommentId as number) > 0) {
+        const created = await this.streamingService.replyToComment(
+          parentCommentId as number,
+          message,
+          userId,
+        );
+        commentPayload = {
+          ...created,
+          streamId: created?.streamId ?? streamId,
+          parentCommentId: created?.parentCommentId ?? parentCommentId,
+        };
+        // Live chat is shared — broadcast to every connected client.
+        this.broadcastChat('newComment', commentPayload);
+        this.broadcastChat('replyMessage', commentPayload);
+      } else {
+        if (!Number.isFinite(streamId) || streamId <= 0) {
+          return { status: 'error', error: 'Valid streamId is required' };
+        }
+        const created = await this.streamingService.commentOnStream(
+          streamId,
+          message,
+          userId,
+        );
+        commentPayload = {
+          ...created,
+          streamId,
+        };
+        this.broadcastChat('newComment', commentPayload);
+        this.broadcastChat('streamMessage', commentPayload);
+      }
+
+      return { status: 'success', comment: commentPayload };
+    } catch (error) {
+      this.logger.error('[StreamGateway] sendComment error:', error);
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : 'Failed to send comment';
+      return { status: 'error', error: message };
     }
-) {
-    const reply = await this.streamingService.likeComment(
-      data.commentId,
-      data.userId,
-    );
+  }
 
-    this.server.to(`comment-${data.commentId}`).emit('replyMessage', reply);
-
-    return reply;
-}
-
-@SubscribeMessage('unlikeComment')
-async unlikeComment(
-    @MessageBody()
-    data: {
-        userId: number,
-        commentId: number,
+  @SubscribeMessage('fetchComments')
+  async fetchComments(
+    @MessageBody() payload: { streamId: string | number },
+    @ConnectedSocket() client: Socket,
+  ) {
+    try {
+      const { streamId } = payload;
+      this.logger.log(`[StreamGateway] fetchComments streamId=${streamId}`);
+      
+      // Return empty array for now - this should fetch from database
+      const comments = await this.streamingService.getStreamCommentsandReplies(Number(streamId));
+      
+      return { status: 'success', comments };
+    } catch (error) {
+      this.logger.error('[StreamGateway] fetchComments error:', error);
+      return { status: 'error', error: 'Failed to fetch comments', comments: [] };
     }
-) {
-    const reply = await this.streamingService.unlikeComment(
-      data.commentId,
-      data.userId,
-    );
-
-    this.server.to(`comment-${data.commentId}`).emit('replyMessage', reply);
-
-    return reply;
-}
-
-@SubscribeMessage('reportComment')
-async reportComment(
-    @MessageBody()
-    data: {
-      commentId: number,
-      creatorId: number,
-        userId: number,
-        reason: string
-    }
-) {
-    const reply = await this.streamingService.reportComment(
-      data.commentId,
-      data.creatorId,
-      data.userId,
-      data.reason
-    );
-
-    this.server.to(`comment-${data.commentId}`).emit('replyMessage', reply);
-
-    return reply;
-}
-
-@SubscribeMessage('deleteComment')
-async deleteComment(
-    @MessageBody()
-    data: {
-      commentId: number,
-    }
-) {
-    const delete_comment = await this.streamingService.deleteComment(
-      data.commentId,
-    );
-
-    this.server.to(`comment-${data.commentId}`).emit('deleteComment', delete_comment);
-
-    return delete_comment;
-}
+  }
 }

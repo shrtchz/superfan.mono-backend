@@ -30,9 +30,10 @@ type Quiz struct {
 	ID    bson.ObjectID `bson:"_id" json:"-"`
 	IDHex string        `bson:"-" json:"id"`
 
-	TestQuiz  string `json:"testQuiz" bson:"testQuiz"`
-	TestLevel string `json:"testLevel" bson:"testLevel"`
-	Subject   string `json:"subject" bson:"subject"`
+	TestQuiz         string `json:"testQuiz" bson:"testQuiz"`
+	TestLevel        string `json:"testLevel" bson:"testLevel"`
+	Subject          string `json:"subject" bson:"subject"`
+	AirtableRecordID string `json:"airtableRecordId,omitempty" bson:"airtableRecordId,omitempty"`
 
 	Earning       string   `json:"earning" bson:"earning"`
 	Question      string   `json:"question" bson:"question"`
@@ -44,19 +45,25 @@ type Quiz struct {
 }
 
 type LiveQuiz struct {
-	ID               bson.ObjectID `bson:"_id" json:"-"`
-	IDHex            string        `bson:"-" json:"id"`
-	Question         string        `json:"question" bson:"question"`
-	Options          []string      `json:"options" bson:"options"`
-	Answer           string        `bson:"answer,omitempty" json:"answer,omitempty"`
-	IsTypedAnswer    bool          `json:"isTypedAnswer,omitempty" bson:"isTypedAnswer,omitempty"`
-	TypedAnswer      string        `json:"typedAnswer,omitempty" bson:"typedAnswer,omitempty"`
-	TotalPrize       int           `json:"totalPrize" bson:"totalPrize"`
-	Recipients       int           `json:"recipients" bson:"recipients"`
-	UnitPrize        int           `json:"unitPrize" bson:"unitPrize"`
-	ShowAnswer       bool          `json:"showAnswer" bson:"showAnswer"`
-	QuizScheduleDate time.Time     `json:"quizScheduleDate" bson:"quizScheduleDate"`
-	ImageLink        []string `json:"imageLink,omitempty" bson:"imageLink,omitempty"`
+	ID                         bson.ObjectID `bson:"_id" json:"-"`
+	IDHex                      string        `bson:"-" json:"id"`
+	Question                   string        `json:"question" bson:"question"`
+	Options                    []string      `json:"options" bson:"options"`
+	Answer                     string        `bson:"answer,omitempty" json:"answer,omitempty"`
+	CustomCountdownLabel       string        `json:"customCountdownLabel,omitempty" bson:"customCountdownLabel,omitempty"`
+	CustomCountdownLabelBefore string        `json:"customCountdownLabelBefore,omitempty" bson:"customCountdownLabelBefore,omitempty"`
+	CustomCountdownLabelDuring string        `json:"customCountdownLabelDuring,omitempty" bson:"customCountdownLabelDuring,omitempty"`
+	CustomCountdownLabelAfter  string        `json:"customCountdownLabelAfter,omitempty" bson:"customCountdownLabelAfter,omitempty"`
+	IsTypedAnswer              bool          `json:"isTypedAnswer,omitempty" bson:"isTypedAnswer,omitempty"`
+	TypedAnswer                string        `json:"typedAnswer,omitempty" bson:"typedAnswer,omitempty"`
+	JackpotAmount              float64       `json:"jackpotAmount,omitempty" bson:"jackpotAmount,omitempty"`
+	TotalPrize                 float64       `json:"totalPrize" bson:"totalPrize"`
+	Recipients                 int           `json:"recipients" bson:"recipients"`
+	UnitPrize                  float64       `json:"unitPrize" bson:"unitPrize"`
+	ShowAnswer                 bool          `json:"showAnswer" bson:"showAnswer"`
+	QuizScheduleDate           time.Time     `json:"quizScheduleDate" bson:"quizScheduleDate"`
+	QuizFinishDate             time.Time     `json:"quizFinishDate" bson:"quizFinishDate"`
+	ImageLink                  []string      `json:"imageLink,omitempty" bson:"imageLink,omitempty"`
 }
 
 type QuizAnswer struct {
@@ -95,24 +102,45 @@ type SubmitQuizRequest struct {
 	Responses  []QuizAnswerRequest `json:"responses"`
 }
 
-
 type QuizCategory struct {
-    ID bson.ObjectID `bson:"_id" json:"id"`
+	ID bson.ObjectID `bson:"_id" json:"id"`
 
-    TestQuiz string `json:"testQuiz" bson:"testQuiz"`
-    Subject  string `json:"subject" bson:"subject"`
+	TestQuiz string `json:"testQuiz" bson:"testQuiz"`
+	Subject  string `json:"subject" bson:"subject"`
 }
 
 func (qc *QuizCategory) ToQuiz() *Quiz {
-    return &Quiz{
-        ID:       qc.ID,
-        IDHex:    qc.ID.Hex(),
-        TestQuiz: qc.TestQuiz,
-        Subject:  qc.Subject,
-    }
+	return &Quiz{
+		ID:       qc.ID,
+		IDHex:    qc.ID.Hex(),
+		TestQuiz: qc.TestQuiz,
+		Subject:  qc.Subject,
+	}
 }
 
 // Mirrors the flat DB document — used only for decoding
+// LiveQuizAttempt maps to Postgres table "live_quiz_attempts" (Prisma LiveQuizAttempt).
+type LiveQuizAttempt struct {
+	ID                int        `gorm:"column:id;primaryKey" json:"id"`
+	UserID            string     `gorm:"column:userId" json:"userId"`
+	QuizID            string     `gorm:"column:quizId" json:"quizId"`
+	OngoingLiveQuizID *int       `gorm:"column:ongoingLiveQuizId" json:"ongoingLiveQuizId"`
+	TotalPrize        *int       `gorm:"column:totalPrize" json:"totalPrize"`
+	Recipients        *int       `gorm:"column:recipients" json:"recipients"`
+	UnitPrize         *int       `gorm:"column:unitPrize" json:"unitPrize"`
+	Earning           int        `gorm:"column:earning" json:"earning"`
+	IsWinner          bool       `gorm:"column:isWinner" json:"isWinner"`
+	IsCompleted       bool       `gorm:"column:isCompleted" json:"isCompleted"`
+	StartedAt         *time.Time `gorm:"column:startedAt" json:"startedAt"`
+	CompletedAt       *time.Time `gorm:"column:completedAt" json:"completedAt"`
+	CreatedAt         time.Time  `gorm:"column:createdAt" json:"createdAt"`
+	UpdatedAt         time.Time  `gorm:"column:updatedAt" json:"updatedAt"`
+}
+
+func (LiveQuizAttempt) TableName() string {
+	return "live_quiz_attempts"
+}
+
 type QuizSubmissionDoc struct {
 	ID             bson.ObjectID `bson:"_id,omitempty"`
 	UserID         string        `bson:"userId"`

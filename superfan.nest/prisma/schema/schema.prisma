@@ -18,7 +18,7 @@ model User {
   username               String              @unique
   referral_code          String?             @unique
   phone                  String?
-  hashedRt               String?
+  clerkUserId            String?             @unique
   roleName               String
   login_timestamp        DateTime?
   active                 Boolean             @default(false)
@@ -737,6 +737,38 @@ model Stream {
   isActive          Boolean         @default(false)
   createdAt         DateTime        @default(now())
   streamComments    StreamComment[]
+  streamUserBans    StreamUserBan[]
+  chatLockLogs      StreamChatLockLog[]
+}
+
+model StreamChatLockLog {
+  id        Int      @id @default(autoincrement())
+  streamId  Int
+  adminId   Int
+  action    String
+  createdAt DateTime @default(now())
+
+  stream Stream @relation(fields: [streamId], references: [id], onDelete: Cascade)
+
+  @@index([streamId])
+  @@index([adminId])
+  @@index([createdAt])
+  @@map("stream_chat_lock_logs")
+}
+
+model StreamUserBan {
+  id        Int      @id @default(autoincrement())
+  streamId  Int
+  userId    Int
+  banReason String?
+  bannedBy  Int?
+  createdAt DateTime @default(now())
+
+  stream Stream @relation(fields: [streamId], references: [id], onDelete: Cascade)
+
+  @@unique([streamId, userId])
+  @@index([streamId])
+  @@index([userId])
 }
 
 model YouTubeToken {

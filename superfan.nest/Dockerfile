@@ -18,9 +18,15 @@ WORKDIR /app
 
 COPY . .
 
-ENV DATABASE_URL="postgresql://1TdILekB7Rc5:cZei5SOTDSNA5yQsM1bxMBjXu@marine-ship.igris.cloud:14999/pipeops"
+# Create dummy credentials.json if missing to satisfy TypeScript compilation
+RUN [ -f credentials.json ] || echo '{"web":{"client_id":"dummy","client_secret":"dummy","redirect_uris":["http://localhost:3000"]}}' > credentials.json
+
+ENV DATABASE_URL="postgresql://neondb_owner:npg_mct1L3EGhNjO@ep-wispy-breeze-atpun0yq-pooler.c-9.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
 
 ENV NODE_OPTIONS="--max-old-space-size=4096"
+
+# Resolve any previously failed migrations before applying new ones
+RUN pnpm prisma migrate resolve --rolled-back 20260305104620_initial_username 2>/dev/null || true
 
 # Apply existing migrations safely
 RUN pnpm prisma migrate deploy
@@ -28,6 +34,8 @@ RUN pnpm prisma migrate deploy
 
 # Generate Prisma Client
 RUN pnpm prisma generate
+# Seed roles, permissions, and initial users (idempotent — safe to re-run)
+RUN pnpm exec tsx prisma/seed/seed.ts
 # Build NestJS
 RUN pnpm build
 
@@ -36,6 +44,7 @@ FROM node:22-slim AS production
 WORKDIR /app
 
 ENV NODE_ENV=production
+ENV DATABASE_URL="postgresql://neondb_owner:npg_mct1L3EGhNjO@ep-wispy-breeze-atpun0yq-pooler.c-9.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
 
 COPY --from=build /app/package.json ./
 COPY --from=build /app/node_modules ./node_modules

@@ -1,3 +1,5 @@
+import { ClerkService } from '../common/clerk/clerk.service';
+import { verifyToken } from '@clerk/backend';
 import {
   BadRequestException,
   ForbiddenException,
@@ -10,7 +12,6 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { JwtService } from '@nestjs/jwt';
 import { TestLevel, User } from '@prisma/client';
 import * as argon from 'argon2';
 import { PostHog } from 'posthog-node';
@@ -41,14 +42,17 @@ import {
   VerifyEmailDto,
 } from './dto/auth.dto';
 import { PresenceGateway } from './gateway/presence.gateway';
-import { JwtPayload } from './types/jwtPayload.type';
+
+type SyncUserMetadata = {
+  referralCode?: string;
+  ip_address?: string;
+  location?: string;
+};
 
 @Injectable()
 export class UserService {
   constructor(
     private mail: MailService,
-    private jwtService: JwtService,
-    private configService: ConfigService,
     @Inject(forwardRef(() => TaskService))
     private taskService: TaskService,
     private walletService: WalletService,
@@ -61,6 +65,7 @@ export class UserService {
     private readonly posthog: PostHog,
     private presenceGateway: PresenceGateway,
     private readonly es: ElasticsearchService,
+    private readonly clerkService: ClerkService,
   ) {}
 
   async signupUser(dto: AuthDto): Promise<any> {
@@ -117,6 +122,23 @@ export class UserService {
       });
     }
 
+    // Create user in Clerk first
+    try {
+      await this.clerkService.getClient().users.createUser({
+        emailAddress: [dto.email],
+        password: dto.password,
+        username: dto.username,
+        firstName: dto.firstName,
+        lastName: dto.lastName || '',
+        ...(dto.phone && { phoneNumber: [dto.phone] }),
+      });
+    } catch (err: any) {
+      console.error('Failed to create user in Clerk:', err);
+      throw new ForbiddenException(
+        err.errors?.[0]?.message || err.message || 'Failed to create user in Clerk'
+      );
+    }
+
     const password = await argon.hash(dto.password);
 
     const referralCode = generateReferralCode(dto.firstName);
@@ -136,6 +158,7 @@ export class UserService {
         password,
         phone: dto.phone,
         roleName: dto.roleName,
+        login_method: 'clerk',
         subscriptionPlan: dto.subscriptionPlan || 'FREE',
 
         referral_code: referralCode,
@@ -315,35 +338,151 @@ export class UserService {
       magicLink.magicLinkURI,
     );
 
-    //generate tokens
-    const userRoleName = user.roleName;
-    const tokens = await this.getTokens(user, userRoleName);
-
     return { message: 'Email verified successfully', id: user.id };
   }
 
-  async getTokens(user: User, role: string): Promise<any> {
-    const jwtPayload: JwtPayload = {
-      id: user.id,
-      email: user.email,
-      role: role,
-    };
-
-    const [accessToken, refreshToken] = await Promise.all([
-      this.jwtService.signAsync(jwtPayload, {
-        secret: this.configService.get<string>('AT_SECRET'),
-        // expiresIn: '15m'
-      }),
-      this.jwtService.signAsync(jwtPayload, {
-        secret: this.configService.get<string>('RT_SECRET'),
-        // expiresIn: '7d'
-      }),
-    ]);
+  private formatSyncUser(user: User) {
+    const onboarded = Boolean(
+      user.languagePreference &&
+        user.subjectPreference &&
+        user.testLevel &&
+        user.questionPreference &&
+        user.timePreference,
+    );
 
     return {
-      accessToken,
-      refreshToken,
+      id: user.id,
+      email: user.email,
+      phone: user.phone,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      username: user.username,
+      role: user.roleName,
+      roleName: user.roleName,
+      active: user.active,
+      subscriptionPlan: user.subscriptionPlan,
+      lastLoginTimeStamp: user.login_timestamp,
+      state: user.state,
+      country: user.country,
+      ip_address: user.ip_address,
+      location: user.location,
+      profilePicture: user.profilePicture,
+      clerkUserId: user.clerkUserId,
+      onboarded,
+      isOnboarded: onboarded,
     };
+  }
+
+  async findUserByClerkId(clerkUserId: string): Promise<User | null> {
+    return prisma.user.findUnique({
+      where: { clerkUserId },
+    });
+  }
+
+  async syncFromClerkToken(
+    authorizationHeader: string | undefined,
+    metadata: SyncUserMetadata = {},
+  ) {
+    const token = (authorizationHeader || '')
+      .replace(/^Bearer\s+/i, '')
+      .trim();
+
+    if (!token) {
+      throw new ForbiddenException('No Clerk session token provided');
+    }
+
+    if (token.startsWith('sit_')) {
+      throw new ForbiddenException(
+        'Clerk sign-in tickets cannot be used for sync. Complete Clerk sign-in first.',
+      );
+    }
+
+    const payload = await verifyToken(token, {
+      secretKey: process.env.CLERK_SECRET_KEY,
+      clockSkewInMs: 300000,
+    });
+
+    const clerkUser = await this.clerkService.getClient().users.getUser(payload.sub);
+    return this.syncFromClerk(clerkUser, metadata);
+  }
+
+  async syncFromClerk(clerkUser: any, metadata: SyncUserMetadata = {}) {
+    const clerkUserId = clerkUser.id as string;
+    const email = clerkUser.emailAddresses?.[0]?.emailAddress as
+      | string
+      | undefined;
+
+    if (!email) {
+      throw new BadRequestException('Clerk user has no email address');
+    }
+
+    const phone =
+      (clerkUser.unsafeMetadata?.phone as string) ||
+      clerkUser.phoneNumbers?.[0]?.phoneNumber ||
+      '';
+    const referralCode =
+      metadata.referralCode ||
+      (clerkUser.unsafeMetadata?.referralCode as string | undefined);
+    const loginMethod =
+      clerkUser.externalAccounts?.[0]?.provider || 'clerk';
+
+    let user = await this.findUserByClerkId(clerkUserId);
+
+    if (!user) {
+      user = await this.findUserByEmail(email);
+      if (user) {
+        user = await prisma.user.update({
+          where: { id: user.id },
+          data: { clerkUserId },
+        });
+      }
+    }
+
+    if (!user) {
+      user = await this.registerClerkUser({
+        clerkUserId,
+        email,
+        firstName: clerkUser.firstName || 'User',
+        lastName: clerkUser.lastName || '',
+        username:
+          clerkUser.username ||
+          clerkUser.firstName?.toLowerCase() ||
+          `user_${clerkUserId.slice(-6)}`,
+        phone,
+        login_method: loginMethod,
+        referralCode,
+      });
+    }
+
+    const clerkImageUrl =
+      typeof clerkUser.imageUrl === 'string' ? clerkUser.imageUrl.trim() : '';
+
+    user = await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        login_timestamp: new Date(),
+        isOnline: true,
+        ...(metadata.ip_address ? { ip_address: metadata.ip_address } : {}),
+        ...(metadata.location ? { location: metadata.location } : {}),
+        ...(clerkImageUrl && !user.profilePicture?.trim()
+          ? { profilePicture: clerkImageUrl }
+          : {}),
+      },
+    });
+
+    try {
+      this.presenceGateway.setUserOnline(user.id);
+    } catch (presenceError) {
+      console.warn('Presence update failed during sync (non-fatal):', presenceError);
+    }
+
+    try {
+      await this.eventEmitter.emit('user.logged_in', { userId: user.id });
+    } catch (eventError) {
+      console.warn('user.logged_in event failed during sync (non-fatal):', eventError);
+    }
+
+    return this.formatSyncUser(user);
   }
 
   async updateOnboarding(
@@ -439,35 +578,6 @@ export class UserService {
     };
   }
 
-  async refreshTokens(userId: string, rt: string): Promise<any> {
-    const user = await prisma.user.findUnique({
-      where: { id: parseInt(userId) },
-    });
-
-    if (!user || !user.hashedRt) {
-      throw new ForbiddenException('Access Denied');
-    }
-
-    const rtMatches = await argon.verify(user.hashedRt, rt);
-
-    if (!rtMatches) {
-      throw new ForbiddenException('Access Denied');
-    }
-
-    const role = await prisma.role.findFirst({
-      where: { name: user.roleName },
-    });
-
-    if (!role) {
-      throw new ForbiddenException('Role not found');
-    }
-
-    const tokens = await this.getTokens(user, role.name);
-    await this.updateRtHash(user.id, tokens.refreshToken);
-
-    return tokens;
-  }
-
   async resendVerificationEmail(
     currentEmail: string,
     newEmail?: string,
@@ -528,33 +638,138 @@ export class UserService {
     };
   }
 
+  private async authenticateExistingUser(
+    user: User,
+    password: string,
+  ): Promise<{ verified: boolean; clerkUserId: string | null; user: User }> {
+    const clerkUser = await this.clerkService.findByEmail(user.email);
+
+    if (clerkUser?.id) {
+      const verified = await this.clerkService.verifyPassword(
+        clerkUser.id,
+        password,
+      );
+      return { verified, clerkUserId: clerkUser.id, user };
+    }
+
+    const passwordMatches = await argon.verify(user.password, password);
+    if (!passwordMatches) {
+      return { verified: false, clerkUserId: null, user };
+    }
+
+    const migrated = await this.clerkService.migrateLocalUser(user, password);
+    return { verified: true, clerkUserId: migrated.id, user };
+  }
+
+  private async authenticateClerkOnlyUser(dto: LoginDto): Promise<{
+    verified: boolean;
+    clerkUserId: string | null;
+    user: User | null;
+  }> {
+    const clerkUser = await this.clerkService.findByIdentifier(dto.identifier);
+    if (!clerkUser?.id) {
+      return { verified: false, clerkUserId: null, user: null };
+    }
+
+    const verified = await this.clerkService.verifyPassword(
+      clerkUser.id,
+      dto.password,
+    );
+    if (!verified) {
+      return { verified: false, clerkUserId: clerkUser.id, user: null };
+    }
+
+    const email = clerkUser.emailAddresses?.[0]?.emailAddress;
+    if (!email) {
+      return { verified: true, clerkUserId: clerkUser.id, user: null };
+    }
+
+    let user = await this.findUserByClerkId(clerkUser.id);
+    if (!user) {
+      const phone =
+        (clerkUser.unsafeMetadata?.phone as string) ||
+        clerkUser.phoneNumbers?.[0]?.phoneNumber ||
+        '';
+      const referralCode = clerkUser.unsafeMetadata?.referralCode as
+        | string
+        | undefined;
+      const loginMethod =
+        clerkUser.externalAccounts?.[0]?.provider || 'clerk';
+
+      user = await this.registerClerkUser({
+        clerkUserId: clerkUser.id,
+        email,
+        firstName: clerkUser.firstName || 'User',
+        lastName: clerkUser.lastName || '',
+        username:
+          clerkUser.username ||
+          clerkUser.firstName?.toLowerCase() ||
+          `user_${clerkUser.id.slice(-6)}`,
+        phone,
+        login_method: loginMethod,
+        referralCode,
+      });
+    }
+
+    return { verified: true, clerkUserId: clerkUser.id, user };
+  }
+
   async signinUser(dto: LoginDto): Promise<any> {
-    const user = await prisma.user.findFirst({
+    let user = await prisma.user.findFirst({
       where: {
         OR: [
-          { email: dto.email },
-          { phone: dto.phone },
-          { username: dto.username },
+          { email: dto.identifier },
+          { phone: dto.identifier },
+          { username: dto.identifier },
         ],
       },
     });
 
-    if (!user) {
-      throw new ForbiddenException('User not found');
-    }
-
-    // 🚫 check if user is banned
-    if (user.isBanned) {
+    if (user?.isBanned) {
       throw new ForbiddenException(
         'Your account has been banned. Contact support.',
       );
     }
 
-    const passwordMatches = await argon.verify(user.password, dto.password);
+    const authResult = user
+      ? await this.authenticateExistingUser(user, dto.password)
+      : await this.authenticateClerkOnlyUser(dto);
 
-    if (!passwordMatches) {
+    user = authResult.user ?? user;
+
+    if (!user) {
+      throw new ForbiddenException('Identifier is invalid.');
+    }
+
+    if (!authResult.verified) {
       throw new ForbiddenException('Incorrect password');
     }
+
+    const clerkUserId =
+      authResult.clerkUserId ??
+      user.clerkUserId ??
+      (await this.clerkService.findByEmail(user.email))?.id ??
+      null;
+
+    if (!clerkUserId) {
+      throw new ForbiddenException(
+        'This account is not linked to Clerk. Try signing in with Google or contact support.',
+      );
+    }
+
+    if (user.clerkUserId !== clerkUserId) {
+      try {
+        user = await prisma.user.update({
+          where: { id: user.id },
+          data: { clerkUserId },
+        });
+      } catch (linkError) {
+        console.warn('Failed to link clerkUserId during signin:', linkError);
+      }
+    }
+
+    const clerkSignInToken =
+      await this.clerkService.createSignInTicket(clerkUserId);
 
     const role = await prisma.role.findFirst({
       where: { name: user.roleName },
@@ -564,7 +779,6 @@ export class UserService {
       throw new ForbiddenException('Role not found');
     }
 
-    // ✅ fetch subadmin permissions if role is subadmin
     let permissions: string[] = [];
 
     if (user.roleName === 'subadmin') {
@@ -583,10 +797,7 @@ export class UserService {
         subAdmin?.subAdminPermissions.map((p) => p.permission.name) || [];
     }
 
-    const tokens = await this.getTokens(user, role.name);
-    await this.updateRtHash(user.id, tokens.refreshToken);
-
-    let log_ip = await prisma.user.update({
+    await prisma.user.update({
       where: { id: user.id },
       data: {
         login_timestamp: new Date(),
@@ -596,21 +807,15 @@ export class UserService {
       },
     });
 
-    // const dailyStreak = await this.updateDailyStreak(user.id);
-    let emit_details = await this.eventEmitter.emit('user.logged_in', {
-  userId: user.id,
-});
-
-
-
+    this.eventEmitter.emit('user.logged_in', { userId: user.id });
     this.presenceGateway.setUserOnline(user.id);
 
     return {
       message: 'Signin successful',
-      tokens: tokens,
+      clerkSignInToken,
       role: user.roleName,
       userId: user.id,
-      permissions: user.roleName === 'subadmin' ? permissions : undefined, // 👈 key addition
+      permissions: user.roleName === 'subadmin' ? permissions : undefined,
       lastLoginTimeStamp: user.login_timestamp,
       subscriptionPlan: user.subscriptionPlan,
     };
@@ -676,21 +881,7 @@ export class UserService {
         }
       }
 
-      // 4️⃣ Generate JWT tokens
-      const role = await prisma.role.findFirst({
-        where: { name: user.roleName },
-      });
-      if (!role) {
-        let role = await prisma.role.create({
-          data: {
-            name: user.roleName,
-          },
-        });
-      }
-      const tokens = await this.getTokens(user, role.name);
-      await this.updateRtHash(user.id, tokens.refreshToken);
-
-      // 5️⃣ Update last login timestamp
+      // 4️⃣ Update last login timestamp
       await prisma.user.update({
         where: { id: user.id },
         data: {
@@ -701,9 +892,8 @@ export class UserService {
         },
       });
 
-      // 6️⃣ Return user info and tokens
+      // 5️⃣ Return user info (Clerk session handles auth)
       return {
-        tokens,
         id: user.id,
         email: user.email,
         firstName: user.firstName,
@@ -742,14 +932,6 @@ export class UserService {
       email: user.email,
       loginMethod: user.login_method,
     };
-  }
-
-  async updateRtHash(userId: number, rt: string): Promise<void> {
-    const hash = await argon.hash(rt);
-    await prisma.user.update({
-      where: { id: userId },
-      data: { hashedRt: hash },
-    });
   }
 
   async findUserAccount(userId: number): Promise<any> {
@@ -1751,31 +1933,45 @@ let validate_bitnob_adddress = await this.bitnobService.validateAddress({
       hashedPassword = await argon.hash(dto.new_password);
     }
 
+    const patch: Record<string, unknown> = {};
+
+    const assign = <K extends keyof UpdateUserDto>(key: K) => {
+      if (dto[key] !== undefined) {
+        patch[key as string] = dto[key];
+      }
+    };
+
+    assign('firstName');
+    assign('lastName');
+    assign('email');
+    assign('phone');
+    assign('state');
+    assign('address');
+    assign('username');
+    assign('testLevel');
+    assign('ip_address');
+    assign('location');
+    assign('dob');
+    assign('languagePreference');
+    assign('subjectPreference');
+    assign('bvn');
+    assign('nin');
+    assign('roleName');
+    assign('country');
+    assign('subscriptionPlan');
+    assign('profilePicture');
+
+    if (dto.address !== undefined) {
+      patch.lastSeen = dto.address;
+    }
+
+    if (hashedPassword) {
+      patch.password = hashedPassword;
+    }
+
     const updatedUser = await prisma.user.update({
       where: { id: userId },
-      data: {
-        firstName: dto.firstName,
-        lastName: dto.lastName,
-        email: dto.email,
-        phone: dto.phone,
-        state: dto.state,
-        address: dto.address,
-        username: dto.username,
-        testLevel: dto.testLevel,
-        ip_address: dto.ip_address,
-        lastSeen: dto.address,
-        location: dto.location,
-        dob: dto.dob,
-        languagePreference: dto.languagePreference,
-        subjectPreference: dto.subjectPreference,
-        bvn: dto.bvn,
-        nin: dto.nin,
-        roleName: dto.roleName,
-        country: dto.country,
-        subscriptionPlan: dto.subscriptionPlan,
-        profilePicture: dto.profilePicture,
-        ...(hashedPassword && { password: hashedPassword }),
-      },
+      data: patch,
     });
 
     return {
@@ -2314,7 +2510,6 @@ async checkSubscriptionStatusbyUserId(userId: number): Promise<{
     await prisma.user.update({
       where: { id: userId },
       data: {
-        hashedRt: null,
         isOnline: false,
         lastSeen: new Date(),
       },
@@ -2327,14 +2522,26 @@ async checkSubscriptionStatusbyUserId(userId: number): Promise<{
   }
 
   async generateMagicLink(user: User) {
-    const tokens = await this.getTokens(user, user.roleName);
+    const clerkUser = await this.clerkService.findByEmail(user.email);
+
+    if (!clerkUser?.id) {
+      throw new BadRequestException(
+        'User is not linked to Clerk. Cannot generate magic link.',
+      );
+    }
+
+    const clerkSignInToken = await this.clerkService.createSignInTicket(
+      clerkUser.id,
+    );
+
+    const frontendUrl =
+      process.env.FRONTEND_URL || 'https://app.superfan.ng';
 
     return {
-      magicLinkURI: `${process.env.FRONTEND_URL}/auth/magic?token=${tokens.accessToken}&userId=${user.id}&email=${encodeURIComponent(
+      magicLinkURI: `${frontendUrl}/auth/magic?token=${clerkSignInToken}&userId=${user.id}&email=${encodeURIComponent(
         user.email,
       )}`,
-      accessToken: tokens.accessToken,
-      refreshToken: tokens.refreshToken,
+      clerkSignInToken,
     };
   }
 
@@ -2393,6 +2600,7 @@ async findUserByEmail(email: string): Promise<any> {
 }
 
   async registerClerkUser(data: {
+    clerkUserId: string;
     email: string;
     firstName: string;
     lastName: string;
@@ -2404,6 +2612,7 @@ async findUserByEmail(email: string): Promise<any> {
     const referralCode = generateReferralCode(data.firstName);
     const user = await prisma.user.create({
       data: {
+        clerkUserId: data.clerkUserId,
         email: data.email,
         firstName: data.firstName,
         lastName: data.lastName,

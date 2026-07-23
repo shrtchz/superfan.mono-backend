@@ -9,6 +9,7 @@ type QuizService interface {
 	GetAllQuiz() ([]*models.Quiz, error)
 	UpdateQuiz(*models.Quiz) error
 	DeleteQuiz(string) error
+	SearchQuizzes(query string, limit int) ([]map[string]interface{}, error)
 
 	// LIVE QUIZ
 	GetQuizByPreferences(
@@ -25,9 +26,11 @@ type QuizService interface {
 	GetLiveQuiz(string) (*models.LiveQuiz, error)
 	GetRandomLiveQuiz(string) ([]models.LiveQuiz, error)
 	GetAllLiveQuiz() ([]map[string]interface{}, error)
-	GetLiveQuizAnswerById(id string) (map[string]interface{}, error)
+	GetLiveQuizAnswerById(userID int, id string) (map[string]interface{}, error)
 	UpdateLiveQuiz(*models.LiveQuiz) error
 	DeleteLiveQuiz(string) error
+	UpdateLiveQuizCustomCountdownLabel(id string, label string) error
+	DeleteLiveQuizCustomCountdownLabel(id string) error
 
 	// QUIZ CATEGORY
 	CreateQuizCategory(category *models.QuizCategory) (*models.QuizCategory, error)

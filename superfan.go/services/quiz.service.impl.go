@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"gorm.io/gorm"
 	"quiz.superfan.com/apis/models"
 	"quiz.superfan.com/apis/utils"
 )
@@ -23,6 +25,9 @@ type QuizServiceImpl struct {
 	quizSubmissionCollection *mongo.Collection
 	ctx                      context.Context
 }
+
+var ErrLiveQuizActive = errors.New("live quiz is active")
+var ErrLiveQuizOverlap = errors.New("another live quiz is already scheduled or active")
 
 // type QuizSubmissionServiceImpl struct {
 // 	collection *mongo.Collection
@@ -36,6 +41,189 @@ func NewQuizService(quizcollection *mongo.Collection, quizCategoryCollection *mo
 		quizSubmissionCollection: quizSubmissionCollection,
 		liveQuizCollection:       liveQuizCollection,
 		ctx:                      ctx,
+	}
+}
+
+func lagosLocation() *time.Location {
+	location, err := time.LoadLocation("Africa/Lagos")
+	if err != nil {
+		// Alpine images without tzdata fail LoadLocation; WAT is fixed UTC+1 (no DST).
+		return time.FixedZone("WAT", 3600)
+	}
+	return location
+}
+
+func lagosNow() (time.Time, error) {
+	return time.Now().In(lagosLocation()), nil
+}
+
+func ComputeLiveQuizStatus(startAt, finishAt, now time.Time) string {
+	if now.Before(startAt) {
+		return "scheduled"
+	}
+	if (now.Equal(startAt) || now.After(startAt)) && now.Before(finishAt) {
+		return "live"
+	}
+	return "closed"
+}
+
+func formatLiveQuizCountdown(target, now time.Time) string {
+	if target.Before(now) {
+		return "0s"
+	}
+
+	remaining := target.Sub(now).Round(time.Second)
+	totalSeconds := int(remaining / time.Second)
+	if totalSeconds < 0 {
+		totalSeconds = 0
+	}
+
+	hours := totalSeconds / 3600
+	minutes := (totalSeconds % 3600) / 60
+	seconds := totalSeconds % 60
+
+	parts := make([]string, 0, 3)
+	if hours > 0 {
+		parts = append(parts, fmt.Sprintf("%dh", hours))
+	}
+	if minutes > 0 {
+		parts = append(parts, fmt.Sprintf("%dm", minutes))
+	}
+	if seconds > 0 || len(parts) == 0 {
+		parts = append(parts, fmt.Sprintf("%ds", seconds))
+	}
+
+	return strings.Join(parts, " ")
+}
+
+func formatLiveQuizElapsed(target, now time.Time) string {
+	if now.Before(target) {
+		return "just now"
+	}
+
+	elapsed := now.Sub(target)
+	hours := int(elapsed.Hours())
+	if hours >= 1 {
+		if hours == 1 {
+			return "1 hour ago"
+		}
+		return fmt.Sprintf("%d hours ago", hours)
+	}
+
+	minutes := int(elapsed.Minutes())
+	if minutes >= 1 {
+		if minutes == 1 {
+			return "1 minute ago"
+		}
+		return fmt.Sprintf("%d minutes ago", minutes)
+	}
+
+	seconds := int(elapsed.Seconds())
+	if seconds <= 1 {
+		return "just now"
+	}
+	return fmt.Sprintf("%d seconds ago", seconds)
+}
+
+func resolveQuizCountdownLabel(defaultLabel, phase, overrideBefore, overrideDuring, overrideAfter string) string {
+	switch strings.ToLower(strings.TrimSpace(phase)) {
+	case "before":
+		if trimmedOverride := strings.TrimSpace(overrideBefore); trimmedOverride != "" {
+			return trimmedOverride
+		}
+	case "during":
+		if trimmedOverride := strings.TrimSpace(overrideDuring); trimmedOverride != "" {
+			return trimmedOverride
+		}
+	case "after":
+		if trimmedOverride := strings.TrimSpace(overrideAfter); trimmedOverride != "" {
+			return trimmedOverride
+		}
+	}
+
+	return defaultLabel
+}
+
+func BuildLiveQuizCountdownLabel(startAt, finishAt time.Time, now time.Time, overrideBefore, overrideDuring, overrideAfter string) string {
+	if startAt.IsZero() || finishAt.IsZero() {
+		return resolveQuizCountdownLabel("Waiting for Live Quiz to start.", "before", overrideBefore, overrideDuring, overrideAfter)
+	}
+
+	var defaultLabel string
+	var phase string
+
+	switch ComputeLiveQuizStatus(startAt, finishAt, now) {
+	case "scheduled":
+		defaultLabel = fmt.Sprintf(
+			"Waiting for Live Quiz to start; starts in %s.",
+			formatLiveQuizCountdown(startAt, now),
+		)
+		phase = "before"
+	case "live":
+		defaultLabel = "Select an answer by clicking on the 3 dots in front of the live quiz."
+		phase = "during"
+	default:
+		defaultLabel = fmt.Sprintf(
+			"Quiz window closed %s",
+			formatLiveQuizElapsed(finishAt, now),
+		)
+		phase = "after"
+	}
+
+	return resolveQuizCountdownLabel(defaultLabel, phase, overrideBefore, overrideDuring, overrideAfter)
+}
+
+func buildLiveQuizResponseMap(raw bson.M, now time.Time) map[string]interface{} {
+	id := rawObjectIDHex(raw["_id"])
+	startAt := rawTime(raw["quizScheduleDate"])
+	finishAt := rawTime(raw["quizFinishDate"])
+	status := "scheduled"
+	if !startAt.IsZero() && !finishAt.IsZero() {
+		status = ComputeLiveQuizStatus(startAt, finishAt, now)
+	}
+	jackpotAmount := rawFloat(raw["jackpotAmount"])
+	if jackpotAmount <= 0 {
+		jackpotAmount = rawFloat(raw["totalPrize"])
+	}
+	isActive := status == "live"
+
+	overrideBefore := rawString(raw["customCountdownLabelBefore"])
+	if overrideBefore == "" {
+		overrideBefore = rawString(raw["customCountdownLabel"])
+	}
+	overrideDuring := rawString(raw["customCountdownLabelDuring"])
+	if overrideDuring == "" {
+		overrideDuring = rawString(raw["customCountdownLabel"])
+	}
+	overrideAfter := rawString(raw["customCountdownLabelAfter"])
+	if overrideAfter == "" {
+		overrideAfter = rawString(raw["customCountdownLabel"])
+	}
+
+	return map[string]interface{}{
+		"id":                         id,
+		"question":                   rawString(raw["question"]),
+		"options":                    rawStringSlice(raw["options"]),
+		"answer":                     rawString(raw["answer"]),
+		"typedAnswer":                rawString(raw["typedAnswer"]),
+		"isTypedAnswer":              rawBool(raw["isTypedAnswer"]),
+		"jackpotAmount":              jackpotAmount,
+		"totalPrize":                 rawFloat(raw["totalPrize"]),
+		"recipients":                 rawInt(raw["recipients"]),
+		"unitPrize":                  rawFloat(raw["unitPrize"]),
+		"showAnswer":                 rawBool(raw["showAnswer"]),
+		"quizScheduleDate":           rawTimeString(raw["quizScheduleDate"]),
+		"quizFinishDate":             rawTimeString(raw["quizFinishDate"]),
+		"status":                     status,
+		"isEditable":                 !isActive,
+		"isDeletable":                !isActive,
+		"imageLink":                  rawStringSlice(raw["imageLink"]),
+		"quizCountdownState":         status,
+		"quizCountdownLabel":         BuildLiveQuizCountdownLabel(startAt, finishAt, now, overrideBefore, overrideDuring, overrideAfter),
+		"customCountdownLabel":       strings.TrimSpace(rawString(raw["customCountdownLabel"])),
+		"customCountdownLabelBefore": strings.TrimSpace(overrideBefore),
+		"customCountdownLabelDuring": strings.TrimSpace(overrideDuring),
+		"customCountdownLabelAfter":  strings.TrimSpace(overrideAfter),
 	}
 }
 
@@ -138,12 +326,55 @@ func (u *QuizServiceImpl) CreateLiveQuiz(liveQuiz *models.LiveQuiz) error {
 	if liveQuiz.QuizScheduleDate.IsZero() {
 		return errors.New("quiz schedule date is required")
 	}
+	if liveQuiz.QuizFinishDate.IsZero() {
+		return errors.New("quiz finish date is required")
+	}
+	if !liveQuiz.QuizFinishDate.After(liveQuiz.QuizScheduleDate) {
+		return errors.New("quiz finish date must be after quiz schedule date")
+	}
+
+	overlapped, err := u.hasOverlappingLiveQuiz(liveQuiz.QuizScheduleDate, liveQuiz.QuizFinishDate)
+	if err != nil {
+		return err
+	}
+	if overlapped {
+		return ErrLiveQuizOverlap
+	}
+
+	if liveQuiz.JackpotAmount <= 0 {
+		liveQuiz.JackpotAmount = liveQuiz.TotalPrize
+	}
+	if liveQuiz.TotalPrize <= 0 && liveQuiz.JackpotAmount > 0 {
+		liveQuiz.TotalPrize = liveQuiz.JackpotAmount
+	}
 
 	// Generate MongoDB ObjectID
 	liveQuiz.ID = bson.NewObjectID()
 	liveQuiz.IDHex = liveQuiz.ID.Hex()
 
-	_, err := u.liveQuizCollection.InsertOne(u.ctx, liveQuiz)
+	doc := bson.M{
+		"_id":                  liveQuiz.ID,
+		"question":             liveQuiz.Question,
+		"options":              liveQuiz.Options,
+		"answer":               liveQuiz.Answer,
+		"customCountdownLabel": strings.TrimSpace(liveQuiz.CustomCountdownLabel),
+		"isTypedAnswer":        liveQuiz.IsTypedAnswer,
+		"typedAnswer":          liveQuiz.TypedAnswer,
+		"jackpotAmount":        liveQuiz.JackpotAmount,
+		"totalPrize":           liveQuiz.TotalPrize,
+		"recipients":           liveQuiz.Recipients,
+		"unitPrize":            liveQuiz.UnitPrize,
+		"showAnswer":           liveQuiz.ShowAnswer,
+		"quizScheduleDate":     liveQuiz.QuizScheduleDate,
+		"quizFinishDate":       liveQuiz.QuizFinishDate,
+		"imageLink":            liveQuiz.ImageLink,
+	}
+
+	_, err = u.liveQuizCollection.InsertOne(u.ctx, doc)
+	if err == nil && LiveQuizFinaliserInstance != nil {
+		// Schedule the one-shot timer for when this quiz expires
+		LiveQuizFinaliserInstance.ScheduleFromCreate(doc)
+	}
 	return err
 }
 
@@ -162,9 +393,9 @@ func (u *QuizServiceImpl) GetLiveQuiz(id string) (*models.LiveQuiz, error) {
 		return nil, err
 	}
 
+	liveQuiz.IDHex = liveQuiz.ID.Hex()
 	return &liveQuiz, nil
 }
-
 
 func (u *QuizServiceImpl) GetRandomLiveQuiz(number string) ([]models.LiveQuiz, error) {
 	limit, err := strconv.Atoi(strings.TrimSpace(number))
@@ -172,18 +403,17 @@ func (u *QuizServiceImpl) GetRandomLiveQuiz(number string) ([]models.LiveQuiz, e
 		return nil, errors.New("invalid quiz number")
 	}
 
-	location, err := time.LoadLocation("Africa/Lagos")
+	now, err := lagosNow()
 	if err != nil {
 		return nil, err
 	}
 
-	now := time.Now().In(location)
-
 	pipeline := mongo.Pipeline{
-		// Stage 1: Filter to only future/current quizzes
+		// Stage 1: Filter to only active quizzes (start reached, finish not reached)
 		{
 			{Key: "$match", Value: bson.M{
-				"quizScheduleDate": bson.M{"$gte": now},
+				"quizScheduleDate": bson.M{"$lte": now},
+				"quizFinishDate":   bson.M{"$gt": now},
 			}},
 		},
 		// Stage 2: Randomly sample 'limit' documents
@@ -221,51 +451,211 @@ func (u *QuizServiceImpl) GetRandomLiveQuiz(number string) ([]models.LiveQuiz, e
 	return quizzes, nil
 }
 
-func (u *QuizServiceImpl) GetAllLiveQuiz() ([]map[string]interface{}, error) {
-	var liveQuizzes []map[string]interface{}
-
-	now := time.Now()
-	filter := bson.D{{Key: "quizScheduleDate", Value: bson.D{{Key: "$gte", Value: now}}}}
-
-	//log commit
-
-	cursor, err := u.liveQuizCollection.Find(u.ctx, filter)
-	if err != nil {
-		return nil, err
+func (u *QuizServiceImpl) hasOverlappingLiveQuiz(startAt, finishAt time.Time) (bool, error) {
+	if u.liveQuizCollection == nil {
+		return false, errors.New("live quiz collection not configured")
 	}
-	defer cursor.Close(u.ctx)
 
-	for cursor.Next(u.ctx) {
-		var liveQuiz models.LiveQuiz
+	filter := bson.M{
+		"quizScheduleDate": bson.M{"$lt": finishAt},
+		"quizFinishDate":   bson.M{"$gt": startAt},
+	}
+	count, err := u.liveQuizCollection.CountDocuments(u.ctx, filter)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
 
-		if err := cursor.Decode(&liveQuiz); err != nil {
-			return nil, err
+func (u *QuizServiceImpl) GetAllLiveQuiz() ([]map[string]interface{}, error) {
+	liveQuizzes := make([]map[string]interface{}, 0)
+	now, _ := lagosNow()
+
+	// Admin ledger: return every live quiz (past + upcoming). Player-facing
+	// "active only" filtering stays on GetRandomLiveQuiz.
+	ctx := context.Background()
+	opts := options.Find().SetSort(bson.D{{Key: "quizScheduleDate", Value: -1}})
+	cursor, err := u.liveQuizCollection.Find(ctx, bson.D{}, opts)
+	if err != nil {
+		return liveQuizzes, err
+	}
+	defer cursor.Close(ctx)
+
+	for cursor.Next(ctx) {
+		// Decode into a raw doc so older int/string prize fields still load.
+		var raw bson.M
+		if err := cursor.Decode(&raw); err != nil {
+			log.Printf("GetAllLiveQuiz: skip doc decode error: %v", err)
+			continue
 		}
 
-		// Build response without answer field
-		quizResponse := map[string]interface{}{
-			"id":               liveQuiz.ID.Hex(),
-			"question":         liveQuiz.Question,
-			"options":          liveQuiz.Options,
-			"totalPrize":       liveQuiz.TotalPrize,
-			"recipients":       liveQuiz.Recipients,
-			"unitPrize":        liveQuiz.UnitPrize,
-			"quizScheduleDate": liveQuiz.QuizScheduleDate,
-			"imageLink":        liveQuiz.ImageLink,
-		}
-
-		liveQuizzes = append(liveQuizzes, quizResponse)
+		liveQuizzes = append(liveQuizzes, buildLiveQuizResponseMap(raw, now))
 	}
 
 	if err := cursor.Err(); err != nil {
-		return nil, err
-	}
-
-	if len(liveQuizzes) == 0 {
-		return nil, errors.New("no live quizzes found")
+		return liveQuizzes, err
 	}
 
 	return liveQuizzes, nil
+}
+
+func rawString(v interface{}) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case nil:
+		return ""
+	default:
+		return fmt.Sprintf("%v", t)
+	}
+}
+
+func rawBool(v interface{}) bool {
+	switch t := v.(type) {
+	case bool:
+		return t
+	case string:
+		return strings.EqualFold(t, "true") || t == "1"
+	case int32:
+		return t != 0
+	case int64:
+		return t != 0
+	case float64:
+		return t != 0
+	default:
+		return false
+	}
+}
+
+func rawInt(v interface{}) int {
+	switch t := v.(type) {
+	case int:
+		return t
+	case int32:
+		return int(t)
+	case int64:
+		return int(t)
+	case float64:
+		return int(t)
+	case string:
+		n, _ := strconv.Atoi(strings.TrimSpace(t))
+		return n
+	default:
+		return 0
+	}
+}
+
+func rawFloat(v interface{}) float64 {
+	switch t := v.(type) {
+	case float64:
+		return t
+	case float32:
+		return float64(t)
+	case int:
+		return float64(t)
+	case int32:
+		return float64(t)
+	case int64:
+		return float64(t)
+	case string:
+		n, _ := strconv.ParseFloat(strings.TrimSpace(t), 64)
+		return n
+	default:
+		return 0
+	}
+}
+
+func rawStringSlice(v interface{}) []string {
+	switch t := v.(type) {
+	case []string:
+		return t
+	case bson.A:
+		out := make([]string, 0, len(t))
+		for _, item := range t {
+			s := strings.TrimSpace(rawString(item))
+			if s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	case []interface{}:
+		out := make([]string, 0, len(t))
+		for _, item := range t {
+			s := strings.TrimSpace(rawString(item))
+			if s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	case string:
+		s := strings.TrimSpace(t)
+		if s == "" {
+			return nil
+		}
+		return []string{s}
+	default:
+		return nil
+	}
+}
+
+func rawObjectIDHex(v interface{}) string {
+	switch t := v.(type) {
+	case bson.ObjectID:
+		return t.Hex()
+	case string:
+		return t
+	default:
+		return ""
+	}
+}
+
+func rawTimeString(v interface{}) string {
+	switch t := v.(type) {
+	case time.Time:
+		if t.IsZero() {
+			return ""
+		}
+		return t.UTC().Format(time.RFC3339)
+	case string:
+		return strings.TrimSpace(t)
+	case int64:
+		// BSON datetime milliseconds
+		return time.UnixMilli(t).UTC().Format(time.RFC3339)
+	case float64:
+		return time.UnixMilli(int64(t)).UTC().Format(time.RFC3339)
+	default:
+		// Handle bson.DateTime and similar via fmt without importing driver-specific aliases
+		if tm, ok := v.(interface{ Time() time.Time }); ok {
+			tt := tm.Time()
+			if tt.IsZero() {
+				return ""
+			}
+			return tt.UTC().Format(time.RFC3339)
+		}
+		return ""
+	}
+}
+
+func rawTime(v interface{}) time.Time {
+	switch t := v.(type) {
+	case time.Time:
+		return t
+	case string:
+		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(t))
+		if err == nil {
+			return parsed
+		}
+		return time.Time{}
+	case int64:
+		return time.UnixMilli(t)
+	case float64:
+		return time.UnixMilli(int64(t))
+	default:
+		if tm, ok := v.(interface{ Time() time.Time }); ok {
+			return tm.Time()
+		}
+		return time.Time{}
+	}
 }
 
 // func (u *QuizServiceImpl) GetQuizByPreferences(
@@ -618,10 +1008,10 @@ func (u *QuizServiceImpl) GetQuizByPreferences(
 
 	if count == 0 {
 		if len(filter) == 0 {
-			return nil, utils.NewAppError(http.StatusNotFound, "NO_QUIZZES",
+			return nil, utils.NewAppError(http.StatusServiceUnavailable, "QUIZ_CATALOG_EMPTY",
 				"no quizzes exist in the database")
 		}
-		return nil, utils.NewAppError(http.StatusNotFound, "NO_QUIZZES",
+		return nil, utils.NewAppError(http.StatusUnprocessableEntity, "NO_QUIZZES",
 			fmt.Sprintf("no quizzes found for: language=%s, subject=%s, level=%s",
 				lang, subj, level))
 	}
@@ -697,7 +1087,7 @@ func (u *QuizServiceImpl) GetQuizByPreferences(
 	}
 
 	if len(quizResponses) == 0 {
-		return nil, utils.NewAppError(http.StatusNotFound, "NO_QUIZZES",
+		return nil, utils.NewAppError(http.StatusUnprocessableEntity, "NO_QUIZZES",
 			"no quizzes found after sampling")
 	}
 
@@ -745,11 +1135,7 @@ func (u *QuizServiceImpl) SubmitQuiz(
 
 		correctAnswer := quiz.Answer
 
-		isCorrect := strings.TrimSpace(
-			strings.ToLower(response.SelectedAnswer),
-		) == strings.TrimSpace(
-			strings.ToLower(correctAnswer),
-		)
+		isCorrect := gradeAnswer(response.SelectedAnswer, correctAnswer, quiz.Options)
 
 		earning := 0
 
@@ -1027,7 +1413,7 @@ func (u *QuizServiceImpl) GetQuizAnswerById(id string) (map[string]interface{}, 
 	var quiz models.Quiz
 	err = u.quizcollection.FindOne(u.ctx, filter).Decode(&quiz)
 	if err != nil {
-		if err == mongo.ErrNoDocuments {
+		if errors.Is(err, mongo.ErrNoDocuments) {
 			return nil, errors.New("quiz not found")
 		}
 		return nil, err
@@ -1041,33 +1427,59 @@ func (u *QuizServiceImpl) GetQuizAnswerById(id string) (map[string]interface{}, 
 	return response, nil
 }
 
-func (u *QuizServiceImpl) GetLiveQuizAnswerById(id string) (map[string]interface{}, error) {
-
+func (u *QuizServiceImpl) GetLiveQuizAnswerById(userID int, id string) (map[string]interface{}, error) {
 	objectID, err := bson.ObjectIDFromHex(id)
 	if err != nil {
 		return nil, errors.New("invalid live quiz id")
 	}
 
-	filter := bson.M{
-		"_id": objectID,
-	}
-
+	quizFilter := bson.M{"_id": objectID}
 	var liveQuiz models.LiveQuiz
-
-	err = u.liveQuizCollection.FindOne(u.ctx, filter).Decode(&liveQuiz)
-	if err != nil {
-
-		if err == mongo.ErrNoDocuments {
+	if err := u.liveQuizCollection.FindOne(u.ctx, quizFilter).Decode(&liveQuiz); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
 			return nil, errors.New("live quiz not found")
 		}
-
 		return nil, err
 	}
 
 	response := map[string]interface{}{
-		"id":       liveQuiz.ID.Hex(),
-		"question": liveQuiz.Question,
-		"answer":   liveQuiz.Answer,
+		"id":             liveQuiz.ID.Hex(),
+		"selectedAnswer": "",
+		"answer":         "",
+	}
+
+	if userID <= 0 {
+		return response, nil
+	}
+
+	if utils.DB == nil {
+		return nil, errors.New("postgres is not configured")
+	}
+
+	var ongoingQuiz models.OngoingQuiz
+	err = utils.DB.
+		Where(`"userId" = ? AND "isCompleted" = ?`, userID, false).
+		Where(`"questions" @> ?`, fmt.Sprintf(`[{"id":"%s"}]`, id)).
+		First(&ongoingQuiz).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return response, nil
+		}
+		return nil, err
+	}
+
+	storedAnswers := parseStoredSessionAnswers(ongoingQuiz.Answers)
+	selectedAnswer := ""
+	for _, answer := range storedAnswers {
+		if strings.TrimSpace(answer.QuizID) == id {
+			selectedAnswer = strings.TrimSpace(answer.SelectedAnswer)
+			break
+		}
+	}
+
+	if selectedAnswer != "" {
+		response["selectedAnswer"] = selectedAnswer
+		response["answer"] = selectedAnswer
 	}
 
 	return response, nil
@@ -1077,6 +1489,18 @@ func (u *QuizServiceImpl) DeleteLiveQuiz(id string) error {
 	objectId, err := bson.ObjectIDFromHex(id)
 	if err != nil {
 		return errors.New("invalid id format")
+	}
+
+	var existing models.LiveQuiz
+	if err := u.liveQuizCollection.FindOne(u.ctx, bson.M{"_id": objectId}).Decode(&existing); err != nil {
+		if err == mongo.ErrNoDocuments {
+			return errors.New("live quiz not found")
+		}
+		return err
+	}
+	now, _ := lagosNow()
+	if (now.Equal(existing.QuizScheduleDate) || now.After(existing.QuizScheduleDate)) && now.Before(existing.QuizFinishDate) {
+		return fmt.Errorf("%w: active quizzes cannot be deleted", ErrLiveQuizActive)
 	}
 
 	filter := bson.M{"_id": objectId}
@@ -1093,7 +1517,84 @@ func (u *QuizServiceImpl) DeleteLiveQuiz(id string) error {
 	return nil
 }
 
+func (u *QuizServiceImpl) UpdateLiveQuizCustomCountdownLabel(id string, label string) error {
+	objectId, err := bson.ObjectIDFromHex(id)
+	if err != nil {
+		return errors.New("invalid id format")
+	}
+
+	result, err := u.liveQuizCollection.UpdateOne(
+		u.ctx,
+		bson.M{"_id": objectId},
+		bson.M{
+			"$set": bson.M{
+				"customCountdownLabel": strings.TrimSpace(label),
+			},
+		},
+	)
+	if err != nil {
+		return err
+	}
+	if result.MatchedCount == 0 {
+		return errors.New("live quiz not found")
+	}
+	return nil
+}
+
+func (u *QuizServiceImpl) DeleteLiveQuizCustomCountdownLabel(id string) error {
+	objectId, err := bson.ObjectIDFromHex(id)
+	if err != nil {
+		return errors.New("invalid id format")
+	}
+
+	result, err := u.liveQuizCollection.UpdateOne(
+		u.ctx,
+		bson.M{"_id": objectId},
+		bson.M{
+			"$unset": bson.M{
+				"customCountdownLabel": "",
+			},
+		},
+	)
+	if err != nil {
+		return err
+	}
+	if result.MatchedCount == 0 {
+		return errors.New("live quiz not found")
+	}
+	return nil
+}
+
 func (u *QuizServiceImpl) UpdateLiveQuiz(quiz *models.LiveQuiz) error {
+	var existing models.LiveQuiz
+	if err := u.liveQuizCollection.FindOne(u.ctx, bson.M{"_id": quiz.ID}).Decode(&existing); err != nil {
+		if err == mongo.ErrNoDocuments {
+			return errors.New("live quiz not found")
+		}
+		return err
+	}
+
+	now, _ := lagosNow()
+	if (now.Equal(existing.QuizScheduleDate) || now.After(existing.QuizScheduleDate)) && now.Before(existing.QuizFinishDate) {
+		return fmt.Errorf("%w: active quizzes cannot be edited", ErrLiveQuizActive)
+	}
+
+	if quiz.QuizFinishDate.IsZero() {
+		quiz.QuizFinishDate = existing.QuizFinishDate
+	}
+	if quiz.QuizScheduleDate.IsZero() {
+		quiz.QuizScheduleDate = existing.QuizScheduleDate
+	}
+	if !quiz.QuizFinishDate.After(quiz.QuizScheduleDate) {
+		return errors.New("quiz finish date must be after quiz schedule date")
+	}
+	if quiz.JackpotAmount <= 0 {
+		quiz.JackpotAmount = quiz.TotalPrize
+	}
+	if quiz.TotalPrize <= 0 && quiz.JackpotAmount > 0 {
+		quiz.TotalPrize = quiz.JackpotAmount
+	}
+
 	filter := bson.D{
 		{Key: "_id", Value: quiz.ID},
 	}
@@ -1105,12 +1606,17 @@ func (u *QuizServiceImpl) UpdateLiveQuiz(quiz *models.LiveQuiz) error {
 				{Key: "question", Value: quiz.Question},
 				{Key: "options", Value: quiz.Options},
 				{Key: "answer", Value: quiz.Answer},
+				{Key: "isTypedAnswer", Value: quiz.IsTypedAnswer},
 				{Key: "typedAnswer", Value: quiz.TypedAnswer},
+				{Key: "jackpotAmount", Value: quiz.JackpotAmount},
 				{Key: "totalPrize", Value: quiz.TotalPrize},
 				{Key: "recipients", Value: quiz.Recipients},
 				{Key: "unitPrize", Value: quiz.UnitPrize},
+				{Key: "showAnswer", Value: quiz.ShowAnswer},
 				{Key: "quizScheduleDate", Value: quiz.QuizScheduleDate},
+				{Key: "quizFinishDate", Value: quiz.QuizFinishDate},
 				{Key: "imageLink", Value: quiz.ImageLink},
+				{Key: "customCountdownLabel", Value: strings.TrimSpace(quiz.CustomCountdownLabel)},
 			},
 		},
 	}
@@ -1121,7 +1627,7 @@ func (u *QuizServiceImpl) UpdateLiveQuiz(quiz *models.LiveQuiz) error {
 	}
 
 	if result.MatchedCount == 0 {
-		return errors.New("no live quiz found with given id")
+		return errors.New("live quiz not found")
 	}
 
 	return nil
@@ -1225,6 +1731,56 @@ func (u *QuizServiceImpl) GetQuiz(id string) (*models.Quiz, error) {
 	return &quiz, nil
 }
 
+func (u *QuizServiceImpl) SearchQuizzes(query string, limit int) ([]map[string]interface{}, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 50 {
+		limit = 50
+	}
+
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return []map[string]interface{}{}, nil
+	}
+
+	filter := bson.M{
+		"question": bson.M{"$regex": query, "$options": "i"},
+	}
+
+	findOptions := options.Find().
+		SetSort(bson.D{{Key: "question", Value: 1}}).
+		SetLimit(int64(limit))
+
+	cursor, err := u.quizcollection.Find(context.Background(), filter, findOptions)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(context.Background())
+
+	var quizzes []models.Quiz
+	if err := cursor.All(context.Background(), &quizzes); err != nil {
+		return nil, err
+	}
+
+	results := make([]map[string]interface{}, 0, len(quizzes))
+	for _, q := range quizzes {
+		results = append(results, map[string]interface{}{
+			"id":        q.ID.Hex(),
+			"question":  q.Question,
+			"testQuiz":  q.TestQuiz,
+			"testLevel": q.TestLevel,
+			"subject":   q.Subject,
+			"answer":    q.Answer,
+			"options":   q.Options,
+			"earning":   q.Earning,
+			"imageLink": q.ImageLink,
+		})
+	}
+
+	return results, nil
+}
+
 func (u *QuizServiceImpl) GetAllQuiz() ([]*models.Quiz, error) {
 	var quizzes []*models.Quiz
 
@@ -1260,14 +1816,29 @@ func (u *QuizServiceImpl) GetAllQuiz() ([]*models.Quiz, error) {
 
 func (u *QuizServiceImpl) UpdateQuiz(quiz *models.Quiz) error {
 	filter := bson.D{bson.E{Key: "_id", Value: quiz.ID}}
-	update := bson.D{bson.E{Key: "$set", Value: bson.D{
+	setFields := bson.D{
 		{Key: "question", Value: quiz.Question},
 		{Key: "options", Value: quiz.Options},
 		{Key: "imageLink", Value: quiz.ImageLink},
+		{Key: "isTypedAnswer", Value: quiz.IsTypedAnswer},
 		{Key: "typedAnswer", Value: quiz.TypedAnswer},
 		{Key: "earning", Value: quiz.Earning},
 		{Key: "answer", Value: quiz.Answer},
-	}}}
+	}
+	if strings.TrimSpace(quiz.TestQuiz) != "" {
+		setFields = append(setFields, bson.E{Key: "testQuiz", Value: quiz.TestQuiz})
+	}
+	if strings.TrimSpace(quiz.TestLevel) != "" {
+		setFields = append(setFields, bson.E{Key: "testLevel", Value: quiz.TestLevel})
+	}
+	if strings.TrimSpace(quiz.Subject) != "" {
+		setFields = append(setFields, bson.E{Key: "subject", Value: quiz.Subject})
+	}
+	if strings.TrimSpace(quiz.AirtableRecordID) != "" {
+		setFields = append(setFields, bson.E{Key: "airtableRecordId", Value: quiz.AirtableRecordID})
+	}
+
+	update := bson.D{bson.E{Key: "$set", Value: setFields}}
 
 	result, err := u.quizcollection.UpdateOne(u.ctx, filter, update)
 	if err != nil {
