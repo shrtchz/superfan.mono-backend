@@ -13,6 +13,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	"gorm.io/gorm"
 	"quiz.superfan.com/apis/models"
 	"quiz.superfan.com/apis/utils"
 )
@@ -369,7 +370,7 @@ func (u *QuizServiceImpl) CreateLiveQuiz(liveQuiz *models.LiveQuiz) error {
 		"imageLink":            liveQuiz.ImageLink,
 	}
 
-	_, err := u.liveQuizCollection.InsertOne(u.ctx, doc)
+	_, err = u.liveQuizCollection.InsertOne(u.ctx, doc)
 	return err
 }
 
@@ -1422,21 +1423,15 @@ func (u *QuizServiceImpl) GetQuizAnswerById(id string) (map[string]interface{}, 
 	return response, nil
 }
 
-func (u *QuizServiceImpl) GetLiveQuizAnswerById(id string) (map[string]interface{}, error) {
-
+func (u *QuizServiceImpl) GetLiveQuizAnswerById(userID int, id string) (map[string]interface{}, error) {
 	objectID, err := bson.ObjectIDFromHex(id)
 	if err != nil {
 		return nil, errors.New("invalid live quiz id")
 	}
 
-	filter := bson.M{
-		"_id": objectID,
-	}
-
+	quizFilter := bson.M{"_id": objectID}
 	var liveQuiz models.LiveQuiz
-
-	err = u.liveQuizCollection.FindOne(u.ctx, filter).Decode(&liveQuiz)
-	if err != nil {
+	if err := u.liveQuizCollection.FindOne(u.ctx, quizFilter).Decode(&liveQuiz); err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			return nil, errors.New("live quiz not found")
 		}
@@ -1444,9 +1439,43 @@ func (u *QuizServiceImpl) GetLiveQuizAnswerById(id string) (map[string]interface
 	}
 
 	response := map[string]interface{}{
-		"id":       liveQuiz.ID.Hex(),
-		"question": liveQuiz.Question,
-		"answer":   liveQuiz.Answer,
+		"id":             liveQuiz.ID.Hex(),
+		"selectedAnswer": "",
+		"answer":         "",
+	}
+
+	if userID <= 0 {
+		return response, nil
+	}
+
+	if utils.DB == nil {
+		return nil, errors.New("postgres is not configured")
+	}
+
+	var ongoingQuiz models.OngoingQuiz
+	err = utils.DB.
+		Where(`"userId" = ? AND "isCompleted" = ?`, userID, false).
+		Where(`"questions" @> ?`, fmt.Sprintf(`[{"id":"%s"}]`, id)).
+		First(&ongoingQuiz).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return response, nil
+		}
+		return nil, err
+	}
+
+	storedAnswers := parseStoredSessionAnswers(ongoingQuiz.Answers)
+	selectedAnswer := ""
+	for _, answer := range storedAnswers {
+		if strings.TrimSpace(answer.QuizID) == id {
+			selectedAnswer = strings.TrimSpace(answer.SelectedAnswer)
+			break
+		}
+	}
+
+	if selectedAnswer != "" {
+		response["selectedAnswer"] = selectedAnswer
+		response["answer"] = selectedAnswer
 	}
 
 	return response, nil

@@ -98,3 +98,52 @@ func extractBearerToken(authorizationHeader string) string {
 	}
 	return strings.TrimSpace(parts[1])
 }
+
+// OptionalAuth accepts Clerk session JWTs if provided, but does not require auth.
+func OptionalAuth() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		token := extractBearerToken(c.GetHeader("Authorization"))
+		if token == "" {
+			if cookie, err := c.Cookie("__session"); err == nil {
+				token = strings.TrimSpace(cookie)
+			}
+		}
+		if token == "" {
+			token = strings.TrimSpace(c.Query("token"))
+		}
+
+		if token == "" {
+			c.Next()
+			return
+		}
+		if token == "undefined" || token == "null" {
+			c.Next()
+			return
+		}
+		if strings.HasPrefix(token, "sit_") {
+			c.Next()
+			return
+		}
+
+		claims, ok := verifyClerkToken(token)
+		if !ok {
+			c.Next()
+			return
+		}
+
+		sub, _ := claims["sub"].(string)
+		email, _ := claims["email"].(string)
+		localUserID, err := services.ResolveLocalUserID(sub, email)
+		if err != nil {
+			c.Next()
+			return
+		}
+
+		c.Set(ContextUserIDKey, localUserID)
+		if email != "" {
+			c.Set(ContextUserEmailKey, email)
+		}
+		c.Set(ContextAuthSource, "clerk")
+		c.Next()
+	}
+}

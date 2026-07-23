@@ -454,7 +454,14 @@ func (qc *QuizController) GetLiveQuizAnswerById(ctx *gin.Context) {
 		return
 	}
 
-	answer, err := qc.QuizService.GetLiveQuizAnswerById(id)
+	userID := 0
+	if userIDValue, ok := ctx.Get(middleware.ContextUserIDKey); ok {
+		if parsedUserID, ok := userIDValue.(int); ok && parsedUserID > 0 {
+			userID = parsedUserID
+		}
+	}
+
+	answer, err := qc.QuizService.GetLiveQuizAnswerById(userID, id)
 	if err != nil {
 		status := http.StatusInternalServerError
 		switch {
@@ -1068,7 +1075,7 @@ func RegisterQuizRoutes(
 	quizroute.GET("/live", qc.GetAllLiveQuiz)
 	quizroute.GET("/live/random/:number", qc.GetRandomLiveQuiz)
 	quizroute.GET("/live/:id", qc.GetLiveQuiz)
-	quizroute.GET("/live-answer/:id", qc.GetLiveQuizAnswerById)
+	quizroute.GET("/live-answer/:id", middleware.AuthRequired(), qc.GetLiveQuizAnswerById)
 
 	// Quiz search — public (used by admin create-quiz autocomplete)
 	quizroute.GET("/search", qc.SearchQuizzes)
