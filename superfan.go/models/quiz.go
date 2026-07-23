@@ -119,6 +119,28 @@ func (qc *QuizCategory) ToQuiz() *Quiz {
 }
 
 // Mirrors the flat DB document — used only for decoding
+// LiveQuizAttempt maps to Postgres table "live_quiz_attempts" (Prisma LiveQuizAttempt).
+type LiveQuizAttempt struct {
+	ID                int        `gorm:"column:id;primaryKey" json:"id"`
+	UserID            string     `gorm:"column:userId" json:"userId"`
+	QuizID            string     `gorm:"column:quizId" json:"quizId"`
+	OngoingLiveQuizID *int       `gorm:"column:ongoingLiveQuizId" json:"ongoingLiveQuizId"`
+	TotalPrize        *int       `gorm:"column:totalPrize" json:"totalPrize"`
+	Recipients        *int       `gorm:"column:recipients" json:"recipients"`
+	UnitPrize         *int       `gorm:"column:unitPrize" json:"unitPrize"`
+	Earning           int        `gorm:"column:earning" json:"earning"`
+	IsWinner          bool       `gorm:"column:isWinner" json:"isWinner"`
+	IsCompleted       bool       `gorm:"column:isCompleted" json:"isCompleted"`
+	StartedAt         *time.Time `gorm:"column:startedAt" json:"startedAt"`
+	CompletedAt       *time.Time `gorm:"column:completedAt" json:"completedAt"`
+	CreatedAt         time.Time  `gorm:"column:createdAt" json:"createdAt"`
+	UpdatedAt         time.Time  `gorm:"column:updatedAt" json:"updatedAt"`
+}
+
+func (LiveQuizAttempt) TableName() string {
+	return "live_quiz_attempts"
+}
+
 type QuizSubmissionDoc struct {
 	ID             bson.ObjectID `bson:"_id,omitempty"`
 	UserID         string        `bson:"userId"`
