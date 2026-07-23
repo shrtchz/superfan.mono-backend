@@ -13,8 +13,11 @@ import {
   Put,
   Query,
   Req,
+  Res,
   UseGuards,
 } from '@nestjs/common';
+import { Request, Response } from 'express';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Public, Roles } from '../common/decorators';
 import { ApiRoutes } from '../common/enums/routes.enum';
 import { Role } from '../common/enums/role.enum';
@@ -39,7 +42,10 @@ import { QuizService } from './quiz.service';
 @UseGuards(JwtGuard)
 @Controller(ApiRoutes.QUIZ)
 export class QuizController {
-  constructor(private readonly quizService: QuizService) {}
+  constructor(
+    private readonly quizService: QuizService,
+    private readonly eventEmitter: EventEmitter2,
+  ) {}
 
   @Public()
   @Post('/create')
@@ -240,7 +246,53 @@ export class QuizController {
     }
   }
 
-    @Get('lq-leaderboard')
+    @Public()
+  @Get('lq-leaderboard/stream')
+  streamLiveQuizLeaderboard(
+    @Req() req: Request,
+    @Res() res: Response,
+  ) {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+
+    const sendEvent = (payload: Record<string, unknown>) => {
+      if (res.writableEnded) return;
+      try {
+        res.write(`data: ${JSON.stringify(payload)}\n\n`);
+      } catch {
+        // Ignore when client disconnected.
+      }
+    };
+
+    const listener = (event: { action: string }) => {
+      sendEvent({
+        action: event.action,
+        timestamp: new Date().toISOString(),
+      });
+    };
+
+    this.eventEmitter.on('liveQuiz.changed', listener);
+    sendEvent({ action: 'connected', timestamp: new Date().toISOString() });
+
+    const heartbeat = setInterval(() => {
+      if (!res.writableEnded) {
+        res.write(': heartbeat\n\n');
+      }
+    }, 20000);
+
+    const cleanup = () => {
+      clearInterval(heartbeat);
+      this.eventEmitter.off('liveQuiz.changed', listener);
+    };
+
+    req.on('close', cleanup);
+    req.on('end', cleanup);
+  }
+
+  @Get('lq-leaderboard')
   async getLiveQuizLeaderboard() {
     try {
       return await this.quizService.getLiveQuizLeaderboard();
