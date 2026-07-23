@@ -26,6 +26,7 @@ type QuizServiceImpl struct {
 }
 
 var ErrLiveQuizActive = errors.New("live quiz is active")
+var ErrLiveQuizOverlap = errors.New("another live quiz is already scheduled or active")
 
 // type QuizSubmissionServiceImpl struct {
 // 	collection *mongo.Collection
@@ -330,6 +331,15 @@ func (u *QuizServiceImpl) CreateLiveQuiz(liveQuiz *models.LiveQuiz) error {
 	if !liveQuiz.QuizFinishDate.After(liveQuiz.QuizScheduleDate) {
 		return errors.New("quiz finish date must be after quiz schedule date")
 	}
+
+	overlapped, err := u.hasOverlappingLiveQuiz(liveQuiz.QuizScheduleDate, liveQuiz.QuizFinishDate)
+	if err != nil {
+		return err
+	}
+	if overlapped {
+		return ErrLiveQuizOverlap
+	}
+
 	if liveQuiz.JackpotAmount <= 0 {
 		liveQuiz.JackpotAmount = liveQuiz.TotalPrize
 	}
@@ -434,6 +444,22 @@ func (u *QuizServiceImpl) GetRandomLiveQuiz(number string) ([]models.LiveQuiz, e
 	}
 
 	return quizzes, nil
+}
+
+func (u *QuizServiceImpl) hasOverlappingLiveQuiz(startAt, finishAt time.Time) (bool, error) {
+	if u.liveQuizCollection == nil {
+		return false, errors.New("live quiz collection not configured")
+	}
+
+	filter := bson.M{
+		"quizScheduleDate": bson.M{"$lt": finishAt},
+		"quizFinishDate":   bson.M{"$gt": startAt},
+	}
+	count, err := u.liveQuizCollection.CountDocuments(u.ctx, filter)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 func (u *QuizServiceImpl) GetAllLiveQuiz() ([]map[string]interface{}, error) {

@@ -573,6 +573,10 @@ func (qc *QuizController) CreateLiveQuiz(c *gin.Context) {
 	}
 
 	if err := qc.QuizService.CreateLiveQuiz(liveQuiz); err != nil {
+		if errors.Is(err, services.ErrLiveQuizOverlap) {
+			utils.SendError(c, http.StatusConflict, "LIVE_QUIZ_OVERLAP", "A live quiz is already scheduled or active. Please wait until it ends before creating a new one.")
+			return
+		}
 		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", err.Error())
 		return
 	}
