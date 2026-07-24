@@ -31,11 +31,11 @@ type liveQuizSubmission struct {
 }
 
 type ongoingLiveQuizRecord struct {
-	ID        int            `gorm:"column:id"`
-	UserID    string         `gorm:"column:userId"`
-	QuizIDs   []string       `gorm:"column:quizIds"`
+	ID        int             `gorm:"column:id"`
+	UserID    string          `gorm:"column:userId"`
+	QuizIDs   []string        `gorm:"column:quizIds"`
 	Answers   json.RawMessage `gorm:"column:answers"`
-	Completed bool           `gorm:"column:completed"`
+	Completed bool            `gorm:"column:completed"`
 }
 
 func (ongoingLiveQuizRecord) TableName() string {
