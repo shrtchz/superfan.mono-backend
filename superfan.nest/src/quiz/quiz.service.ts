@@ -26,6 +26,88 @@ import {
 } from './quiz.dto';
 import { QuestionAddedEvent } from './quiz.events';
 
+export function buildLiveQuizLeaderboardRows(
+  leaderboardEntries: any[],
+  ongoingQuizzes: any[],
+) {
+  const participantMap = new Map<string, Set<string>>();
+
+  ongoingQuizzes.forEach((attempt) => {
+    (attempt.quizIds ?? []).forEach((quizId: string) => {
+      if (!quizId) return;
+      if (!participantMap.has(quizId)) {
+        participantMap.set(quizId, new Set());
+      }
+      participantMap.get(quizId)?.add(attempt.userId);
+    });
+  });
+
+  const entriesByQuizId = new Map<string, typeof leaderboardEntries>();
+  leaderboardEntries.forEach((entry) => {
+    const existing = entriesByQuizId.get(entry.quizId) ?? [];
+    existing.push(entry);
+    entriesByQuizId.set(entry.quizId, existing);
+  });
+
+  const quizIds = new Set<string>([
+    ...Array.from(entriesByQuizId.keys()),
+    ...Array.from(participantMap.keys()),
+  ]);
+
+  let totalRewardDistributed = 0;
+
+  const leaderboard = Array.from(quizIds).map((quizId) => {
+    const quizEntries = entriesByQuizId.get(quizId) ?? [];
+    const sortedEntries = [...quizEntries].sort(
+      (a, b) =>
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    );
+    const latestEntry = sortedEntries[0] ?? null;
+
+    const winners = [
+      ...new Set(
+        quizEntries
+          .filter((entry) => entry.isWinner)
+          .map((entry) => entry.userId),
+      ),
+    ];
+
+    totalRewardDistributed += quizEntries.reduce(
+      (sum, entry) => sum + Number(entry.unitPrize || 0),
+      0,
+    );
+
+    const recordedParticipants = quizEntries.reduce(
+      (max, entry) => Math.max(max, Number(entry.participants || 0)),
+      0,
+    );
+
+    return {
+      quizDate: latestEntry?.quizDate ?? null,
+      quizId,
+      question: latestEntry?.question ?? '',
+      answer: latestEntry?.answer ?? null,
+      participants:
+        participantMap.get(quizId)?.size || recordedParticipants || 0,
+      quizWinners: winners,
+      reward: latestEntry?.rewardType ?? null,
+      status: latestEntry?.rewardStatus ?? 'NONE',
+    };
+  });
+
+  const totalParticipants = leaderboard.reduce(
+    (sum, quiz) => sum + (quiz.participants || 0),
+    0,
+  );
+
+  return {
+    totalQuizzes: leaderboard.length,
+    totalParticipants,
+    totalRewardDistributed,
+    leaderboard,
+  };
+}
+
 @Injectable()
 export class QuizService {
   private readonly logger = new Logger(QuizService.name);
@@ -1030,78 +1112,7 @@ async getLiveQuizLeaderboard() {
       prisma.ongoingLiveQuiz.findMany(),
     ]);
 
-    const participantMap = new Map<string, Set<string>>();
-
-    ongoingQuizzes.forEach((attempt) => {
-      attempt.quizIds?.forEach((quizId) => {
-        if (!participantMap.has(quizId)) {
-          participantMap.set(quizId, new Set());
-        }
-
-        participantMap.get(quizId)?.add(attempt.userId);
-      });
-    });
-
-    const entriesByQuizId = new Map<string, typeof leaderboardEntries>();
-    leaderboardEntries.forEach((entry) => {
-      const existing = entriesByQuizId.get(entry.quizId) ?? [];
-      existing.push(entry);
-      entriesByQuizId.set(entry.quizId, existing);
-    });
-
-    let totalRewardDistributed = 0;
-
-    const leaderboard = Array.from(entriesByQuizId.entries()).map(
-      ([quizId, quizEntries]) => {
-        const sortedEntries = [...quizEntries].sort(
-          (a, b) =>
-            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-        );
-        const latestEntry = sortedEntries[0] ?? null;
-
-        const winners = [
-          ...new Set(
-            quizEntries
-              .filter((entry) => entry.isWinner)
-              .map((entry) => entry.userId),
-          ),
-        ];
-
-        totalRewardDistributed += quizEntries.reduce(
-          (sum, entry) => sum + Number(entry.unitPrize || 0),
-          0,
-        );
-
-        const recordedParticipants = quizEntries.reduce(
-          (max, entry) => Math.max(max, Number(entry.participants || 0)),
-          0,
-        );
-
-        return {
-          quizDate: latestEntry?.quizDate ?? null,
-          quizId,
-          question: latestEntry?.question ?? '',
-          answer: latestEntry?.answer ?? null,
-          participants:
-            participantMap.get(quizId)?.size || recordedParticipants || 0,
-          quizWinners: winners,
-          reward: latestEntry?.rewardType ?? null,
-          status: latestEntry?.rewardStatus ?? 'NONE',
-        };
-      },
-    );
-
-    const totalParticipants = leaderboard.reduce(
-      (sum, quiz) => sum + (quiz.participants || 0),
-      0,
-    );
-
-    return {
-      totalQuizzes: leaderboard.length,
-      totalParticipants,
-      totalRewardDistributed,
-      leaderboard,
-    };
+    return buildLiveQuizLeaderboardRows(leaderboardEntries, ongoingQuizzes);
   } catch (error) {
     throw new HttpException(
       error?.message ||

@@ -2,12 +2,15 @@ package services
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
+	"gorm.io/gorm"
 	"quiz.superfan.com/apis/models"
 	"quiz.superfan.com/apis/utils"
 )
@@ -19,6 +22,103 @@ type storedSessionAnswer struct {
 	SelectedAnswer string    `json:"selectedAnswer"`
 	AnsweredAt     time.Time `json:"answeredAt"`
 	IsCorrect      bool      `json:"isCorrect,omitempty"`
+}
+
+type liveQuizSubmission struct {
+	QuizID         string `json:"quizId"`
+	SelectedAnswer string `json:"selectedAnswer"`
+	SubmittedAt    string `json:"submittedAt"`
+}
+
+type ongoingLiveQuizRecord struct {
+	ID        int             `gorm:"column:id"`
+	UserID    string          `gorm:"column:userId"`
+	QuizIDs   []string        `gorm:"column:quizIds"`
+	Answers   json.RawMessage `gorm:"column:answers"`
+	Completed bool            `gorm:"column:completed"`
+}
+
+func (ongoingLiveQuizRecord) TableName() string {
+	return "ongoing_live_quiz"
+}
+
+func mergeLiveQuizSubmissionAnswers(existingAnswers []byte, quizID, selectedAnswer string, submittedAt time.Time) ([]byte, error) {
+	var answers []liveQuizSubmission
+	if len(existingAnswers) > 0 {
+		if err := json.Unmarshal(existingAnswers, &answers); err != nil {
+			return nil, err
+		}
+	}
+
+	updated := false
+	for i := range answers {
+		if answers[i].QuizID == quizID {
+			answers[i].SelectedAnswer = selectedAnswer
+			answers[i].SubmittedAt = submittedAt.UTC().Format(time.RFC3339)
+			updated = true
+			break
+		}
+	}
+	if !updated {
+		answers = append(answers, liveQuizSubmission{
+			QuizID:         quizID,
+			SelectedAnswer: selectedAnswer,
+			SubmittedAt:    submittedAt.UTC().Format(time.RFC3339),
+		})
+	}
+
+	return json.Marshal(answers)
+}
+
+func persistLiveQuizAnswer(userID int, quizID, selectedAnswer string, submittedAt time.Time) error {
+	if utils.DB == nil {
+		return nil
+	}
+
+	if quizID == "" || selectedAnswer == "" {
+		return nil
+	}
+
+	userIDValue := strconv.Itoa(userID)
+	var record ongoingLiveQuizRecord
+	err := utils.DB.Where(`"userId" = ? AND "completed" = ?`, userIDValue, false).First(&record).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+
+	answersJSON, err := mergeLiveQuizSubmissionAnswers(record.Answers, quizID, selectedAnswer, submittedAt)
+	if err != nil {
+		return err
+	}
+
+	quizIDs := append([]string{}, record.QuizIDs...)
+	if !containsString(quizIDs, quizID) {
+		quizIDs = append(quizIDs, quizID)
+	}
+
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return utils.DB.Create(&ongoingLiveQuizRecord{
+			UserID:    userIDValue,
+			QuizIDs:   quizIDs,
+			Answers:   answersJSON,
+			Completed: false,
+		}).Error
+	}
+
+	return utils.DB.Model(&record).Updates(map[string]interface{}{
+		"quizIds":   quizIDs,
+		"answers":   answersJSON,
+		"updatedAt": submittedAt,
+	}).Error
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func ensureSessionAcceptsAnswers(lookup *activeSessionLookup) error {
@@ -317,6 +417,10 @@ func (s *QuizSessionV2Service) GradeLiveAnswer(req models.SaveAnswerV2Request) (
 	now, err := lagosNow()
 	if err != nil {
 		return nil, utils.NewAppError(http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to resolve timezone")
+	}
+
+	if err := persistLiveQuizAnswer(req.UserID, questionID, selectedAnswer, now); err != nil {
+		return nil, utils.NewAppError(http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to persist live quiz answer")
 	}
 
 	// Return a result without mutating Postgres session state.
