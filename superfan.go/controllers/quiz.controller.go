@@ -524,7 +524,18 @@ func (qc *QuizController) SubmitLiveQuizAnswer(ctx *gin.Context) {
 	sessionID, err := services.FindActiveSessionIDByUserAndQuestion(userID, quizID)
 	if err != nil {
 		if errors.Is(err, services.ErrOngoingQuizNotFound) {
-			utils.SendError(ctx, http.StatusNotFound, "NOT_FOUND", "Active live quiz not found")
+			// No ongoing Postgres session exists for this user/question — grade as a live answer
+			sessionService := services.NewQuizSessionV2Service(qc.QuizService)
+			result, err := sessionService.GradeLiveAnswer(models.SaveAnswerV2Request{
+				UserID:         userID,
+				QuestionID:     quizID,
+				SelectedAnswer: body.SelectedAnswer,
+			})
+			if err != nil {
+				sendServiceError(ctx, err)
+				return
+			}
+			utils.Success(ctx, http.StatusOK, "Live quiz answer submitted", gin.H{"answer": result.Answer})
 			return
 		}
 		utils.SendError(ctx, http.StatusInternalServerError, "ERROR", err.Error())

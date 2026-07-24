@@ -268,6 +268,69 @@ func (s *QuizSessionV2Service) SaveAnswer(sessionID string, req models.SaveAnswe
 	}, nil
 }
 
+// GradeLiveAnswer grades a single live quiz answer without requiring an ongoing session.
+// This is used for live-quiz submissions that should not be correlated with Postgres sessions.
+func (s *QuizSessionV2Service) GradeLiveAnswer(req models.SaveAnswerV2Request) (*models.SaveAnswerV2Result, error) {
+	if _, err := s.loadUser(req.UserID); err != nil {
+		return nil, err
+	}
+
+	questionID := strings.TrimSpace(req.QuestionID)
+	selectedAnswer := strings.TrimSpace(req.SelectedAnswer)
+	if !mongoObjectIDPattern.MatchString(questionID) {
+		return nil, utils.NewAppError(http.StatusBadRequest, "INVALID_QUESTION", "questionId must be a valid quiz id.")
+	}
+	if selectedAnswer == "" {
+		return nil, utils.NewAppError(http.StatusBadRequest, "INVALID_ANSWER", "selectedAnswer is required.")
+	}
+
+	answerPayload, err := s.quizService.GetQuizAnswerById(questionID)
+	if err != nil {
+		return nil, utils.NewAppError(http.StatusUnprocessableEntity, "ANSWER_LOOKUP_FAILED", "Unable to verify answer for this question.")
+	}
+
+	correctAnswer := stringField(answerPayload, "answer")
+	if correctAnswer == "" {
+		return nil, utils.NewAppError(http.StatusUnprocessableEntity, "ANSWER_LOOKUP_FAILED", "Correct answer was not found for this question.")
+	}
+
+	// Build a minimal question object for grading helpers
+	question := map[string]interface{}{}
+	if opts, ok := answerPayload["options"]; ok {
+		question["options"] = opts
+	}
+
+	options := stringSliceField(question["options"])
+	isCorrect := gradeAnswer(selectedAnswer, correctAnswer, options)
+	correctDisplay := buildCorrectAnswerDisplay(correctAnswer, options)
+	earning := questionEarningValue(question, isCorrect)
+
+	now, err := lagosNow()
+	if err != nil {
+		return nil, utils.NewAppError(http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to resolve timezone")
+	}
+
+	// Return a result without mutating Postgres session state.
+	return &models.SaveAnswerV2Result{
+		Answer: models.SavedAnswerV2Feedback{
+			QuestionID:           questionID,
+			SelectedAnswer:       selectedAnswer,
+			IsCorrect:            isCorrect,
+			CorrectAnswer:        correctAnswer,
+			CorrectAnswerDisplay: correctDisplay,
+			Earning:              earning,
+			AnsweredAt:           isoTime(now),
+		},
+		Session: models.SaveAnswerV2Session{
+			ID:             "",
+			CurrentIndex:   0,
+			AnswersCount:   0,
+			IsLastQuestion: false,
+			Status:         "live",
+		},
+	}, nil
+}
+
 func buildSubmitResponsesFromSession(record *models.OngoingQuiz) []models.QuizAnswerRequest {
 	answers := parseStoredSessionAnswers(record.Answers)
 	responses := make([]models.QuizAnswerRequest, 0, len(answers))
