@@ -432,8 +432,15 @@ func (s *QuizSessionV2Service) GradeLiveAnswer(req models.SaveAnswerV2Request) (
 		return nil, utils.NewAppError(http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to resolve timezone")
 	}
 
+	// if err := persistLiveQuizAnswer(req.UserID, questionID, selectedAnswer, now); err != nil {
+	// 	return nil, utils.NewAppError(http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to persist live quiz answer")
+	// }
 	if err := persistLiveQuizAnswer(req.UserID, questionID, selectedAnswer, now); err != nil {
-		return nil, utils.NewAppError(http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to persist live quiz answer")
+		return nil, utils.NewAppError(
+			http.StatusInternalServerError,
+			"INTERNAL_SERVER_ERROR",
+			fmt.Sprintf("failed to persist live quiz answer: %v", err),
+		)
 	}
 
 	// Return a result without mutating Postgres session state.
