@@ -1,6 +1,8 @@
 package services
 
 import (
+	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +16,98 @@ import (
 	"quiz.superfan.com/apis/models"
 	"quiz.superfan.com/apis/utils"
 )
+
+// StringArray is a custom type that properly implements PostgreSQL array marshaling
+type StringArray []string
+
+// Value implements the Valuer interface for database/sql
+func (a StringArray) Value() (driver.Value, error) {
+	if len(a) == 0 {
+		return nil, nil
+	}
+	// PostgreSQL array format: {val1,val2,val3}
+	// Escape quotes in values and wrap in braces
+	var escaped []string
+	for _, v := range a {
+		// Escape double quotes and backslashes
+		v = strings.ReplaceAll(v, "\\", "\\\\")
+		v = strings.ReplaceAll(v, "\"", "\\\"")
+		escaped = append(escaped, fmt.Sprintf(`"%s"`, v))
+	}
+	return fmt.Sprintf("{%s}", strings.Join(escaped, ",")), nil
+}
+
+// Scan implements the Scanner interface for database/sql
+func (a *StringArray) Scan(value interface{}) error {
+	if value == nil {
+		*a = StringArray([]string{})
+		return nil
+	}
+
+	// Handle string (PostgreSQL array as string)
+	if str, ok := value.(string); ok {
+		// Parse PostgreSQL array format: {val1,val2,val3}
+		str = strings.TrimSpace(str)
+		if str == "{}" || str == "" {
+			*a = StringArray([]string{})
+			return nil
+		}
+
+		// Remove outer braces
+		if len(str) >= 2 && str[0] == '{' && str[len(str)-1] == '}' {
+			str = str[1 : len(str)-1]
+		}
+
+		// Split by comma and unescape
+		var result []string
+		var current strings.Builder
+		inQuotes := false
+
+		for i := 0; i < len(str); i++ {
+			ch := str[i]
+			if ch == '"' && (i == 0 || str[i-1] != '\\') {
+				inQuotes = !inQuotes
+				continue
+			}
+			if ch == ',' && !inQuotes {
+				result = append(result, current.String())
+				current.Reset()
+				continue
+			}
+			if ch == '\\' && i+1 < len(str) {
+				// Handle escape sequences
+				next := str[i+1]
+				if next == '"' || next == '\\' {
+					current.WriteByte(next)
+					i++
+					continue
+				}
+			}
+			current.WriteByte(ch)
+		}
+		if current.Len() > 0 {
+			result = append(result, current.String())
+		}
+		*a = StringArray(result)
+		return nil
+	}
+
+	// Handle []byte (raw PostgreSQL data)
+	if b, ok := value.([]byte); ok {
+		return a.Scan(string(b))
+	}
+
+	// Handle sql.NullString
+	if ns, ok := value.(sql.NullString); ok {
+		if !ns.Valid {
+			*a = StringArray([]string{})
+			return nil
+		}
+		return a.Scan(ns.String)
+	}
+
+	return fmt.Errorf("cannot scan %T into StringArray", value)
+}
 
 var mongoObjectIDPattern = regexp.MustCompile(`^[a-f\d]{24}$`)
 
@@ -33,7 +127,7 @@ type liveQuizSubmission struct {
 type ongoingLiveQuizRecord struct {
 	ID        int             `gorm:"column:id"`
 	UserID    string          `gorm:"column:userId"`
-	QuizIDs   []string        `gorm:"column:quizIds;type:text[]"`
+	QuizIDs   StringArray     `gorm:"column:quizIds;type:text[]"`
 	Answers   json.RawMessage `gorm:"column:answers"`
 	Completed bool            `gorm:"column:completed"`
 	CreatedAt time.Time       `gorm:"column:createdAt"`
@@ -44,7 +138,7 @@ func (ongoingLiveQuizRecord) TableName() string {
 	return "ongoing_live_quiz"
 }
 
-func buildOngoingLiveQuizRecord(userID string, quizIDs []string, answersJSON []byte, submittedAt time.Time) ongoingLiveQuizRecord {
+func buildOngoingLiveQuizRecord(userID string, quizIDs StringArray, answersJSON []byte, submittedAt time.Time) ongoingLiveQuizRecord {
 	return ongoingLiveQuizRecord{
 		UserID:    userID,
 		QuizIDs:   quizIDs,
@@ -104,29 +198,28 @@ func persistLiveQuizAnswer(userID int, quizID, selectedAnswer string, submittedA
 		return mergeErr
 	}
 
-	quizIDs := append([]string{}, record.QuizIDs...)
+	quizIDs := StringArray(append([]string(nil), record.QuizIDs...))
 	if !containsString(quizIDs, quizID) {
 		quizIDs = append(quizIDs, quizID)
 	}
 
 	if errors.Is(queryErr, gorm.ErrRecordNotFound) {
-		// For create operations, we need to ensure the QuizIDs are properly set on the model
 		recordToCreate := buildOngoingLiveQuizRecord(userIDValue, quizIDs, answersJSON, submittedAt)
 		return utils.DB.Create(&recordToCreate).Error
 	}
 
-	// Update the record fields directly and use Save() instead of Updates()
-	record.QuizIDs = quizIDs
-	record.Answers = answersJSON
-	record.UpdatedAt = submittedAt
-	return utils.DB.Save(&record).Error
+	return utils.DB.Model(&record).Updates(map[string]interface{}{
+		"quizIds":   quizIDs,
+		"answers":   answersJSON,
+		"updatedAt": submittedAt,
+	}).Error
 }
 
 func shouldCreateLiveQuizRecord(queryErr error) bool {
 	return errors.Is(queryErr, gorm.ErrRecordNotFound)
 }
 
-func containsString(values []string, target string) bool {
+func containsString(values StringArray, target string) bool {
 	for _, value := range values {
 		if value == target {
 			return true
