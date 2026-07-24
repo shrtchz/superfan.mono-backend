@@ -182,13 +182,13 @@ func buildTopWinnerCandidatesFromAttempts(attempts []models.LiveQuizAttempt) []m
 		}
 		rowIndex := len(winners) + 1
 		winners = append(winners, map[string]interface{}{
-			"username":   attempt.UserID,
-			"fullname":   attempt.UserID,
-			"firstName":  attempt.UserID,
-			"lastName":   "",
-			"image":      nil,
-			"amountWon":  attempt.Earning,
-			"rank":       rowIndex,
+			"username":  attempt.UserID,
+			"fullname":  attempt.UserID,
+			"firstName": attempt.UserID,
+			"lastName":  "",
+			"image":     nil,
+			"amountWon": attempt.Earning,
+			"rank":      rowIndex,
 		})
 	}
 	return winners
@@ -196,11 +196,11 @@ func buildTopWinnerCandidatesFromAttempts(attempts []models.LiveQuizAttempt) []m
 
 func buildLiveQuizLedgerMeta(quizID string, status string) map[string]interface{} {
 	meta := map[string]interface{}{
-		"participants":  0,
-		"winnerCount":   0,
-		"topWinners":    []map[string]interface{}{},
-		"rewardStatus":  "pending",
-		"payoutStatus":  "pending",
+		"participants": 0,
+		"winnerCount":  0,
+		"topWinners":   []map[string]interface{}{},
+		"rewardStatus": "pending",
+		"payoutStatus": "pending",
 	}
 
 	if strings.TrimSpace(quizID) == "" {
@@ -243,13 +243,13 @@ func buildLiveQuizLedgerMeta(quizID string, status string) map[string]interface{
 				winnerCount++
 				rowIndex := len(topWinners) + 1
 				topWinners = append(topWinners, map[string]interface{}{
-					"username":   row.UserID,
-					"fullname":   row.UserID,
-					"firstName":  row.UserID,
-					"lastName":   "",
-					"image":      nil,
-					"amountWon":  0,
-					"rank":       rowIndex,
+					"username":  row.UserID,
+					"fullname":  row.UserID,
+					"firstName": row.UserID,
+					"lastName":  "",
+					"image":     nil,
+					"amountWon": 0,
+					"rank":      rowIndex,
 				})
 			}
 		}
