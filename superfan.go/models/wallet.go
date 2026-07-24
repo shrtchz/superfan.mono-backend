@@ -19,6 +19,7 @@ type WalletTransaction struct {
 	UserID      int       `gorm:"column:userId" json:"userId"`
 	Amount      float64   `gorm:"column:amount" json:"amount"`
 	Type        *string   `gorm:"column:type" json:"type"`
+	AccountType *string   `gorm:"column:account_type" json:"account_type"`
 	Description *string   `gorm:"column:description" json:"description"`
 	TrxRef      *string   `gorm:"column:trx_ref" json:"trx_ref"`
 	CreatedAt   time.Time `gorm:"column:createdAt" json:"createdAt"`
