@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 func TestMergeLiveQuizSubmissionAnswers(t *testing.T) {
@@ -23,5 +25,15 @@ func TestMergeLiveQuizSubmissionAnswers(t *testing.T) {
 
 	if answers[0].QuizID != "quiz-1" || answers[0].SelectedAnswer != "Option A" {
 		t.Fatalf("unexpected payload: %+v", answers[0])
+	}
+}
+
+func TestShouldCreateLiveQuizRecord(t *testing.T) {
+	if !shouldCreateLiveQuizRecord(gorm.ErrRecordNotFound) {
+		t.Fatal("expected missing-record lookup to create a new row")
+	}
+
+	if shouldCreateLiveQuizRecord(nil) {
+		t.Fatal("expected existing record lookup to update instead of create")
 	}
 }
