@@ -5,6 +5,7 @@ import (
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 var DB *gorm.DB
@@ -12,7 +13,9 @@ var DB *gorm.DB
 // ConnectPostgres connects to the PostgreSQL database using the provided DATABASE_URL
 func ConnectPostgres(dsn string) {
 	var err error
-	DB, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	DB, err = gorm.Open(postgres.Open(dsn), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Info),
+	})
 	if err != nil {
 		log.Fatalf("Failed to connect to PostgreSQL database: %v", err)
 	}
