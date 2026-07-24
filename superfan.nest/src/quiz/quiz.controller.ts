@@ -15,6 +15,7 @@ import {
   Req,
   Res,
   UseGuards,
+  BadRequestException,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { EventEmitter2 } from '@nestjs/event-emitter';
