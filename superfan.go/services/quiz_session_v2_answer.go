@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgtype"
 	"gorm.io/gorm"
 	"quiz.superfan.com/apis/models"
 	"quiz.superfan.com/apis/utils"
@@ -116,15 +115,11 @@ func persistLiveQuizAnswer(userID int, quizID, selectedAnswer string, submittedA
 		return utils.DB.Create(&recordToCreate).Error
 	}
 
-	textArray := pgtype.Array[string]{
-		Elements: quizIDs,
-		Valid:    len(quizIDs) > 0,
-	}
-	return utils.DB.Model(&record).Updates(map[string]interface{}{
-		"quizIds":   textArray,
-		"answers":   answersJSON,
-		"updatedAt": submittedAt,
-	}).Error
+	// Update the record fields directly and use Save() instead of Updates()
+	record.QuizIDs = quizIDs
+	record.Answers = answersJSON
+	record.UpdatedAt = submittedAt
+	return utils.DB.Save(&record).Error
 }
 
 func shouldCreateLiveQuizRecord(queryErr error) bool {
