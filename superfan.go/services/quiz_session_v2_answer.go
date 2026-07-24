@@ -36,10 +36,23 @@ type ongoingLiveQuizRecord struct {
 	QuizIDs   []string        `gorm:"column:quizIds"`
 	Answers   json.RawMessage `gorm:"column:answers"`
 	Completed bool            `gorm:"column:completed"`
+	CreatedAt time.Time       `gorm:"column:createdAt"`
+	UpdatedAt time.Time       `gorm:"column:updatedAt"`
 }
 
 func (ongoingLiveQuizRecord) TableName() string {
 	return "ongoing_live_quiz"
+}
+
+func buildOngoingLiveQuizRecord(userID string, quizIDs []string, answersJSON []byte, submittedAt time.Time) ongoingLiveQuizRecord {
+	return ongoingLiveQuizRecord{
+		UserID:    userID,
+		QuizIDs:   quizIDs,
+		Answers:   answersJSON,
+		Completed: false,
+		CreatedAt: submittedAt,
+		UpdatedAt: submittedAt,
+	}
 }
 
 func mergeLiveQuizSubmissionAnswers(existingAnswers []byte, quizID, selectedAnswer string, submittedAt time.Time) ([]byte, error) {
@@ -97,12 +110,8 @@ func persistLiveQuizAnswer(userID int, quizID, selectedAnswer string, submittedA
 	}
 
 	if errors.Is(queryErr, gorm.ErrRecordNotFound) {
-		return utils.DB.Create(&ongoingLiveQuizRecord{
-			UserID:    userIDValue,
-			QuizIDs:   quizIDs,
-			Answers:   answersJSON,
-			Completed: false,
-		}).Error
+		recordToCreate := buildOngoingLiveQuizRecord(userIDValue, quizIDs, answersJSON, submittedAt)
+		return utils.DB.Create(&recordToCreate).Error
 	}
 
 	return utils.DB.Model(&record).Updates(map[string]interface{}{
