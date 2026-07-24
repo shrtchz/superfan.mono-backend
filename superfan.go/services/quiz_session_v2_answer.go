@@ -116,8 +116,10 @@ func persistLiveQuizAnswer(userID int, quizID, selectedAnswer string, submittedA
 		return utils.DB.Create(&recordToCreate).Error
 	}
 
-	textArray := pgtype.Array[string]{}
-	textArray.Set(quizIDs)
+	textArray := pgtype.Array[string]{
+		Elements: quizIDs,
+		Valid:    len(quizIDs) > 0,
+	}
 	return utils.DB.Model(&record).Updates(map[string]interface{}{
 		"quizIds":   textArray,
 		"answers":   answersJSON,
