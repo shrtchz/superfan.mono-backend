@@ -12,12 +12,18 @@ describe('buildLiveQuizLeaderboardRows', () => {
 
     const rows = buildLiveQuizLeaderboardRows(leaderboardEntries, ongoingQuizzes as any[]);
 
-    expect(rows).toEqual([
+    expect(rows).toEqual(
       expect.objectContaining({
-        quizId: 'quiz-123',
-        participants: 1,
-        status: 'NONE',
+        totalQuizzes: 1,
+        totalParticipants: 1,
+        leaderboard: [
+          expect.objectContaining({
+            quizId: 'quiz-123',
+            participants: 1,
+            status: 'NONE',
+          }),
+        ],
       }),
-    ]);
+    );
   });
 });

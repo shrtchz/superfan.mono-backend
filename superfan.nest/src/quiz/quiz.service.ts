@@ -573,7 +573,6 @@ async submitQuiz(
     isCompleted: true,
     completedAt: now,
     totalEarning: amountInNaira,
-    quizTimeSeconds,
     quizTime: formattedQuizTime,
     baseScore,
     accuracyBonus: accuracyGain,
