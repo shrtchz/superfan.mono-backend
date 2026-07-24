@@ -81,14 +81,14 @@ func persistLiveQuizAnswer(userID int, quizID, selectedAnswer string, submittedA
 
 	userIDValue := strconv.Itoa(userID)
 	var record ongoingLiveQuizRecord
-	err := utils.DB.Where(`"userId" = ? AND "completed" = ?`, userIDValue, false).First(&record).Error
-	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-		return err
+	queryErr := utils.DB.Where(`"userId" = ? AND "completed" = ?`, userIDValue, false).First(&record).Error
+	if queryErr != nil && !errors.Is(queryErr, gorm.ErrRecordNotFound) {
+		return queryErr
 	}
 
-	answersJSON, err := mergeLiveQuizSubmissionAnswers(record.Answers, quizID, selectedAnswer, submittedAt)
-	if err != nil {
-		return err
+	answersJSON, mergeErr := mergeLiveQuizSubmissionAnswers(record.Answers, quizID, selectedAnswer, submittedAt)
+	if mergeErr != nil {
+		return mergeErr
 	}
 
 	quizIDs := append([]string{}, record.QuizIDs...)
@@ -96,7 +96,7 @@ func persistLiveQuizAnswer(userID int, quizID, selectedAnswer string, submittedA
 		quizIDs = append(quizIDs, quizID)
 	}
 
-	if errors.Is(err, gorm.ErrRecordNotFound) {
+	if errors.Is(queryErr, gorm.ErrRecordNotFound) {
 		return utils.DB.Create(&ongoingLiveQuizRecord{
 			UserID:    userIDValue,
 			QuizIDs:   quizIDs,
@@ -110,6 +110,10 @@ func persistLiveQuizAnswer(userID int, quizID, selectedAnswer string, submittedA
 		"answers":   answersJSON,
 		"updatedAt": submittedAt,
 	}).Error
+}
+
+func shouldCreateLiveQuizRecord(queryErr error) bool {
+	return errors.Is(queryErr, gorm.ErrRecordNotFound)
 }
 
 func containsString(values []string, target string) bool {
