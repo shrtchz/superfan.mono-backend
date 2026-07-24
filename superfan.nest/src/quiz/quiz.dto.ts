@@ -1,14 +1,17 @@
 import { TestLevel } from '@prisma/client';
 import { Transform, Type } from 'class-transformer';
 import {
+  ArrayNotEmpty,
   IsArray,
   IsBoolean,
   IsEnum,
+  IsInt,
   IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
   Matches,
+  Min,
   ValidateNested,
 } from 'class-validator';
 
@@ -266,9 +269,16 @@ export class SubmitQuizDto {
   @IsNotEmpty()
   rewardType: string;
 
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  quizTimeSeconds?: number;
+
+  @IsOptional()
   @IsString()
   @IsNotEmpty()
-  quizTime: string;
+  quizTime?: string;
 
   @IsOptional()
   @Type(() => Number)

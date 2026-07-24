@@ -111,11 +111,30 @@ export class QuizController {
 
   @Post('/submit-quiz')
   async submitQuiz(@Body() body: SubmitQuizDto) {
-    const { userId, rewardType, quizTime, responses, ad_bonuses = 0 } = body;
+    const {
+      userId,
+      rewardType,
+      quizTimeSeconds,
+      quizTime,
+      responses,
+      ad_bonuses = 0,
+    } = body;
+
+    const effectiveQuizTimeSeconds =
+      typeof quizTimeSeconds === 'number' && Number.isFinite(quizTimeSeconds)
+        ? quizTimeSeconds
+        : this.quizService.parseQuizTimeToSeconds(quizTime);
+
+    if (effectiveQuizTimeSeconds < 1) {
+      throw new BadRequestException(
+        'quizTimeSeconds must be provided and at least 1 second',
+      );
+    }
+
     return this.quizService.submitQuiz(
       userId,
       rewardType,
-      quizTime,
+      effectiveQuizTimeSeconds,
       ad_bonuses,
       responses,
     );

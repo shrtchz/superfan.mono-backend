@@ -8,7 +8,7 @@ import { JsonArray } from '@prisma/client/runtime/client';
 import { firstValueFrom } from 'rxjs';
 import { EarningStatus } from '../common/enums/task.enum';
 import { QuizQuestion, UserAnswer } from '../common/utils/types';
-import { getAccuracyBonus, getSpeedBonus, getStreakBonus } from '../common/utils/utils';
+import { getAccuracyBonus, getSpeedBonus, getStreakBonus, formatSecondsToMMSS } from '../common/utils/utils';
 import { PaymentService } from '../payment/payment.service';
 import { prisma } from '../prisma/prisma';
 import { UserService } from '../user/user.service';
@@ -114,6 +114,28 @@ export class QuizService {
       selectedAnswer: String(row.selectedAnswer),
       submittedAt,
     };
+  }
+
+  public parseQuizTimeToSeconds(value?: string | number | null): number {
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+      return Math.max(0, Math.floor(value));
+    }
+
+    const raw = String(value ?? '').trim();
+    if (!raw) {
+      return 0;
+    }
+
+    if (/^\d+$/.test(raw)) {
+      return Number(raw);
+    }
+
+    const parts = raw.split(':').map((part) => Number(part.trim()));
+    if (parts.length === 2 && Number.isFinite(parts[0]) && Number.isFinite(parts[1])) {
+      return Math.max(0, parts[0] * 60 + parts[1]);
+    }
+
+    return 0;
   }
 
   private parseLiveQuizPayload(response: any) {
@@ -288,12 +310,16 @@ export class QuizService {
 async submitQuiz(
   userId: string,
   rewardType: string,
-  quizTime: string,
+  quizTimeSeconds: number,
   ad_bonuses: number,
   responses: SubmitQuizDto['responses'],
 ) {
   if (!Array.isArray(responses) || responses.length === 0) {
     throw new BadRequestException('At least one quiz response is required');
+  }
+
+  if (!Number.isFinite(quizTimeSeconds) || quizTimeSeconds < 0) {
+    throw new BadRequestException('quizTimeSeconds must be a valid non-negative number');
   }
 
   const objectIdPattern = /^[a-f\d]{24}$/i;
@@ -336,6 +362,8 @@ async submitQuiz(
     );
   }
 
+  const normalizedQuizTime = String(quizTimeSeconds);
+
   let response;
   try {
     response = await firstValueFrom(
@@ -343,7 +371,7 @@ async submitQuiz(
         userId,
         responses,
         rewardType,
-        quizTime,
+        quizTime: normalizedQuizTime,
       }),
     );
   } catch (error: any) {
@@ -398,8 +426,9 @@ async submitQuiz(
   const get_ongoing_quiz = await this.getOngoingQuiz(Number(userId));
   const ongoingQuestions = (get_ongoing_quiz?.questions as JsonArray) || [];
   const totalQuestions = ongoingQuestions.length || submissionResponses?.length || 0;
+  const attemptedAnswers = submissionResponses?.length || 0;
   const baseScore = Number(totalEarning ?? 0);
-  const speed_bonus = getSpeedBonus(quizTime);
+  const speed_bonus = getSpeedBonus(quizTimeSeconds);
   const accuracy_bonus = getAccuracyBonus(correctAnswers, totalQuestions);
   const streakData = await this.userService.updateDailyStreak(Number(userId));
   const { streakBonus, dailyStreak } = getStreakBonus({
@@ -416,6 +445,8 @@ async submitQuiz(
   const amountInNaira = totalPoints / 1000;
 
   // 6. Save leaderboard rows (only earning > 0)
+  const formattedQuizTime = formatSecondsToMMSS(quizTimeSeconds);
+
   const leaderboardRows = (submissionResponses || [])
     .map((item: any) => ({
       userId: String(userId),
@@ -427,7 +458,8 @@ async submitQuiz(
       selectedAnswer: item.selectedAnswer ?? null,
       correctAnswer: item.correctAnswer ?? null,
       earning: Number(item.earning ?? 0),
-      quizTime: String(quizTime),
+      quizTimeSeconds,
+      quizTime: formattedQuizTime,
       submittedAt: submittedAt ? new Date(submittedAt) : new Date(),
     }))
     .filter((row) => row.earning > 0);
@@ -459,7 +491,8 @@ async submitQuiz(
     isCompleted: true,
     completedAt: now,
     totalEarning: amountInNaira,
-    quizTime: String(quizTime),
+    quizTimeSeconds,
+    quizTime: formattedQuizTime,
     baseScore,
     accuracyBonus: accuracyGain,
     speedBonus: speedGain,
@@ -513,10 +546,15 @@ async submitQuiz(
     score,
   );
 
+  const scoreText = `${correctAnswers}/${totalQuestions}`;
+
   // 9. Return enriched response
   return {
     ...response.data,
+    score: scoreText,
     totalQuestions: totalQuestions,
+    correctAnswers,
+    attemptedAnswers,
     streak: {
       current: dailyStreak,
       flameIcon: '🔥',
@@ -602,10 +640,11 @@ async quitQuiz(
   let submitResult: any = null;
 
   if (responses.length > 0) {
+    const effectiveQuizTimeSeconds = this.parseQuizTimeToSeconds(quizTime);
     submitResult = await this.submitQuiz(
       String(userId),
       rewardType,
-      quizTime,
+      effectiveQuizTimeSeconds,
       ad_bonuses,
       responses,
     );
@@ -1478,7 +1517,11 @@ async hasSubmittedLiveQuizForStream(
       }
     }); 
 
-    return completedQuiz;
+    if (!completedQuiz) return completedQuiz;
+    return {
+      ...completedQuiz,
+      quizTime: formatSecondsToMMSS((completedQuiz as any).quizTime),
+    };
   }
 
       async getAllCompletedQuiz() {
@@ -1487,18 +1530,57 @@ async hasSubmittedLiveQuizForStream(
       where: {
         isCompleted: true,
       },
+      include: {
+        user: {
+          select: {
+            username: true,
+            firstName: true,
+            lastName: true,
+          },
+        },
+      },
     }); 
 
-    return completedQuiz;
+    return completedQuiz.map((q) => {
+      const fullName = [q.user?.firstName, q.user?.lastName]
+        .filter(Boolean)
+        .join(" ")
+        .trim();
+
+      const answers = Array.isArray(q.answers) ? q.answers : [];
+      const totalQuestions =
+        q.totalQuestions ??
+        (Array.isArray(q.questions) ? q.questions.length : 0);
+      const correctAnswers = answers.filter((answer: any) => {
+        if (typeof answer?.isCorrect === "boolean") {
+          return answer.isCorrect;
+        }
+        if (
+          answer?.selectedAnswer != null &&
+          answer?.correctAnswer != null
+        ) {
+          return String(answer.selectedAnswer) === String(answer.correctAnswer);
+        }
+        return false;
+      }).length;
+
+      return {
+        ...q,
+        username: q.user?.username ?? String(q.userId),
+        fullName: fullName || undefined,
+        quizTime: formatSecondsToMMSS((q as any).quizTime),
+        score: `${correctAnswers}/${totalQuestions}`,
+        totalQuestions,
+        correctAnswers,
+      };
+    });
   }
 
-
-
-/**
- * Create a quick-start quiz session from a pack already fetched from Go.
- * Nest no longer needs to call Go when the client supplies the pack.
- */
-async startQuickQuizSession(
+  /**
+   * Create a quick-start quiz session from a pack already fetched from Go.
+   * Nest no longer needs to call Go when the client supplies the pack.
+   */
+  async startQuickQuizSession(
   userId: number,
   pack: Record<string, any>,
   isRandom = true,

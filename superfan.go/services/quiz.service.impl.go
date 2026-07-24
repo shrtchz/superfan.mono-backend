@@ -1179,7 +1179,9 @@ func (u *QuizServiceImpl) SubmitQuiz(
 	}
 
 	return map[string]interface{}{
-		"submission": submission,
+		"submission":     submission,
+		"correctAnswers": totalScore,
+		"totalQuestions": len(request.Responses),
 	}, nil
 }
 
