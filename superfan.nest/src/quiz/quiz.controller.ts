@@ -489,14 +489,19 @@ async getOngoingLiveQuiz(@Param('id', ParseIntPipe) id: number) {
     };
   }
 
+  @Public()
   @Post('live/:id/answer')
   async submitLiveAnswerByQuizId(
     @Req() req: any,
     @Param('id') quizId: string,
     @Body() dto: SubmitLiveAnswerDto,
   ) {
+    if (!req.user?.id && !dto.userId) {
+      throw new BadRequestException('userId is required for public live answer submission');
+    }
+
     const data = await this.quizService.submitLiveAnswerByQuizId(
-      req.user.id,
+      req.user?.id ?? dto.userId,
       quizId,
       dto.selectedAnswer,
     );
