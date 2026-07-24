@@ -15,8 +15,9 @@ func RegisterLiveQuizV2Routes(rg *gin.RouterGroup, qc *QuizController) {
 	quizroute.GET("/live/:id", qc.GetLiveQuiz)
 	quizroute.GET("/live-answer/:id", middleware.OptionalAuth(), qc.GetLiveQuizAnswerById)
 
-	// Live quiz answer submission requires auth and is routed through Go.
-	quizroute.POST("/live/:id/answer", middleware.AuthRequired(), qc.SubmitLiveQuizAnswer)
+	// Live quiz answer submission is public in v2 but can use auth if available.
+	quizroute.POST("/live/:id/answer", middleware.OptionalAuth(), qc.SubmitLiveQuizAnswer)
+	quizroute.POST("/live-quiz-answer/:id", middleware.OptionalAuth(), qc.SubmitLiveQuizAnswer)
 
 	// Make POST/PATCH/PUT/DELETE public for live quizzes (no auth middleware)
 	quizroute.POST("/live", qc.CreateLiveQuiz)

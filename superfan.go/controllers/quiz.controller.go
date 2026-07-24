@@ -485,20 +485,11 @@ func (qc *QuizController) SubmitLiveQuizAnswer(ctx *gin.Context) {
 		return
 	}
 
-	userIDValue, ok := ctx.Get(middleware.ContextUserIDKey)
-	if !ok {
-		utils.SendError(ctx, http.StatusUnauthorized, "UNAUTHORIZED", "user authentication is required")
-		return
-	}
-
-	userID, ok := userIDValue.(int)
-	if !ok || userID <= 0 {
-		utils.SendError(ctx, http.StatusUnauthorized, "UNAUTHORIZED", "invalid authenticated user")
-		return
-	}
-
 	var body struct {
-		SelectedAnswer string `json:"selectedAnswer"`
+		UserID              int     `json:"userId"`
+		SelectedAnswer      string  `json:"selectedAnswer"`
+		SelectedOptionIndex *int    `json:"selectedOptionIndex"`
+		SelectedOptionLabel *string `json:"selectedOptionLabel"`
 	}
 	if err := ctx.ShouldBindJSON(&body); err != nil {
 		utils.SendError(ctx, http.StatusBadRequest, "BAD_REQUEST", err.Error())
@@ -506,6 +497,27 @@ func (qc *QuizController) SubmitLiveQuizAnswer(ctx *gin.Context) {
 	}
 	if strings.TrimSpace(body.SelectedAnswer) == "" {
 		utils.SendError(ctx, http.StatusBadRequest, "BAD_REQUEST", "selectedAnswer is required")
+		return
+	}
+
+	userIDValue, ok := ctx.Get(middleware.ContextUserIDKey)
+	userID := 0
+	if ok {
+		userID, ok = userIDValue.(int)
+		if !ok || userID <= 0 {
+			utils.SendError(ctx, http.StatusUnauthorized, "UNAUTHORIZED", "invalid authenticated user")
+			return
+		}
+	}
+
+	if userID == 0 {
+		if body.UserID <= 0 {
+			utils.SendError(ctx, http.StatusBadRequest, "BAD_REQUEST", "userId is required when no auth token is provided")
+			return
+		}
+		userID = body.UserID
+	} else if body.UserID > 0 && body.UserID != userID {
+		utils.SendError(ctx, http.StatusUnauthorized, "UNAUTHORIZED", "submitted userId does not match authenticated user")
 		return
 	}
 
