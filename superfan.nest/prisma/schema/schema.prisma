@@ -392,7 +392,8 @@ model OngoingQuiz {
   speedBonus          Int? // bonus points for speed
   streakMultiplier    Int? // multiplier for consecutive correct answers
   adBonuses           Int? // bonus points from ads
-  quizTime            String? // time taken by user in seconds
+  quizTimeSeconds     Int? // time taken by user in seconds (authoritative)
+  quizTime            String? // formatted time taken by user in MM:SS
   timeRemaining       Int // countdown tracker in seconds
 
   // Questions stored as JSON array
@@ -512,6 +513,7 @@ model QuizLeaderboard {
   testLevel      String
   score          Int?
   selectedAnswer String
+  quizTimeSeconds Int?
   quizTime       String?
   accuracyBonus  String?
   position       Int?
