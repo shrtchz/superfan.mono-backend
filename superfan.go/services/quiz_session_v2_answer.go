@@ -285,22 +285,31 @@ func (s *QuizSessionV2Service) GradeLiveAnswer(req models.SaveAnswerV2Request) (
 	}
 
 	answerPayload, err := s.quizService.GetQuizAnswerById(questionID)
+	question := map[string]interface{}{}
+	var correctAnswer string
+	var options []string
 	if err != nil {
-		return nil, utils.NewAppError(http.StatusUnprocessableEntity, "ANSWER_LOOKUP_FAILED", "Unable to verify answer for this question.")
+		liveQuiz, liveErr := s.quizService.GetLiveQuiz(questionID)
+		if liveErr != nil {
+			return nil, utils.NewAppError(http.StatusUnprocessableEntity, "ANSWER_LOOKUP_FAILED", "Unable to verify answer for this question.")
+		}
+		correctAnswer = liveQuiz.Answer
+		options = liveQuiz.Options
+	} else {
+		correctAnswer = stringField(answerPayload, "answer")
+		if opts, ok := answerPayload["options"]; ok {
+			question["options"] = opts
+		}
 	}
 
-	correctAnswer := stringField(answerPayload, "answer")
 	if correctAnswer == "" {
 		return nil, utils.NewAppError(http.StatusUnprocessableEntity, "ANSWER_LOOKUP_FAILED", "Correct answer was not found for this question.")
 	}
 
-	// Build a minimal question object for grading helpers
-	question := map[string]interface{}{}
-	if opts, ok := answerPayload["options"]; ok {
-		question["options"] = opts
+	if len(options) == 0 {
+		options = stringSliceField(question["options"])
 	}
 
-	options := stringSliceField(question["options"])
 	isCorrect := gradeAnswer(selectedAnswer, correctAnswer, options)
 	correctDisplay := buildCorrectAnswerDisplay(correctAnswer, options)
 	earning := questionEarningValue(question, isCorrect)
