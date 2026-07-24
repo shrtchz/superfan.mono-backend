@@ -174,13 +174,33 @@ func BuildLiveQuizCountdownLabel(startAt, finishAt time.Time, now time.Time, ove
 	return resolveQuizCountdownLabel(defaultLabel, phase, overrideBefore, overrideDuring, overrideAfter)
 }
 
+func buildTopWinnerCandidatesFromAttempts(attempts []models.LiveQuizAttempt) []map[string]interface{} {
+	winners := make([]map[string]interface{}, 0, len(attempts))
+	for _, attempt := range attempts {
+		if !attempt.IsWinner {
+			continue
+		}
+		rowIndex := len(winners) + 1
+		winners = append(winners, map[string]interface{}{
+			"username":  attempt.UserID,
+			"fullname":  attempt.UserID,
+			"firstName": attempt.UserID,
+			"lastName":  "",
+			"image":     nil,
+			"amountWon": attempt.Earning,
+			"rank":      rowIndex,
+		})
+	}
+	return winners
+}
+
 func buildLiveQuizLedgerMeta(quizID string, status string) map[string]interface{} {
 	meta := map[string]interface{}{
-		"participants":  0,
-		"winnerCount":   0,
-		"topWinners":    []map[string]interface{}{},
-		"rewardStatus":  "pending",
-		"payoutStatus":  "pending",
+		"participants": 0,
+		"winnerCount":  0,
+		"topWinners":   []map[string]interface{}{},
+		"rewardStatus": "pending",
+		"payoutStatus": "pending",
 	}
 
 	if strings.TrimSpace(quizID) == "" {
@@ -201,6 +221,7 @@ func buildLiveQuizLedgerMeta(quizID string, status string) map[string]interface{
 			}
 		}
 		meta["winnerCount"] = winnerCount
+		meta["topWinners"] = buildTopWinnerCandidatesFromAttempts(attempts)
 		if strings.EqualFold(status, "closed") && paid {
 			meta["rewardStatus"] = "paid"
 			meta["payoutStatus"] = "paid"
@@ -222,13 +243,13 @@ func buildLiveQuizLedgerMeta(quizID string, status string) map[string]interface{
 				winnerCount++
 				rowIndex := len(topWinners) + 1
 				topWinners = append(topWinners, map[string]interface{}{
-					"username":   row.UserID,
-					"fullname":   row.UserID,
-					"firstName":  row.UserID,
-					"lastName":   "",
-					"image":      nil,
-					"amountWon":  0,
-					"rank":       rowIndex,
+					"username":  row.UserID,
+					"fullname":  row.UserID,
+					"firstName": row.UserID,
+					"lastName":  "",
+					"image":     nil,
+					"amountWon": 0,
+					"rank":      rowIndex,
 				})
 			}
 		}
