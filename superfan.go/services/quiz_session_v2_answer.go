@@ -58,10 +58,10 @@ func findQuestionInSession(record *models.OngoingQuiz, questionID string) (map[s
 	for _, question := range questions {
 		if question.ID == questionID {
 			return map[string]interface{}{
-				"id":       question.ID,
-				"question": question.Text,
-				"options":  question.Options,
-				"earning":  fmt.Sprint(question.Earning),
+				"id":        question.ID,
+				"question":  question.Text,
+				"options":   question.Options,
+				"earning":   fmt.Sprint(question.Earning),
 				"testLevel": question.Level,
 			}, nil
 		}
@@ -240,9 +240,9 @@ func (s *QuizSessionV2Service) SaveAnswer(sessionID string, req models.SaveAnswe
 	if err := utils.DB.Model(&models.OngoingQuiz{}).
 		Where(`"id" = ? AND "userId" = ? AND "isCompleted" = ?`, sessionID, req.UserID, false).
 		Updates(map[string]interface{}{
-			"answers":       json.RawMessage(answersJSON),
-			"currentIndex":  currentIndex,
-			"updatedAt":     now,
+			"answers":      json.RawMessage(answersJSON),
+			"currentIndex": currentIndex,
+			"updatedAt":    now,
 		}).Error; err != nil {
 		return nil, utils.NewAppError(http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to save answer")
 	}
