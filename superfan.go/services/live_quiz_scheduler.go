@@ -290,6 +290,7 @@ func (f *LiveQuizFinaliser) finaliseQuiz(raw bson.M, quizID string) {
 				Earning:     earning,
 				IsWinner:    isWinner,
 				IsCompleted: true,
+				StartedAt:   &now,
 				CompletedAt: &now,
 			}).
 			FirstOrCreate(&models.LiveQuizAttempt{}).Error; err != nil {
