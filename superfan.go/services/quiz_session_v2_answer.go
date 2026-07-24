@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgtype"
 	"gorm.io/gorm"
 	"quiz.superfan.com/apis/models"
 	"quiz.superfan.com/apis/utils"
@@ -116,8 +116,10 @@ func persistLiveQuizAnswer(userID int, quizID, selectedAnswer string, submittedA
 		return utils.DB.Create(&recordToCreate).Error
 	}
 
+	textArray := pgtype.Array[string]{}
+	textArray.Set(quizIDs)
 	return utils.DB.Model(&record).Updates(map[string]interface{}{
-		"quizIds":   pq.Array(quizIDs),
+		"quizIds":   textArray,
 		"answers":   answersJSON,
 		"updatedAt": submittedAt,
 	}).Error
