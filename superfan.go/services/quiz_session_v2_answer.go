@@ -33,7 +33,7 @@ type liveQuizSubmission struct {
 type ongoingLiveQuizRecord struct {
 	ID        int             `gorm:"column:id"`
 	UserID    string          `gorm:"column:userId"`
-	QuizIDs   []string        `gorm:"column:quizIds"`
+	QuizIDs   []string        `gorm:"column:quizIds;type:text[]"`
 	Answers   json.RawMessage `gorm:"column:answers"`
 	Completed bool            `gorm:"column:completed"`
 	CreatedAt time.Time       `gorm:"column:createdAt"`
