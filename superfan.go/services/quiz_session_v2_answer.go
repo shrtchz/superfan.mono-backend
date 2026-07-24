@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lib/pq"
 	"gorm.io/gorm"
 	"quiz.superfan.com/apis/models"
 	"quiz.superfan.com/apis/utils"
@@ -110,12 +111,13 @@ func persistLiveQuizAnswer(userID int, quizID, selectedAnswer string, submittedA
 	}
 
 	if errors.Is(queryErr, gorm.ErrRecordNotFound) {
+		// For create operations, we need to ensure the QuizIDs are properly set on the model
 		recordToCreate := buildOngoingLiveQuizRecord(userIDValue, quizIDs, answersJSON, submittedAt)
 		return utils.DB.Create(&recordToCreate).Error
 	}
 
 	return utils.DB.Model(&record).Updates(map[string]interface{}{
-		"quizIds":   quizIDs,
+		"quizIds":   pq.Array(quizIDs),
 		"answers":   answersJSON,
 		"updatedAt": submittedAt,
 	}).Error
