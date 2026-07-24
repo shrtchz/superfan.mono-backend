@@ -239,7 +239,7 @@ async handleExpiredQuizzes() {
           await this.quizService.submitQuiz(
             String(quiz.userId),
             quiz.testQuiz,
-            String(timeUsed),
+            timeUsed,
             0, // ad bonuses
             responses,
           );
