@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -173,6 +174,105 @@ func BuildLiveQuizCountdownLabel(startAt, finishAt time.Time, now time.Time, ove
 	return resolveQuizCountdownLabel(defaultLabel, phase, overrideBefore, overrideDuring, overrideAfter)
 }
 
+func buildLiveQuizLedgerMeta(quizID string, status string) map[string]interface{} {
+	meta := map[string]interface{}{
+		"participants":  0,
+		"winnerCount":   0,
+		"topWinners":    []map[string]interface{}{},
+		"rewardStatus":  "pending",
+		"payoutStatus":  "pending",
+	}
+
+	if strings.TrimSpace(quizID) == "" {
+		return meta
+	}
+
+	var attempts []models.LiveQuizAttempt
+	if err := utils.DB.Where(`"quizId" = ?`, quizID).Order(`"createdAt" ASC`).Find(&attempts).Error; err == nil && len(attempts) > 0 {
+		meta["participants"] = len(attempts)
+		winnerCount := 0
+		paid := false
+		for _, attempt := range attempts {
+			if attempt.IsWinner {
+				winnerCount++
+			}
+			if attempt.IsCompleted && attempt.Earning > 0 {
+				paid = true
+			}
+		}
+		meta["winnerCount"] = winnerCount
+		if strings.EqualFold(status, "closed") && paid {
+			meta["rewardStatus"] = "paid"
+			meta["payoutStatus"] = "paid"
+			return meta
+		}
+		return meta
+	}
+
+	var leaderboardRows []models.LiveQuizLeaderboardRow
+	if err := utils.DB.Where(`"quizId" = ?`, quizID).Order(`"createdAt" DESC`).Find(&leaderboardRows).Error; err == nil && len(leaderboardRows) > 0 {
+		participantCount := 0
+		winnerCount := 0
+		topWinners := make([]map[string]interface{}, 0)
+		for _, row := range leaderboardRows {
+			if row.Participants > participantCount {
+				participantCount = row.Participants
+			}
+			if row.IsWinner {
+				winnerCount++
+				rowIndex := len(topWinners) + 1
+				topWinners = append(topWinners, map[string]interface{}{
+					"username":   row.UserID,
+					"fullname":   row.UserID,
+					"firstName":  row.UserID,
+					"lastName":   "",
+					"image":      nil,
+					"amountWon":  0,
+					"rank":       rowIndex,
+				})
+			}
+		}
+		meta["participants"] = participantCount
+		meta["winnerCount"] = winnerCount
+		meta["topWinners"] = topWinners
+		rewardStatus := strings.ToLower(strings.TrimSpace(leaderboardRows[0].RewardStatus))
+		if rewardStatus == "" {
+			rewardStatus = "pending"
+		}
+		meta["rewardStatus"] = rewardStatus
+		meta["payoutStatus"] = rewardStatus
+		return meta
+	}
+
+	var sessions []struct {
+		UserID  string          `gorm:"column:userId"`
+		Answers json.RawMessage `gorm:"column:answers"`
+	}
+	if err := utils.DB.Raw(`SELECT "userId", "answers" FROM "ongoing_live_quiz" WHERE ? = ANY("quizIds")`, quizID).Scan(&sessions).Error; err == nil {
+		participantSet := make(map[string]struct{})
+		for _, session := range sessions {
+			if len(session.Answers) == 0 {
+				continue
+			}
+			var answers []struct {
+				QuizID         string `json:"quizId"`
+				SelectedAnswer string `json:"selectedAnswer"`
+			}
+			if err := json.Unmarshal(session.Answers, &answers); err != nil {
+				continue
+			}
+			for _, answer := range answers {
+				if answer.QuizID == quizID && strings.TrimSpace(answer.SelectedAnswer) != "" {
+					participantSet[session.UserID] = struct{}{}
+				}
+			}
+		}
+		meta["participants"] = len(participantSet)
+	}
+
+	return meta
+}
+
 func buildLiveQuizResponseMap(raw bson.M, now time.Time) map[string]interface{} {
 	id := rawObjectIDHex(raw["_id"])
 	startAt := rawTime(raw["quizScheduleDate"])
@@ -200,6 +300,8 @@ func buildLiveQuizResponseMap(raw bson.M, now time.Time) map[string]interface{} 
 		overrideAfter = rawString(raw["customCountdownLabel"])
 	}
 
+	ledgerMeta := buildLiveQuizLedgerMeta(id, status)
+
 	return map[string]interface{}{
 		"id":                         id,
 		"question":                   rawString(raw["question"]),
@@ -224,6 +326,11 @@ func buildLiveQuizResponseMap(raw bson.M, now time.Time) map[string]interface{} 
 		"customCountdownLabelBefore": strings.TrimSpace(overrideBefore),
 		"customCountdownLabelDuring": strings.TrimSpace(overrideDuring),
 		"customCountdownLabelAfter":  strings.TrimSpace(overrideAfter),
+		"participants":               ledgerMeta["participants"],
+		"winnerCount":                ledgerMeta["winnerCount"],
+		"topWinners":                 ledgerMeta["topWinners"],
+		"rewardStatus":               ledgerMeta["rewardStatus"],
+		"payoutStatus":               ledgerMeta["payoutStatus"],
 	}
 }
 

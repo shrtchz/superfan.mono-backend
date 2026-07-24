@@ -141,6 +141,24 @@ func (LiveQuizAttempt) TableName() string {
 	return "live_quiz_attempts"
 }
 
+type LiveQuizLeaderboardRow struct {
+	UserID       string    `gorm:"column:userId" json:"userId"`
+	QuizID       string    `gorm:"column:quizId" json:"quizId"`
+	Question     string    `gorm:"column:question" json:"question"`
+	Answer       string    `gorm:"column:answer" json:"answer"`
+	RewardType   string    `gorm:"column:rewardType" json:"rewardType"`
+	IsWinner     bool      `gorm:"column:isWinner" json:"isWinner"`
+	Participants int       `gorm:"column:participants" json:"participants"`
+	UnitPrize    int       `gorm:"column:unitPrize" json:"unitPrize"`
+	RewardStatus string    `gorm:"column:rewardStatus" json:"rewardStatus"`
+	QuizDate     time.Time `gorm:"column:quizDate" json:"quizDate"`
+	CreatedAt    time.Time `gorm:"column:createdAt" json:"createdAt"`
+}
+
+func (LiveQuizLeaderboardRow) TableName() string {
+	return "LiveQuizLeaderboard"
+}
+
 type QuizSubmissionDoc struct {
 	ID             bson.ObjectID `bson:"_id,omitempty"`
 	UserID         string        `bson:"userId"`
