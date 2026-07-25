@@ -181,12 +181,62 @@ func buildTopWinnerCandidatesFromAttempts(attempts []models.LiveQuizAttempt) []m
 			continue
 		}
 		rowIndex := len(winners) + 1
+		userName := attempt.UserID
+		fullName := attempt.UserID
+		firstName := attempt.UserID
+		lastName := ""
+		profilePicture := ""
+
+		if userID, err := strconv.Atoi(strings.TrimSpace(attempt.UserID)); err == nil {
+			var user models.User
+			if err := utils.DB.Where(`"id" = ?`, userID).First(&user).Error; err == nil {
+				var clerkUserID string
+				if user.ClerkUserID != nil {
+					clerkUserID = *user.ClerkUserID
+				}
+				if user.ProfilePicture != nil {
+					profilePicture = *user.ProfilePicture
+				}
+				if trimmed := strings.TrimSpace(user.FirstName); trimmed != "" {
+					firstName = trimmed
+				}
+				if trimmed := strings.TrimSpace(user.LastName); trimmed != "" {
+					lastName = trimmed
+				}
+				if trimmed := strings.TrimSpace(user.Username); trimmed != "" {
+					userName = trimmed
+				}
+				if trimmed := strings.TrimSpace(user.Email); trimmed != "" {
+					if fullName == attempt.UserID {
+						fullName = trimmed
+					}
+					if userName == attempt.UserID {
+						userName = trimmed
+					}
+				}
+				if trimmed := strings.TrimSpace(clerkUserID); trimmed != "" {
+					if userName == attempt.UserID {
+						userName = trimmed
+					}
+					if fullName == attempt.UserID {
+						fullName = trimmed
+					}
+				}
+				if trimmed := strings.TrimSpace(strings.TrimSpace(firstName) + " " + strings.TrimSpace(lastName)); trimmed != "" {
+					fullName = trimmed
+				}
+				if profilePicture != "" {
+					// keep profile image in payload if available
+				}
+			}
+		}
+
 		winners = append(winners, map[string]interface{}{
-			"username":  attempt.UserID,
-			"fullname":  attempt.UserID,
-			"firstName": attempt.UserID,
-			"lastName":  "",
-			"image":     nil,
+			"username":  userName,
+			"fullname":  fullName,
+			"firstName": firstName,
+			"lastName":  lastName,
+			"image":     profilePicture,
 			"amountWon": attempt.Earning,
 			"rank":      rowIndex,
 		})

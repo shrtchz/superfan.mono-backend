@@ -5,7 +5,11 @@ import "time"
 // User maps to Postgres "User" table (Prisma User).
 type User struct {
 	ID                 int        `gorm:"column:id;primaryKey" json:"id"`
+	FirstName          string     `gorm:"column:firstName" json:"firstName"`
+	LastName           string     `gorm:"column:lastName" json:"lastName"`
 	Email              string     `gorm:"column:email" json:"email"`
+	Username           string     `gorm:"column:username" json:"username"`
+	ProfilePicture     *string    `gorm:"column:profilePicture" json:"profilePicture"`
 	ClerkUserID        *string    `gorm:"column:clerkUserId" json:"clerkUserId"`
 	RoleName           *string    `gorm:"column:roleName" json:"roleName"`
 	SubscriptionPlan   *string    `gorm:"column:subscriptionPlan" json:"subscriptionPlan"`
