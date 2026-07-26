@@ -42,6 +42,7 @@ import {
   CreateBushaCustomerDto,
   CreateBushaQuoteDto,
   CreateBushaTransferDto,
+  CreditWalletDto,
   CreatePaymentMethodDto,
   CreatePaymentPlanDto,
   CreatePayoutQuoteDto,
