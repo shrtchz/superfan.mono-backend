@@ -449,8 +449,8 @@ async getWalletTransactions(
   }
 
   @Post('/credit-wallet')
-  async creditWallet(@Body() userId: number, @Body() amount: number, @Body() title: string, @Body() description: string) {
-    return this.walletService.creditWallet(userId, amount, title, description);
+  async creditWallet(@Body() dto: CreditWalletDto) {
+    return this.walletService.creditWallet(dto.userId, dto.amount, dto.title, dto.description);
   }
 
   @Post('/wallet/credit/test-quiz-reward')
