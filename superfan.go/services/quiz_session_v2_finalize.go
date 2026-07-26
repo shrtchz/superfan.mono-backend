@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -420,12 +421,34 @@ func creditQuizReward(tx *gorm.DB, userID int, amountInNaira float64, subject st
 	}
 
 	pointRef := fmt.Sprintf("POINTS_%d", now.UnixNano())
-	return tx.Create(&models.Point{
+	if err := tx.Create(&models.Point{
 		ID:        uuid.NewString(),
 		UserID:    userID,
 		Points:    score,
 		Reference: &pointRef,
 		Type:      "quiz_reward",
 		CreatedAt: now,
-	}).Error
+	}).Error; err != nil {
+		return err
+	}
+
+	// Send notification for wallet credit from quiz
+	if nestBaseURL := utils.GetEnvWithKey("NEST_BASE_URL"); nestBaseURL != "" {
+		payload := map[string]interface{}{
+			"userId":  userID,
+			"title":   fmt.Sprintf("Wallet Credit - Manual"),
+			"message": fmt.Sprintf("Your wallet has been credited with ₦%.0f from %s Quiz", amountInNaira, subject),
+			"type":    "wallet_credit_manual",
+		}
+		body, _ := json.Marshal(payload)
+		go func() {
+			http.Post(
+				fmt.Sprintf("%s/api/v1/notifications/create", nestBaseURL),
+				"application/json",
+				bytes.NewReader(body),
+			)
+		}()
+	}
+
+	return nil
 }

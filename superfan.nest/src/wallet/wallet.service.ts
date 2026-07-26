@@ -32,20 +32,27 @@ export class WalletService {
       },
     });
 
-          await prisma.activityWallet.create({
-        data: {
-          // userId,
-            user: {
+    await prisma.activityWallet.create({
+      data: {
+        user: {
           connect: { id: userId },
         },
-          type: 'credit',
-          title,
-          description,
-          amount,
-          currency: 'NGN',
-          status: 'SUCCESS',
-        },
-      });
+        type: 'credit',
+        title,
+        description,
+        amount,
+        currency: 'NGN',
+        status: 'SUCCESS',
+      },
+    });
+
+    // Send notification for manual wallet credit
+    await this.notificationService.createNotification(
+      userId,
+      'Wallet Credit - Manual',
+      `Your wallet has been credited with ₦${amount}`,
+      'wallet_credit_manual'
+    );
   }
 
 
