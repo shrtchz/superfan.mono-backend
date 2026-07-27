@@ -79,6 +79,7 @@ export class StreamingService {
     firstName?: string;
     lastName?: string;
     profilePicture?: string | null;
+    roleName?: string | null;
   }> {
     const user = await prisma.user.findUnique({
       where: { id: userId },
@@ -88,6 +89,7 @@ export class StreamingService {
         lastName: true,
         username: true,
         profilePicture: true,
+        roleName: true,
       },
     });
 
@@ -100,6 +102,7 @@ export class StreamingService {
       firstName: user?.firstName || undefined,
       lastName: user?.lastName || undefined,
       profilePicture: user?.profilePicture,
+      roleName: user?.roleName || undefined,
     };
   }
 
@@ -111,6 +114,7 @@ export class StreamingService {
       username: string;
       firstName?: string;
       lastName?: string;
+      roleName?: string;
     },
     extras?: Record<string, unknown>,
   ) {
@@ -138,6 +142,7 @@ export class StreamingService {
       username: author.username,
       firstName: author.firstName,
       lastName: author.lastName,
+      roleName: author.roleName,
       name: author.displayName,
       fullName: author.displayName,
       avatarUrl: author.avatarUrl,
@@ -154,6 +159,7 @@ export class StreamingService {
         avatarUrl: author.avatarUrl,
         profileImage: author.avatarUrl,
         profilePicture: author.avatarUrl,
+        roleName: author.roleName,
       },
       ...extras,
     };
@@ -1769,6 +1775,7 @@ async getStreamCommentsandReplies(streamId?: number) {
           lastName: true,
           username: true,
           profilePicture: true,
+          roleName: true,
         },
       })
     : [];
@@ -1783,9 +1790,14 @@ async getStreamCommentsandReplies(streamId?: number) {
           this.buildDisplayName(user, user.id),
         ),
         profilePicture: user.profilePicture || undefined,
+        profileImage: this.toHttpsAvatarUrl(
+          user.profilePicture,
+          this.buildDisplayName(user, user.id),
+        ),
         username: user.username || this.buildDisplayName(user, user.id),
         firstName: user.firstName || undefined,
         lastName: user.lastName || undefined,
+        roleName: user.roleName || undefined,
       },
     ]),
   );
@@ -1799,6 +1811,7 @@ async getStreamCommentsandReplies(streamId?: number) {
         username: `User${comment.userId}`,
         firstName: undefined as string | undefined,
         lastName: undefined as string | undefined,
+        roleName: undefined as string | undefined,
       };
 
     const replies = Array.isArray(comment.replies)
@@ -1811,6 +1824,7 @@ async getStreamCommentsandReplies(streamId?: number) {
               username: `User${reply.userId}`,
               firstName: undefined as string | undefined,
               lastName: undefined as string | undefined,
+              roleName: undefined as string | undefined,
             };
 
           return {
@@ -1822,6 +1836,7 @@ async getStreamCommentsandReplies(streamId?: number) {
             username: replyUser.username,
             firstName: replyUser.firstName,
             lastName: replyUser.lastName,
+            roleName: replyUser.roleName,
             name: replyUser.displayName,
             fullName: replyUser.displayName,
             image: replyUser.avatarUrl,
@@ -1834,7 +1849,9 @@ async getStreamCommentsandReplies(streamId?: number) {
               username: replyUser.username,
               displayName: replyUser.displayName,
               avatarUrl: replyUser.avatarUrl,
+        
               profilePicture: replyUser.profilePicture,
+              roleName: replyUser.roleName,
             },
           };
         })
@@ -1849,6 +1866,7 @@ async getStreamCommentsandReplies(streamId?: number) {
       username: commentUser.username,
       firstName: commentUser.firstName,
       lastName: commentUser.lastName,
+      roleName: commentUser.roleName,
       name: commentUser.displayName,
       fullName: commentUser.displayName,
       image: commentUser.avatarUrl,
@@ -1862,6 +1880,7 @@ async getStreamCommentsandReplies(streamId?: number) {
         displayName: commentUser.displayName,
         avatarUrl: commentUser.avatarUrl,
         profilePicture: commentUser.profilePicture,
+        roleName: commentUser.roleName,
       },
     };
   });

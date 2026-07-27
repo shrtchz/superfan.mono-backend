@@ -186,6 +186,8 @@ export class StreamingController {
     );
   }
 
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin, Role.moderator)
   @Post('comment/:commentId/reply')
   async reply(
     @Param('commentId', ParseIntPipe) commentId: number,
