@@ -213,6 +213,7 @@ export class StreamingController {
       this.streamGateway.broadcastChat('pinComment', {
         commentId,
         streamId: pinned.streamId,
+        isPinned: true,
       });
     }
     return pinned;
