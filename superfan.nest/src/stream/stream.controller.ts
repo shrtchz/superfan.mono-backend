@@ -222,7 +222,15 @@ export class StreamingController {
   @Roles(Role.superadmin, Role.subadmin, Role.moderator)
   @Delete('pin-comment/:commentId')
   async unpinComment(@Param('commentId', ParseIntPipe) commentId: number) {
-    return this.streamingService.unpinComment(commentId);
+    const unpinned = await this.streamingService.unpinComment(commentId);
+    if (unpinned?.streamId) {
+      this.streamGateway.broadcastChat('pinComment', {
+        commentId,
+        streamId: unpinned.streamId,
+        isPinned: false,
+      });
+    }
+    return unpinned;
   }
 
   @UseGuards(RoleGuard)
