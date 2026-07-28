@@ -57,7 +57,7 @@ ENV NODE_OPTIONS="--max-old-space-size=4096"
 # Resolve any previously failed migrations before applying new ones
 RUN pnpm prisma migrate resolve --rolled-back 20260305104620_initial_username 2>/dev/null || true
 # Apply existing migrations safely with extended timeout
-RUN PRISMA_MIGRATE_LOCK_TIMEOUT=60000 pnpm prisma migrate deploy --skip-generate
+RUN PRISMA_MIGRATE_LOCK_TIMEOUT=60000 pnpm prisma migrate deploy
 RUN pnpm prisma generate
 # Seed roles, permissions, and initial users (idempotent — safe to re-run)
 RUN pnpm exec tsx prisma/seed/seed.ts
