@@ -75,6 +75,14 @@ export class UserController {
     return this.userService.signupUser(dto);
   }
 
+  // Debug endpoint to list all users with referral codes
+  @Public()
+  @Get('/debug/referral-codes')
+  async getAllReferralCodes() {
+    const users = await this.userService.findAllUsersWithReferralCodes();
+    return users;
+  }
+
   @Public()
   @Post('/auth/login')
   @HttpCode(HttpStatus.OK)

@@ -2392,6 +2392,26 @@ async checkSubscriptionStatusbyUserId(userId: number): Promise<{
     }
   }
 
+  async findAllUsersWithReferralCodes() {
+    try {
+      const users = await prisma.user.findMany({
+        select: {
+          id: true,
+          username: true,
+          email: true,
+          referral_code: true,
+        },
+        orderBy: { id: 'asc' },
+      });
+      return {
+        total: users.length,
+        data: users,
+      };
+    } catch (error) {
+      throw error;
+    }
+  }
+
   async deleteUser(id: number) {
     try {
       await prisma.user.delete({
