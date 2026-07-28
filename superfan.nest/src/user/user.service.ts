@@ -93,7 +93,7 @@ export class UserService {
 
     if (dto.referralCode) {
       referrer = await prisma.user.findUnique({
-        where: { referral_code: dto.referralCode },
+        where: { referral_code: dto.referralCode.toUpperCase() },
       });
 
       if (!referrer) {
@@ -2558,7 +2558,7 @@ async findUserByEmail(email: string): Promise<any> {
     if (!referralCode) return;
 
     const referrer = await prisma.user.findUnique({
-      where: { referral_code: referralCode },
+      where: { referral_code: referralCode.toUpperCase() },
     });
 
     if (!referrer) return;
