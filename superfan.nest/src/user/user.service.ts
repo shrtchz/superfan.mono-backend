@@ -79,12 +79,14 @@ export class UserService {
     }
 
     // ✅ Check if phone already exists
-    const existingPhone = await prisma.user.findFirst({
-      where: { phone: dto.phone },
-    });
+    if (dto.phone) {
+      const existingPhone = await prisma.user.findFirst({
+        where: { phone: dto.phone },
+      });
 
-    if (existingPhone) {
-      throw new ForbiddenException('Phone number already in use');
+      if (existingPhone) {
+        throw new ForbiddenException('Phone number already in use');
+      }
     }
 
     let referrer = null;
