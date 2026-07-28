@@ -94,12 +94,13 @@ model Reward {
 }
 
 model Point {
-  id        String   @id @default(uuid())
-  userId    Int
-  points    Int
-  reference String?
-  type      String // e.g. 'REFERRAL_SIGNUP', 'REFERRAL_TEST'
-  createdAt DateTime @default(now())
+  id          String   @id @default(uuid())
+  userId      Int
+  points      Int
+  reference   String?
+  type        String // e.g. 'REFERRAL_SIGNUP', 'REFERRAL_TEST'
+  accountType String   @default("Gold")
+  createdAt   DateTime @default(now())
 }
 
 model Admin {

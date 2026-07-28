@@ -13,6 +13,7 @@ import { PaymentService } from '../payment/payment.service';
 import { prisma } from '../prisma/prisma';
 import { UserService } from '../user/user.service';
 import { WalletService } from '../wallet/wallet.service';
+import { TaskService } from '../tasks/tasks.service';
 
 import {
   CreateLiveQuizDto,
@@ -124,6 +125,8 @@ export class QuizService {
     private readonly configService: ConfigService,
     @Inject(forwardRef(() => UserService))
     private readonly userService: UserService,
+    @Inject(forwardRef(() => TaskService))
+    private readonly taskService: TaskService,
   ) {}
 
   /** Service JWT for server-to-server calls to the Go quiz API (AuthRequired routes). */
@@ -626,6 +629,13 @@ async submitQuiz(
     EarningStatus.PAID_OUT,
     score,
   );
+
+  // Check and process first quiz completion referral bonus
+  try {
+    await this.taskService.rewardFirstTest(Number(userId));
+  } catch (referralErr) {
+    this.logger.warn(`Failed to process first test referral bonus for user ${userId}:`, referralErr);
+  }
 
   const scoreText = `${correctAnswers}/${totalQuestions}`;
 

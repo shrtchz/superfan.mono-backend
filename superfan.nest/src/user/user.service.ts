@@ -181,94 +181,7 @@ export class UserService {
      * HANDLE REFERRAL
      */
     if (dto.referralCode) {
-      const referrer = await prisma.user.findUnique({
-        where: { referral_code: dto.referralCode },
-      });
-
-      if (referrer) {
-        await prisma.referral.create({
-          data: {
-            referrerId: referrer.id,
-            refereeId: user.id,
-          },
-        });
-
-        await this.walletService.creditWallet(
-          referrer.id,
-          30,
-          'Referral signup reward',
-          `You earned ₦25 because ${user.username} signed up using your referral link.`,
-        );
-
-        const referrer_pts = 30000;
-          await prisma.point.create({
-            data: {
-              userId: referrer.id,
-              points: referrer_pts,
-              reference: `POINTS_${generateFiveUniqueRandomNumbers()}`,
-              type: 'referral_reward',
-            },
-          });
-
-        await this.walletService.userCreateReward(
-          referrer.id,
-          25,
-          'NGN',
-          'Referral signup reward',
-          EarningStatus.PAID_OUT,
-        );
-
-        await this.notificationService.createNotification(
-          referrer.id,
-          'Referral Reward',
-          `You earned ₦25 because ${user.username} signed up using your referral link.`,
-          'referral_reward'
-        );
-
-        await this.walletService.creditWallet(
-          user.id,
-          10,
-          'Referral welcome bonus',
-          `You earned ₦25 because ${user.username} signed up using your referral link.`,
-        );
-
-                // let referreral_pts = 10000;
-            // await prisma.point.create({
-            //   data: {
-            //     userId: user.id,
-            //     points: referreral_pts,
-            //     reference: `POINTS_${generateFiveUniqueRandomNumbers()}`,
-            //     type: 'referral_reward',
-            //   }
-            //   })
-
-              
-        const referreral_pts = 10000;
-          await prisma.point.create({
-            data: {
-              userId: user.id,
-              points: referreral_pts,
-              reference: `POINTS_${generateFiveUniqueRandomNumbers()}`,
-              type: 'referral_reward',
-            },
-          });
-
-        // INVITER USER ALREADY HAS A ACCOUNT AND WALLET
-        await this.walletService.userCreateReward(
-          user.id,
-          10,
-          'NGN',
-          'Referral welcome bonus',
-          EarningStatus.PAID_OUT,
-        );
-
-        await this.notificationService.createNotification(
-          user.id,
-          'Welcome Bonus',
-          'You received ₦10 for signing up with a referral code.',
-          'welcome_bonus'
-        );
-      }
+      await this.processReferralSignup(user, dto.referralCode);
     }
 
 
@@ -2633,85 +2546,70 @@ async findUserByEmail(email: string): Promise<any> {
 
     // Handle referral bonuses
     if (data.referralCode) {
-      const referrer = await prisma.user.findUnique({
-        where: { referral_code: data.referralCode },
-      });
-
-      if (referrer) {
-        await prisma.referral.create({
-          data: {
-            referrerId: referrer.id,
-            refereeId: user.id,
-          },
-        });
-
-        await this.walletService.creditWallet(
-          referrer.id,
-          30,
-          'Referral signup reward',
-          `You earned ₦25 because ${user.username} signed up using your referral link.`,
-        );
-
-        const referrer_pts = 30000;
-        await prisma.point.create({
-          data: {
-            userId: referrer.id,
-            points: referrer_pts,
-            reference: `POINTS_${generateFiveUniqueRandomNumbers()}`,
-            type: 'referral_reward',
-          },
-        });
-
-        await this.walletService.userCreateReward(
-          referrer.id,
-          25,
-          'NGN',
-          'Referral signup reward',
-          EarningStatus.PAID_OUT,
-        );
-
-        await this.notificationService.createNotification(
-          referrer.id,
-          'Referral Reward',
-          `You earned ₦25 because ${user.username} signed up using your referral link.`,
-          'referral_reward'
-        );
-
-        await this.walletService.creditWallet(
-          user.id,
-          10,
-          'Referral welcome bonus',
-          `You earned ₦25 because ${user.username} signed up using your referral link.`,
-        );
-
-        const referreral_pts = 10000;
-        await prisma.point.create({
-          data: {
-            userId: user.id,
-            points: referreral_pts,
-            reference: `POINTS_${generateFiveUniqueRandomNumbers()}`,
-            type: 'referral_reward',
-          },
-        });
-
-        await this.walletService.userCreateReward(
-          user.id,
-          10,
-          'NGN',
-          'Referral welcome bonus',
-          EarningStatus.PAID_OUT,
-        );
-
-        await this.notificationService.createNotification(
-          user.id,
-          'Welcome Bonus',
-          'You received ₦10 for signing up with a referral code.',
-          'welcome_bonus'
-        );
-      }
+      await this.processReferralSignup(user, data.referralCode);
     }
 
     return user;
+  }
+
+  async processReferralSignup(user: User, referralCode?: string) {
+    if (!referralCode) return;
+
+    const referrer = await prisma.user.findUnique({
+      where: { referral_code: referralCode },
+    });
+
+    if (!referrer) return;
+
+    // Block self-referrals (same user ID, email, phone, or IP address)
+    const isSelfReferral =
+      referrer.id === user.id ||
+      (user.email && referrer.email && user.email.toLowerCase() === referrer.email.toLowerCase()) ||
+      (user.phone && referrer.phone && user.phone === referrer.phone) ||
+      (user.ip_address && referrer.ip_address && user.ip_address === referrer.ip_address);
+
+    if (isSelfReferral) {
+      console.warn(
+        `[Referral] Self-referral attempt blocked for user ${user.id} attempting to use referral code ${referralCode}`,
+      );
+      return;
+    }
+
+    const existingReferral = await prisma.referral.findFirst({
+      where: { refereeId: user.id },
+    });
+
+    if (existingReferral) return;
+
+    // Create referral relationship record
+    await prisma.referral.create({
+      data: {
+        referrerId: referrer.id,
+        refereeId: user.id,
+        signupRewardGiven: true,
+        testRewardGiven: false,
+        status: 'SIGNED_UP',
+      },
+    });
+
+    // Referrer — Signup Bonus: 20,000 PTS credited directly to Gold Account
+    await prisma.point.create({
+      data: {
+        userId: referrer.id,
+        points: 20000,
+        reference: `POINTS_${generateFiveUniqueRandomNumbers()}`,
+        type: 'referral_signup',
+        accountType: 'Gold',
+      },
+    });
+
+    // Notification for referrer
+    await this.notificationService.createNotification(
+      referrer.id,
+      'Credit Wallet - Referral Bonus',
+      `You earned 20,000 PTS (Gold Account) because @${user.username} signed up using your referral link.`,
+      'referral_reward',
+    );
   }
 }
 
