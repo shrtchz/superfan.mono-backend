@@ -1,7 +1,7 @@
 # ==========================================
 # STAGE 1: GO SERVICE STAGES
 # ==========================================
-
+ 
 # Go Builder
 FROM golang:1.25-alpine AS go-builder
 RUN apk add --no-cache git
@@ -10,7 +10,7 @@ COPY superfan.go/go.mod superfan.go/go.sum ./
 RUN go mod download
 COPY superfan.go/ .
 RUN CGO_ENABLED=0 GOOS=linux go build -o main .
-
+ 
 # Go Development stage
 FROM golang:1.25-alpine AS go-dev
 WORKDIR /app
@@ -19,7 +19,7 @@ COPY superfan.go/go.mod superfan.go/go.sum ./
 RUN go mod download
 COPY superfan.go/ .
 CMD ["air"]
-
+ 
 # Go Production stage (Target name: go-production)
 FROM alpine:latest AS go-production
 RUN apk --no-cache add ca-certificates
@@ -28,24 +28,24 @@ COPY --from=go-builder /app/main .
 COPY --from=go-builder /app/.env* ./
 EXPOSE 7190
 CMD ["./main"]
-
-
+ 
+ 
 # ==========================================
 # STAGE 2: NESTJS SERVICE STAGES
 # ==========================================
-
+ 
 # Base Nest
 FROM node:20-alpine AS nest-base
 WORKDIR /app
 RUN npm install -g pnpm
-
+ 
 # Nest Dependencies
 FROM nest-base AS nest-deps
 WORKDIR /app
 COPY superfan.nest/package.json superfan.nest/pnpm-lock.yaml ./
 COPY superfan.nest/prisma ./prisma
 RUN pnpm install --no-frozen-lockfile
-
+ 
 # Nest Build
 FROM nest-deps AS nest-build
 WORKDIR /app
@@ -62,7 +62,7 @@ RUN pnpm prisma generate
 # Seed roles, permissions, and initial users (idempotent — safe to re-run)
 RUN pnpm exec tsx prisma/seed/seed.ts
 RUN pnpm build
-
+ 
 # Nest Production stage (Target name: nest-production)
 FROM node:22-slim AS nest-production
 WORKDIR /app
