@@ -187,11 +187,15 @@ export class UserService {
         await this.processReferralSignup(user, dto.referralCode);
       }
 
-      this.posthog.capture({
-        event: 'user_registered',
-        // distinctId, sessionId, and request properties
-        // are automatically included from the interceptor context
-      });
+      try {
+        this.posthog.capture({
+          event: 'user_registered',
+          // distinctId, sessionId, and request properties
+          // are automatically included from the interceptor context
+        });
+      } catch (posthogError) {
+        console.warn('PostHog capture failed during signup (non-fatal):', posthogError);
+      }
 
       await prisma.user.update({
         where: { id: user.id },
@@ -200,7 +204,11 @@ export class UserService {
         },
       });
 
-      await this.mail.verifyEmail(dto.email, verificationCode, dto.firstName);
+      try {
+        await this.mail.verifyEmail(dto.email, verificationCode, dto.firstName);
+      } catch (mailError) {
+        console.warn('Verification email failed to queue during signup (non-fatal):', mailError);
+      }
 
       return {
         message:
@@ -211,6 +219,9 @@ export class UserService {
       };
     } catch (error) {
       console.error('Signup error:', error);
+      if (error instanceof HttpException) {
+        throw error;
+      }
       throw new InternalServerErrorException(
         error instanceof Error ? error.message : 'Something went wrong'
       );
@@ -2648,7 +2659,6 @@ async findUserByEmail(email: string): Promise<any> {
         points: 20000,
         reference: `POINTS_${generateFiveUniqueRandomNumbers()}`,
         type: 'referral_signup',
-        accountType: 'Gold',
       },
     });
 
