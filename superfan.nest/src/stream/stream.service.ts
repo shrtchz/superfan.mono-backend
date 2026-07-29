@@ -19,6 +19,7 @@ import { RedisService } from '../mail/redis.service';
 import { NotificationService } from '../notification/notification.service';
 import { prisma } from '../prisma/prisma';
 import { QuizService } from '../quiz/quiz.service';
+import { isPrismaMissingTableError } from './commentLikeCompat';
 
 export interface StreamSession {
   broadcastId: string;
@@ -197,13 +198,25 @@ export class StreamingService {
           })
         : Promise.resolve([] as Array<{ commentId: number }>),
       replyIds.length
-        ? prisma.commentReplyLike.findMany({
-            where: {
-              userId: safeViewerUserId,
-              replyId: { in: replyIds },
-            },
-            select: { replyId: true },
-          })
+        ? (async () => {
+            try {
+              return await prisma.commentReplyLike.findMany({
+                where: {
+                  userId: safeViewerUserId,
+                  replyId: { in: replyIds },
+                },
+                select: { replyId: true },
+              });
+            } catch (error) {
+              if (isPrismaMissingTableError(error)) {
+                this.logger.warn(
+                  '[StreamingService] Comment reply like table is unavailable; skipping reply-like state.',
+                );
+                return [] as Array<{ replyId: number }>;
+              }
+              throw error;
+            }
+          })()
         : Promise.resolve([] as Array<{ replyId: number }>),
     ]);
 
@@ -1856,15 +1869,25 @@ async editStream(
         };
       }
 
-      const alreadyLiked = await prisma.commentReplyLike.findUnique({
-        where: {
-          replyId_userId: {
-            replyId: commentId,
-            userId,
+      let alreadyLiked: { id: number } | null = null;
+      try {
+        alreadyLiked = await prisma.commentReplyLike.findUnique({
+          where: {
+            replyId_userId: {
+              replyId: commentId,
+              userId,
+            },
           },
-        },
-        select: { id: true },
-      });
+          select: { id: true },
+        });
+      } catch (error) {
+        if (!isPrismaMissingTableError(error)) {
+          throw error;
+        }
+        this.logger.warn(
+          '[StreamingService] Comment reply like table is unavailable; treating reply like as not liked.',
+        );
+      }
 
       if (alreadyLiked) {
         const existingReply = await prisma.commentReply.findUnique({
@@ -1887,12 +1910,22 @@ async editStream(
         };
       }
 
-      const like_reply = await prisma.commentReplyLike.create({
-        data: {
-          replyId: commentId,
-          userId,
-        },
-      });
+      let like_reply: { id: number } | null = null;
+      try {
+        like_reply = await prisma.commentReplyLike.create({
+          data: {
+            replyId: commentId,
+            userId,
+          },
+        });
+      } catch (error) {
+        if (!isPrismaMissingTableError(error)) {
+          throw error;
+        }
+        this.logger.warn(
+          '[StreamingService] Comment reply like table is unavailable; skipping reply like persistence.',
+        );
+      }
 
       const updatedReply = await prisma.commentReply.update({
         where: { id: commentId },
@@ -1970,14 +2003,23 @@ async editStream(
         return { message: 'Comment unliked successfully', data: unlike_comment };
       }
 
-      await prisma.commentReplyLike.delete({
-        where: {
-          replyId_userId: {
-            replyId: commentId,
-            userId,
+      try {
+        await prisma.commentReplyLike.delete({
+          where: {
+            replyId_userId: {
+              replyId: commentId,
+              userId,
+            },
           },
-        },
-      });
+        });
+      } catch (error) {
+        if (!isPrismaMissingTableError(error)) {
+          throw error;
+        }
+        this.logger.warn(
+          '[StreamingService] Comment reply like table is unavailable; skipping reply unlike persistence.',
+        );
+      }
 
       const unlike_reply = await prisma.commentReply.update({
         where: {
