@@ -2093,12 +2093,17 @@ async getStreamCommentsandReplies(streamId?: number, viewerUserId?: number | nul
   // Live chat is shared across streams — serve one global recent feed.
   const cacheKey = 'stream:global:comments';
 
-  const cached = await this.redis.get(cacheKey);
-
-  if (cached) {
-    const parsed = JSON.parse(cached);
-    const cachedComments = Array.isArray(parsed) ? parsed : [];
-    return this.applyViewerLikeState(cachedComments, viewerUserId);
+  try {
+    const cached = await this.redis.get(cacheKey);
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      const cachedComments = Array.isArray(parsed) ? parsed : [];
+      return this.applyViewerLikeState(cachedComments, viewerUserId);
+    }
+  } catch (error) {
+    this.logger.warn(
+      `[StreamingService] Redis comment cache read failed; falling back to database: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 
   const comments = await prisma.streamComment.findMany({
@@ -2267,11 +2272,17 @@ async getStreamCommentsandReplies(streamId?: number, viewerUserId?: number | nul
     };
   });
 
-  await this.redis.set(
-    cacheKey,
-    JSON.stringify(enriched),
-    60, // 1 minute
-  );
+  try {
+    await this.redis.set(
+      cacheKey,
+      JSON.stringify(enriched),
+      60, // 1 minute
+    );
+  } catch (error) {
+    this.logger.warn(
+      `[StreamingService] Redis comment cache write failed; continuing with database result: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 
   return this.applyViewerLikeState(enriched, viewerUserId);
 }
