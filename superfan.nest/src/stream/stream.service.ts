@@ -165,6 +165,74 @@ export class StreamingService {
     };
   }
 
+  private async applyViewerLikeState(
+    comments: any[],
+    viewerUserId?: number | null,
+  ): Promise<any[]> {
+    const safeViewerUserId = Number(viewerUserId);
+    if (!Number.isFinite(safeViewerUserId) || safeViewerUserId <= 0) {
+      return comments;
+    }
+
+    const commentIds = comments
+      .map((comment) => Number(comment?.id))
+      .filter((id): id is number => Number.isFinite(id) && id > 0);
+
+    const replyIds = comments
+      .flatMap((comment) =>
+        Array.isArray(comment?.replies)
+          ? comment.replies.map((reply: any) => Number(reply?.id))
+          : [],
+      )
+      .filter((id): id is number => Number.isFinite(id) && id > 0);
+
+    const [likedComments, likedReplies] = await Promise.all([
+      commentIds.length
+        ? prisma.commentLike.findMany({
+            where: {
+              userId: safeViewerUserId,
+              commentId: { in: commentIds },
+            },
+            select: { commentId: true },
+          })
+        : Promise.resolve([] as Array<{ commentId: number }>),
+      replyIds.length
+        ? prisma.commentReplyLike.findMany({
+            where: {
+              userId: safeViewerUserId,
+              replyId: { in: replyIds },
+            },
+            select: { replyId: true },
+          })
+        : Promise.resolve([] as Array<{ replyId: number }>),
+    ]);
+
+    const likedCommentIds = new Set(
+      likedComments.map((entry) => String(entry.commentId)),
+    );
+    const likedReplyIds = new Set(likedReplies.map((entry) => String(entry.replyId)));
+
+    return comments.map((comment) => {
+      const nextReplies = Array.isArray(comment?.replies)
+        ? comment.replies.map((reply: any) => {
+            const isLiked = likedReplyIds.has(String(reply?.id));
+            return {
+              ...reply,
+              liked: isLiked,
+              isLiked,
+            };
+          })
+        : [];
+      const isLiked = likedCommentIds.has(String(comment?.id));
+      return {
+        ...comment,
+        liked: isLiked,
+        isLiked,
+        replies: nextReplies,
+      };
+    });
+  }
+
   private readonly SCOPES = [];
 
   private oauth2Client: OAuth2Client;
@@ -1194,6 +1262,15 @@ async editStream(
     );
   }
 
+  private async isPinnedCommentEligibleAuthor(userId: number): Promise<boolean> {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { roleName: true },
+    });
+    const role = String(user?.roleName ?? '').toLowerCase();
+    return role === Role.superadmin || role === Role.subadmin;
+  }
+
   private getStreamUserBanDelegate() {
     const banDelegate = (prisma as { streamUserBan?: {
       findUnique: Function;
@@ -1754,6 +1831,9 @@ async editStream(
           },
         });
 
+        await this.redis.del(`stream:${existing.streamId}:comments`);
+        await this.redis.del('stream:global:comments');
+
         try {
           let getUsername = await prisma.user.findUnique({
             where: { id: like_comment.userId },
@@ -1823,6 +1903,9 @@ async editStream(
         },
       });
 
+      await this.redis.del(`stream:${reference.streamId}:comments`);
+      await this.redis.del('stream:global:comments');
+
       try {
         const replyOwner = await prisma.user.findUnique({
           where: { id: updatedReply.userId },
@@ -1881,6 +1964,9 @@ async editStream(
           },
         });
 
+        await this.redis.del(`stream:${reference.streamId}:comments`);
+        await this.redis.del('stream:global:comments');
+
         return { message: 'Comment unliked successfully', data: unlike_comment };
       }
 
@@ -1903,6 +1989,9 @@ async editStream(
           },
         },
       });
+
+      await this.redis.del(`stream:${reference.streamId}:comments`);
+      await this.redis.del('stream:global:comments');
 
       return {
         message: 'Comment unliked successfully',
@@ -2000,14 +2089,16 @@ async editStream(
     }
   }
 
-async getStreamCommentsandReplies(streamId?: number) {
+async getStreamCommentsandReplies(streamId?: number, viewerUserId?: number | null) {
   // Live chat is shared across streams — serve one global recent feed.
   const cacheKey = 'stream:global:comments';
 
   const cached = await this.redis.get(cacheKey);
 
   if (cached) {
-    return JSON.parse(cached);
+    const parsed = JSON.parse(cached);
+    const cachedComments = Array.isArray(parsed) ? parsed : [];
+    return this.applyViewerLikeState(cachedComments, viewerUserId);
   }
 
   const comments = await prisma.streamComment.findMany({
@@ -2182,7 +2273,7 @@ async getStreamCommentsandReplies(streamId?: number) {
     60, // 1 minute
   );
 
-  return enriched;
+  return this.applyViewerLikeState(enriched, viewerUserId);
 }
 
 async getStreamChatStatus(streamId: number) {
@@ -2243,7 +2334,10 @@ async setStreamChatLock(streamId: number, locked: boolean, adminId: number) {
       timestamp,
     };
   } catch (error) {
-    if (error instanceof NotFoundException) {
+    if (
+      error instanceof NotFoundException ||
+      error instanceof ForbiddenException
+    ) {
       throw error;
     }
     throw new InternalServerErrorException(
@@ -2263,11 +2357,20 @@ async pinComment(commentId: number) {
   try {
     const target = await prisma.streamComment.findUnique({
       where: { id: commentId },
-      select: { id: true, streamId: true, isDeleted: true },
+      select: { id: true, streamId: true, isDeleted: true, userId: true },
     });
 
     if (!target || target.isDeleted) {
       throw new NotFoundException(`Comment with ID ${commentId} not found.`);
+    }
+
+    const isEligiblePinnedAuthor = await this.isPinnedCommentEligibleAuthor(
+      target.userId,
+    );
+    if (!isEligiblePinnedAuthor) {
+      throw new ForbiddenException(
+        'Only superadmin or subadmin comments can be pinned.',
+      );
     }
 
     await prisma.$transaction([
@@ -2288,11 +2391,17 @@ async pinComment(commentId: number) {
       }),
     ]);
 
+    await this.redis.del(`stream:${target.streamId}:comments`);
+    await this.redis.del('stream:global:comments');
+
     return prisma.streamComment.findUnique({
       where: { id: commentId },
     });
   } catch (error) {
-    if (error instanceof NotFoundException) {
+    if (
+      error instanceof NotFoundException ||
+      error instanceof ForbiddenException
+    ) {
       throw error;
     }
     throw new InternalServerErrorException(
@@ -2305,18 +2414,23 @@ async unpinComment(commentId: number) {
   try {
     const target = await prisma.streamComment.findUnique({
       where: { id: commentId },
-      select: { id: true, isDeleted: true },
+      select: { id: true, streamId: true, isDeleted: true },
     });
     if (!target || target.isDeleted) {
       throw new NotFoundException(`Comment with ID ${commentId} not found.`);
     }
 
-    return prisma.streamComment.update({
+    const updated = await prisma.streamComment.update({
       where: { id: commentId },
       data: {
         isPinned: false,
       },
     });
+
+    await this.redis.del(`stream:${target.streamId}:comments`);
+    await this.redis.del('stream:global:comments');
+
+    return updated;
   } catch (error) {
     if (error instanceof NotFoundException) {
       throw error;
@@ -2551,7 +2665,7 @@ async isWinner(commentId: number, winAmount: number) {
     }
   }
 
-  async getUserChatFeed(streamId: number) {
+  async getUserChatFeed(streamId: number, viewerUserId?: number | null) {
     const stream = await prisma.stream.findUnique({
       where: { id: streamId },
       select: { id: true, lockChat: true },
@@ -2561,7 +2675,7 @@ async isWinner(commentId: number, winAmount: number) {
       throw new NotFoundException(`Stream with ID ${streamId} not found.`);
     }
 
-    const comments = await this.getStreamCommentsandReplies(streamId);
+    const comments = await this.getStreamCommentsandReplies(streamId, viewerUserId);
 
     return {
       streamId,

@@ -35,8 +35,11 @@ export class StreamUserController {
   ) {}
 
   @Get('chat')
-  async getChatFeed(@Query('streamId', ParseIntPipe) streamId: number) {
-    return this.streamingService.getUserChatFeed(streamId);
+  async getChatFeed(@Query('streamId', ParseIntPipe) streamId: number, @Req() req) {
+    return this.streamingService.getUserChatFeed(
+      streamId,
+      Number(req.user?.id),
+    );
   }
 
   @Get('chat/status')
