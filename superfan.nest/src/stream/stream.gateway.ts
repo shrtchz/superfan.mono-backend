@@ -473,16 +473,24 @@ export class StreamGateway
       const { streamId } = payload;
       const userId = this.resolveSocketUserId(client, payload?.userId);
       this.logger.log(`[StreamGateway] fetchComments streamId=${streamId}`);
-      
+
       const comments = await this.streamingService.getStreamCommentsandReplies(
         Number(streamId),
         userId,
       );
-      
+
       return { status: 'success', comments };
     } catch (error) {
       this.logger.error('[StreamGateway] fetchComments error:', error);
-      return { status: 'error', error: 'Failed to fetch comments', comments: [] };
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : 'Failed to fetch comments';
+      return {
+        status: 'error',
+        error: `Failed to fetch comments: ${message}`,
+        comments: [],
+      };
     }
   }
 }
