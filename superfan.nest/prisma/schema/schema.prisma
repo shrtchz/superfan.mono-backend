@@ -840,8 +840,33 @@ model CommentReply {
 
   // relation
   comment StreamComment @relation(fields: [commentId], references: [id])
+  likes CommentReplyLike[]
+  reports CommentReplyReport[]
 
   @@index([commentId])
+}
+
+model CommentReplyLike {
+  id      Int @id @default(autoincrement())
+  replyId Int
+  userId  Int
+  createdAt DateTime @default(now())
+
+  reply CommentReply @relation(fields: [replyId], references: [id], onDelete: Cascade)
+
+  @@unique([replyId, userId])
+}
+
+model CommentReplyReport {
+  id      Int @id @default(autoincrement())
+  replyId Int
+  userId  Int
+  reason  String?
+  createdAt DateTime @default(now())
+
+  reply CommentReply @relation(fields: [replyId], references: [id], onDelete: Cascade)
+
+  @@unique([replyId, userId])
 }
 
 model CommentReport {
