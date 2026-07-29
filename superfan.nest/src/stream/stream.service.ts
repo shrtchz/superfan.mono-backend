@@ -1505,6 +1505,10 @@ async editStream(
       });
 
       if (findComment) {
+        await prisma.commentReply.updateMany({
+          where: { commentId: findComment.id, isDeleted: false },
+          data: { isDeleted: true },
+        });
         await prisma.streamComment.update({
           where: { id: findComment.id },
           data: {
@@ -1578,12 +1582,14 @@ async editStream(
         throw new ForbiddenException('You can only delete your own comments');
       }
 
-      const replies = await prisma.commentReply.findMany({
-        where: { commentId },
+      await prisma.commentReply.updateMany({
+        where: { commentId, isDeleted: false },
+        data: { isDeleted: true },
       });
-
-      await prisma.commentReply.deleteMany({ where: { commentId } });
-      await prisma.streamComment.delete({ where: { id: commentId } });
+      await prisma.streamComment.update({
+        where: { id: commentId },
+        data: { isDeleted: true },
+      });
 
       await this.redis.del(`stream:${comment.streamId}:comments`);
       await this.redis.del('stream:global:comments');
