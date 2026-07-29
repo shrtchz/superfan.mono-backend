@@ -2659,7 +2659,6 @@ async findUserByEmail(email: string): Promise<any> {
         points: 20000,
         reference: `POINTS_${generateFiveUniqueRandomNumbers()}`,
         type: 'referral_signup',
-        accountType: 'Gold',
       },
     });
 
