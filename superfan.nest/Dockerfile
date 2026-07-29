@@ -22,22 +22,22 @@ COPY . .
 RUN [ -f credentials.json ] || echo '{"web":{"client_id":"dummy","client_secret":"dummy","redirect_uris":["http://localhost:3000"]}}' > credentials.json
 
 ENV DATABASE_URL="postgresql://neondb_owner:npg_mct1L3EGhNjO@ep-wispy-breeze-atpun0yq-pooler.c-9.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
+ENV PRISMA_MIGRATE_LOCK_TIMEOUT=60000
 
 ENV NODE_OPTIONS="--max-old-space-size=4096"
 
 # Resolve any previously failed migrations before applying new ones
 RUN pnpm prisma migrate resolve --rolled-back 20260305104620_initial_username 2>/dev/null || true
 
-# Apply existing migrations safely
-RUN pnpm prisma migrate deploy
-
-
 # Generate Prisma Client
 RUN pnpm prisma generate
-# Seed roles, permissions, and initial users (idempotent — safe to re-run)
-RUN pnpm exec tsx prisma/seed/seed.ts
+
 # Build NestJS
 RUN pnpm build
+
+# Copy migration and startup scripts
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
 
 # Production
 FROM node:22-slim AS production
@@ -52,6 +52,6 @@ COPY --from=build /app/dist ./dist
 COPY --from=build /app/prisma ./prisma
 COPY --from=build /app/src/mail/templates ./dist/src/mail/templates
 
+# Use entrypoint script to run migrations before starting the app
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["node", "dist/src/main.js"]
-
-# CMD sh -c "pnpm prisma migrate deploy && node dist/src/main.js"
