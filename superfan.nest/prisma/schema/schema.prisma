@@ -787,9 +787,14 @@ model YouTubeToken {
 }
 
 model StreamComment {
-  id       Int @id @default(autoincrement())
-  streamId Int
-  userId   Int
+  id            Int  @id @default(autoincrement())
+  streamId      Int
+  userId        Int
+  parentId      Int?
+  rootId        Int?
+  replyToUserId Int?
+  depth         Int  @default(0)
+  legacyReplyId Int? @unique
 
   message String
 
@@ -805,10 +810,19 @@ model StreamComment {
   updatedAt DateTime @updatedAt
 
   // Relations
-  stream  Stream          @relation(fields: [streamId], references: [id], onDelete: Cascade)
-  likes   CommentLike[]
-  reports CommentReport[]
-  replies CommentReply[]
+  stream       Stream          @relation(fields: [streamId], references: [id], onDelete: Cascade)
+  parent       StreamComment?  @relation("StreamCommentChildren", fields: [parentId], references: [id], onDelete: Cascade)
+  replies      StreamComment[] @relation("StreamCommentChildren")
+  root         StreamComment?  @relation("StreamCommentRoot", fields: [rootId], references: [id], onDelete: Cascade)
+  descendants  StreamComment[] @relation("StreamCommentRoot")
+  likes        CommentLike[]
+  reports      CommentReport[]
+  legacyReplies CommentReply[] @relation("LegacyCommentReplies")
+
+  @@index([streamId, createdAt])
+  @@index([parentId, createdAt])
+  @@index([rootId, createdAt])
+  @@index([replyToUserId])
 }
 
 model CommentLike {
@@ -839,7 +853,7 @@ model CommentReply {
   updatedAt DateTime @updatedAt
 
   // relation
-  comment StreamComment @relation(fields: [commentId], references: [id])
+  comment StreamComment @relation("LegacyCommentReplies", fields: [commentId], references: [id])
   likes CommentReplyLike[]
   reports CommentReplyReport[]
 

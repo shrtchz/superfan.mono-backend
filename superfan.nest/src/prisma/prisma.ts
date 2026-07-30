@@ -15,11 +15,6 @@ if (!connectionString) {
   throw new Error('DATABASE_URL is not set. Make sure .env is loaded before running the seed script.');
 }
 
-type ReplyAwarePrismaClient = PrismaClient & {
-  commentReplyLike: any;
-  commentReplyReport: any;
-};
-
 export const prisma = new PrismaClient({
   adapter: new PrismaPg({
     connectionString,
