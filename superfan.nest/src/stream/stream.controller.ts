@@ -311,7 +311,7 @@ export class StreamingController {
       likesCount: result?.data?.likesCount,
       data: result?.data,
     });
-    return { message: 'stream successfully deleted', data: result };
+    return result;
   }
 
   @UseGuards(RoleGuard)

@@ -19,7 +19,6 @@ import { RedisService } from '../mail/redis.service';
 import { NotificationService } from '../notification/notification.service';
 import { prisma } from '../prisma/prisma';
 import { QuizService } from '../quiz/quiz.service';
-import { isPrismaMissingTableError } from './commentLikeCompat';
 
 export interface StreamSession {
   broadcastId: string;
@@ -138,7 +137,11 @@ export class StreamingService {
       isDeleted: Boolean(comment.isDeleted),
       createdAt,
       updatedAt,
-      parentCommentId: comment.parentCommentId ?? comment.commentId ?? null,
+      parentCommentId:
+        comment.parentCommentId ?? comment.parentId ?? comment.commentId ?? null,
+      rootCommentId: comment.rootCommentId ?? comment.rootId ?? comment.id,
+      depth: comment.depth ?? 0,
+      replyToUserId: comment.replyToUserId ?? null,
       displayName: author.displayName,
       username: author.username,
       firstName: author.firstName,
@@ -175,75 +178,222 @@ export class StreamingService {
       return comments;
     }
 
-    const commentIds = comments
-      .map((comment) => Number(comment?.id))
+    const commentIds = this.collectCommentIds(comments)
       .filter((id): id is number => Number.isFinite(id) && id > 0);
 
-    const replyIds = comments
-      .flatMap((comment) =>
-        Array.isArray(comment?.replies)
-          ? comment.replies.map((reply: any) => Number(reply?.id))
-          : [],
-      )
-      .filter((id): id is number => Number.isFinite(id) && id > 0);
-
-    const [likedComments, likedReplies] = await Promise.all([
-      commentIds.length
-        ? prisma.commentLike.findMany({
-            where: {
-              userId: safeViewerUserId,
-              commentId: { in: commentIds },
-            },
-            select: { commentId: true },
-          })
-        : Promise.resolve([] as Array<{ commentId: number }>),
-      replyIds.length
-        ? (async () => {
-            try {
-              return await prisma.commentReplyLike.findMany({
-                where: {
-                  userId: safeViewerUserId,
-                  replyId: { in: replyIds },
-                },
-                select: { replyId: true },
-              });
-            } catch (error) {
-              if (isPrismaMissingTableError(error)) {
-                this.logger.warn(
-                  '[StreamingService] Comment reply like table is unavailable; skipping reply-like state.',
-                );
-                return [] as Array<{ replyId: number }>;
-              }
-              throw error;
-            }
-          })()
-        : Promise.resolve([] as Array<{ replyId: number }>),
-    ]);
+    const likedComments = commentIds.length
+      ? await prisma.commentLike.findMany({
+          where: {
+            userId: safeViewerUserId,
+            commentId: { in: commentIds },
+          },
+          select: { commentId: true },
+        })
+      : [];
 
     const likedCommentIds = new Set(
       likedComments.map((entry) => String(entry.commentId)),
     );
-    const likedReplyIds = new Set(likedReplies.map((entry) => String(entry.replyId)));
 
-    return comments.map((comment) => {
-      const nextReplies = Array.isArray(comment?.replies)
-        ? comment.replies.map((reply: any) => {
-            const isLiked = likedReplyIds.has(String(reply?.id));
-            return {
-              ...reply,
-              liked: isLiked,
-              isLiked,
-            };
-          })
+    return comments.map((comment) =>
+      this.applyLikeStateToCommentTree(comment, likedCommentIds),
+    );
+  }
+
+  private collectCommentIds(comments: any[]): number[] {
+    return comments.flatMap((comment) => {
+      const currentId = Number(comment?.id);
+      const current = Number.isFinite(currentId) && currentId > 0 ? [currentId] : [];
+      const children = Array.isArray(comment?.replies)
+        ? this.collectCommentIds(comment.replies)
         : [];
-      const isLiked = likedCommentIds.has(String(comment?.id));
-      return {
-        ...comment,
-        liked: isLiked,
-        isLiked,
-        replies: nextReplies,
-      };
+      return [...current, ...children];
     });
+  }
+
+  private applyLikeStateToCommentTree(
+    comment: any,
+    likedCommentIds: Set<string>,
+  ): any {
+    const isLiked = likedCommentIds.has(String(comment?.id));
+    const replies = Array.isArray(comment?.replies)
+      ? comment.replies.map((reply: any) =>
+          this.applyLikeStateToCommentTree(reply, likedCommentIds),
+        )
+      : [];
+
+    return {
+      ...comment,
+      liked: isLiked,
+      isLiked,
+      replies,
+    };
+  }
+
+  private async invalidateCommentCaches(streamId?: number | null) {
+    const deletions = ['stream:global:comments'];
+    if (Number.isFinite(Number(streamId)) && Number(streamId) > 0) {
+      deletions.unshift(`stream:${Number(streamId)}:comments`);
+    }
+    await Promise.all(deletions.map((cacheKey) => this.redis.del(cacheKey)));
+  }
+
+  private async getCommentNodeOrThrow(commentId: number) {
+    const comment = await prisma.streamComment.findUnique({
+      where: { id: commentId },
+      select: {
+        id: true,
+        streamId: true,
+        userId: true,
+        parentId: true,
+        rootId: true,
+        replyToUserId: true,
+        depth: true,
+        message: true,
+        likesCount: true,
+        reportsCount: true,
+        isDeleted: true,
+        isPinned: true,
+        isWinner: true,
+        winAmount: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    if (!comment || comment.isDeleted) {
+      throw new NotFoundException(`Comment with ID ${commentId} not found.`);
+    }
+
+    return comment;
+  }
+
+  private async getCommentSubtreeIds(commentId: number): Promise<number[]> {
+    const rows = await prisma.$queryRaw<Array<{ id: number }>>`
+      WITH RECURSIVE comment_tree AS (
+        SELECT id
+        FROM "StreamComment"
+        WHERE id = ${commentId}
+        UNION ALL
+        SELECT child.id
+        FROM "StreamComment" child
+        INNER JOIN comment_tree parent_tree ON child."parentId" = parent_tree.id
+      )
+      SELECT id FROM comment_tree
+    `;
+
+    return rows
+      .map((row) => Number(row.id))
+      .filter((id): id is number => Number.isFinite(id) && id > 0);
+  }
+
+  private buildCommentTree(comments: Array<Record<string, any>>) {
+    const byId = new Map<string, any>();
+    const roots: any[] = [];
+
+    const sorted = [...comments].sort((left, right) => {
+      const leftDepth = Number(left.depth ?? 0);
+      const rightDepth = Number(right.depth ?? 0);
+      if (leftDepth !== rightDepth) return leftDepth - rightDepth;
+      return (
+        new Date(String(left.createdAt)).getTime() -
+        new Date(String(right.createdAt)).getTime()
+      );
+    });
+
+    for (const entry of sorted) {
+      const current: any = {
+        ...entry,
+        replies: [],
+      };
+      byId.set(String(current.id), current);
+
+      if (current.parentCommentId) {
+        const parent = byId.get(String(current.parentCommentId));
+        if (parent) {
+          parent.replies = [...(Array.isArray(parent.replies) ? parent.replies : []), current];
+          continue;
+        }
+      }
+
+      roots.push(current);
+    }
+
+    return roots
+      .map((root) => this.sortNestedReplies(root))
+      .sort((left, right) => {
+        const leftPinned = left.isPinned ? 1 : 0;
+        const rightPinned = right.isPinned ? 1 : 0;
+        if (leftPinned !== rightPinned) return rightPinned - leftPinned;
+        return (
+          new Date(String(right.createdAt)).getTime() -
+          new Date(String(left.createdAt)).getTime()
+        );
+      });
+  }
+
+  private sortNestedReplies(comment: any) {
+    const replies = Array.isArray(comment.replies)
+      ? comment.replies
+          .map((reply: any) => this.sortNestedReplies(reply))
+          .sort(
+            (left: any, right: any) =>
+              new Date(String(left.createdAt)).getTime() -
+              new Date(String(right.createdAt)).getTime(),
+          )
+      : [];
+
+    return {
+      ...comment,
+      replies,
+    };
+  }
+
+  private enrichCommentTree(
+    comment: Record<string, any>,
+    userMap: Map<number, Record<string, unknown>>,
+  ) {
+    const author =
+      userMap.get(comment.userId) || {
+        displayName: `User${comment.userId}`,
+        profilePicture: this.toHttpsAvatarUrl(null, `User${comment.userId}`),
+        avatarUrl: this.toHttpsAvatarUrl(null, `User${comment.userId}`),
+        username: `User${comment.userId}`,
+        firstName: undefined as string | undefined,
+        lastName: undefined as string | undefined,
+        roleName: undefined as string | undefined,
+      };
+
+    const replies = Array.isArray(comment.replies)
+      ? comment.replies.map((reply) => this.enrichCommentTree(reply, userMap))
+      : [];
+
+    return {
+      ...comment,
+      replies,
+      displayName: author.displayName,
+      avatarUrl: author.avatarUrl,
+      profilePicture: author.profilePicture,
+      username: author.username,
+      firstName: author.firstName,
+      lastName: author.lastName,
+      roleName: author.roleName,
+      name: author.displayName,
+      fullName: author.displayName,
+      image: author.avatarUrl,
+      profileImage: author.avatarUrl,
+      avatar: author.avatarUrl,
+      user: {
+        id: comment.userId,
+        firstName: author.firstName,
+        lastName: author.lastName,
+        username: author.username,
+        displayName: author.displayName,
+        avatarUrl: author.avatarUrl,
+        profilePicture: author.profilePicture,
+        roleName: author.roleName,
+      },
+    };
   }
 
   private readonly SCOPES = [];
@@ -1194,44 +1344,29 @@ async editStream(
   private async resolveCommentOrReply(
     commentId: number,
   ): Promise<
-    | { type: 'comment'; commentId: number; streamId: number }
-    | { type: 'reply'; replyId: number; commentId: number; streamId: number }
-  > {
-    const comment = await prisma.streamComment.findUnique({
-      where: { id: commentId },
-      select: { id: true, streamId: true, isDeleted: true },
-    });
-
-    if (comment) {
-      if (comment.isDeleted) {
-        throw new NotFoundException(`Comment with ID ${commentId} not found.`);
+    | {
+        type: 'comment';
+        commentId: number;
+        streamId: number;
+        parentCommentId: number | null;
+        rootCommentId: number;
       }
-      return { type: 'comment', commentId: comment.id, streamId: comment.streamId };
-    }
-
-    const reply = await prisma.commentReply.findUnique({
-      where: { id: commentId },
-      select: { id: true, commentId: true, isDeleted: true },
-    });
-
-    if (!reply || reply.isDeleted) {
-      throw new NotFoundException(`Comment with ID ${commentId} not found.`);
-    }
-
-    const parentComment = await prisma.streamComment.findUnique({
-      where: { id: reply.commentId },
-      select: { id: true, streamId: true },
-    });
-
-    if (!parentComment) {
-      throw new NotFoundException(`Root comment for reply ID ${commentId} not found.`);
-    }
+    | {
+        type: 'reply';
+        commentId: number;
+        streamId: number;
+        parentCommentId: number | null;
+        rootCommentId: number;
+      }
+  > {
+    const comment = await this.getCommentNodeOrThrow(commentId);
 
     return {
-      type: 'reply',
-      replyId: reply.id,
-      commentId: parentComment.id,
-      streamId: parentComment.streamId,
+      type: comment.parentId ? 'reply' : 'comment',
+      commentId: comment.id,
+      streamId: comment.streamId,
+      parentCommentId: comment.parentId ?? null,
+      rootCommentId: comment.rootId ?? comment.id,
     };
   }
 
@@ -1241,25 +1376,7 @@ async editStream(
       select: { streamId: true },
     });
 
-    if (comment) {
-      return comment.streamId;
-    }
-
-    const reply = await prisma.commentReply.findUnique({
-      where: { id: commentId },
-      select: { commentId: true },
-    });
-
-    if (!reply) {
-      return null;
-    }
-
-    const parentComment = await prisma.streamComment.findUnique({
-      where: { id: reply.commentId },
-      select: { streamId: true },
-    });
-
-    return parentComment?.streamId ?? null;
+    return comment?.streamId ?? null;
   }
 
   private async isStreamModerator(userId: number): Promise<boolean> {
@@ -1448,24 +1565,32 @@ async editStream(
         bypassChatLock: await this.isStreamModerator(userId),
       });
 
-      let stream_comment = await prisma.streamComment.create({
+      const createdComment = await prisma.streamComment.create({
         data: {
           streamId,
           message: comment,
           userId,
           isDeleted: false,
+          depth: 0,
         },
       });
 
-      await this.redis.del(`stream:${streamId}:comments`);
-      await this.redis.del('stream:global:comments');
+      const stream_comment = await prisma.streamComment.update({
+        where: { id: createdComment.id },
+        data: {
+          rootId: createdComment.id,
+        },
+      });
+
+      await this.invalidateCommentCaches(streamId);
 
       try {
         await this.elasticSearch.indexComment({
           id: stream_comment.id,
           streamId,
           content: comment,
-          parentId: 'comment',
+          parentId: null,
+          createdAt: stream_comment.createdAt,
         });
       } catch (indexError: any) {
         this.logger.warn(
@@ -1500,66 +1625,28 @@ async editStream(
 
   async deleteComment(commentId: number) {
     try {
-      const findComment = await prisma.streamComment.findFirst({
-        where: { id: commentId },
-      });
+      const targetComment = await this.getCommentNodeOrThrow(commentId);
+      const subtreeIds = await this.getCommentSubtreeIds(commentId);
 
-      if (findComment) {
-        await prisma.commentReply.updateMany({
-          where: { commentId: findComment.id, isDeleted: false },
-          data: { isDeleted: true },
-        });
-        await prisma.streamComment.update({
-          where: { id: findComment.id },
-          data: {
-            isDeleted: true,
-          },
-        });
-
-        await this.redis.del(`stream:${findComment.streamId}:comments`);
-        await this.redis.del('stream:global:comments');
-
-        return {
-          commentId: findComment.id,
-          streamId: findComment.streamId,
-        };
-      }
-
-      const findReply = await prisma.commentReply.findUnique({
-        where: { id: commentId },
-        select: { id: true, commentId: true, isDeleted: true },
-      });
-
-      if (!findReply || findReply.isDeleted) {
-        throw new NotFoundException(
-          `Comment with ID ${commentId} not found.`,
-        );
-      }
-
-      const parentComment = await prisma.streamComment.findUnique({
-        where: { id: findReply.commentId },
-        select: { id: true, streamId: true },
-      });
-
-      if (!parentComment) {
-        throw new NotFoundException(
-          `Root comment for reply ID ${commentId} not found.`,
-        );
-      }
-
-      await prisma.commentReply.update({
-        where: { id: findReply.id },
+      await prisma.streamComment.updateMany({
+        where: {
+          id: { in: subtreeIds },
+          isDeleted: false,
+        },
         data: {
           isDeleted: true,
         },
       });
 
-      await this.redis.del(`stream:${parentComment.streamId}:comments`);
-      await this.redis.del('stream:global:comments');
+      await this.invalidateCommentCaches(targetComment.streamId);
+
+      await Promise.all(
+        subtreeIds.map((id) => this.elasticSearch.deleteComment(id)),
+      );
 
       return {
-        commentId: findReply.id,
-        streamId: parentComment.streamId,
+        commentId: targetComment.id,
+        streamId: targetComment.streamId,
       };
     } catch (error: any) {
       if (error instanceof NotFoundException) {
@@ -1572,105 +1659,41 @@ async editStream(
   }
 
   async deleteOwnStreamComment(commentId: number, userId: number) {
-    const comment = await prisma.streamComment.findUnique({
-      where: { id: commentId },
-      select: { id: true, streamId: true, userId: true, isDeleted: true },
-    });
+    const comment = await this.getCommentNodeOrThrow(commentId);
 
-    if (comment && !comment.isDeleted) {
-      if (comment.userId !== userId) {
-        throw new ForbiddenException('You can only delete your own comments');
-      }
-
-      await prisma.commentReply.updateMany({
-        where: { commentId, isDeleted: false },
-        data: { isDeleted: true },
-      });
-      await prisma.streamComment.update({
-        where: { id: commentId },
-        data: { isDeleted: true },
-      });
-
-      await this.redis.del(`stream:${comment.streamId}:comments`);
-      await this.redis.del('stream:global:comments');
-
-      return {
-        commentId: comment.id,
-        streamId: comment.streamId,
-      };
-    }
-
-    const reply = await prisma.commentReply.findUnique({
-      where: { id: commentId },
-      select: { id: true, commentId: true, userId: true, isDeleted: true },
-    });
-
-    if (!reply || reply.isDeleted) {
-      throw new NotFoundException(`Comment with ID ${commentId} not found.`);
-    }
-
-    if (reply.userId !== userId) {
+    if (comment.userId !== userId) {
       throw new ForbiddenException('You can only delete your own comments');
     }
 
-    const parentComment = await prisma.streamComment.findUnique({
-      where: { id: reply.commentId },
-      select: { streamId: true },
-    });
+    const subtreeIds = await this.getCommentSubtreeIds(commentId);
 
-    if (!parentComment) {
-      throw new NotFoundException(
-        `Root comment for reply ID ${commentId} not found.`,
-      );
-    }
-
-    await prisma.commentReply.update({
-      where: { id: commentId },
+    await prisma.streamComment.updateMany({
+      where: {
+        id: { in: subtreeIds },
+        isDeleted: false,
+      },
       data: { isDeleted: true },
     });
 
-    await this.redis.del(`stream:${parentComment.streamId}:comments`);
-    await this.redis.del('stream:global:comments');
+    await this.invalidateCommentCaches(comment.streamId);
+
+    await Promise.all(
+      subtreeIds.map((id) => this.elasticSearch.deleteComment(id)),
+    );
 
     return {
-      commentId: reply.id,
-      streamId: parentComment.streamId,
+      commentId: comment.id,
+      streamId: comment.streamId,
     };
   }
 
   async deleteReply(replyId: number) {
     try {
-      const reply = await prisma.commentReply.findUnique({
-        where: { id: replyId },
-        select: { id: true, commentId: true, isDeleted: true },
-      });
-
-      if (!reply || reply.isDeleted) {
-        throw new NotFoundException(`Reply with ID ${replyId} not found.`);
-      }
-
-      const parentComment = await prisma.streamComment.findUnique({
-        where: { id: reply.commentId },
-        select: { streamId: true },
-      });
-
-      if (!parentComment) {
-        throw new NotFoundException(
-          `Root comment for reply ID ${replyId} not found.`,
-        );
-      }
-
-      await prisma.commentReply.update({
-        where: { id: replyId },
-        data: { isDeleted: true },
-      });
-
-      await this.redis.del(`stream:${parentComment.streamId}:comments`);
-      await this.redis.del('stream:global:comments');
+      const deleted = await this.deleteComment(replyId);
 
       return {
-        replyId: reply.id,
-        streamId: parentComment.streamId,
+        replyId,
+        streamId: deleted.streamId,
       };
     } catch (error: any) {
       if (error instanceof NotFoundException) {
@@ -1684,57 +1707,35 @@ async editStream(
 
   async replyToComment(commentId: number, comment: string, userId: number) {
     try {
-      let parentComment = await prisma.streamComment.findUnique({
-        where: { id: commentId },
-        select: { id: true, streamId: true, userId: true },
-      });
-
-      if (!parentComment) {
-        const replyParent = await prisma.commentReply.findUnique({
-          where: { id: commentId },
-          select: { commentId: true },
-        });
-
-        if (!replyParent) {
-          throw new NotFoundException(
-            `Comment with ID ${commentId} not found.`,
-          );
-        }
-
-        parentComment = await prisma.streamComment.findUnique({
-          where: { id: replyParent.commentId },
-          select: { id: true, streamId: true, userId: true },
-        });
-
-        if (!parentComment) {
-          throw new NotFoundException(
-            `Root comment for reply ID ${commentId} not found.`,
-          );
-        }
-      }
+      const parentComment = await this.getCommentNodeOrThrow(commentId);
+      const rootCommentId = parentComment.rootId ?? parentComment.id;
 
       await this.assertStreamParticipation(parentComment.streamId, userId, {
         bypassChatLock: await this.isStreamModerator(userId),
       });
 
-      let reply_comment = await prisma.commentReply.create({
+      const reply_comment = await prisma.streamComment.create({
         data: {
-          commentId: parentComment.id,
+          streamId: parentComment.streamId,
+          parentId: parentComment.id,
+          rootId: rootCommentId,
+          replyToUserId: parentComment.userId,
+          depth: Number(parentComment.depth ?? 0) + 1,
           message: comment,
           userId,
           isDeleted: false,
         },
       });
 
-      await this.redis.del(`stream:${parentComment.streamId}:comments`);
-      await this.redis.del('stream:global:comments');
+      await this.invalidateCommentCaches(parentComment.streamId);
 
       try {
         await this.elasticSearch.indexComment({
           id: reply_comment.id,
           streamId: parentComment.streamId,
           content: comment,
-          parentId: 'reply',
+          parentId: String(parentComment.id),
+          createdAt: reply_comment.createdAt,
         });
       } catch (indexError: any) {
         this.logger.warn(
@@ -1779,14 +1780,7 @@ async editStream(
       }
 
       const author = await this.getUserPublicProfile(userId);
-      return this.toCommentBroadcastPayload(
-        {
-          ...reply_comment,
-          streamId: parentComment.streamId,
-          parentCommentId: reply_comment.commentId,
-        },
-        author,
-      );
+      return this.toCommentBroadcastPayload(reply_comment, author);
 
     } catch (error) {
       if (
@@ -1804,136 +1798,32 @@ async editStream(
   async likeComment(commentId: number, userId: number) {
     try {
       const reference = await this.resolveCommentOrReply(commentId);
-
-      if (reference.type === 'comment') {
-        const existing = await prisma.streamComment.findUnique({
-          where: { id: commentId },
-          select: { id: true, streamId: true, likesCount: true, isDeleted: true, userId: true },
-        });
-
-        if (!existing || existing.isDeleted) {
-          throw new NotFoundException(`Comment with ID ${commentId} not found.`);
-        }
-
-        const alreadyLiked = await prisma.commentLike.findUnique({
-          where: {
-            commentId_userId: {
-              commentId,
-              userId,
-            },
-          },
-          select: { id: true },
-        });
-
-        if (alreadyLiked) {
-          return {
-            message: 'Comment already liked',
-            data: existing,
-          };
-        }
-
-        await prisma.commentLike.create({
-          data: {
+      const existing = await this.getCommentNodeOrThrow(commentId);
+      const alreadyLiked = await prisma.commentLike.findUnique({
+        where: {
+          commentId_userId: {
             commentId,
             userId,
           },
-        });
-
-        const like_comment = await prisma.streamComment.update({
-          where: {
-            id: commentId,
-          },
-          data: {
-            likesCount: {
-              increment: 1,
-            },
-          },
-        });
-
-        await this.redis.del(`stream:${existing.streamId}:comments`);
-        await this.redis.del('stream:global:comments');
-
-        try {
-          let getUsername = await prisma.user.findUnique({
-            where: { id: like_comment.userId },
-            select: { username: true },
-          });
-          if (like_comment && like_comment.userId && like_comment.userId !== userId) {
-            await this.notificationService.createNotification(
-              like_comment.userId,
-              'Comment liked',
-              `${getUsername?.username || 'Someone'} liked your comment.`,
-            );
-          }
-        } catch (notifError: any) {
-          this.logger.error(`Failed to send like notification: ${notifError.message}`);
-        }
-
-        return {
-          message: 'Comment liked successfully',
-          data: like_comment,
-        };
-      }
-
-      let alreadyLiked: { id: number } | null = null;
-      try {
-        alreadyLiked = await prisma.commentReplyLike.findUnique({
-          where: {
-            replyId_userId: {
-              replyId: commentId,
-              userId,
-            },
-          },
-          select: { id: true },
-        });
-      } catch (error) {
-        if (!isPrismaMissingTableError(error)) {
-          throw error;
-        }
-        this.logger.warn(
-          '[StreamingService] Comment reply like table is unavailable; treating reply like as not liked.',
-        );
-      }
+        },
+        select: { id: true },
+      });
 
       if (alreadyLiked) {
-        const existingReply = await prisma.commentReply.findUnique({
-          where: { id: commentId },
-          select: {
-            id: true,
-            commentId: true,
-            userId: true,
-            likesCount: true,
-            reportsCount: true,
-            isDeleted: true,
-          },
-        });
         return {
           message: 'Comment already liked',
-          data: {
-            ...existingReply,
-            streamId: reference.streamId,
-          },
+          data: existing,
         };
       }
 
-      let like_reply: { id: number } | null = null;
-      try {
-        like_reply = await prisma.commentReplyLike.create({
-          data: {
-            replyId: commentId,
-            userId,
-          },
-        });
-      } catch (error) {
-        if (!isPrismaMissingTableError(error)) {
-          throw error;
-        }
-        this.logger.warn(
-          '[StreamingService] Comment reply like table is unavailable; skipping reply like persistence.',
-        );
-      }
+      await prisma.commentLike.create({
+        data: {
+          commentId,
+          userId,
+        },
+      });
 
-      const updatedReply = await prisma.commentReply.update({
+      const like_comment = await prisma.streamComment.update({
         where: { id: commentId },
         data: {
           likesCount: {
@@ -1942,19 +1832,20 @@ async editStream(
         },
       });
 
-      await this.redis.del(`stream:${reference.streamId}:comments`);
-      await this.redis.del('stream:global:comments');
+      await this.invalidateCommentCaches(reference.streamId);
 
       try {
-        const replyOwner = await prisma.user.findUnique({
-          where: { id: updatedReply.userId },
+        const likingUser = await prisma.user.findUnique({
+          where: { id: userId },
           select: { username: true },
         });
-        if (updatedReply.userId && updatedReply.userId !== userId) {
+        if (like_comment.userId && like_comment.userId !== userId) {
           await this.notificationService.createNotification(
-            updatedReply.userId,
+            like_comment.userId,
             'Comment liked',
-            `${replyOwner?.username || 'Someone'} liked your reply.`,
+            `${likingUser?.username || 'Someone'} liked your ${
+              reference.type === 'reply' ? 'reply' : 'comment'
+            }.`,
           );
         }
       } catch (notifError: any) {
@@ -1963,10 +1854,7 @@ async editStream(
 
       return {
         message: 'Comment liked successfully',
-        data: {
-          ...updatedReply,
-          streamId: reference.streamId,
-        },
+        data: like_comment,
       };
     } catch (error: any) {
       if (error instanceof NotFoundException) {
@@ -1981,53 +1869,31 @@ async editStream(
   async unlikeComment(commentId: number, userId: number) {
     try {
       const reference = await this.resolveCommentOrReply(commentId);
-
-      if (reference.type === 'comment') {
-        await prisma.commentLike.delete({
-          where: {
-            commentId_userId: {
-              commentId,
-              userId,
-            },
+      const existing = await this.getCommentNodeOrThrow(commentId);
+      const likedEntry = await prisma.commentLike.findUnique({
+        where: {
+          commentId_userId: {
+            commentId,
+            userId,
           },
-        });
+        },
+        select: { id: true },
+      });
 
-        const unlike_comment = await prisma.streamComment.update({
-          where: {
-            id: commentId,
-          },
-          data: {
-            likesCount: {
-              decrement: 1,
-            },
-          },
-        });
-
-        await this.redis.del(`stream:${reference.streamId}:comments`);
-        await this.redis.del('stream:global:comments');
-
-        return { message: 'Comment unliked successfully', data: unlike_comment };
+      if (!likedEntry) {
+        return { message: 'Comment not previously liked', data: existing };
       }
 
-      try {
-        await prisma.commentReplyLike.delete({
-          where: {
-            replyId_userId: {
-              replyId: commentId,
-              userId,
-            },
+      await prisma.commentLike.delete({
+        where: {
+          commentId_userId: {
+            commentId,
+            userId,
           },
-        });
-      } catch (error) {
-        if (!isPrismaMissingTableError(error)) {
-          throw error;
-        }
-        this.logger.warn(
-          '[StreamingService] Comment reply like table is unavailable; skipping reply unlike persistence.',
-        );
-      }
+        },
+      });
 
-      const unlike_reply = await prisma.commentReply.update({
+      const unlike_comment = await prisma.streamComment.update({
         where: {
           id: commentId,
         },
@@ -2038,17 +1904,13 @@ async editStream(
         },
       });
 
-      await this.redis.del(`stream:${reference.streamId}:comments`);
-      await this.redis.del('stream:global:comments');
+      await this.invalidateCommentCaches(reference.streamId);
 
-      return {
-        message: 'Comment unliked successfully',
-        data: {
-          ...unlike_reply,
-          streamId: reference.streamId,
-        },
-      };
+      return { message: 'Comment unliked successfully', data: unlike_comment };
     } catch (error: any) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
       throw new InternalServerErrorException(
         `Failed to unlike comment: ${error.message}`,
       );
@@ -2057,54 +1919,17 @@ async editStream(
 
   async reportComment(commentId: number, creatorId: number, userId: number, reason: string) {
     try {
-      const reference = await this.resolveCommentOrReply(commentId);
+      await this.getCommentNodeOrThrow(commentId);
 
-      if (reference.type === 'comment') {
-        const report_comment = await prisma.commentReport.create({
-          data: {
-            commentId,
-            reason,
-            userId,
-          },
-        });
-
-        const updatedComment = await prisma.streamComment.update({
-          where: {
-            id: commentId,
-          },
-          data: {
-            reportsCount: {
-              increment: 1,
-            },
-          },
-        });
-
-        await prisma.userHistory.create({
-          data: {
-            userId,
-            creatorId,
-            title: reason,
-            description: reason,
-            type: 'REPORT',
-            submittedBy: 'USER',
-          },
-        });
-
-        return {
-          ...report_comment,
-          reportsCount: updatedComment.reportsCount,
-        };
-      }
-
-      const report_comment = await prisma.commentReplyReport.create({
+      const report_comment = await prisma.commentReport.create({
         data: {
-          replyId: commentId,
+          commentId,
           reason,
           userId,
         },
       });
 
-      const updatedReply = await prisma.commentReply.update({
+      const updatedComment = await prisma.streamComment.update({
         where: {
           id: commentId,
         },
@@ -2128,9 +1953,12 @@ async editStream(
 
       return {
         ...report_comment,
-        reportsCount: updatedReply.reportsCount,
+        reportsCount: updatedComment.reportsCount,
       };
     } catch (error: any) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
       throw new InternalServerErrorException(
         `Failed to report comment: ${error.message}`,
       );
@@ -2154,20 +1982,10 @@ async getStreamCommentsandReplies(streamId?: number, viewerUserId?: number | nul
     );
   }
 
-  const comments = await prisma.streamComment.findMany({
+  const rootComments = await prisma.streamComment.findMany({
     where: {
       isDeleted: false,
-    },
-    include: {
-      replies: {
-        where: { isDeleted: false },
-      },
-      stream: {
-        select: {
-          id: true,
-          title: true,
-        },
-      },
+      parentId: null,
     },
     orderBy: [
       { isPinned: 'desc' },
@@ -2176,27 +1994,56 @@ async getStreamCommentsandReplies(streamId?: number, viewerUserId?: number | nul
     take: 500,
   });
 
+  const rootIds = rootComments
+    .map((comment) => Number(comment.id))
+    .filter((id): id is number => Number.isFinite(id) && id > 0);
+
+  const comments = rootIds.length
+    ? await prisma.streamComment.findMany({
+        where: {
+          isDeleted: false,
+          OR: [
+            { id: { in: rootIds } },
+            { rootId: { in: rootIds } },
+          ],
+        },
+        include: {
+          stream: {
+            select: {
+              id: true,
+              title: true,
+            },
+          },
+        },
+      })
+    : [];
+
+  const tree = this.buildCommentTree(
+    comments.map((comment) => ({
+      ...comment,
+      parentCommentId: comment.parentId ?? null,
+      rootCommentId: comment.rootId ?? comment.id,
+    })),
+  );
+
   // Prefer a pinned comment for the active stream at the front when present.
-  let result = comments;
+  let result = tree;
   if (streamId) {
-    const pinnedForStream = comments.find(
+    const pinnedForStream = tree.find(
       (comment) => comment.streamId === streamId && comment.isPinned,
     );
     if (pinnedForStream) {
       result = [
         pinnedForStream,
-        ...comments.filter((comment) => comment.id !== pinnedForStream.id),
+        ...tree.filter((comment) => comment.id !== pinnedForStream.id),
       ];
     }
   }
 
   const allUserIds = Array.from(
     new Set(
-      result
-        .flatMap((item) => [
-          item.userId,
-          ...(Array.isArray(item.replies) ? item.replies.map((reply) => reply.userId) : []),
-        ])
+      comments
+        .map((item) => item.userId)
         .filter((id): id is number => typeof id === 'number' && Number.isFinite(id)),
     ),
   );
@@ -2237,88 +2084,9 @@ async getStreamCommentsandReplies(streamId?: number, viewerUserId?: number | nul
     ]),
   );
 
-  const enriched = result.map((comment) => {
-    const commentUser =
-      userMap.get(comment.userId) || {
-        displayName: `User${comment.userId}`,
-        profilePicture: this.toHttpsAvatarUrl(null, `User${comment.userId}`),
-        avatarUrl: this.toHttpsAvatarUrl(null, `User${comment.userId}`),
-        username: `User${comment.userId}`,
-        firstName: undefined as string | undefined,
-        lastName: undefined as string | undefined,
-        roleName: undefined as string | undefined,
-      };
-
-    const replies = Array.isArray(comment.replies)
-      ? comment.replies.map((reply) => {
-          const replyUser =
-            userMap.get(reply.userId) || {
-              displayName: `User${reply.userId}`,
-              profilePicture: this.toHttpsAvatarUrl(null, `User${reply.userId}`),
-              avatarUrl: this.toHttpsAvatarUrl(null, `User${reply.userId}`),
-              username: `User${reply.userId}`,
-              firstName: undefined as string | undefined,
-              lastName: undefined as string | undefined,
-              roleName: undefined as string | undefined,
-            };
-
-          return {
-            ...reply,
-            parentCommentId: reply.commentId,
-            displayName: replyUser.displayName,
-            avatarUrl: replyUser.avatarUrl,
-            profilePicture: replyUser.profilePicture,
-            username: replyUser.username,
-            firstName: replyUser.firstName,
-            lastName: replyUser.lastName,
-            roleName: replyUser.roleName,
-            name: replyUser.displayName,
-            fullName: replyUser.displayName,
-            image: replyUser.avatarUrl,
-            profileImage: replyUser.avatarUrl,
-            avatar: replyUser.avatarUrl,
-            user: {
-              id: reply.userId,
-              firstName: replyUser.firstName,
-              lastName: replyUser.lastName,
-              username: replyUser.username,
-              displayName: replyUser.displayName,
-              avatarUrl: replyUser.avatarUrl,
-        
-              profilePicture: replyUser.profilePicture,
-              roleName: replyUser.roleName,
-            },
-          };
-        })
-      : [];
-
-    return {
-      ...comment,
-      replies,
-      displayName: commentUser.displayName,
-      avatarUrl: commentUser.avatarUrl,
-      profilePicture: commentUser.profilePicture,
-      username: commentUser.username,
-      firstName: commentUser.firstName,
-      lastName: commentUser.lastName,
-      roleName: commentUser.roleName,
-      name: commentUser.displayName,
-      fullName: commentUser.displayName,
-      image: commentUser.avatarUrl,
-      profileImage: commentUser.avatarUrl,
-      avatar: commentUser.avatarUrl,
-      user: {
-        id: comment.userId,
-        firstName: commentUser.firstName,
-        lastName: commentUser.lastName,
-        username: commentUser.username,
-        displayName: commentUser.displayName,
-        avatarUrl: commentUser.avatarUrl,
-        profilePicture: commentUser.profilePicture,
-        roleName: commentUser.roleName,
-      },
-    };
-  });
+  const enriched = result.map((comment) =>
+    this.enrichCommentTree(comment, userMap),
+  );
 
   try {
     await this.redis.set(

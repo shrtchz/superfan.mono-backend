@@ -807,12 +807,31 @@ func (qc *QuizController) UpdateLiveQuizCustomCountdownLabel(c *gin.Context) {
 		return
 	}
 
-	if strings.TrimSpace(payload.CustomCountdownLabel) == "" {
+	phase := strings.TrimSpace(c.Query("phase"))
+	if phase == "" {
+		phase = strings.TrimSpace(c.GetHeader("X-Countdown-Phase"))
+	}
+	if phase == "" {
+		phase = "during"
+	}
+
+	label := strings.TrimSpace(payload.CustomCountdownLabel)
+	if label == "" {
+		if phase == "before" {
+			label = strings.TrimSpace(payload.CustomCountdownLabelBefore)
+		} else if phase == "during" {
+			label = strings.TrimSpace(payload.CustomCountdownLabelDuring)
+		} else if phase == "after" {
+			label = strings.TrimSpace(payload.CustomCountdownLabelAfter)
+		}
+	}
+
+	if label == "" {
 		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "custom countdown label is required")
 		return
 	}
 
-	if err := qc.QuizService.UpdateLiveQuizCustomCountdownLabel(id, payload.CustomCountdownLabel); err != nil {
+	if err := qc.QuizService.UpdateLiveQuizCustomCountdownLabel(id, phase, label); err != nil {
 		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", err.Error())
 		return
 	}
@@ -838,7 +857,15 @@ func (qc *QuizController) UpdateLiveQuizCustomCountdownLabel(c *gin.Context) {
 func (qc *QuizController) DeleteLiveQuizCustomCountdownLabel(c *gin.Context) {
 	id := c.Param("id")
 
-	if err := qc.QuizService.DeleteLiveQuizCustomCountdownLabel(id); err != nil {
+	phase := strings.TrimSpace(c.Query("phase"))
+	if phase == "" {
+		phase = strings.TrimSpace(c.GetHeader("X-Countdown-Phase"))
+	}
+	if phase == "" {
+		phase = "during"
+	}
+
+	if err := qc.QuizService.DeleteLiveQuizCustomCountdownLabel(id, phase); err != nil {
 		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", err.Error())
 		return
 	}

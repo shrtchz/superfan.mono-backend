@@ -127,22 +127,7 @@ func formatLiveQuizElapsed(target, now time.Time) string {
 }
 
 func resolveQuizCountdownLabel(defaultLabel, phase, overrideBefore, overrideDuring, overrideAfter string) string {
-	switch strings.ToLower(strings.TrimSpace(phase)) {
-	case "before":
-		if trimmedOverride := strings.TrimSpace(overrideBefore); trimmedOverride != "" {
-			return trimmedOverride
-		}
-	case "during":
-		if trimmedOverride := strings.TrimSpace(overrideDuring); trimmedOverride != "" {
-			return trimmedOverride
-		}
-	case "after":
-		if trimmedOverride := strings.TrimSpace(overrideAfter); trimmedOverride != "" {
-			return trimmedOverride
-		}
-	}
-
-	return defaultLabel
+	return strings.TrimSpace(defaultLabel)
 }
 
 func BuildLiveQuizCountdownLabel(startAt, finishAt time.Time, now time.Time, overrideBefore, overrideDuring, overrideAfter string) string {
@@ -1697,10 +1682,20 @@ func (u *QuizServiceImpl) DeleteLiveQuiz(id string) error {
 	return nil
 }
 
-func (u *QuizServiceImpl) UpdateLiveQuizCustomCountdownLabel(id string, label string) error {
+func (u *QuizServiceImpl) UpdateLiveQuizCustomCountdownLabel(id string, phase string, label string) error {
 	objectId, err := bson.ObjectIDFromHex(id)
 	if err != nil {
 		return errors.New("invalid id format")
+	}
+
+	phaseKey := "customCountdownLabelDuring"
+	switch strings.ToLower(strings.TrimSpace(phase)) {
+	case "before":
+		phaseKey = "customCountdownLabelBefore"
+	case "after":
+		phaseKey = "customCountdownLabelAfter"
+	default:
+		phaseKey = "customCountdownLabelDuring"
 	}
 
 	result, err := u.liveQuizCollection.UpdateOne(
@@ -1708,7 +1703,7 @@ func (u *QuizServiceImpl) UpdateLiveQuizCustomCountdownLabel(id string, label st
 		bson.M{"_id": objectId},
 		bson.M{
 			"$set": bson.M{
-				"customCountdownLabel": strings.TrimSpace(label),
+				phaseKey: strings.TrimSpace(label),
 			},
 		},
 	)
@@ -1721,10 +1716,20 @@ func (u *QuizServiceImpl) UpdateLiveQuizCustomCountdownLabel(id string, label st
 	return nil
 }
 
-func (u *QuizServiceImpl) DeleteLiveQuizCustomCountdownLabel(id string) error {
+func (u *QuizServiceImpl) DeleteLiveQuizCustomCountdownLabel(id string, phase string) error {
 	objectId, err := bson.ObjectIDFromHex(id)
 	if err != nil {
 		return errors.New("invalid id format")
+	}
+
+	phaseKey := "customCountdownLabelDuring"
+	switch strings.ToLower(strings.TrimSpace(phase)) {
+	case "before":
+		phaseKey = "customCountdownLabelBefore"
+	case "after":
+		phaseKey = "customCountdownLabelAfter"
+	default:
+		phaseKey = "customCountdownLabelDuring"
 	}
 
 	result, err := u.liveQuizCollection.UpdateOne(
@@ -1732,7 +1737,7 @@ func (u *QuizServiceImpl) DeleteLiveQuizCustomCountdownLabel(id string) error {
 		bson.M{"_id": objectId},
 		bson.M{
 			"$unset": bson.M{
-				"customCountdownLabel": "",
+				phaseKey: "",
 			},
 		},
 	)
