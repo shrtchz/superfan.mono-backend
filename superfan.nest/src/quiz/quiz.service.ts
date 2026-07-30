@@ -620,14 +620,12 @@ async submitQuiz(
   });
 }
 
-  // 8. Create wallet reward
+  // 8. Create wallet reward - pass points, convert to NGN internally
   await this.walletService.createQuizReward(
     Number(userId),
-    amountInNaira,
-    'NGN',
+    totalPoints,
     subject,
     EarningStatus.PAID_OUT,
-    score,
   );
 
   // Check and process first quiz completion referral bonus
