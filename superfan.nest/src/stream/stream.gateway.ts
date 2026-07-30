@@ -92,6 +92,12 @@ export class StreamGateway
       imageLink: Array.isArray(source.imageLink) ? source.imageLink : [],
       customCountdownLabel:
         this.toValidString(source.customCountdownLabel) || '',
+      customCountdownLabelBefore:
+        this.toValidString(source.customCountdownLabelBefore) || '',
+      customCountdownLabelDuring:
+        this.toValidString(source.customCountdownLabelDuring) || '',
+      customCountdownLabelAfter:
+        this.toValidString(source.customCountdownLabelAfter) || '',
       status:
         this.toValidString(source.status) ||
         this.toValidString(source.quizStatus) ||
