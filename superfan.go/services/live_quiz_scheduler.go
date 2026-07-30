@@ -46,7 +46,7 @@ var (
 	// ErrQuizAlreadyFinalised is returned when a quiz has already been processed.
 	ErrQuizAlreadyFinalised = errors.New("live quiz already finalised")
 )
-
+// here
 // NewLiveQuizFinaliser creates a finaliser backed by the given MongoDB collection.
 func NewLiveQuizFinaliser(liveQuizCollection *mongo.Collection) *LiveQuizFinaliser {
 	nestURL := utils.GetEnvWithKey("NEST_BASE_URL")
