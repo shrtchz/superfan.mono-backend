@@ -456,18 +456,20 @@ async getWalletTransactions(
 
   @Post('/wallet/credit/test-quiz-reward')
   async creditTestQuizReward(@Body() dto: RewardCreditDto, @Req() req: any) {
-    let points = dto.amount * 1000;
-    return this.walletService.createQuizReward(req.user.id ||  dto.userId, dto.amount, 'NGN', dto.subject, EarningStatus.AVAILABLE, points);
+    const points = dto.amount * 1000;
+    return this.walletService.createQuizReward(req.user.id ||  dto.userId, points, dto.subject, EarningStatus.AVAILABLE);
   }
 
   @Post('/wallet/credit/live-quiz-reward')
   async creditLiveQuizReward(@Body() dto: RewardCreditDto, @Req() req: any) {
-    return this.walletService.createLiveQuizReward(req.user.id ||  dto.userId, dto.amount, EarningStatus.AVAILABLE);
+    const points = dto.amount * 1000;
+    return this.walletService.createLiveQuizReward(req.user.id ||  dto.userId, points, EarningStatus.AVAILABLE);
   }
 
   @Post('/wallet/credit/ad-reward')
   async creditAdReward(@Body() dto: RewardCreditDto, @Req() req: any) {
-    return this.walletService.createReward(req.user.id ||  dto.userId, dto.amount, 'NGN', 'ad', EarningStatus.AVAILABLE);
+    const points = dto.amount * 1000;
+    return this.walletService.createReward(req.user.id ||  dto.userId, points, 'ad', EarningStatus.AVAILABLE);
   }
 
   @Post('/resend-otp')
