@@ -2613,13 +2613,30 @@ async findUserByEmail(email: string): Promise<any> {
   }
 
   async processReferralSignup(user: User, referralCode?: string) {
-    if (!referralCode) return;
+    console.log('[Referral][START] processReferralSignup', {
+      refereeId: user.id,
+      refereeUsername: user.username,
+      referralCode,
+    });
+
+    if (!referralCode) {
+      console.log('[Referral][END] No referralCode provided');
+      return;
+    }
 
     const referrer = await prisma.user.findUnique({
       where: { referral_code: referralCode.toUpperCase() },
     });
 
-    if (!referrer) return;
+    if (!referrer) {
+      console.log('[Referral][END] Referrer not found for code', referralCode);
+      return;
+    }
+
+    console.log('[Referral] Referrer found', {
+      referrerId: referrer.id,
+      referrerUsername: referrer.username,
+    });
 
     // Block self-referrals (same user ID, email, phone, or IP address)
     const isSelfReferral =
@@ -2639,10 +2656,16 @@ async findUserByEmail(email: string): Promise<any> {
       where: { refereeId: user.id },
     });
 
-    if (existingReferral) return;
+    if (existingReferral) {
+      console.log('[Referral][END] Existing referral found for referee', {
+        refereeId: user.id,
+        existingReferral,
+      });
+      return;
+    }
 
     // Create referral relationship record
-    await prisma.referral.create({
+    const referralRecord = await prisma.referral.create({
       data: {
         referrerId: referrer.id,
         refereeId: user.id,
@@ -2651,15 +2674,40 @@ async findUserByEmail(email: string): Promise<any> {
         status: 'SIGNED_UP',
       },
     });
+    console.log('[Referral] Referral record created', {
+      referralId: referralRecord.id,
+      referrerId: referrer.id,
+      refereeId: user.id,
+    });
 
     // Referrer — Signup Bonus: 20,000 PTS credited directly to Gold Account
-    await prisma.point.create({
+    const point = await prisma.point.create({
       data: {
         userId: referrer.id,
         points: 20000,
         reference: `POINTS_${generateFiveUniqueRandomNumbers()}`,
         type: 'referral_signup',
+        accountType: 'Gold',
       },
+    });
+    console.log('[Referral] Point created', {
+      pointId: point.id,
+      userId: referrer.id,
+      points: point.points,
+      type: point.type,
+    });
+
+    // Credit referrer wallet so the balance is visible in the Gold Wallet
+    await this.walletService.creditWallet(
+      referrer.id,
+      20000,
+      'Referral Signup Reward',
+      `You earned ₦20,000 because @${user.username} signed up using your referral link.`,
+      'Gold',
+    );
+    console.log('[Referral] Wallet credited for referrer', {
+      referrerId: referrer.id,
+      amount: 20000,
     });
 
     // Notification for referrer
@@ -2669,6 +2717,8 @@ async findUserByEmail(email: string): Promise<any> {
       `You earned 20,000 PTS (Gold Account) because @${user.username} signed up using your referral link.`,
       'referral_reward',
     );
+
+    console.log('[Referral][END] Completed successfully');
   }
 }
 
