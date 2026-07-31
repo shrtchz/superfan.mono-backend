@@ -2314,7 +2314,7 @@ async getOngoingQuizAnswers(userId: number) {
       const response = await firstValueFrom(
         this.httpService.patch(`${this.liveQuizGoBaseUrl}/live/${id}`, updateData),
       );
-      this.eventEmitter.emit('liveQuiz.changed', { action: 'updated' });
+      this.eventEmitter.emit('liveQuiz.changed', { action: 'updated', id });
       return response.data;
     } catch (error) {
       this.rethrowGoProxyError(error, 'Failed to update live quiz');

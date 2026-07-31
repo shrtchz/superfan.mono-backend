@@ -247,11 +247,15 @@ export class StreamGateway
     return tryCollect(payload);
   }
 
-  private async getCurrentLiveQuizSnapshot(): Promise<Record<string, unknown> | null> {
+  private async getCurrentLiveQuizSnapshot(
+    quizId?: string,
+  ): Promise<Record<string, unknown> | null> {
     try {
-      const response = await this.quizService.getAllLiveQuiz();
+      const response = quizId
+        ? await this.quizService.getLiveQuiz(quizId)
+        : await this.quizService.getAllLiveQuiz();
       const quizzes = this.extractLiveQuizArray(response);
-      const current = this.pickCurrentLiveQuiz(quizzes);
+      const current = quizId ? quizzes[0] ?? null : this.pickCurrentLiveQuiz(quizzes);
       const displayQuiz = this.toDisplayLiveQuiz(current);
       this.logger.log(
         `[LiveQuiz] fetched=${quizzes.length} selectedId=${displayQuiz?.id ?? 'none'} question=${displayQuiz?.question ?? 'none'}`,
@@ -266,10 +270,11 @@ export class StreamGateway
   private async emitLiveQuizUpdate(
     action: 'created' | 'updated' | 'deleted' | 'sync' = 'sync',
     socket?: Socket,
+    quizId?: string,
   ) {
     if (!this.server) return;
 
-    const quiz = await this.getCurrentLiveQuizSnapshot();
+    const quiz = await this.getCurrentLiveQuizSnapshot(quizId);
     const payload = {
       action,
       quiz,
@@ -288,9 +293,12 @@ export class StreamGateway
   }
 
   @OnEvent('liveQuiz.changed')
-  async handleLiveQuizChanged(event?: { action?: 'created' | 'updated' | 'deleted' }) {
+  async handleLiveQuizChanged(event?: {
+    action?: 'created' | 'updated' | 'deleted';
+    id?: string;
+  }) {
     const action = event?.action ?? 'updated';
-    await this.emitLiveQuizUpdate(action);
+    await this.emitLiveQuizUpdate(action, undefined, event?.id);
   }
 
   private startLiveQuizTicker() {
