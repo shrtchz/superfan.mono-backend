@@ -170,6 +170,18 @@ export class UpdateLiveQuizDto {
   @IsOptional()
   @IsString()
   quizFinishDate?: string;
+
+  @IsOptional()
+  @IsString()
+  customCountdownLabelBefore?: string;
+
+  @IsOptional()
+  @IsString()
+  customCountdownLabelDuring?: string;
+
+  @IsOptional()
+  @IsString()
+  customCountdownLabelAfter?: string;
 }
 
 export class startRandomQuiz {
