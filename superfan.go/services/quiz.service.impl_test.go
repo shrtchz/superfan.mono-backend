@@ -2,7 +2,7 @@ package services
 
 import "testing"
 
-func TestResolveQuizCountdownLabelUsesPhaseOverride(t *testing.T) {
+func TestResolveQuizCountdownLabelKeepsDefaultLabelWhenOverridesExist(t *testing.T) {
 	t.Parallel()
 
 	got := resolveQuizCountdownLabel(
@@ -13,8 +13,8 @@ func TestResolveQuizCountdownLabelUsesPhaseOverride(t *testing.T) {
 		"",
 	)
 
-	if got != "Be ready!" {
-		t.Fatalf("expected before-phase override, got %q", got)
+	if got != "Waiting for Live Quiz to start; starts in 5 minutes." {
+		t.Fatalf("expected default label to remain primary countdown text, got %q", got)
 	}
 }
 

@@ -127,18 +127,6 @@ func formatLiveQuizElapsed(target, now time.Time) string {
 }
 
 func resolveQuizCountdownLabel(defaultLabel, phase, overrideBefore, overrideDuring, overrideAfter string) string {
-	var override string
-	switch phase {
-	case "before":
-		override = overrideBefore
-	case "during":
-		override = overrideDuring
-	case "after":
-		override = overrideAfter
-	}
-	if strings.TrimSpace(override) != "" {
-		return strings.TrimSpace(override)
-	}
 	return strings.TrimSpace(defaultLabel)
 }
 
