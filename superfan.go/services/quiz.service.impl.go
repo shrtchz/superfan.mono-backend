@@ -1802,6 +1802,9 @@ func (u *QuizServiceImpl) UpdateLiveQuiz(quiz *models.LiveQuiz) error {
 				{Key: "quizFinishDate", Value: quiz.QuizFinishDate},
 				{Key: "imageLink", Value: quiz.ImageLink},
 				{Key: "customCountdownLabel", Value: strings.TrimSpace(quiz.CustomCountdownLabel)},
+				{Key: "customCountdownLabelBefore", Value: strings.TrimSpace(quiz.CustomCountdownLabelBefore)},
+				{Key: "customCountdownLabelDuring", Value: strings.TrimSpace(quiz.CustomCountdownLabelDuring)},
+				{Key: "customCountdownLabelAfter", Value: strings.TrimSpace(quiz.CustomCountdownLabelAfter)},
 			},
 		},
 	}
