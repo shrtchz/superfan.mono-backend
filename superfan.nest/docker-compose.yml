@@ -10,7 +10,6 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql://neondb_owner:npg_YpfzV2Ziv6FD@ep-frosty-poetry-ayrkt4uz-pooler.c-5.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require&connection_limit=10&pool_timeout=20
       - LOCAL_REDIS_HOST=redis
     volumes:
       - .:/app

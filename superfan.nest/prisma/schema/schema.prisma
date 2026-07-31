@@ -544,6 +544,7 @@ model WalletTransaction {
   userId       Int
   amount       Float
   type         String?
+  currency     String  @default("NGN")
   username     String?
   account_name String?
 
@@ -570,6 +571,12 @@ model WalletTransaction {
 
   createdAt DateTime @default(now())
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([type])
+  @@index([status])
+  @@index([account_type])
+  @@index([currency])
 }
 
 model exchangeRate {

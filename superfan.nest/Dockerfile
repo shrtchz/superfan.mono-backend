@@ -21,14 +21,9 @@ COPY . .
 # Create dummy credentials.json if missing to satisfy TypeScript compilation
 RUN [ -f credentials.json ] || echo '{"web":{"client_id":"dummy","client_secret":"dummy","redirect_uris":["http://localhost:3000"]}}' > credentials.json
 
-# ENV DATABASE_URL="postgresql://neondb_owner:npg_mct1L3EGhNjO@ep-wispy-breeze-atpun0yq-pooler.c-9.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
-ENV DATABASE_URL="postgresql://neondb_owner:npg_YpfzV2Ziv6FD@ep-frosty-poetry-ayrkt4uz-pooler.c-5.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
 ENV PRISMA_MIGRATE_LOCK_TIMEOUT=60000
-
 ENV NODE_OPTIONS="--max-old-space-size=4096"
-
-# Resolve any previously failed migrations before applying new ones
-RUN pnpm prisma migrate resolve --rolled-back 20260305104620_initial_username 2>/dev/null || true
+ENV DATABASE_URL="postgresql://placeholder:placeholder@localhost:5432/placeholder"
 
 # Generate Prisma Client
 RUN pnpm prisma generate
@@ -45,7 +40,6 @@ FROM node:22-slim AS production
 WORKDIR /app
 
 ENV NODE_ENV=production
-ENV DATABASE_URL="postgresql://neondb_owner:npg_YpfzV2Ziv6FD@ep-frosty-poetry-ayrkt4uz-pooler.c-5.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
 
 COPY --from=build /app/package.json ./
 COPY --from=build /app/node_modules ./node_modules

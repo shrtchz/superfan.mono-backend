@@ -317,12 +317,27 @@ export class PaymentController {
 async getWalletTransactions(
   @Query('userId') userId?: string,
   @Query('accountType') accountType?: string,
+  @Query('startDate') startDate?: string,
+  @Query('endDate') endDate?: string,
+  @Query('type') type?: string,
+  @Query('currency') currency?: string,
+  @Query('status') status?: string,
+  @Query('page') page?: string,
+  @Query('limit') limit?: string,
 ) {
-  return this.walletService.getUserWalletTransactions(
-    userId ? Number(userId) : undefined,
+  return this.walletService.getUserWalletTransactions({
+    userId: userId ? Number(userId) : undefined,
     accountType,
-  );
+    startDate,
+    endDate,
+    type,
+    currency,
+    status,
+    page: page ? Number(page) : undefined,
+    limit: limit ? Number(limit) : undefined,
+  });
 }
+
 
     @Get('transactions-by-id')
   async getWalletTransactionsById(@Query('id') id: number) {
