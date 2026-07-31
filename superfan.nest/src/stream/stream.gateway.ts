@@ -92,6 +92,12 @@ export class StreamGateway
       imageLink: Array.isArray(source.imageLink) ? source.imageLink : [],
       customCountdownLabel:
         this.toValidString(source.customCountdownLabel) || '',
+      customCountdownLabelBefore:
+        this.toValidString(source.customCountdownLabelBefore) || '',
+      customCountdownLabelDuring:
+        this.toValidString(source.customCountdownLabelDuring) || '',
+      customCountdownLabelAfter:
+        this.toValidString(source.customCountdownLabelAfter) || '',
       status:
         this.toValidString(source.status) ||
         this.toValidString(source.quizStatus) ||
@@ -466,20 +472,31 @@ export class StreamGateway
 
   @SubscribeMessage('fetchComments')
   async fetchComments(
-    @MessageBody() payload: { streamId: string | number },
+    @MessageBody() payload: { streamId: string | number; userId?: string | number },
     @ConnectedSocket() client: Socket,
   ) {
     try {
       const { streamId } = payload;
+      const userId = this.resolveSocketUserId(client, payload?.userId);
       this.logger.log(`[StreamGateway] fetchComments streamId=${streamId}`);
-      
-      // Return empty array for now - this should fetch from database
-      const comments = await this.streamingService.getStreamCommentsandReplies(Number(streamId));
-      
+
+      const comments = await this.streamingService.getStreamCommentsandReplies(
+        Number(streamId),
+        userId,
+      );
+
       return { status: 'success', comments };
     } catch (error) {
       this.logger.error('[StreamGateway] fetchComments error:', error);
-      return { status: 'error', error: 'Failed to fetch comments', comments: [] };
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : 'Failed to fetch comments';
+      return {
+        status: 'error',
+        error: `Failed to fetch comments: ${message}`,
+        comments: [],
+      };
     }
   }
 }

@@ -152,8 +152,11 @@ export class StreamingController {
   }
 
   @Get('/comment')
-  async getStreamcomment(@Query('streamId') streamId: number) {
-    return this.streamingService.getStreamCommentsandReplies(streamId);
+  async getStreamcomment(@Query('streamId') streamId: number, @Req() req) {
+    return this.streamingService.getStreamCommentsandReplies(
+      streamId,
+      Number(req.user?.id),
+    );
   }
 
   @Get(':id/chat/search')
@@ -308,7 +311,7 @@ export class StreamingController {
       likesCount: result?.data?.likesCount,
       data: result?.data,
     });
-    return { message: 'stream successfully deleted', data: result };
+    return result;
   }
 
   @UseGuards(RoleGuard)
