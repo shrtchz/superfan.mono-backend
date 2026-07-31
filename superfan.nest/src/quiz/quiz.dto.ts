@@ -182,6 +182,23 @@ export class UpdateLiveQuizDto {
   @IsOptional()
   @IsString()
   customCountdownLabelAfter?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => CustomCountdownLabelDto)
+  customCountdownLabels?: CustomCountdownLabelDto[];
+}
+
+export class CustomCountdownLabelDto {
+  @IsString()
+  id: string;
+
+  @IsString()
+  phase: 'before' | 'during' | 'after';
+
+  @IsString()
+  text: string;
 }
 
 export class startRandomQuiz {

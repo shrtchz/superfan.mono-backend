@@ -98,6 +98,19 @@ export class StreamGateway
         this.toValidString(source.customCountdownLabelDuring) || '',
       customCountdownLabelAfter:
         this.toValidString(source.customCountdownLabelAfter) || '',
+      customCountdownLabels: Array.isArray(source.customCountdownLabels)
+        ? source.customCountdownLabels
+            .filter((label) => label && typeof label === 'object')
+            .map((label) => {
+              const item = label as Record<string, unknown>;
+              return {
+                id: this.toValidString(item.id),
+                phase: this.toValidString(item.phase),
+                text: this.toValidString(item.text),
+              };
+            })
+            .filter((label) => Boolean(label.id && label.phase && label.text))
+        : [],
       status:
         this.toValidString(source.status) ||
         this.toValidString(source.quizStatus) ||
