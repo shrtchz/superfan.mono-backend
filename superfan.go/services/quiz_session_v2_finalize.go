@@ -118,6 +118,7 @@ func (s *QuizSessionV2Service) finalizeSession(
 	totalPoints := baseScore + accuracyGain + speedGain + adBonusPoints + streakBonus
 	pointsToNairaRate := getPointsToNairaRate()
 	amountInNaira := float64(totalPoints) / float64(pointsToNairaRate)
+	finalNairaAmount, finalUSDCAmount, finalUSDTAmount := computeSessionEarnings(totalPoints)
 
 	testLevel := lookup.record.TestLevel
 	status := "completed"
@@ -129,18 +130,21 @@ func (s *QuizSessionV2Service) finalizeSession(
 		if err := tx.Model(&models.OngoingQuiz{}).
 			Where(`"id" = ? AND "userId" = ?`, sessionID, req.UserID).
 			Updates(map[string]interface{}{
-				"isCompleted":      true,
-				"completedAt":      now,
-				"totalEarning":     int(math.Round(amountInNaira * 1000)),
-				"quizTime":         strconv.Itoa(req.QuizTimeSeconds),
-				"baseScore":        baseScore,
-				"accuracyBonus":    accuracyGain,
-				"speedBonus":       speedGain,
-				"streakMultiplier": streakBonus,
-				"adBonuses":        adBonusPoints,
-				"earnedAmount":     int(math.Round(amountInNaira * 1000)),
-				"timeRemaining":    0,
-				"updatedAt":        now,
+				"isCompleted":         true,
+				"completedAt":         now,
+				"totalEarning":        totalPoints,
+				"totalEarninginNaira": finalNairaAmount,
+				"totalEarninginUSDC":  finalUSDCAmount,
+				"totalEarninginUSDT":  finalUSDTAmount,
+				"quizTime":            strconv.Itoa(req.QuizTimeSeconds),
+				"baseScore":           baseScore,
+				"accuracyBonus":       accuracyGain,
+				"speedBonus":          speedGain,
+				"streakMultiplier":    streakBonus,
+				"adBonuses":           adBonusPoints,
+				"earnedAmount":        totalPoints,
+				"timeRemaining":       0,
+				"updatedAt":           now,
 			}).Error; err != nil {
 			return err
 		}
