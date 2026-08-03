@@ -17,3 +17,22 @@ func TestGetPointsToNairaRateFallsBackToDefault(t *testing.T) {
 		t.Fatalf("expected default conversion rate %d, got %d", defaultPointsToNairaRate, got)
 	}
 }
+
+func TestConvertTotalEarningToRewardAmountsUsesBaseEarning(t *testing.T) {
+	t.Setenv("POINTS_TO_NAIRA_RATE", "1000")
+
+	amountInNaira, finalNairaAmount, finalUSDCAmount, finalUSDTAmount := convertTotalEarningToRewardAmounts(2500)
+
+	if amountInNaira != 2.5 {
+		t.Fatalf("expected naira amount 2.5, got %v", amountInNaira)
+	}
+	if finalNairaAmount != 2 {
+		t.Fatalf("expected rounded naira amount 2, got %d", finalNairaAmount)
+	}
+	if finalUSDCAmount != 0 {
+		t.Fatalf("expected zero USDC amount for the default exchange rates, got %d", finalUSDCAmount)
+	}
+	if finalUSDTAmount != 0 {
+		t.Fatalf("expected zero USDT amount for the default exchange rates, got %d", finalUSDTAmount)
+	}
+}

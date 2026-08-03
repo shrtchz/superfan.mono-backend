@@ -33,6 +33,13 @@ func getPointsToNairaRate() int {
 	return parsed
 }
 
+func convertTotalEarningToRewardAmounts(totalEarning int) (amountInNaira float64, finalNairaAmount int, finalUSDCAmount int, finalUSDTAmount int) {
+	pointsToNairaRate := getPointsToNairaRate()
+	amountInNaira = float64(totalEarning) / float64(pointsToNairaRate)
+	finalNairaAmount, finalUSDCAmount, finalUSDTAmount = computeSessionEarnings(totalEarning)
+	return amountInNaira, finalNairaAmount, finalUSDCAmount, finalUSDTAmount
+}
+
 // SubmitSession grades saved answers, applies rewards, and completes the session.
 func (s *QuizSessionV2Service) SubmitSession(sessionID string, req models.FinalizeSessionV2Request) (*models.FinalizeSessionV2Result, error) {
 	return s.finalizeSession(sessionID, req, false)
@@ -118,9 +125,7 @@ func (s *QuizSessionV2Service) finalizeSession(
 	speedGain := int(math.Round(float64(baseScore) * (float64(speedBonusPercent) / 100.0)))
 	adBonusPoints := req.AdBonuses
 	totalPoints := baseScore + accuracyGain + speedGain + adBonusPoints + streakBonus
-	pointsToNairaRate := getPointsToNairaRate()
-	amountInNaira := float64(totalPoints) / float64(pointsToNairaRate)
-	finalNairaAmount, finalUSDCAmount, finalUSDTAmount := computeSessionEarnings(totalPoints)
+	amountInNaira, finalNairaAmount, finalUSDCAmount, finalUSDTAmount := convertTotalEarningToRewardAmounts(baseScore)
 
 	testLevel := lookup.record.TestLevel
 	status := "completed"
