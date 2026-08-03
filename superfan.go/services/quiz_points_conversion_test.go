@@ -13,7 +13,7 @@ func TestGetPointsToNairaRateUsesConfiguredValue(t *testing.T) {
 func TestGetPointsToNairaRateFallsBackToDefault(t *testing.T) {
 	t.Setenv("POINTS_TO_NAIRA_RATE", "")
 
-	if got := getPointsToNairaRate(); got != 1000 {
-		t.Fatalf("expected default conversion rate 1000, got %d", got)
+	if got := getPointsToNairaRate(); got != defaultPointsToNairaRate {
+		t.Fatalf("expected default conversion rate %d, got %d", defaultPointsToNairaRate, got)
 	}
 }

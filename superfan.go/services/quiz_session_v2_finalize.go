@@ -17,15 +17,17 @@ import (
 	"quiz.superfan.com/apis/utils"
 )
 
+const defaultPointsToNairaRate = 1000
+
 func getPointsToNairaRate() int {
 	value := strings.TrimSpace(os.Getenv("POINTS_TO_NAIRA_RATE"))
 	if value == "" {
-		return 1000
+		return defaultPointsToNairaRate
 	}
 
 	parsed, err := strconv.Atoi(value)
 	if err != nil || parsed <= 0 {
-		return 1000
+		return defaultPointsToNairaRate
 	}
 
 	return parsed
