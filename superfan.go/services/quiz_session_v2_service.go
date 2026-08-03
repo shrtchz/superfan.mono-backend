@@ -713,7 +713,8 @@ func extractQuizPack(pack map[string]interface{}) ([]map[string]interface{}, int
 }
 
 func computeSessionEarnings(totalEarning int) (amountInNaira int, amountInUSDC int, amountInUSDT int) {
-	amountInNaira = int(math.Floor(float64(totalEarning) / 1000.0))
+	pointsToNairaRate := getPointsToNairaRate()
+	amountInNaira = int(math.Floor(float64(totalEarning) / float64(pointsToNairaRate)))
 
 	usdcRate := lookupExchangeRate("USDC")
 	usdtRate := lookupExchangeRate("USDT")
