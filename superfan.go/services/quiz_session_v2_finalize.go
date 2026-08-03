@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,6 +16,20 @@ import (
 	"quiz.superfan.com/apis/models"
 	"quiz.superfan.com/apis/utils"
 )
+
+func getPointsToNairaRate() int {
+	value := strings.TrimSpace(os.Getenv("POINTS_TO_NAIRA_RATE"))
+	if value == "" {
+		return 1000
+	}
+
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return 1000
+	}
+
+	return parsed
+}
 
 // SubmitSession grades saved answers, applies rewards, and completes the session.
 func (s *QuizSessionV2Service) SubmitSession(sessionID string, req models.FinalizeSessionV2Request) (*models.FinalizeSessionV2Result, error) {
@@ -85,6 +101,10 @@ func (s *QuizSessionV2Service) finalizeSession(
 	correctAnswers := countCorrectResponses(submission)
 	baseScore := submission.TotalEarning
 	accuracyBonusPercent := getAccuracyBonusPercent(correctAnswers, totalQuestions)
+	accuracyPercent := 0
+	if totalQuestions > 0 {
+		accuracyPercent = int(math.Round(float64(correctAnswers) / float64(totalQuestions) * 100.0))
+	}
 	speedBonusPercent := getSpeedBonusPercent(req.QuizTimeSeconds)
 	dailyStreak, err := updateDailyStreak(req.UserID, now)
 	if err != nil {
@@ -96,7 +116,8 @@ func (s *QuizSessionV2Service) finalizeSession(
 	speedGain := int(math.Round(float64(baseScore) * (float64(speedBonusPercent) / 100.0)))
 	adBonusPoints := req.AdBonuses
 	totalPoints := baseScore + accuracyGain + speedGain + adBonusPoints + streakBonus
-	amountInNaira := float64(totalPoints) / 1000.0
+	pointsToNairaRate := getPointsToNairaRate()
+	amountInNaira := float64(totalPoints) / float64(pointsToNairaRate)
 
 	testLevel := lookup.record.TestLevel
 	status := "completed"
@@ -174,12 +195,13 @@ func (s *QuizSessionV2Service) finalizeSession(
 		"totalQuestions":   totalQuestions,
 		"correctAnswers":   correctAnswers,
 		"attemptedAnswers": len(responses),
-		"baseEarning":     baseScore,
-		"totalPoints":     totalPoints,
-		"amountInNaira":   amountInNaira,
-		"rewardType":      req.RewardType,
-		"quizTimeSeconds": req.QuizTimeSeconds,
-		"submittedAt":     isoTime(submission.SubmittedAt),
+		"baseEarning":      baseScore,
+		"totalPoints":      totalPoints,
+		"amountInNaira":    amountInNaira,
+		"rewardType":       req.RewardType,
+		"accuracyPercent":  accuracyPercent,
+		"quizTimeSeconds":  req.QuizTimeSeconds,
+		"submittedAt":      isoTime(submission.SubmittedAt),
 		"bonuses": map[string]interface{}{
 			"accuracy": map[string]interface{}{"percent": accuracyBonusPercent, "points": accuracyGain},
 			"speed":    map[string]interface{}{"percent": speedBonusPercent, "points": speedGain},
