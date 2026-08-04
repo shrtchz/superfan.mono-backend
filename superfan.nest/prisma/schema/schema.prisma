@@ -61,7 +61,7 @@ model User {
   busha_customer_id      String?
   busha_balance_id       String?
   bitnob_customer_id     String?
-  lifetimePoints         Int                 @default(0)
+  lifetimePoints         Int                 @default(0) @map("lifetime_points")
   dailyStreak            Int                 @default(0)
   lastStreakDate         DateTime? // last date a streak was counted
   questionPreference     QuestionPreference?
