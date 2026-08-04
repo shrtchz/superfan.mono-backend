@@ -99,28 +99,38 @@ LEFT JOIN "StreamComment" migrated
 WHERE migrated."id" IS NULL;
 
 -- Move reply likes onto the unified CommentLike table.
-INSERT INTO "CommentLike" ("commentId", "userId", "createdAt")
-SELECT
-  migrated."id" AS "commentId",
-  reply_like."userId",
-  reply_like."createdAt"
-FROM "CommentReplyLike" reply_like
-INNER JOIN "CommentReply" reply
-  ON reply."id" = reply_like."replyId"
-INNER JOIN "StreamComment" migrated
-  ON migrated."legacyReplyId" = reply."id"
-ON CONFLICT ("commentId", "userId") DO NOTHING;
+DO $$
+BEGIN
+  IF to_regclass('public.CommentReplyLike') IS NOT NULL THEN
+    INSERT INTO "CommentLike" ("commentId", "userId", "createdAt")
+    SELECT
+      migrated."id" AS "commentId",
+      reply_like."userId",
+      reply_like."createdAt"
+    FROM "CommentReplyLike" reply_like
+    INNER JOIN "CommentReply" reply
+      ON reply."id" = reply_like."replyId"
+    INNER JOIN "StreamComment" migrated
+      ON migrated."legacyReplyId" = reply."id"
+    ON CONFLICT ("commentId", "userId") DO NOTHING;
+  END IF;
+END $$;
 
 -- Move reply reports onto the unified CommentReport table.
-INSERT INTO "CommentReport" ("commentId", "userId", "reason", "createdAt")
-SELECT
-  migrated."id" AS "commentId",
-  reply_report."userId",
-  reply_report."reason",
-  reply_report."createdAt"
-FROM "CommentReplyReport" reply_report
-INNER JOIN "CommentReply" reply
-  ON reply."id" = reply_report."replyId"
-INNER JOIN "StreamComment" migrated
-  ON migrated."legacyReplyId" = reply."id"
-ON CONFLICT ("commentId", "userId") DO NOTHING;
+DO $$
+BEGIN
+  IF to_regclass('public.CommentReplyReport') IS NOT NULL THEN
+    INSERT INTO "CommentReport" ("commentId", "userId", "reason", "createdAt")
+    SELECT
+      migrated."id" AS "commentId",
+      reply_report."userId",
+      reply_report."reason",
+      reply_report."createdAt"
+    FROM "CommentReplyReport" reply_report
+    INNER JOIN "CommentReply" reply
+      ON reply."id" = reply_report."replyId"
+    INNER JOIN "StreamComment" migrated
+      ON migrated."legacyReplyId" = reply."id"
+    ON CONFLICT ("commentId", "userId") DO NOTHING;
+  END IF;
+END $$;
