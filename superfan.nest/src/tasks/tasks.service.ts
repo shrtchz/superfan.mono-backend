@@ -413,6 +413,11 @@ export class TaskService {
       },
     });
 
+    await prisma.user.update({
+      where: { id: referral.referrerId },
+      data: { lifetimePoints: { increment: 10000 } },
+    });
+
     await this.notificationService.createNotification(
       referral.referrerId,
       'Credit Wallet - Referral Bonus',
@@ -429,6 +434,11 @@ export class TaskService {
         type: 'referral_first_test_referee',
         accountType: 'Gold',
       },
+    });
+
+    await prisma.user.update({
+      where: { id: referral.refereeId },
+      data: { lifetimePoints: { increment: 20000 } },
     });
 
     await this.notificationService.createNotification(

@@ -178,6 +178,11 @@ export class WalletService {
       }
     });
 
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { lifetimePoints: { increment: points } },
+    });
+
     // Send notification
     await this.notificationService.createNotification(
       userId,
@@ -225,7 +230,12 @@ export class WalletService {
     // Credit the wallet - live quiz rewards go to Gold Account
     await this.creditWallet(userId, amount, `₦${amount} has  been added to your wallet`, `You earned ${amount} from Live Quiz`, 'Gold', 'NGN');
 
-        await this.notificationService.createNotification(
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { lifetimePoints: { increment: points } },
+    });
+
+    await this.notificationService.createNotification(
       userId,
       `₦${amount} has  been added to your wallet`,
       `You earned ₦${amount} from Live Quiz`,
