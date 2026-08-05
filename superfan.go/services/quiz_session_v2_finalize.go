@@ -125,7 +125,7 @@ func (s *QuizSessionV2Service) finalizeSession(
 	speedGain := int(math.Round(float64(baseScore) * (float64(speedBonusPercent) / 100.0)))
 	adBonusPoints := req.AdBonuses
 	totalPoints := baseScore + accuracyGain + speedGain + adBonusPoints + streakBonus
-	amountInNaira, finalNairaAmount, finalUSDCAmount, finalUSDTAmount := convertTotalEarningToRewardAmounts(baseScore)
+	amountInNaira, finalNairaAmount, finalUSDCAmount, finalUSDTAmount := convertTotalEarningToRewardAmounts(totalPoints)
 
 	testLevel := lookup.record.TestLevel
 	status := "completed"
