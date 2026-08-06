@@ -395,7 +395,18 @@ func updateDailyStreak(userID int, now time.Time) (int, error) {
 		case diffDays == 1:
 			newStreak = user.DailyStreak + 1
 		default:
-			newStreak = 1
+			// Missed one or more days: reset streak. For the quiz that detects the miss
+			// we give no streak bonus (return 0), but record a new streak start so
+			// subsequent quizzes begin at 1.
+			if err := utils.DB.Model(&models.User{}).
+				Where("id = ?", userID).
+				Updates(map[string]interface{}{
+					"dailyStreak":    1,
+					"lastStreakDate": now,
+				}).Error; err != nil {
+				return 0, utils.NewAppError(http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to reset daily streak")
+			}
+			return 0, nil
 		}
 	}
 
