@@ -1,12 +1,14 @@
+import { createClerkClient } from '@clerk/backend';
 import * as argon from 'argon2';
+import crypto from 'crypto';
 import { generateReferralCode } from '../../src/common/shared/lib';
 import { prisma } from "../../src/prisma/prisma";
-
 export enum SubscriptionPlan {
   FREE = "FREE",
   PREMIUM_PRO = "PREMIUM_PRO",
   PREMIUM_PRO_MAX = "PREMIUM_PRO_MAX",
 }
+
 
 
 
@@ -16,34 +18,60 @@ async function seedAll() {
       firstName: "ridwan",
       lastName: "surajudeen",
       email: "ridwan.1095@outlook.com",
-      password: "Password@1234#",
+      password: "Shortchase@11",
       phone: "+2348012345678",
       username: "ridwanSuraj",
       subscriptionPlan: SubscriptionPlan.FREE,
       roleName: "client",
       referral_code: generateReferralCode("ridwan"),
+      profilePicture:"https://cloudflare-b2.shrtchz.workers.dev/Screenshot 2025-07-04 153317.png",
     },
     {
       firstName: "mike",
       lastName: "oketunde",
       email: "michael.5820@outlook.com",
-      password: "Password@1234#",
+      password: "SF_dev_pass_9872#@!",
       phone: "+2348046573479",
       username: "mikOutlook",
       subscriptionPlan: SubscriptionPlan.FREE,
       roleName: "client",
       referral_code: generateReferralCode("mike"),
+      profilePicture:null
     },
     {
-      firstName: "admin",
-      lastName: "user",
+      firstName: "Superfan",
+      lastName: "Admin",
       email: "superfanng@superfan.ng",
-      password: "Password@1234#",
+      password: "Shortchase#2019@",
       phone: "+2348098765432",
-      username: "adminUser",
+      username: "odofin",
       subscriptionPlan: SubscriptionPlan.FREE,
       roleName: "superadmin",
       referral_code: generateReferralCode("admin"),
+      profilePicture:null
+    },{
+      firstName: "Samuel",
+      lastName: "Clement",
+      email:"samuel.7421@outlook.com",
+      password: "Shortchase@11",
+      phone: "+2349112074341",
+      username: "thesamclem01",
+      subscriptionPlan: SubscriptionPlan.FREE,
+      roleName: "client",
+      referral_code: generateReferralCode("samuel"),
+      profilePicture:null
+    },
+    {
+      firstName: "Sola",
+      lastName: "Sola",
+      email: "sola.8519@outlook.com",
+      password: "Shortchase@11",
+      phone: "+2349012345678",
+      username: "soladebayo",
+      subscriptionPlan: SubscriptionPlan.FREE,
+      roleName: "client",
+      referral_code: generateReferralCode("sola"),
+      profilePicture:null
     },
   ];
 
@@ -118,7 +146,7 @@ if (!existingRole) {
 
   console.log("Payment processors seeded");
 
-  // ✅ Seed users
+  // ✅ Seed users (safe against email/username unique conflicts)
   for (const user of users) {
     const hashedPassword = await argon.hash(user.password);
 
@@ -126,29 +154,55 @@ if (!existingRole) {
       where: { name: user.roleName },
     });
 
-    const createdUser = await prisma.user.upsert({
+    const existingByEmail = await prisma.user.findUnique({
       where: { email: user.email },
-      update: {
-        firstName: user.firstName,
-        lastName: user.lastName,
-        phone: user.phone,
-        username: user.username,
-        subscriptionPlan: user.subscriptionPlan,
-        roleName: role.name, // safer
-        referral_code: user.referral_code,
-      },
-      create: {
-        firstName: user.firstName,
-        lastName: user.lastName,
-        email: user.email,
-        password: hashedPassword,
-        phone: user.phone,
-        username: user.username,
-        subscriptionPlan: user.subscriptionPlan,
-        roleName: role.name,
-        referral_code: user.referral_code,
-      },
     });
+    const existingByUsername = await prisma.user.findUnique({
+      where: { username: user.username },
+    });
+
+    const sharedUpdate = {
+      firstName: user.firstName,
+      lastName: user.lastName,
+      phone: user.phone,
+      subscriptionPlan: user.subscriptionPlan,
+      roleName: role.name,
+      referral_code: user.referral_code,
+      password: hashedPassword,
+      profilePicture: user.profilePicture || null,
+    };
+
+    let createdUser;
+
+    if (existingByEmail) {
+      const usernameTakenByOther =
+        existingByUsername && existingByUsername.id !== existingByEmail.id;
+
+      createdUser = await prisma.user.update({
+        where: { id: existingByEmail.id },
+        data: {
+          ...sharedUpdate,
+          // Avoid P2002 when username already belongs to a different row.
+          ...(usernameTakenByOther ? {} : { username: user.username }),
+        },
+      });
+    } else if (existingByUsername) {
+      createdUser = await prisma.user.update({
+        where: { id: existingByUsername.id },
+        data: {
+          ...sharedUpdate,
+          email: user.email,
+        },
+      });
+    } else {
+      createdUser = await prisma.user.create({
+        data: {
+          ...sharedUpdate,
+          email: user.email,
+          username: user.username,
+        },
+      });
+    }
 
     // ✅ Create wallet for user
     await prisma.wallet.upsert({
@@ -161,7 +215,47 @@ if (!existingRole) {
     });
   }
 
-  console.log("Users seeded");
+  console.log("Users seeded in DB");
+
+  // ✅ Seed users in Clerk
+  const clerkClient = createClerkClient({
+    secretKey: process.env.CLERK_SECRET_KEY,
+  });
+
+  // Helper to generate a random strong password (base64 + symbols) that avoids pwned lists.
+  function generateSafePassword(): string {
+    // 12 random bytes => 16 base64 chars, then remove URL‑unsafe chars and append extra symbols.
+    const raw = crypto.randomBytes(12).toString('base64');
+    const sanitized = raw.replace(/[+/=]/g, '');
+    // Ensure we have at least 12 characters and add a symbol/number for extra strength.
+    return `${sanitized}!A1`;
+  }
+
+  for (const user of users) {
+    try {
+      const clerkUsers = await clerkClient.users.getUserList({ emailAddress: [user.email] });
+      const existingClerkUser = clerkUsers?.data?.[0] || clerkUsers?.[0];
+      const clerkPassword = user.password;
+      if (existingClerkUser) {
+        // Update Clerk user with the configured password.
+        await clerkClient.users.updateUser(existingClerkUser.id, { password: clerkPassword });
+        console.log(`Updated Clerk password for ${user.email}`);
+      } else {
+        // Create Clerk user with the configured password.
+        await clerkClient.users.createUser({
+          emailAddress: [user.email],
+          password: clerkPassword,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          username: user.username,
+        });
+        console.log(`Created Clerk user for ${user.email}`);
+      }
+    } catch (e) {
+      console.error(`Error syncing ${user.email} to Clerk:`, e);
+    }
+  }
+  console.log('✅ All seeded users have been synced to Clerk');
 }
 
 // ✅ Run everything

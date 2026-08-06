@@ -24,6 +24,7 @@ export class AuthDto {
   @IsString()
   lastName: string;
 
+  @IsOptional()
   @IsString()
   phone?: string;
 
@@ -285,16 +286,7 @@ export class SubAdminDto {
 
 export class LoginDto {
   @IsString()
-  @IsOptional()
-  email?: string;
-
-  @IsString()
-  @IsOptional()
-  phone?: string;
-
-  @IsString()
-  @IsOptional()
-  username?: string;
+  identifier: string;
 
   @IsString()
   @IsOptional()
@@ -378,6 +370,20 @@ export class ResetPasswordDto {
   @IsString()
   @MinLength(6)
   newPassword: string;
+}
+
+export class SyncUserDto {
+  @IsOptional()
+  @IsString()
+  referralCode?: string;
+
+  @IsOptional()
+  @IsString()
+  ip_address?: string;
+
+  @IsOptional()
+  @IsString()
+  location?: string;
 }
 
 export class RewardPaymentDto {

@@ -17,6 +17,7 @@ import { CreateClientHistoryDto, CreatePayoutDto, GetClientHistoryDto, TaskDto, 
 import { TaskChatGateway } from './tasks.gateway';
 import { TaskStatus, ActivityType } from '../common/enums/task.enum';
 import { CronJobService } from '../cronjobs/cronjob.service';
+import { generateFiveUniqueRandomNumbers } from '../common/utils/utils';
 
 @Injectable()
 export class TaskService {
@@ -401,14 +402,51 @@ export class TaskService {
 
     if (!referral) return;
 
-    await this.walletService.creditWallet(
+    // Referrer Bonus: 10,000 PTS into Gold Account
+    await prisma.point.create({
+      data: {
+        userId: referral.referrerId,
+        points: 10000,
+        reference: `POINTS_${generateFiveUniqueRandomNumbers()}`,
+        type: 'referral_first_test_referrer',
+        accountType: 'Gold',
+      },
+    });
+
+    await prisma.user.update({
+      where: { id: referral.referrerId },
+      data: { lifetimePoints: { increment: 10000 } },
+    });
+
+    await this.notificationService.createNotification(
       referral.referrerId,
-      10,
-      'referral_test_bonus',
-      `You earned ₦10 because completed a test`,
+      'Credit Wallet - Referral Bonus',
+      'You earned 10,000 PTS (Gold Account) because your referee completed their first test.',
+      'referral_reward',
     );
 
-    // call createReward and createPoints
+    // Referee Bonus: 20,000 PTS into Gold Account
+    await prisma.point.create({
+      data: {
+        userId: referral.refereeId,
+        points: 20000,
+        reference: `POINTS_${generateFiveUniqueRandomNumbers()}`,
+        type: 'referral_first_test_referee',
+        accountType: 'Gold',
+      },
+    });
+
+    await prisma.user.update({
+      where: { id: referral.refereeId },
+      data: { lifetimePoints: { increment: 20000 } },
+    });
+
+    await this.notificationService.createNotification(
+      referral.refereeId,
+      'Credit Wallet - Referral Bonus',
+      'You earned 20,000 PTS (Gold Account) for completing your first test.',
+      'welcome_bonus',
+    );
 
     await prisma.referral.update({
       where: { id: referral.id },

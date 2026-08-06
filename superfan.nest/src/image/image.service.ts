@@ -71,6 +71,6 @@ export class ImageService {
 
     const bucketName = this.config.get('B2_BUCKET_NAME');
 
-    return `${this.downloadUrl}/${file.originalname}`;
+    return `${this.downloadUrl}/${encodeURIComponent(file.originalname)}`;
   }
 }

@@ -10,7 +10,6 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql://postgres:password@db:5432/superfan?connection_limit=10&pool_timeout=20
       - LOCAL_REDIS_HOST=redis
     volumes:
       - .:/app

@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	_ "github.com/joho/godotenv/autoload"
@@ -16,6 +17,7 @@ import (
 	"quiz.superfan.com/apis/utils"
 
 	"quiz.superfan.com/apis/controllers"
+	"quiz.superfan.com/apis/middleware"
 	"quiz.superfan.com/apis/services"
 )
 
@@ -78,15 +80,9 @@ func ErrorHandler() gin.HandlerFunc {
 		err := c.Errors.Last().Err
 		var appErr *AppError
 		if errors.As(err, &appErr) {
-			c.JSON(appErr.Status, gin.H{
-				"success": false,
-				"error":   gin.H{"code": appErr.Code, "message": appErr.Message},
-			})
+			utils.SendError(c, appErr.Status, appErr.Code, appErr.Message)
 		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"success": false,
-				"error":   gin.H{"code": "INTERNAL", "message": "an unexpected error occurred"},
-			})
+			utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "an unexpected error occurred")
 		}
 	}
 }
@@ -100,18 +96,35 @@ func init() {
 		log.Fatal("MONGO_URI environment variable is required")
 	}
 
+	pgURI := get("DATABASE_URL")
+	if pgURI != "" {
+		utils.ConnectPostgres(pgURI)
+	} else {
+		log.Println("DATABASE_URL environment variable is not set; skipping PostgreSQL connection")
+	}
+
 	ctx = context.Background()
 
 	clientOptions := options.Client().ApplyURI(mongoURI)
 
-	mongoclient, err = mongo.Connect(clientOptions)
-	if err != nil {
-		log.Fatal("error while connecting with mongo:", err)
+	var mongoclient *mongo.Client
+	var err error
+	maxRetries := 10
+	
+	for i := 0; i < maxRetries; i++ {
+		mongoclient, err = mongo.Connect(clientOptions)
+		if err == nil {
+			err = mongoclient.Ping(ctx, readpref.Primary())
+			if err == nil {
+				break
+			}
+		}
+		log.Printf("Failed to connect to MongoDB, retrying in 2 seconds... (%d/%d)", i+1, maxRetries)
+		time.Sleep(2 * time.Second)
 	}
 
-	err = mongoclient.Ping(ctx, readpref.Primary())
 	if err != nil {
-		log.Fatal("error while trying to ping mongo", err)
+		log.Fatal("error  while trying to ping/connect mongo after retries: ", err)
 	}
 
 	fmt.Println("mongo connection established")
@@ -135,7 +148,31 @@ func init() {
 	qsc = controllers.NewQuizSubmissionController(qsImpl)
 	qc = controllers.NewQuizController(qs)
 
-	server = gin.Default()
+	// Launch Airtable sync in the background
+	go services.SyncFromAirtable(qs)
+
+	// Launch live quiz finaliser (one-shot timers based on quizFinishDate)
+	finaliser := services.NewLiveQuizFinaliser(liveQuizc)
+	services.LiveQuizFinaliserInstance = finaliser
+	finaliser.Start()
+
+	server = gin.New()
+	server.Use(gin.Logger())
+	server.Use(middleware.CORSMiddleware())
+	server.Use(gin.CustomRecovery(func(c *gin.Context, recovered interface{}) {
+		msg := "an unexpected error occurred"
+		if err, ok := recovered.(string); ok && err != "" {
+			msg = err
+		} else if err, ok := recovered.(error); ok && err != nil {
+			msg = err.Error()
+		}
+		log.Printf("panic recovered: %v", recovered)
+		// Avoid double-write: only send JSON error body.
+		if !c.Writer.Written() {
+			utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", msg)
+		}
+		c.Abort()
+	}))
 
 	server.Use(ErrorHandler())
 }
@@ -148,6 +185,10 @@ func main() {
 
 	defer mongoclient.Disconnect(ctx)
 
+	server.GET("/health", func(c *gin.Context) {
+		utils.Success(c, http.StatusOK, "UP", nil)
+	})
+
 	basepath := server.Group("/v1")
 
 	controllers.RegisterQuizRoutes(
@@ -155,6 +196,16 @@ func main() {
 		qc,
 		qsc,
 	)
+
+	v2path := server.Group("/v2")
+	controllers.RegisterQuizSessionV2Routes(v2path, qs)
+	controllers.RegisterLiveQuizV2Routes(v2path, qc)
+
+	// Register REST routes for the streaming proxy (auth required — same tokens as Nest)
+	controllers.RegisterStreamRoutes(basepath)
+
+	// WebSocket Streaming Route (token via Authorization header or ?token=)
+	basepath.GET("/streams/ws", middleware.AuthRequired(), controllers.StreamWebSocket)
 
 	port := os.Getenv("PORT")
 	if port == "" {
