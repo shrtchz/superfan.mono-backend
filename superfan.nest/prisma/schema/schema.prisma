@@ -390,6 +390,7 @@ model OngoingQuiz {
   totalTime           Int? // total time in seconds
   baseScore           Int? // base score for the quiz
   isRandom            Boolean @default(false)
+  submissionMode     String  @default("interval")
   accuracyBonus       Int? // bonus points for accuracy
   speedBonus          Int? // bonus points for speed
   streakMultiplier    Int? // multiplier for consecutive correct answers

@@ -11,6 +11,7 @@ type CreateSessionV2Result struct {
 type CreateSessionV2Request struct {
 	UserID          int                   `json:"userId" binding:"required,min=1"`
 	Mode            string                `json:"mode" binding:"omitempty,oneof=random custom"`
+	SubmissionMode  string                `json:"submissionMode" binding:"omitempty,oneof=interval end_of_quiz"`
 	Preferences     *SessionV2Preferences `json:"preferences"`
 	ReplaceExisting bool                  `json:"replaceExisting"`
 }
@@ -87,6 +88,7 @@ type SessionV2 struct {
 	ID               string              `json:"id"`
 	UserID           int                 `json:"userId"`
 	Mode             string              `json:"mode"`
+	SubmissionMode   string              `json:"submissionMode"`
 	Status           string              `json:"status"`
 	Questions        []SessionV2Question `json:"questions"`
 	Answers          []SessionV2Answer   `json:"answers"`

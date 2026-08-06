@@ -20,6 +20,7 @@ type OngoingQuiz struct {
 	TotalTime           *int            `gorm:"column:totalTime" json:"totalTime"`
 	BaseScore           *int            `gorm:"column:baseScore" json:"baseScore"`
 	IsRandom            bool            `gorm:"column:isRandom" json:"isRandom"`
+	SubmissionMode      string          `gorm:"column:submissionMode;default:interval" json:"submissionMode"`
 	AccuracyBonus       *int            `gorm:"column:accuracyBonus" json:"accuracyBonus"`
 	SpeedBonus          *int            `gorm:"column:speedBonus" json:"speedBonus"`
 	StreakMultiplier    *int            `gorm:"column:streakMultiplier" json:"streakMultiplier"`
