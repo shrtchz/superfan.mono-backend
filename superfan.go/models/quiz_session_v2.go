@@ -18,11 +18,11 @@ type CreateSessionV2Request struct {
 
 // SessionV2Preferences applies when mode is "custom".
 type SessionV2Preferences struct {
-	Language       string `json:"language"`
-	Subject        string `json:"subject"`
-	Level          string `json:"level"`
-	QuestionCount  int    `json:"questionCount"`
-	TimerMinutes   *int   `json:"timerMinutes"`
+	Language      string `json:"language"`
+	Subject       string `json:"subject"`
+	Level         string `json:"level"`
+	QuestionCount int    `json:"questionCount"`
+	TimerMinutes  *int   `json:"timerMinutes"`
 }
 
 // BeginSessionV2Request is the body for PATCH /v2/quiz/sessions/:sessionId/begin.
@@ -71,11 +71,11 @@ type FinalizeSessionV2Request struct {
 
 // FinalizeSessionV2Result is returned by submit and quit.
 type FinalizeSessionV2Result struct {
-	Result     map[string]interface{}   `json:"result"`
-	Responses  []map[string]interface{} `json:"responses"`
-	Streak     map[string]interface{}   `json:"streak"`
-	Session    SessionV2Summary         `json:"session"`
-	Submitted  bool                     `json:"submitted"`
+	Result    map[string]interface{}   `json:"result"`
+	Responses []map[string]interface{} `json:"responses"`
+	Streak    map[string]interface{}   `json:"streak"`
+	Session   SessionV2Summary         `json:"session"`
+	Submitted bool                     `json:"submitted"`
 }
 
 type SessionV2Summary struct {
