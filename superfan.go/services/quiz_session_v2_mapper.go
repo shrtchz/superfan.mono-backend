@@ -87,6 +87,7 @@ func mapOngoingQuizToSessionV2(record *models.OngoingQuiz, expired bool) models.
 		ID:               record.ID,
 		UserID:           record.UserID,
 		Mode:             mode,
+		SubmissionMode:   normalizeSubmissionMode(record.SubmissionMode),
 		Status:           deriveSessionStatus(record, expired),
 		Questions:        normalizeStoredQuestions(record.Questions),
 		Answers:          normalizeStoredAnswers(record.Answers),
@@ -140,6 +141,17 @@ func sessionExpiresAt(record *models.OngoingQuiz) *string {
 		return nil
 	}
 	return isoTimePtr(record.ExpiresAt)
+}
+
+func normalizeSubmissionMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "end_of_quiz":
+		return "end_of_quiz"
+	case "interval":
+		return "interval"
+	default:
+		return "interval"
+	}
 }
 
 func normalizeStoredAnswers(raw json.RawMessage) []models.SessionV2Answer {

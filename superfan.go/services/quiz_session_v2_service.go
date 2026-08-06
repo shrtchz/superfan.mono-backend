@@ -279,6 +279,8 @@ func (s *QuizSessionV2Service) createNewSession(req models.CreateSessionV2Reques
 		timeRemaining = *sessionTotalTime
 	}
 
+	submissionMode := normalizeSubmissionMode(req.SubmissionMode)
+
 	ongoingQuiz := models.OngoingQuiz{
 		ID:                  cuid.New(),
 		UserID:              req.UserID,
@@ -292,6 +294,7 @@ func (s *QuizSessionV2Service) createNewSession(req models.CreateSessionV2Reques
 		TotalQuestions:      totalQuestions,
 		TotalTime:           sessionTotalTime,
 		IsRandom:            isRandom,
+		SubmissionMode:      submissionMode,
 		TimeRemaining:       timeRemaining,
 		Questions:           questionsJSON,
 		Answers:             json.RawMessage("[]"),
@@ -530,6 +533,7 @@ func (s *QuizSessionV2Service) buildPreviewSession(
 		TotalQuestions: totalQuestions,
 		TotalTime:      sessionTotalTime,
 		IsRandom:       isRandom,
+		SubmissionMode: normalizeSubmissionMode(req.SubmissionMode),
 		Questions:      questionsJSON,
 		Answers:        json.RawMessage("[]"),
 		CurrentIndex:   0,
