@@ -818,11 +818,12 @@ func (qc *QuizController) UpdateLiveQuizCustomCountdownLabel(c *gin.Context) {
 
 	label := strings.TrimSpace(payload.CustomCountdownLabel)
 	if label == "" {
-		if phase == "before" {
+		switch phase {
+		case "before":
 			label = strings.TrimSpace(payload.CustomCountdownLabelBefore)
-		} else if phase == "during" {
+		case "during":
 			label = strings.TrimSpace(payload.CustomCountdownLabelDuring)
-		} else if phase == "after" {
+		case "after":
 			label = strings.TrimSpace(payload.CustomCountdownLabelAfter)
 		}
 	}

@@ -354,8 +354,21 @@ export class StreamGateway
         : Number(payload);
     if (Number.isFinite(userId) && userId > 0) {
       (client.data as { userId?: number }).userId = userId;
+      void client.join(`user_${userId}`);
     }
     return { status: 'success' };
+  }
+
+  @OnEvent('user.wallet.updated')
+  handleUserWalletUpdated(payload: { userId: number }) {
+    if (!payload?.userId) return;
+    this.server.to(`user_${payload.userId}`).emit('wallet_updated');
+  }
+
+  @OnEvent('user.payment.history')
+  handleUserPaymentHistoryUpdated(payload: { userId: number }) {
+    if (!payload?.userId) return;
+    this.server.to(`user_${payload.userId}`).emit('payment_history_updated');
   }
 
   @SubscribeMessage('joinStream')

@@ -19,6 +19,10 @@ import (
 	"quiz.superfan.com/apis/controllers"
 	"quiz.superfan.com/apis/middleware"
 	"quiz.superfan.com/apis/services"
+
+	paymentControllers "quiz.superfan.com/apis/controllers"
+	"quiz.superfan.com/apis/services/payment"
+	"quiz.superfan.com/apis/services/payment/providers"
 )
 
 var (
@@ -28,7 +32,11 @@ var (
 	qc          *controllers.QuizController
 	ctx         context.Context
 	mongoclient *mongo.Client
-	err         error
+	// err         error
+
+	// Payment
+	paymentSvc  *payment.PaymentService
+	paymentCtrl *paymentControllers.PaymentController
 )
 
 type AppError struct {
@@ -110,7 +118,7 @@ func init() {
 	var mongoclient *mongo.Client
 	var err error
 	maxRetries := 10
-	
+
 	for i := 0; i < maxRetries; i++ {
 		mongoclient, err = mongo.Connect(clientOptions)
 		if err == nil {
@@ -147,6 +155,16 @@ func init() {
 	// Wire controllers
 	qsc = controllers.NewQuizSubmissionController(qsImpl)
 	qc = controllers.NewQuizController(qs)
+
+	// Wire Payment
+	monnify := providers.NewMonnifyProvider(get("PROD_MONNIFY_API_KEY"), get("PROD_MONNIFY_SECRET_KEY"), get("MONNIFY_URI"), get("MONNIFY_CONTRACT_CODE"))
+	bitnobURL := get("BITNOB_URL")
+	if bitnobURL == "" {
+		bitnobURL = "https://api.bitnob.co"
+	}
+	bitnob := providers.NewBitnobProvider(get("BITNOB_SECRET_KEY"), bitnobURL)
+	paymentSvc = payment.NewPaymentService(utils.DB, monnify, bitnob)
+	paymentCtrl = paymentControllers.NewPaymentController(paymentSvc)
 
 	// Launch Airtable sync in the background
 	go services.SyncFromAirtable(qs)
@@ -203,6 +221,9 @@ func main() {
 
 	// Register REST routes for the streaming proxy (auth required — same tokens as Nest)
 	controllers.RegisterStreamRoutes(basepath)
+
+	// Payment Routes
+	paymentControllers.RegisterPaymentRoutes(basepath, paymentCtrl)
 
 	// WebSocket Streaming Route (token via Authorization header or ?token=)
 	basepath.GET("/streams/ws", middleware.AuthRequired(), controllers.StreamWebSocket)

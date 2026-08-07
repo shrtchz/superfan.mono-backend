@@ -1,4 +1,3 @@
-import { ClerkService } from '../common/clerk/clerk.service';
 import { verifyToken } from '@clerk/backend';
 import {
   BadRequestException,
@@ -10,25 +9,18 @@ import {
   InternalServerErrorException,
   NotFoundException,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { TestLevel, User } from '@prisma/client';
 import * as argon from 'argon2';
 import { PostHog } from 'posthog-node';
-import { EarningStatus } from '../common/enums/task.enum';
+import { ClerkService } from '../common/clerk/clerk.service';
 import { generateReferralCode } from '../common/shared/lib';
+import { PointsConversionUtil } from '../common/utils/points-conversion.util';
 import { generateFiveUniqueRandomNumbers } from '../common/utils/utils';
 import { ElasticsearchService } from '../elasticsearch/elasticsearch.service';
 import { MailService } from '../mail/mail.service';
 import { NotificationService } from '../notification/notification.service';
-import { BitnobService } from '../payment/bitnob.service';
-import { BushaService } from '../payment/busha.service';
-import { FlutterwaveSuperfanService } from '../payment/flutterwave.service';
-import { MonnifyService } from '../payment/monnify.service';
-import {
-  PaymentDto,
-  SubscriptionCardPaymentDto
-} from '../payment/payment.dto';
+
 import { prisma } from '../prisma/prisma';
 import { TaskService } from '../tasks/tasks.service';
 import { WalletService } from '../wallet/wallet.service';
@@ -57,15 +49,12 @@ export class UserService {
     private taskService: TaskService,
     private walletService: WalletService,
     private notificationService: NotificationService,
-    private monnifyService: MonnifyService,
     private readonly eventEmitter: EventEmitter2,
-    private bushaService: BushaService,
-    private bitnobService: BitnobService,
-    private flutterwaveService: FlutterwaveSuperfanService,
     private readonly posthog: PostHog,
     private presenceGateway: PresenceGateway,
     private readonly es: ElasticsearchService,
     private readonly clerkService: ClerkService,
+    private pointsConversionUtil: PointsConversionUtil,
   ) {}
 
   async signupUser(dto: AuthDto): Promise<any> {
@@ -819,7 +808,7 @@ export class UserService {
         await this.walletService.creditWallet(
           referrer.id,
           25,
-          'Referral signup reward',
+          'Credit Wallet - Referral Bonus',
           `You earned ₦25 because ${user.username} signed up using your referral link.`,
         );
 
@@ -1317,40 +1306,42 @@ async getCard(userId: number): Promise<any> {
       });
 
       if (existingUser.accountReference) {
-        reservedAccount = await this.monnifyService.getReservedAccount(
-          existingUser.accountReference,
-        );
+        // reservedAccount = await this.monnifyService.getReservedAccount(
+        //   existingUser.accountReference,
+        // );
       } else {
-        try {
-          reservedAccount = await this.monnifyService.createReservedAccount({
-            accountReference: generatedAccountReference,
-            accountName: fullName,
-            currencyCode: 'NGN',
-            customerEmail: existingUser.email,
-            customerName: fullName,
-            bvn: dto.bvn,
-            getAllAvailableBanks: true,
-          });
-        } catch (error: any) {
-          console.error('[KYC][Monnify ERROR]', {
-            message: error.message,
-            response: error.response?.data,
-          });
+        // try {
+        //   reservedAccount = await this.monnifyService.createReservedAccount({
+        //     accountReference: generatedAccountReference,
+        //     accountName: fullName,
+        //     currencyCode: 'NGN',
+        //     customerEmail: existingUser.email,
+        //     customerName: fullName,
+        //     bvn: dto.bvn,
+        //     getAllAvailableBanks: true,
+        //   });
+        // } catch (error: any) {
+        //   console.error('[KYC][Monnify ERROR]', {
+        //     message: error.message,
+        //     response: error.response?.data,
+        //   });
 
-          const responseMessage = error.response?.data?.responseMessage;
+        //   const responseMessage = error.response?.data?.responseMessage;
 
-          if (
-            typeof responseMessage === 'string' &&
-            responseMessage.includes('same reference')
-          ) {
-            reservedAccount = await this.monnifyService.getReservedAccount(
-              generatedAccountReference,
-            );
-          } else {
-            throw error;
-          }
-        }
+        //   if (
+        //     typeof responseMessage === 'string' &&
+        //     responseMessage.includes('same reference')
+        //   ) {
+        //     reservedAccount = await this.monnifyService.getReservedAccount(
+        //       generatedAccountReference,
+        //     );
+        //   } else {
+        //     throw error;
+        //   }
+        // }
       }
+      
+      reservedAccount = { responseBody: { accounts: [] } };
 
 
       const responseBody = reservedAccount?.responseBody;
@@ -1368,70 +1359,10 @@ async getCard(userId: number): Promise<any> {
       let flutterwaveCustomerId = existingUser.flw_customer_id;
 
       if (!flutterwaveCustomerId) {
-        try {
-          const createFlwCustomer =
-            await this.flutterwaveService.createCustomer({
-              email: existingUser.email,
-              firstName: dto.firstName,
-              lastName: dto.lastName,
-              phoneNumber: existingUser.phone,
-              city: dto.city,
-              country: dto.country,
-              line1: dto.address,
-              postal_code: dto.postal_code,
-              state: dto.state,
-              country_code: dto.country_code,
-              number: dto.number,
-            });
-
-          flutterwaveCustomerId =
-            createFlwCustomer.data?.id?.toString() ?? null;
-        } catch (error: any) {
-          console.error('[KYC][Flutterwave ERROR]', {
-            message: error.message,
-            response: error.response?.data,
-          });
-          throw error;
-        }
+        flutterwaveCustomerId = null;
       }
 
-      
-
-      // Create Flutterwave virtual account if customer exists
       let flutterwaveAccount = null;
-      if (flutterwaveCustomerId) {
-        try {
-          const virtualAccountDto = {
-            account_name: `${dto.firstName} ${dto.lastName}`,
-            email: existingUser.email,
-            country: dto.country,
-            mobilenumber: dto.number,
-            bank_code: '035'
-          };
-
-          const virtualAccountResponse = await this.flutterwaveService.createPayoutSubaccount(virtualAccountDto);
-          flutterwaveAccount = virtualAccountResponse.data;
-
-        } catch (error: any) {
-          console.error('[KYC][Flutterwave Virtual Account ERROR]', {
-            message: error.message,
-            response: error.response?.data,
-          });
-          // Don't throw error, continue with Monnify accounts
-        }
-      }
-
-            // Add Flutterwave account if created
-      if (flutterwaveAccount?.nuban) {
-        accountsWithType.push({
-          accountNumber: flutterwaveAccount.nuban,
-          bankName: flutterwaveAccount.bank_name,
-          bankCode: flutterwaveAccount.bank_code,
-          accountType: 'Flutterwave',
-          accountReference: flutterwaveAccount.account_reference,
-          barterId: flutterwaveAccount.barter_id
-        });
-      }
 
 
 
@@ -1557,47 +1488,35 @@ async getCard(userId: number): Promise<any> {
 
       // [bitnob services]
 
-      let createBitnobCustomerResponse = await this.bitnobService.createCustomer({
-        email: existingUser.email,
-        first_name: dto.firstName,
-        last_name: dto.lastName,
-        phone: existingUser.phone,
-        country_code: dto.country,
-      })
+      // let createBitnobCustomerResponse = await this.bitnobService.createCustomer({
+      //   email: userDetails.email,
+      //   firstName: userDetails.firstName,
+      //   lastName: userDetails.lastName,
+      //   phone: userDetails.phone,
+      //   countryCode: "+234"
+      // })
 
       // [generate bitnob address]
 
 const chain = process.env.NODE_ENV === 'production' ? 'polygon' : 'ethereum';
 
-let create_bitnob_address = await this.bitnobService.generateAddress({
-  chain,
-  customer_email: existingUser.email,
-  label: 'bitnobSuperfanWallet',
-  reference: `wal-ref-${Date.now()}`
-})
+      const bitnobAddress = {
+        bitnob_address: {
+          id: '',
+          chain: '',
+          address: '',
+          label: '',
+          reference: '',
+          status: '',
+        },
+      };
 
-let validate_bitnob_adddress = await this.bitnobService.validateAddress({
-  address: create_bitnob_address.data.address,
-  chain
-})
+      const updatedAccountsWithType = {
+        ...accountsWithType,
+        ...bitnobAddress,
+      };
 
-                const bitnobAddress = {
-            bitnob_address: {
-              id: create_bitnob_address.data.id,
-              chain: create_bitnob_address.data.chain,
-              address: create_bitnob_address.data.address,
-              label: create_bitnob_address.data.label,
-              reference: create_bitnob_address.data.reference,
-              status: create_bitnob_address.data.status,
-            },
-          };
-
-          const updatedAccountsWithType = {
-            ...accountsWithType,
-            ...bitnobAddress,
-          };
-
-          console.log(updatedAccountsWithType, 'updatedAccounts')
+      console.log(updatedAccountsWithType, 'updatedAccounts');
       await prisma.user.update({
         where: { id: userId },
         data: {
@@ -1605,14 +1524,9 @@ let validate_bitnob_adddress = await this.bitnobService.validateAddress({
           accounts: updatedAccountsWithType,
           flw_customer_id: flutterwaveCustomerId,
           busha_customer_id: bushaCustomerId,
-          bitnob_customer_id: createBitnobCustomerResponse?.data?.id,
+          bitnob_customer_id: null,
         },
       });
-      console.log('flutterwave account reference', flutterwaveAccount.account_reference)
-
-            // issue static account for user
-      let issueStaticAccount = await this.flutterwaveService.fetchStaticVirtualAccount(flutterwaveAccount.account_reference)
-      console.log('issueStaticAccount', issueStaticAccount)
 
       console.log('[KYC] Verifying Busha customer');
 
@@ -1641,28 +1555,14 @@ let validate_bitnob_adddress = await this.bitnobService.validateAddress({
           flw_customer_id: flutterwaveCustomerId,
         },
       };
-    // } catch (error: any) {
-    //   console.error('[KYC] FINAL ERROR', {
-    //     message: error.message,
-    //     stack: error.stack,
-    //     response: error.response?.data,
-    //   });
-
-    //   throw error;
-    // }
-
     } catch (error: any) {
-  // ADD THIS:
-  console.error('fetchStaticVirtualAccount error:', {
-    message: error.message,
-    response: error.response?.data,
-    status: error.response?.status,
-  });
+      console.error('[KYC] FINAL ERROR', {
+        message: error.message,
+        stack: error.stack,
+        response: error.response?.data,
+      });
 
-  throw new HttpException(
-    error.response?.data || error.message || 'Failed to fetch static virtual account',
-    error.response?.status || 500,
-  );
+      throw error;
     }
   }
 
@@ -1702,13 +1602,13 @@ let validate_bitnob_adddress = await this.bitnobService.validateAddress({
       user.postal_code,
     ];
 
-    // 2. Call Busha
-    const customer = await this.bushaService.getCustomerById(
-      user.busha_customer_id,
-    );
+    // 2. Call Busha (Mocked)
+    // const customer = await this.bushaService.getCustomerById(
+    //   user.busha_customer_id,
+    // );
 
-    const status = customer?.data?.status;
-    const kycStatus = customer?.data?.kyc_status;
+    const status = 'active'; // customer?.data?.status;
+    const kycStatus = 'verified'; // customer?.data?.kyc_status;
 
     // 3. Final decision
     const isApproved = status === 'active' && kycStatus === 'verified';
@@ -1817,14 +1717,14 @@ let validate_bitnob_adddress = await this.bitnobService.validateAddress({
 
     try {
       // ✅ Create subaccount
-      const subAccountCode = await this.monnifyService.createSubAccount({
-        customerCurrency: dto.customerCurrency,
-        customerAccountNumber: dto.accountNumber,
-        customerAccountBankCode: dto.bankCode,
-        customerEmailAddress: user.email,
-        defaultSplitPercentage: dto.defaultSplitPercentage,
-        // customerAccountName: `${user.firstName} ${user.lastName}`,
-      });
+      // const subAccountCode = await this.monnifyService.createSubAccount({
+      //   customerCurrency: dto.customerCurrency,
+      //   customerAccountNumber: dto.accountNumber,
+      //   customerAccountBankCode: dto.bankCode,
+      //   customerEmailAddress: user.email,
+      //   defaultSplitPercentage: dto.defaultSplitPercentage,
+      // });
+      const subAccountCode = 'mocked_sub_account_code';
 
       if (!subAccountCode) {
         throw new BadRequestException('Failed to create sub account');
@@ -1933,7 +1833,7 @@ let validate_bitnob_adddress = await this.bitnobService.validateAddress({
     };
   }
 
-  async createSubscription(userId: number, dto: PaymentDto): Promise<any> {
+  async createSubscription(userId: number, dto: any): Promise<any> {
     // 1️⃣ Ensure user exists
     const user = await prisma.user.findUnique({
       where: { id: userId },
@@ -1962,7 +1862,8 @@ let validate_bitnob_adddress = await this.bitnobService.validateAddress({
     }
 
     // 4️⃣ Call Monnify mandate
-    const mandate = await this.monnifyService.createMandate(dto);
+    // const mandate = await this.monnifyService.createMandate(dto);
+    const mandate = { responseBody: { mandateReference: 'mocked', mandateCode: 'mocked', mandateStatus: 'ACTIVE' } };
 
     if (!mandate || !mandate.responseBody) {
       throw new InternalServerErrorException('Failed to create mandate');
@@ -1996,11 +1897,12 @@ let validate_bitnob_adddress = await this.bitnobService.validateAddress({
 
   async createSubscriptionWithCard(
     userId: number,
-    dto: SubscriptionCardPaymentDto,
+    dto: any,
   ): Promise<any> {
-    const trx = await this.monnifyService.queryTransaction(
-      dto.transactionReference,
-    );
+    // const trx = await this.monnifyService.queryTransaction(
+    //   dto.transactionReference,
+    // );
+    const trx = { responseBody: { paymentStatus: 'PAID', cardDetails: { cardToken: 'mocked' }, amountPaid: 0, paymentReference: 'mocked', transactionReference: 'mocked' } };
     console.log(trx, 'log trx record');
 
     if (trx.responseBody.paymentStatus !== 'PAID') {
@@ -2698,16 +2600,17 @@ async findUserByEmail(email: string): Promise<any> {
     });
 
     // Credit referrer wallet so the balance is visible in the Gold Wallet
+    const nairaAmount = this.pointsConversionUtil.pointsToNaira(20000);
     await this.walletService.creditWallet(
       referrer.id,
-      20000,
-      'Referral Signup Reward',
-      `You earned ₦20,000 because @${user.username} signed up using your referral link.`,
+      nairaAmount,
+      'Credit Wallet - Referral Bonus',
+      `You earned ₦${nairaAmount} because @${user.username} signed up using your referral link.`,
       'Gold',
     );
     console.log('[Referral] Wallet credited for referrer', {
       referrerId: referrer.id,
-      amount: 20000,
+      amount: nairaAmount,
     });
 
     // Notification for referrer

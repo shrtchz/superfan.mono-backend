@@ -16,8 +16,6 @@ import { ApiRoutes } from '../common/enums/routes.enum';
 import { generateFiveUniqueRandomNumbers } from '../common/utils/utils';
 import { validateHmacChecksum } from '../common/utils/validateHmacChecksum';
 import { NotificationService } from '../notification/notification.service';
-import { BushaService } from '../payment/busha.service';
-import { FlutterwaveSuperfanService } from '../payment/flutterwave.service';
 import { prisma } from '../prisma/prisma';
 import { MonnifyWebhookService } from './webhook.service';
 
@@ -28,8 +26,6 @@ export class MonnifyWebhookController {
 
   constructor(
     private readonly webhookService: MonnifyWebhookService,
-    private readonly bushaService: BushaService,
-    private readonly flutterwaveService: FlutterwaveSuperfanService,
     private readonly notificationService: NotificationService,
   ) {}
 
@@ -106,7 +102,7 @@ export class MonnifyWebhookController {
   console.log('✅ Valid Busha webhook:', payload);
 
   // 🚀 Just pass everything to service
-  await this.bushaService.processBushaWebhook(payload);
+  // await this.bushaService.processBushaWebhook(payload);
 
     return { received: true };
   }
@@ -189,32 +185,7 @@ private async handleBitnobTransferSuccess(payload: any) {
         data: { status: 'SUCCESS' },
       });
 
-      // Decrement wallet balance
-      const walletUpdateData: any = {};
-
-      switch (currency) {
-        case 'USDC':
-          walletUpdateData.usdcBalance = {
-            decrement: amount,
-          };
-          break;
-
-        case 'USDT':
-          walletUpdateData.usdtBalance = {
-            decrement: amount,
-          };
-          break;
-
-        default:
-          throw new Error(`Unsupported currency: ${currency}`);
-      }
-
-      await tx.wallet.update({
-        where: {
-          userId: transaction.userId,
-        },
-        data: walletUpdateData,
-      });
+      // Wallet balance was already decremented during withdrawal creation to prevent double spending
 
       // Activity log
       await tx.activityWallet.create({
@@ -423,41 +394,41 @@ private async handleCardCharge(payload: any) {
     }
 
     console.log('[HANDLE CARD CHARGE] Verifying transaction with txRef:', txRef);
-    const verifyResponse = await this.flutterwaveService.verifyTransactionByReference(txRef);
-    console.log('[HANDLE CARD CHARGE] Verify response:', verifyResponse);
+    // const verifyResponse = await this.flutterwaveService.verifyTransactionByReference(txRef);
+    // console.log('[HANDLE CARD CHARGE] Verify response:', verifyResponse);
     
-    const verifiedData = verifyResponse?.data;
+    // const verifiedData = verifyResponse?.data;
 
-    if (!verifiedData || verifiedData?.status !== 'successful') {
-      console.log('[HANDLE CARD CHARGE] Verification failed or not successful:', verifiedData?.status);
-      return;
-    }
+    // if (!verifiedData || verifiedData?.status !== 'successful') {
+    //   console.log('[HANDLE CARD CHARGE] Verification failed or not successful:', verifiedData?.status);
+    //   return;
+    // }
 
-    const card = verifiedData?.card;
-    console.log('[HANDLE CARD CHARGE] Card from verification:', card);
+    // const card = verifiedData?.card;
+    // console.log('[HANDLE CARD CHARGE] Card from verification:', card);
 
-    if (card?.token) {
-  const existing = await prisma.userCard.findFirst({
-    where: {
-      userId: cardFunding.userId,
-      cardToken: card.token,
-    },
-  });
+//     if (card?.token) {
+//   const existing = await prisma.userCard.findFirst({
+//     where: {
+//       userId: cardFunding.userId,
+//       cardToken: card.token,
+//     },
+//   });
 
-  if (!existing) {
-    await prisma.userCard.create({
-      data: {
-        userId: cardFunding.userId,
-        cardToken: card.token, // assuming Json column
-      },
-    });
+//   if (!existing) {
+//     await prisma.userCard.create({
+//       data: {
+//         userId: cardFunding.userId,
+//         cardToken: card.token, // assuming Json column
+//       },
+//     });
 
-    console.log(
-      '[HANDLE CARD CHARGE] Card saved to userCard for user:',
-      cardFunding.userId,
-    );
-  }
-}
+//     console.log(
+//       '[HANDLE CARD CHARGE] Card saved to userCard for user:',
+//       cardFunding.userId,
+//     );
+//   }
+// }
 
     // 💰 update wallet
     console.log('[HANDLE CARD CHARGE] Updating wallet balance by:', amount);

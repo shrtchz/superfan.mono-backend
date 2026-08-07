@@ -9,7 +9,6 @@ import { firstValueFrom } from 'rxjs';
 import { EarningStatus } from '../common/enums/task.enum';
 import { QuizQuestion, UserAnswer } from '../common/utils/types';
 import { getAccuracyBonus, getSpeedBonus, getStreakBonus, formatSecondsToMMSS } from '../common/utils/utils';
-import { PaymentService } from '../payment/payment.service';
 import { prisma } from '../prisma/prisma';
 import { UserService } from '../user/user.service';
 import { WalletService } from '../wallet/wallet.service';
@@ -119,7 +118,6 @@ export class QuizService {
   constructor(
     private readonly httpService: HttpService,
     private readonly walletService: WalletService,
-    private readonly paymentService: PaymentService,
     private readonly eventEmitter: EventEmitter2,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
@@ -1677,8 +1675,8 @@ async hasSubmittedLiveQuizForStream(
         const amountInNaira = totalEarning / 1000;
 
         // Still fetch exchange rates for consistency
-        const convertToUSDC = await this.paymentService.getExchangeRate('USDC');
-        const convertToUSDT = await this.paymentService.getExchangeRate('USDT');
+        const convertToUSDC = { rate: 1600 }; // await this.paymentService.getExchangeRate('USDC');
+        const convertToUSDT = { rate: 1600 }; // await this.paymentService.getExchangeRate('USDT');
 
         const amountInUSDC = amountInNaira / Number(convertToUSDC.rate);
         const amountInUSDT = amountInNaira / Number(convertToUSDT.rate);
@@ -1723,8 +1721,8 @@ async hasSubmittedLiveQuizForStream(
 
     const amountInNaira = totalEarning / 1000;
 
-    const convertToUSDC = await this.paymentService.getExchangeRate('USDC');
-    const convertToUSDT = await this.paymentService.getExchangeRate('USDT');
+    const convertToUSDC = { rate: 1600 };
+    const convertToUSDT = { rate: 1600 };
 
     const amountInUSDC = amountInNaira / Number(convertToUSDC.rate);
     const amountInUSDT = amountInNaira / Number(convertToUSDT.rate);
