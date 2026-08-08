@@ -3,11 +3,13 @@ package models
 import "time"
 
 type Wallet struct {
-	ID          int     `gorm:"column:id;primaryKey" json:"id"`
-	UserID      int     `gorm:"column:userId;uniqueIndex" json:"userId"`
-	Balance     float64 `gorm:"column:balance" json:"balance"`
-	UsdcBalance float64 `gorm:"column:usdcBalance" json:"usdcBalance"`
-	UsdtBalance float64 `gorm:"column:usdtBalance" json:"usdtBalance"`
+	ID              int     `gorm:"column:id;primaryKey" json:"id"`
+	UserID          int     `gorm:"column:userId;uniqueIndex" json:"userId"`
+	Balance         float64 `gorm:"column:balance" json:"balance"`
+	GoldBalance     float64 `gorm:"column:goldBalance" json:"goldBalance"`
+	PersonalBalance float64 `gorm:"column:personalBalance" json:"personalBalance"`
+	UsdcBalance     float64 `gorm:"column:usdcBalance" json:"usdcBalance"`
+	UsdtBalance     float64 `gorm:"column:usdtBalance" json:"usdtBalance"`
 }
 
 func (Wallet) TableName() string {
@@ -76,3 +78,65 @@ type QuizLeaderboard struct {
 func (QuizLeaderboard) TableName() string {
 	return "QuizLeaderboard"
 }
+
+type ActivityWallet struct {
+	ID          int       `gorm:"column:id;primaryKey" json:"id"`
+	UserID      int       `gorm:"column:userId" json:"userId"`
+	Type        string    `gorm:"column:type" json:"type"`
+	Title       string    `gorm:"column:title" json:"title"`
+	Description string    `gorm:"column:description" json:"description"`
+	Amount      float64   `gorm:"column:amount" json:"amount"`
+	Currency    string    `gorm:"column:currency" json:"currency"`
+	Reference   *string   `gorm:"column:reference" json:"reference"`
+	Status      string    `gorm:"column:status" json:"status"`
+	CreatedAt   time.Time `gorm:"column:createdAt" json:"createdAt"`
+}
+
+func (ActivityWallet) TableName() string {
+	return "ActivityWallet"
+}
+
+type CardFunding struct {
+	ID        int       `gorm:"column:id;primaryKey" json:"id"`
+	UserID    int       `gorm:"column:userId" json:"userId"`
+	WalletID  *int      `gorm:"column:walletId" json:"walletId"`
+	Amount    float64   `gorm:"column:amount" json:"amount"`
+	Currency  string    `gorm:"column:currency" json:"currency"`
+	Reference string    `gorm:"column:reference" json:"reference"`
+	Status    string    `gorm:"column:status" json:"status"`
+	CreatedAt time.Time `gorm:"column:createdAt" json:"createdAt"`
+	UpdatedAt time.Time `gorm:"column:updatedAt" json:"updatedAt"`
+}
+
+func (CardFunding) TableName() string {
+	return "CardFunding"
+}
+
+type UserWithdrawalBank struct {
+	ID            int       `gorm:"column:id;primaryKey" json:"id"`
+	AccountName   string    `gorm:"column:accountName" json:"accountName"`
+	AccountNumber string    `gorm:"column:accountNumber" json:"accountNumber"`
+	BankName      string    `gorm:"column:bankName" json:"bankName"`
+	BankCode      string    `gorm:"column:bankCode" json:"bankCode"`
+	UserID        int       `gorm:"column:userId" json:"userId"`
+	CreatedAt     time.Time `gorm:"column:createdAt" json:"createdAt"`
+}
+
+func (UserWithdrawalBank) TableName() string {
+	return "UserWithdrawalBank"
+}
+
+type UserWithdrawalWallet struct {
+	ID            int       `gorm:"column:id;primaryKey" json:"id"`
+	WalletAddress string    `gorm:"column:walletAddress" json:"walletAddress"`
+	RecipientID   *string   `gorm:"column:recipientId" json:"recipientId"`
+	Symbol        string    `gorm:"column:symbol" json:"symbol"`
+	Network       string    `gorm:"column:network" json:"network"`
+	UserID        int       `gorm:"column:userId" json:"userId"`
+	CreatedAt     time.Time `gorm:"column:createdAt" json:"createdAt"`
+}
+
+func (UserWithdrawalWallet) TableName() string {
+	return "UserWithdrawalWallet"
+}
+

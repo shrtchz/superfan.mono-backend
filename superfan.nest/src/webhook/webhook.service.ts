@@ -431,53 +431,60 @@ if (bankTransfer) {
     `Processing wallet funding | User: ${user.id} | AccountType: ${accountType} | Amount: ${amount}`,
   );
 
-  await prisma.$transaction([
-    // 💰 Update Wallet Balance (⚠️ still single wallet per user)
-    prisma.wallet.update({
-      where: { userId: user.id },
-      data: {
-        balance: { increment: amount },
-      },
-    }),
+    let notificationTitle = "Credit Wallet - Bank Transfer";
+    if (String(paymentMethod).toUpperCase().includes("CARD")) {
+      notificationTitle = "Credit Wallet - Debit Card";
+    } else if (String(paymentMethod).toUpperCase().includes("CRYPTO") || String(paymentMethod).toUpperCase().includes("STABLE")) {
+      notificationTitle = "Credit Wallet - Stable Coins";
+    }
 
-    // 🧾 Wallet Transaction
-    prisma.walletTransaction.create({
-      data: {
-        userId: user.id,
-        amount,
-        type: 'credit',
-        transactionType: 'FUNDING',
-        status: 'SUCCESS',
-        reference,
-        payment_method: paymentMethod,
-        account_name: accountName,
-        bank_name: bankName,
-        account_no: accountNumber,
-        account_type: accountType,
-        description: `Money added to wallet`,
-        trx_ref: `${generateFiveUniqueRandomNumbers()}`
-      },
-    }),
-
-    // 📊 Activity Wallet
-    prisma.activityWallet.create({
-      data: {
-        userId: user.id,
-        type: 'credit',
-        title: 'Money Added',
-        description: `Money added to wallet`,
-        amount,
-        currency: eventData.currency,
-        reference,
-        status: 'SUCCESS',
-        metadata: {
-          paymentMethod,
-          bankName,
-          accountType,
+    await prisma.$transaction([
+      // 💰 Update Wallet Balance (⚠️ still single wallet per user)
+      prisma.wallet.update({
+        where: { userId: user.id },
+        data: {
+          balance: { increment: amount },
         },
-      },
-    }),
-  ]);
+      }),
+
+      // 🧾 Wallet Transaction
+      prisma.walletTransaction.create({
+        data: {
+          userId: user.id,
+          amount,
+          type: 'credit',
+          transactionType: 'FUNDING',
+          status: 'SUCCESS',
+          reference,
+          payment_method: paymentMethod,
+          account_name: accountName,
+          bank_name: bankName,
+          account_no: accountNumber,
+          account_type: accountType,
+          description: notificationTitle,
+          trx_ref: `${generateFiveUniqueRandomNumbers()}`
+        },
+      }),
+
+      // 📊 Activity Wallet
+      prisma.activityWallet.create({
+        data: {
+          userId: user.id,
+          type: 'credit',
+          title: notificationTitle,
+          description: notificationTitle,
+          amount,
+          currency: eventData.currency,
+          reference,
+          status: 'SUCCESS',
+          metadata: {
+            paymentMethod,
+            bankName,
+            accountType,
+          },
+        },
+      }),
+    ]);
 
   await this.notificationService.createNotification(
     user.id,

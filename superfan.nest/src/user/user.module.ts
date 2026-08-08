@@ -5,7 +5,6 @@ import { AccessControlService } from "../common/shared/access-control.service";
 import { DatabaseModule } from "../config/database/database.module";
 import { MailModule } from "../mail/mail.module";
 import { NotificationModule } from "../notification/notification.module";
-import { PaymentModule } from "../payment/payment.module";
 import { PosthogModule } from "../posthog/posthog.module";
 import { TaskModule } from "../tasks/tasks.module";
 import { WalletModule } from "../wallet/wallet.module";
@@ -24,7 +23,6 @@ import { UserListener } from "./user.listener";
         forwardRef(() => TaskModule),
         DatabaseModule,
         WalletModule,
-        PaymentModule,
         NotificationModule
     ],
     controllers: [UserController],

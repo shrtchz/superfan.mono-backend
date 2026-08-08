@@ -27,7 +27,6 @@ import {
   failureResponse,
   successResponse,
 } from '../common/interceptors/response.interceptor';
-import { PaymentDto, SubscriptionCardPaymentDto } from '../payment/payment.dto';
 import { WalletService } from '../wallet/wallet.service';
 import {
   AuthDto,
@@ -152,15 +151,15 @@ export class UserController {
   }
 
   @Post('/create-subscription')
-  createSubscription(@Body() dto: PaymentDto, @Req() req: any) {
+  createSubscription(@Req() req: any, @Body() dto: any) {
     return this.userService.createSubscription(req.user.id, dto);
   }
 
   @Post('/create-subscription-with-card')
   createSubscriptionWithCard(
     @Req() req: any,
-    @Body() dto: SubscriptionCardPaymentDto,
-  ) {
+    @Body() dto: any
+    ) {
     return this.userService.createSubscriptionWithCard(req.user.id, dto);
   }
 

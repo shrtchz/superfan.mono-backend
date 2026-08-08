@@ -161,13 +161,16 @@ if (!existingRole) {
       where: { username: user.username },
     });
 
+    const existingUser = existingByEmail || existingByUsername;
+    const stableReferralCode = existingUser?.referral_code || user.referral_code;
+
     const sharedUpdate = {
       firstName: user.firstName,
       lastName: user.lastName,
       phone: user.phone,
       subscriptionPlan: user.subscriptionPlan,
       roleName: role.name,
-      referral_code: user.referral_code,
+      referral_code: stableReferralCode,
       password: hashedPassword,
       profilePicture: user.profilePicture || null,
     };
@@ -256,6 +259,157 @@ if (!existingRole) {
     }
   }
   console.log('✅ All seeded users have been synced to Clerk');
+
+  // ✅ Seed Stream, Stream Comments, Nested Replies, and Live Quiz
+  const adminUser = await prisma.user.findFirst({
+    where: { roleName: 'superadmin' },
+  });
+  const clientUser = await prisma.user.findFirst({
+    where: { roleName: 'client' },
+  });
+
+  if (adminUser && clientUser) {
+    // 1. Seed Stream
+    const stream = await prisma.stream.upsert({
+      where: { id: 1 },
+      update: {
+        title: "Superfan Live Yoruba & General Knowledge Quiz",
+        status: "live",
+        isActive: true,
+      },
+      create: {
+        id: 1,
+        userId: adminUser.id,
+        title: "Superfan Live Yoruba & General Knowledge Quiz",
+        description: "Join our weekly interactive stream to answer questions live and win prizes!",
+        privacyStatus: "public",
+        networkPlatform: "youtube",
+        broadcastId: "sample_broadcast_001",
+        streamUrl: "https://www.youtube.com/watch?v=sample_live",
+        status: "live",
+        category: "quiz",
+        isActive: true,
+      },
+    });
+    console.log("✅ Seeded Stream (ID: 1)");
+
+    // 2. Seed Stream Comments & Nested Replies
+    const rootComment1 = await prisma.streamComment.upsert({
+      where: { id: 1 },
+      update: {},
+      create: {
+        id: 1,
+        streamId: stream.id,
+        userId: clientUser.id,
+        message: "Hello everyone! Ready for the live quiz show!",
+        depth: 0,
+        isDeleted: false,
+        likesCount: 5,
+      },
+    });
+
+    const replyComment1 = await prisma.streamComment.upsert({
+      where: { id: 2 },
+      update: {},
+      create: {
+        id: 2,
+        streamId: stream.id,
+        userId: adminUser.id,
+        parentId: rootComment1.id,
+        rootId: rootComment1.id,
+        replyToUserId: clientUser.id,
+        message: "Welcome! The quiz is about to start in 2 minutes.",
+        depth: 1,
+        isDeleted: false,
+        likesCount: 3,
+      },
+    });
+
+    await prisma.streamComment.upsert({
+      where: { id: 3 },
+      update: {},
+      create: {
+        id: 3,
+        streamId: stream.id,
+        userId: clientUser.id,
+        parentId: replyComment1.id,
+        rootId: rootComment1.id,
+        replyToUserId: adminUser.id,
+        message: "Awesome! Locking in my answers.",
+        depth: 2,
+        isDeleted: false,
+        likesCount: 1,
+      },
+    });
+    console.log("✅ Seeded Stream Comments & Nested Replies");
+
+    // 3. Seed Ongoing Live Quiz
+    const liveQuiz = await prisma.ongoingLiveQuiz.upsert({
+      where: { id: 1 },
+      update: {},
+      create: {
+        id: 1,
+        userId: String(adminUser.id),
+        quizIds: ["QUIZ_YORUBA_001"],
+        streamId: stream.id,
+        questions: [
+          {
+            id: "q1",
+            question: "What is the capital of Lagos State?",
+            options: ["Ikeja", "Lekki", "Badagry", "Epe"],
+            correctAnswer: "Ikeja",
+          },
+          {
+            id: "q2",
+            question: "Translate 'Good morning' in Yoruba:",
+            options: ["E kaaro", "E kaasan", "E ku ale", "O dababo"],
+            correctAnswer: "E kaaro",
+          },
+        ],
+        totalEarning: 5000,
+        completed: false,
+      },
+    });
+    console.log("✅ Seeded Ongoing Live Quiz");
+
+    // 4. Seed Live Quiz Attempt & Leaderboard
+    await prisma.liveQuizAttempt.upsert({
+      where: {
+        userId_quizId: {
+          userId: String(clientUser.id),
+          quizId: "QUIZ_YORUBA_001",
+        },
+      },
+      update: {},
+      create: {
+        userId: String(clientUser.id),
+        quizId: "QUIZ_YORUBA_001",
+        ongoingLiveQuizId: liveQuiz.id,
+        totalPrize: 5000,
+        recipients: 10,
+        unitPrize: 500,
+        earning: 500,
+        isWinner: true,
+        isCompleted: true,
+      },
+    });
+
+    await prisma.liveQuizLeaderboard.create({
+      data: {
+        userId: String(clientUser.id),
+        quizId: "QUIZ_YORUBA_001",
+        question: "What is the capital of Lagos State?",
+        answer: "Ikeja",
+        rewardType: "LIVE_QUIZ",
+        isWinner: true,
+        participants: 10,
+        unitPrize: 500,
+        rewardStatus: "paid",
+        quizDate: new Date(),
+      },
+    });
+    console.log("✅ Seeded Live Quiz Attempt & Leaderboard");
+  }
 }
 
 // ✅ Run everything

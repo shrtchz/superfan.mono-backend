@@ -18,6 +18,7 @@ import { TaskChatGateway } from './tasks.gateway';
 import { TaskStatus, ActivityType } from '../common/enums/task.enum';
 import { CronJobService } from '../cronjobs/cronjob.service';
 import { generateFiveUniqueRandomNumbers } from '../common/utils/utils';
+import { PointsConversionUtil } from '../common/utils/points-conversion.util';
 
 @Injectable()
 export class TaskService {
@@ -27,7 +28,8 @@ export class TaskService {
     private notificationService: NotificationService,
     @Inject(forwardRef(() => UserService))
     private userService: UserService,
-    private cronService: CronJobService
+    private cronService: CronJobService,
+    private pointsConversionUtil: PointsConversionUtil
   ) {}
 
   async createTask(dto: TaskDto) {
@@ -403,15 +405,24 @@ export class TaskService {
     if (!referral) return;
 
     // Referrer Bonus: 10,000 PTS into Gold Account
+    const referrerPoints = 10000;
+    const referrerNaira = this.pointsConversionUtil.pointsToNaira(referrerPoints);
     await prisma.point.create({
       data: {
         userId: referral.referrerId,
-        points: 10000,
+        points: referrerPoints,
         reference: `POINTS_${generateFiveUniqueRandomNumbers()}`,
         type: 'referral_first_test_referrer',
         accountType: 'Gold',
       },
     });
+    await this.walletService.creditWallet(
+      referral.referrerId,
+      referrerNaira,
+      'Referral Bonus',
+      `You earned ₦${referrerNaira} because your referee completed their first test.`,
+      'Gold'
+    );
 
     await prisma.user.update({
       where: { id: referral.referrerId },
@@ -426,15 +437,24 @@ export class TaskService {
     );
 
     // Referee Bonus: 20,000 PTS into Gold Account
+    const refereePoints = 20000;
+    const refereeNaira = this.pointsConversionUtil.pointsToNaira(refereePoints);
     await prisma.point.create({
       data: {
         userId: referral.refereeId,
-        points: 20000,
+        points: refereePoints,
         reference: `POINTS_${generateFiveUniqueRandomNumbers()}`,
         type: 'referral_first_test_referee',
         accountType: 'Gold',
       },
     });
+    await this.walletService.creditWallet(
+      referral.refereeId,
+      refereeNaira,
+      'Referral Bonus',
+      `You earned ₦${refereeNaira} for completing your first test.`,
+      'Gold'
+    );
 
     await prisma.user.update({
       where: { id: referral.refereeId },

@@ -25,7 +25,6 @@ import { CronJobModule } from './cronjobs/cronjob.module';
 import { HealthModule } from './health/health.module';
 import { ImageModule } from './image/image.module';
 import { NotificationModule } from './notification/notification.module';
-import { PaymentModule } from './payment/payment.module';
 import { PermissionModule } from './permission/permission.module';
 import { QuizModule } from './quiz/quiz.module';
 import { QuotesModule } from './quote/quote.module';
@@ -81,7 +80,6 @@ import { WaitlistModule } from './waitlist/waitlist.module';
     UserModule,
     NotificationModule,
     QuizModule,
-    PaymentModule,
     StreamingModule,
     WebhookModule,
     ResetModule,
