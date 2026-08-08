@@ -424,6 +424,11 @@ export class TaskService {
       'Gold'
     );
 
+    await prisma.user.update({
+      where: { id: referral.referrerId },
+      data: { lifetimePoints: { increment: 10000 } },
+    });
+
     await this.notificationService.createNotification(
       referral.referrerId,
       'Credit Wallet - Referral Bonus',
@@ -450,6 +455,11 @@ export class TaskService {
       `You earned ₦${refereeNaira} for completing your first test.`,
       'Gold'
     );
+
+    await prisma.user.update({
+      where: { id: referral.refereeId },
+      data: { lifetimePoints: { increment: 20000 } },
+    });
 
     await this.notificationService.createNotification(
       referral.refereeId,

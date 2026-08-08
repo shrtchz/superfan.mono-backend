@@ -355,6 +355,7 @@ func buildLiveQuizResponseMap(raw bson.M, now time.Time) map[string]interface{} 
 	if overrideAfter == "" {
 		overrideAfter = rawString(raw["customCountdownLabel"])
 	}
+	customCountdownLabels := rawCustomCountdownLabels(raw["customCountdownLabels"], overrideBefore, overrideDuring, overrideAfter)
 
 	ledgerMeta := buildLiveQuizLedgerMeta(id, status)
 
@@ -382,6 +383,7 @@ func buildLiveQuizResponseMap(raw bson.M, now time.Time) map[string]interface{} 
 		"customCountdownLabelBefore": strings.TrimSpace(overrideBefore),
 		"customCountdownLabelDuring": strings.TrimSpace(overrideDuring),
 		"customCountdownLabelAfter":  strings.TrimSpace(overrideAfter),
+		"customCountdownLabels":      customCountdownLabels,
 		"participants":               ledgerMeta["participants"],
 		"winnerCount":                ledgerMeta["winnerCount"],
 		"topWinners":                 ledgerMeta["topWinners"],
@@ -671,6 +673,31 @@ func rawString(v interface{}) string {
 	default:
 		return fmt.Sprintf("%v", t)
 	}
+}
+
+func rawCustomCountdownLabels(value interface{}, before, during, after string) []map[string]string {
+	labels := make([]map[string]string, 0)
+	if encoded, err := json.Marshal(value); err == nil {
+		_ = json.Unmarshal(encoded, &labels)
+	}
+	if len(labels) > 0 {
+		return labels
+	}
+	legacy := []struct {
+		id, phase, text string
+	}{
+		{"legacy-before", "before", before},
+		{"legacy-during", "during", during},
+		{"legacy-after", "after", after},
+	}
+	for _, item := range legacy {
+		if strings.TrimSpace(item.text) != "" {
+			labels = append(labels, map[string]string{
+				"id": item.id, "phase": item.phase, "text": strings.TrimSpace(item.text),
+			})
+		}
+	}
+	return labels
 }
 
 func rawBool(v interface{}) bool {
@@ -1750,6 +1777,111 @@ func (u *QuizServiceImpl) DeleteLiveQuizCustomCountdownLabel(id string, phase st
 	return nil
 }
 
+func validateCustomCountdownLabel(phase string, text string) (string, string, error) {
+	safePhase := strings.ToLower(strings.TrimSpace(phase))
+	if safePhase != "before" && safePhase != "during" && safePhase != "after" {
+		return "", "", errors.New("phase must be before, during, or after")
+	}
+	safeText := strings.TrimSpace(text)
+	if safeText == "" {
+		return "", "", errors.New("custom countdown label text is required")
+	}
+	return safePhase, safeText, nil
+}
+
+func (u *QuizServiceImpl) CreateLiveQuizCustomCountdownLabel(id string, phase string, text string) (*models.LiveQuiz, error) {
+	safePhase, safeText, err := validateCustomCountdownLabel(phase, text)
+	if err != nil {
+		return nil, err
+	}
+	objectID, err := bson.ObjectIDFromHex(id)
+	if err != nil {
+		return nil, errors.New("invalid live quiz id")
+	}
+
+	var quiz models.LiveQuiz
+	if err := u.liveQuizCollection.FindOne(u.ctx, bson.M{"_id": objectID}).Decode(&quiz); err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, errors.New("live quiz not found")
+		}
+		return nil, err
+	}
+
+	quiz.CustomCountdownLabels = append(quiz.CustomCountdownLabels, models.CustomCountdownLabel{
+		ID: bson.NewObjectID().Hex(), Phase: safePhase, Text: safeText,
+	})
+	if _, err := u.liveQuizCollection.UpdateOne(u.ctx, bson.M{"_id": objectID}, bson.M{"$set": bson.M{"customCountdownLabels": quiz.CustomCountdownLabels}}); err != nil {
+		return nil, err
+	}
+	return u.GetLiveQuiz(id)
+}
+
+func (u *QuizServiceImpl) UpdateLiveQuizCustomCountdownLabelByID(id string, labelID string, phase string, text string) (*models.LiveQuiz, error) {
+	safePhase, safeText, err := validateCustomCountdownLabel(phase, text)
+	if err != nil {
+		return nil, err
+	}
+	objectID, err := bson.ObjectIDFromHex(id)
+	if err != nil {
+		return nil, errors.New("invalid live quiz id")
+	}
+
+	var quiz models.LiveQuiz
+	if err := u.liveQuizCollection.FindOne(u.ctx, bson.M{"_id": objectID}).Decode(&quiz); err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, errors.New("live quiz not found")
+		}
+		return nil, err
+	}
+	found := false
+	for index := range quiz.CustomCountdownLabels {
+		if quiz.CustomCountdownLabels[index].ID == labelID {
+			quiz.CustomCountdownLabels[index].Phase = safePhase
+			quiz.CustomCountdownLabels[index].Text = safeText
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, errors.New("custom countdown label not found")
+	}
+	if _, err := u.liveQuizCollection.UpdateOne(u.ctx, bson.M{"_id": objectID}, bson.M{"$set": bson.M{"customCountdownLabels": quiz.CustomCountdownLabels}}); err != nil {
+		return nil, err
+	}
+	return u.GetLiveQuiz(id)
+}
+
+func (u *QuizServiceImpl) DeleteLiveQuizCustomCountdownLabelByID(id string, labelID string) (*models.LiveQuiz, error) {
+	objectID, err := bson.ObjectIDFromHex(id)
+	if err != nil {
+		return nil, errors.New("invalid live quiz id")
+	}
+
+	var quiz models.LiveQuiz
+	if err := u.liveQuizCollection.FindOne(u.ctx, bson.M{"_id": objectID}).Decode(&quiz); err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, errors.New("live quiz not found")
+		}
+		return nil, err
+	}
+	labels := make([]models.CustomCountdownLabel, 0, len(quiz.CustomCountdownLabels))
+	found := false
+	for _, label := range quiz.CustomCountdownLabels {
+		if label.ID == labelID {
+			found = true
+			continue
+		}
+		labels = append(labels, label)
+	}
+	if !found {
+		return nil, errors.New("custom countdown label not found")
+	}
+	if _, err := u.liveQuizCollection.UpdateOne(u.ctx, bson.M{"_id": objectID}, bson.M{"$set": bson.M{"customCountdownLabels": labels}}); err != nil {
+		return nil, err
+	}
+	return u.GetLiveQuiz(id)
+}
+
 func (u *QuizServiceImpl) UpdateLiveQuiz(quiz *models.LiveQuiz) error {
 	var existing models.LiveQuiz
 	if err := u.liveQuizCollection.FindOne(u.ctx, bson.M{"_id": quiz.ID}).Decode(&existing); err != nil {
@@ -1779,6 +1911,9 @@ func (u *QuizServiceImpl) UpdateLiveQuiz(quiz *models.LiveQuiz) error {
 	if quiz.TotalPrize <= 0 && quiz.JackpotAmount > 0 {
 		quiz.TotalPrize = quiz.JackpotAmount
 	}
+	if quiz.CustomCountdownLabels == nil {
+		quiz.CustomCountdownLabels = existing.CustomCountdownLabels
+	}
 
 	filter := bson.D{
 		{Key: "_id", Value: quiz.ID},
@@ -1802,6 +1937,10 @@ func (u *QuizServiceImpl) UpdateLiveQuiz(quiz *models.LiveQuiz) error {
 				{Key: "quizFinishDate", Value: quiz.QuizFinishDate},
 				{Key: "imageLink", Value: quiz.ImageLink},
 				{Key: "customCountdownLabel", Value: strings.TrimSpace(quiz.CustomCountdownLabel)},
+				{Key: "customCountdownLabelBefore", Value: strings.TrimSpace(quiz.CustomCountdownLabelBefore)},
+				{Key: "customCountdownLabelDuring", Value: strings.TrimSpace(quiz.CustomCountdownLabelDuring)},
+				{Key: "customCountdownLabelAfter", Value: strings.TrimSpace(quiz.CustomCountdownLabelAfter)},
+				{Key: "customCountdownLabels", Value: quiz.CustomCountdownLabels},
 			},
 		},
 	}

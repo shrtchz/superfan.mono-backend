@@ -45,25 +45,32 @@ type Quiz struct {
 }
 
 type LiveQuiz struct {
-	ID                         bson.ObjectID `bson:"_id" json:"-"`
-	IDHex                      string        `bson:"-" json:"id"`
-	Question                   string        `json:"question" bson:"question"`
-	Options                    []string      `json:"options" bson:"options"`
-	Answer                     string        `bson:"answer,omitempty" json:"answer,omitempty"`
-	CustomCountdownLabel       string        `json:"customCountdownLabel,omitempty" bson:"customCountdownLabel,omitempty"`
-	CustomCountdownLabelBefore string        `json:"customCountdownLabelBefore,omitempty" bson:"customCountdownLabelBefore,omitempty"`
-	CustomCountdownLabelDuring string        `json:"customCountdownLabelDuring,omitempty" bson:"customCountdownLabelDuring,omitempty"`
-	CustomCountdownLabelAfter  string        `json:"customCountdownLabelAfter,omitempty" bson:"customCountdownLabelAfter,omitempty"`
-	IsTypedAnswer              bool          `json:"isTypedAnswer,omitempty" bson:"isTypedAnswer,omitempty"`
-	TypedAnswer                string        `json:"typedAnswer,omitempty" bson:"typedAnswer,omitempty"`
-	JackpotAmount              float64       `json:"jackpotAmount,omitempty" bson:"jackpotAmount,omitempty"`
-	TotalPrize                 float64       `json:"totalPrize" bson:"totalPrize"`
-	Recipients                 int           `json:"recipients" bson:"recipients"`
-	UnitPrize                  float64       `json:"unitPrize" bson:"unitPrize"`
-	ShowAnswer                 bool          `json:"showAnswer" bson:"showAnswer"`
-	QuizScheduleDate           time.Time     `json:"quizScheduleDate" bson:"quizScheduleDate"`
-	QuizFinishDate             time.Time     `json:"quizFinishDate" bson:"quizFinishDate"`
-	ImageLink                  []string      `json:"imageLink,omitempty" bson:"imageLink,omitempty"`
+	ID                         bson.ObjectID          `bson:"_id" json:"-"`
+	IDHex                      string                 `bson:"-" json:"id"`
+	Question                   string                 `json:"question" bson:"question"`
+	Options                    []string               `json:"options" bson:"options"`
+	Answer                     string                 `bson:"answer,omitempty" json:"answer,omitempty"`
+	CustomCountdownLabel       string                 `json:"customCountdownLabel,omitempty" bson:"customCountdownLabel,omitempty"`
+	CustomCountdownLabelBefore string                 `json:"customCountdownLabelBefore,omitempty" bson:"customCountdownLabelBefore,omitempty"`
+	CustomCountdownLabelDuring string                 `json:"customCountdownLabelDuring,omitempty" bson:"customCountdownLabelDuring,omitempty"`
+	CustomCountdownLabelAfter  string                 `json:"customCountdownLabelAfter,omitempty" bson:"customCountdownLabelAfter,omitempty"`
+	CustomCountdownLabels      []CustomCountdownLabel `json:"customCountdownLabels,omitempty" bson:"customCountdownLabels,omitempty"`
+	IsTypedAnswer              bool                   `json:"isTypedAnswer,omitempty" bson:"isTypedAnswer,omitempty"`
+	TypedAnswer                string                 `json:"typedAnswer,omitempty" bson:"typedAnswer,omitempty"`
+	JackpotAmount              float64                `json:"jackpotAmount,omitempty" bson:"jackpotAmount,omitempty"`
+	TotalPrize                 float64                `json:"totalPrize" bson:"totalPrize"`
+	Recipients                 int                    `json:"recipients" bson:"recipients"`
+	UnitPrize                  float64                `json:"unitPrize" bson:"unitPrize"`
+	ShowAnswer                 bool                   `json:"showAnswer" bson:"showAnswer"`
+	QuizScheduleDate           time.Time              `json:"quizScheduleDate" bson:"quizScheduleDate"`
+	QuizFinishDate             time.Time              `json:"quizFinishDate" bson:"quizFinishDate"`
+	ImageLink                  []string               `json:"imageLink,omitempty" bson:"imageLink,omitempty"`
+}
+
+type CustomCountdownLabel struct {
+	ID    string `json:"id" bson:"id"`
+	Phase string `json:"phase" bson:"phase"`
+	Text  string `json:"text" bson:"text"`
 }
 
 type QuizAnswer struct {

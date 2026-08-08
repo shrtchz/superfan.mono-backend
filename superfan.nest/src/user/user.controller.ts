@@ -236,6 +236,13 @@ export class UserController {
     return this.userService.getUserBadge(userId);
   }
 
+  @Get('/top-earners')
+  getTopEarners(
+    @Query('limit', ParseIntPipe) limit: number = 10,
+  ): Promise<any> {
+    return this.userService.getTopEarners(limit);
+  }
+
   @Get('/all-users')
   getAllUser(): Promise<any> {
     return this.userService.findAllUsers();

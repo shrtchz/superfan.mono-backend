@@ -61,6 +61,7 @@ model User {
   busha_customer_id      String?
   busha_balance_id       String?
   bitnob_customer_id     String?
+  lifetimePoints         Int                 @default(0) @map("lifetime_points")
   dailyStreak            Int                 @default(0)
   lastStreakDate         DateTime? // last date a streak was counted
   questionPreference     QuestionPreference?
@@ -389,6 +390,7 @@ model OngoingQuiz {
   totalTime           Int? // total time in seconds
   baseScore           Int? // base score for the quiz
   isRandom            Boolean @default(false)
+  submissionMode     String  @default("interval")
   accuracyBonus       Int? // bonus points for accuracy
   speedBonus          Int? // bonus points for speed
   streakMultiplier    Int? // multiplier for consecutive correct answers

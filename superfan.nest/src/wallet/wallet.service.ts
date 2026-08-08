@@ -50,7 +50,7 @@ export class WalletService {
         increment: amount,
       });
 
-      const walletTransaction = await tx.walletTransaction.create({
+      const walletTransaction = await (tx.walletTransaction as any).create({
         data: {
           user: {
             connect: { id: userId },
@@ -156,8 +156,22 @@ export class WalletService {
     };
   }
 
-  async createQuizReward(userId: number, points: number, subject: string, status: EarningStatus) {
+  async createQuizReward(userId: number, points: number, subject: string, status: EarningStatus, reference?: string) {
     const amount = this.pointsConversionUtil.pointsToNaira(points);
+    const rewardReference = reference ?? `quiz_reward:${userId}:${subject}:${points}:${status}`;
+
+    const existingReward = await this.prisma.reward.findFirst({
+      where: {
+        userId,
+        type: 'quiz_reward',
+        reference: rewardReference,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (existingReward) {
+      return;
+    }
     
     await this.prisma.reward.create({
       data: {
@@ -166,6 +180,7 @@ export class WalletService {
         currency: 'NGN',
         type: 'quiz_reward',
         status,
+        reference: rewardReference,
       },
     });
 
@@ -176,9 +191,14 @@ export class WalletService {
       data: {
         userId,
         points,
-        reference: `POINTS_${generateFiveUniqueRandomNumbers()}`,
+        reference: rewardReference,
         type: 'quiz_reward',
       }
+    });
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { lifetimePoints: { increment: points } },
     });
 
     // Send notification
@@ -197,8 +217,22 @@ export class WalletService {
     );
   }
 
-  async createLiveQuizReward(userId: number, points: number, status: EarningStatus) {
+  async createLiveQuizReward(userId: number, points: number, status: EarningStatus, reference?: string) {
     const amount = this.pointsConversionUtil.pointsToNaira(points);
+    const rewardReference = reference ?? `live_quiz_reward:${userId}:${points}:${status}`;
+
+    const existingReward = await this.prisma.reward.findFirst({
+      where: {
+        userId,
+        type: 'live_quiz_reward',
+        reference: rewardReference,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (existingReward) {
+      return;
+    }
     
     await this.prisma.reward.create({
       data: {
@@ -207,13 +241,19 @@ export class WalletService {
         currency: 'NGN',
         type: 'live_quiz_reward',
         status,
+        reference: rewardReference,
       },
     });
 
     // Credit the wallet - live quiz rewards go to Gold Account
     await this.creditWallet(userId, amount, `₦${amount} has  been added to your wallet`, `You earned ${amount} from Live Quiz`, 'Gold', 'NGN');
 
-        await this.notificationService.createNotification(
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { lifetimePoints: { increment: points } },
+    });
+
+    await this.notificationService.createNotification(
       userId,
       `₦${amount} has  been added to your wallet`,
       `You earned ₦${amount} from Live Quiz`,
@@ -343,7 +383,7 @@ async getUserWalletTransactions(filters: WalletTransactionFilterDto) {
       }),
 
       // Create wallet transaction
-      this.prisma.walletTransaction.create({
+      (this.prisma.walletTransaction as any).create({
         data: {
           userId,
           amount,
@@ -436,7 +476,7 @@ const trf_reference = `TRANSFER_${Date.now()}`;
     // Perform transfer in a transaction
     await this.prisma.$transaction([
       // Debit source account
-      this.prisma.walletTransaction.create({
+      (this.prisma.walletTransaction as any).create({
         data: {
           userId,
           amount,
@@ -454,7 +494,7 @@ const trf_reference = `TRANSFER_${Date.now()}`;
       }),
 
       // Credit destination account
-      this.prisma.walletTransaction.create({
+      (this.prisma.walletTransaction as any).create({
         data: {
           userId,
           amount,

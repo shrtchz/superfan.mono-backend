@@ -11,7 +11,7 @@ export class PointsConversionUtil {
    * Default: 1000 points = 1 Naira
    */
   pointsToNaira(points: number): number {
-    const rate = parseInt(this.configService.get<string>('POINTS_TO_NAIRA_RATE', '1000'), 10);
+    const rate = parseInt(this.configService.get<string>('POINTS_TO_NAIRA_RATE'), 10);
     return points / rate;
   }
 
@@ -21,7 +21,7 @@ export class PointsConversionUtil {
    * Default: 1 Naira = 1000 points
    */
   nairaToPoints(naira: number): number {
-    const rate = parseInt(this.configService.get<string>('POINTS_TO_NAIRA_RATE', '1000'), 10);
+    const rate = parseInt(this.configService.get<string>('POINTS_TO_NAIRA_RATE'), 10);
     return naira * rate;
   }
 
@@ -29,6 +29,6 @@ export class PointsConversionUtil {
    * Get the current points-to-Naira conversion rate
    */
   getConversionRate(): number {
-    return parseInt(this.configService.get<string>('POINTS_TO_NAIRA_RATE', '1000'), 10);
+    return parseInt(this.configService.get<string>('POINTS_TO_NAIRA_RATE'), 10);
   }
 }

@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,6 +16,29 @@ import (
 	"quiz.superfan.com/apis/models"
 	"quiz.superfan.com/apis/utils"
 )
+
+const defaultPointsToNairaRate = 1000
+
+func getPointsToNairaRate() int {
+	value := strings.TrimSpace(os.Getenv("POINTS_TO_NAIRA_RATE"))
+	if value == "" {
+		return defaultPointsToNairaRate
+	}
+
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return defaultPointsToNairaRate
+	}
+
+	return parsed
+}
+
+func convertTotalEarningToRewardAmounts(totalEarning int) (amountInNaira float64, finalNairaAmount int, finalUSDCAmount int, finalUSDTAmount int) {
+	pointsToNairaRate := getPointsToNairaRate()
+	amountInNaira = float64(totalEarning) / float64(pointsToNairaRate)
+	finalNairaAmount, finalUSDCAmount, finalUSDTAmount = computeSessionEarnings(totalEarning)
+	return amountInNaira, finalNairaAmount, finalUSDCAmount, finalUSDTAmount
+}
 
 // SubmitSession grades saved answers, applies rewards, and completes the session.
 func (s *QuizSessionV2Service) SubmitSession(sessionID string, req models.FinalizeSessionV2Request) (*models.FinalizeSessionV2Result, error) {
@@ -85,6 +110,10 @@ func (s *QuizSessionV2Service) finalizeSession(
 	correctAnswers := countCorrectResponses(submission)
 	baseScore := submission.TotalEarning
 	accuracyBonusPercent := getAccuracyBonusPercent(correctAnswers, totalQuestions)
+	accuracyPercent := 0
+	if totalQuestions > 0 {
+		accuracyPercent = int(math.Round(float64(correctAnswers) / float64(totalQuestions) * 100.0))
+	}
 	speedBonusPercent := getSpeedBonusPercent(req.QuizTimeSeconds)
 	dailyStreak, err := updateDailyStreak(req.UserID, now)
 	if err != nil {
@@ -96,7 +125,7 @@ func (s *QuizSessionV2Service) finalizeSession(
 	speedGain := int(math.Round(float64(baseScore) * (float64(speedBonusPercent) / 100.0)))
 	adBonusPoints := req.AdBonuses
 	totalPoints := baseScore + accuracyGain + speedGain + adBonusPoints + streakBonus
-	amountInNaira := float64(totalPoints) / 1000.0
+	amountInNaira, finalNairaAmount, finalUSDCAmount, finalUSDTAmount := convertTotalEarningToRewardAmounts(totalPoints)
 
 	testLevel := lookup.record.TestLevel
 	status := "completed"
@@ -108,18 +137,21 @@ func (s *QuizSessionV2Service) finalizeSession(
 		if err := tx.Model(&models.OngoingQuiz{}).
 			Where(`"id" = ? AND "userId" = ?`, sessionID, req.UserID).
 			Updates(map[string]interface{}{
-				"isCompleted":      true,
-				"completedAt":      now,
-				"totalEarning":     int(math.Round(amountInNaira * 1000)),
-				"quizTime":         strconv.Itoa(req.QuizTimeSeconds),
-				"baseScore":        baseScore,
-				"accuracyBonus":    accuracyGain,
-				"speedBonus":       speedGain,
-				"streakMultiplier": streakBonus,
-				"adBonuses":        adBonusPoints,
-				"earnedAmount":     int(math.Round(amountInNaira * 1000)),
-				"timeRemaining":    0,
-				"updatedAt":        now,
+				"isCompleted":         true,
+				"completedAt":         now,
+				"totalEarning":        totalPoints,
+				"totalEarninginNaira": finalNairaAmount,
+				"totalEarninginUSDC":  finalUSDCAmount,
+				"totalEarninginUSDT":  finalUSDTAmount,
+				"quizTime":            strconv.Itoa(req.QuizTimeSeconds),
+				"baseScore":           baseScore,
+				"accuracyBonus":       accuracyGain,
+				"speedBonus":          speedGain,
+				"streakMultiplier":    streakBonus,
+				"adBonuses":           adBonusPoints,
+				"earnedAmount":        totalPoints,
+				"timeRemaining":       0,
+				"updatedAt":           now,
 			}).Error; err != nil {
 			return err
 		}
@@ -174,12 +206,13 @@ func (s *QuizSessionV2Service) finalizeSession(
 		"totalQuestions":   totalQuestions,
 		"correctAnswers":   correctAnswers,
 		"attemptedAnswers": len(responses),
-		"baseEarning":     baseScore,
-		"totalPoints":     totalPoints,
-		"amountInNaira":   amountInNaira,
-		"rewardType":      req.RewardType,
-		"quizTimeSeconds": req.QuizTimeSeconds,
-		"submittedAt":     isoTime(submission.SubmittedAt),
+		"baseEarning":      baseScore,
+		"totalPoints":      totalPoints,
+		"amountInNaira":    amountInNaira,
+		"rewardType":       req.RewardType,
+		"accuracyPercent":  accuracyPercent,
+		"quizTimeSeconds":  req.QuizTimeSeconds,
+		"submittedAt":      isoTime(submission.SubmittedAt),
 		"bonuses": map[string]interface{}{
 			"accuracy": map[string]interface{}{"percent": accuracyBonusPercent, "points": accuracyGain},
 			"speed":    map[string]interface{}{"percent": speedBonusPercent, "points": speedGain},
@@ -362,7 +395,18 @@ func updateDailyStreak(userID int, now time.Time) (int, error) {
 		case diffDays == 1:
 			newStreak = user.DailyStreak + 1
 		default:
-			newStreak = 1
+			// Missed one or more days: reset streak. For the quiz that detects the miss
+			// we give no streak bonus (return 0), but record a new streak start so
+			// subsequent quizzes begin at 1.
+			if err := utils.DB.Model(&models.User{}).
+				Where("id = ?", userID).
+				Updates(map[string]interface{}{
+					"dailyStreak":    1,
+					"lastStreakDate": now,
+				}).Error; err != nil {
+				return 0, utils.NewAppError(http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to reset daily streak")
+			}
+			return 0, nil
 		}
 	}
 

@@ -1,4 +1,3 @@
-
 package controllers
 
 import (
@@ -32,6 +31,16 @@ type liveQuizCountdownLabelPayload struct {
 	CustomCountdownLabelBefore string `json:"customCountdownLabelBefore"`
 	CustomCountdownLabelDuring string `json:"customCountdownLabelDuring"`
 	CustomCountdownLabelAfter  string `json:"customCountdownLabelAfter"`
+}
+
+type customCountdownLabelPayload struct {
+	Phase string `json:"phase"`
+	Text  string `json:"text"`
+}
+
+type customCountdownLabelUpdatePayload struct {
+	Phase string `json:"phase"`
+	Text  string `json:"text"`
 }
 
 func NewQuizController(quizService services.QuizService) *QuizController {
@@ -68,6 +77,7 @@ func buildLiveQuizResponse(liveQuiz *models.LiveQuiz) gin.H {
 		"customCountdownLabelBefore": strings.TrimSpace(liveQuiz.CustomCountdownLabelBefore),
 		"customCountdownLabelDuring": strings.TrimSpace(liveQuiz.CustomCountdownLabelDuring),
 		"customCountdownLabelAfter":  strings.TrimSpace(liveQuiz.CustomCountdownLabelAfter),
+		"customCountdownLabels":      liveQuiz.CustomCountdownLabels,
 		"jackpotAmount":              liveQuiz.JackpotAmount,
 		"totalPrize":                 liveQuiz.TotalPrize,
 		"recipients":                 liveQuiz.Recipients,
@@ -887,6 +897,57 @@ func (qc *QuizController) DeleteLiveQuizCustomCountdownLabel(c *gin.Context) {
 	}
 	BroadcastToRoom(fmt.Sprintf("stream:%s", id), broadcastEvent)
 
+	utils.Success(c, http.StatusOK, "live quiz custom countdown label deleted successfully", response)
+}
+
+func (qc *QuizController) CreateLiveQuizCustomCountdownLabel(c *gin.Context) {
+	id := c.Param("id")
+	var payload customCountdownLabelPayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+	liveQuiz, err := qc.QuizService.CreateLiveQuizCustomCountdownLabel(id, payload.Phase, payload.Text)
+	if err != nil {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+	response := buildLiveQuizResponse(liveQuiz)
+	broadcastEvent := gin.H{"event": "liveQuizUpdated", "quiz": response}
+	BroadcastToRoom(fmt.Sprintf("stream:%s", id), broadcastEvent)
+	utils.Success(c, http.StatusOK, "live quiz custom countdown label created successfully", response)
+}
+
+func (qc *QuizController) UpdateLiveQuizCustomCountdownLabelByID(c *gin.Context) {
+	id := c.Param("id")
+	labelID := c.Param("labelId")
+	var payload customCountdownLabelUpdatePayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+	liveQuiz, err := qc.QuizService.UpdateLiveQuizCustomCountdownLabelByID(id, labelID, payload.Phase, payload.Text)
+	if err != nil {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+	response := buildLiveQuizResponse(liveQuiz)
+	broadcastEvent := gin.H{"event": "liveQuizUpdated", "quiz": response}
+	BroadcastToRoom(fmt.Sprintf("stream:%s", id), broadcastEvent)
+	utils.Success(c, http.StatusOK, "live quiz custom countdown label updated successfully", response)
+}
+
+func (qc *QuizController) DeleteLiveQuizCustomCountdownLabelByID(c *gin.Context) {
+	id := c.Param("id")
+	labelID := c.Param("labelId")
+	liveQuiz, err := qc.QuizService.DeleteLiveQuizCustomCountdownLabelByID(id, labelID)
+	if err != nil {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+	response := buildLiveQuizResponse(liveQuiz)
+	broadcastEvent := gin.H{"event": "liveQuizUpdated", "quiz": response}
+	BroadcastToRoom(fmt.Sprintf("stream:%s", id), broadcastEvent)
 	utils.Success(c, http.StatusOK, "live quiz custom countdown label deleted successfully", response)
 }
 

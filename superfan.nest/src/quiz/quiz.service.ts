@@ -525,7 +525,8 @@ async submitQuiz(
   const adBonusPoints = Number(ad_bonuses ?? 0);
 
   const totalPoints = baseScore + accuracyGain + speedGain + adBonusPoints + streakBonus;
-  const amountInNaira = totalPoints / 1000;
+  const pointsToNairaRate = parseInt(this.configService.get<string>('POINTS_TO_NAIRA_RATE'), 10);
+  const amountInNaira = totalPoints / pointsToNairaRate;
 
   // 6. Save leaderboard rows (only earning > 0)
   const formattedQuizTime = formatSecondsToMMSS(quizTimeSeconds);
@@ -624,6 +625,7 @@ async submitQuiz(
     totalPoints,
     subject,
     EarningStatus.PAID_OUT,
+    `quiz_reward:${userId}:${checkQuiz.id}`,
   );
 
   // Check and process first quiz completion referral bonus
@@ -634,6 +636,7 @@ async submitQuiz(
   }
 
   const scoreText = `${correctAnswers}/${totalQuestions}`;
+  const accuracyPercent = totalQuestions > 0 ? Math.round((correctAnswers / totalQuestions) * 100) : 0;
 
   // 9. Return enriched response
   return {
@@ -665,6 +668,7 @@ async submitQuiz(
         accuracy_bonus,
         speed_bonus,
         streak_bonus: streakBonus,
+        accuracyPercent,
       },
     },
   };
@@ -1250,6 +1254,7 @@ async submitLiveQuiz(userId: string) {
       Number(userId),
       Math.round(totalEarning),
       EarningStatus.PAID_OUT,
+      `live_quiz_reward:${userId}:${updatedQuiz?.id ?? 'session'}`,
     );
   }
 
@@ -1672,7 +1677,8 @@ async hasSubmittedLiveQuizForStream(
             0,
           );
 
-        const amountInNaira = totalEarning / 1000;
+        const pointsToNairaRate = parseInt(this.configService.get<string>('POINTS_TO_NAIRA_RATE'), 10);
+        const amountInNaira = totalEarning / pointsToNairaRate;
 
         // Still fetch exchange rates for consistency
         const convertToUSDC = { rate: 1600 }; // await this.paymentService.getExchangeRate('USDC');
@@ -1719,7 +1725,8 @@ async hasSubmittedLiveQuizForStream(
         0,
       );
 
-    const amountInNaira = totalEarning / 1000;
+    const pointsToNairaRate = parseInt(this.configService.get<string>('POINTS_TO_NAIRA_RATE'), 10);
+    const amountInNaira = totalEarning / pointsToNairaRate;
 
     const convertToUSDC = { rate: 1600 };
     const convertToUSDT = { rate: 1600 };
@@ -2312,7 +2319,7 @@ async getOngoingQuizAnswers(userId: number) {
       const response = await firstValueFrom(
         this.httpService.patch(`${this.liveQuizGoBaseUrl}/live/${id}`, updateData),
       );
-      this.eventEmitter.emit('liveQuiz.changed', { action: 'updated' });
+      this.eventEmitter.emit('liveQuiz.changed', { action: 'updated', id });
       return response.data;
     } catch (error) {
       this.rethrowGoProxyError(error, 'Failed to update live quiz');

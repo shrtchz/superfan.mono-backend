@@ -1156,7 +1156,12 @@ async getCard(userId: number): Promise<any> {
     if (!user) {
       throw new NotFoundException('User not found');
     }
-    return user;
+
+    const badgeInfo = await this.getUserBadge(userId);
+    return {
+      ...user,
+      ...badgeInfo,
+    };
   }
 
 
@@ -2332,6 +2337,30 @@ async checkSubscriptionStatusbyUserId(userId: number): Promise<{
     }
   }
 
+  async getTopEarners(limit = 10) {
+    try {
+      const topUsers = await prisma.user.findMany({
+        orderBy: { lifetimePoints: 'desc' },
+        take: limit,
+        select: {
+          id: true,
+          username: true,
+          firstName: true,
+          lastName: true,
+          lifetimePoints: true,
+          referral_code: true,
+        },
+      });
+
+      return {
+        message: 'Top earners fetched successfully',
+        data: topUsers,
+      };
+    } catch (error) {
+      throw error;
+    }
+  }
+
   async findAllUsersWithReferralCodes() {
     try {
       const users = await prisma.user.findMany({
@@ -2592,6 +2621,12 @@ async findUserByEmail(email: string): Promise<any> {
         accountType: 'Gold',
       },
     });
+
+    await prisma.user.update({
+      where: { id: referrer.id },
+      data: { lifetimePoints: { increment: 20000 } },
+    });
+
     console.log('[Referral] Point created', {
       pointId: point.id,
       userId: referrer.id,
