@@ -9,6 +9,10 @@ type User struct {
 	LastName           string     `gorm:"column:lastName" json:"lastName"`
 	Email              string     `gorm:"column:email" json:"email"`
 	Username           string     `gorm:"column:username" json:"username"`
+	AccountNumber      *string    `gorm:"column:accountNumber" json:"accountNumber"`
+	BankCode           *string    `gorm:"column:bankCode" json:"bankCode"`
+	SubAccountCode     *string    `gorm:"column:subAccountCode" json:"subAccountCode"`
+	LifetimePoints     int        `gorm:"column:lifetime_points" json:"lifetime_points"`
 	ProfilePicture     *string    `gorm:"column:profilePicture" json:"profilePicture"`
 	ClerkUserID        *string    `gorm:"column:clerkUserId" json:"clerkUserId"`
 	RoleName           *string    `gorm:"column:roleName" json:"roleName"`

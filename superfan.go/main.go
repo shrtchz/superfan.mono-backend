@@ -224,6 +224,10 @@ func main() {
 
 	// Payment Routes
 	paymentControllers.RegisterPaymentRoutes(basepath, paymentCtrl)
+	apibasepath := server.Group("/api/v1")
+	paymentControllers.RegisterPaymentRoutes(apibasepath, paymentCtrl)
+	rootbasepath := server.Group("")
+	paymentControllers.RegisterPaymentRoutes(rootbasepath, paymentCtrl)
 
 	// WebSocket Streaming Route (token via Authorization header or ?token=)
 	basepath.GET("/streams/ws", middleware.AuthRequired(), controllers.StreamWebSocket)

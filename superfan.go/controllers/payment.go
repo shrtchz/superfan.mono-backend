@@ -87,6 +87,7 @@ func (pc *PaymentController) Webhook(c *gin.Context) {
 
 func RegisterPaymentRoutes(rg *gin.RouterGroup, pc *PaymentController) {
 	paymentGroup := rg.Group("/payment")
+	paymentGroup.GET("/wallet-transactions", pc.GetWalletTransactions)
 	paymentGroup.POST("/deposit", pc.InitiateDeposit)
 	paymentGroup.POST("/initialize-transaction", pc.InitializeTransaction)
 	paymentGroup.POST("/init-payment-by-transfer", pc.InitPaymentByTransfer)
@@ -106,6 +107,55 @@ func RegisterPaymentRoutes(rg *gin.RouterGroup, pc *PaymentController) {
 	paymentGroup.GET("/user-withdrawal-wallets/:userId", pc.GetUserWithdrawalWallets)
 	paymentGroup.POST("/wallet-withdrawal", pc.WalletWithdrawal)
 	paymentGroup.POST("/validate-otp", pc.ValidateOTP)
+}
+
+// GetWalletTransactions handles GET /v1/payment/wallet-transactions
+func (pc *PaymentController) GetWalletTransactions(c *gin.Context) {
+	var filter payment.WalletTransactionFilter
+
+	if uidStr := c.Query("userId"); uidStr != "" {
+		fmt.Sscanf(uidStr, "%d", &filter.UserID)
+	}
+	filter.AccountType = c.Query("accountType")
+	filter.Type = c.Query("type")
+	filter.Currency = c.Query("currency")
+	filter.Status = c.Query("status")
+
+	if pageStr := c.Query("page"); pageStr != "" {
+		fmt.Sscanf(pageStr, "%d", &filter.Page)
+	}
+	if limitStr := c.Query("limit"); limitStr != "" {
+		fmt.Sscanf(limitStr, "%d", &filter.Limit)
+	} else if perPageStr := c.Query("perPage"); perPageStr != "" {
+		fmt.Sscanf(perPageStr, "%d", &filter.Limit)
+	}
+
+	if startStr := c.Query("startDate"); startStr != "" {
+		if t, err := time.Parse(time.RFC3339, startStr); err == nil {
+			filter.StartDate = &t
+		}
+	}
+	if endStr := c.Query("endDate"); endStr != "" {
+		if t, err := time.Parse(time.RFC3339, endStr); err == nil {
+			filter.EndDate = &t
+		}
+	}
+
+	transactions, total, err := pc.paymentService.GetWalletTransactions(c.Request.Context(), filter)
+	if err != nil {
+		sendDetailedError(c, http.StatusInternalServerError, "FETCH_TRANSACTIONS_FAILED", "Failed to fetch wallet transactions", err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"requestSuccessful": true,
+		"responseCode":      "0",
+		"responseMessage":   "Wallet transactions fetched successfully",
+		"data":              transactions,
+		"total":             total,
+		"page":              filter.Page,
+		"limit":             filter.Limit,
+	})
 }
 
 // InitializeTransaction handles POST /v1/payment/initialize-transaction
