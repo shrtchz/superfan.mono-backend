@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"gorm.io/gorm"
 	"quiz.superfan.com/apis/models"
 	"quiz.superfan.com/apis/services/payment/providers"
-	"gorm.io/gorm"
 )
 
 type PaymentService struct {
@@ -1151,5 +1151,3 @@ func (s *PaymentService) GetUserWithdrawalWallets(ctx context.Context, userID in
 	}
 	return wallets, nil
 }
-
-
