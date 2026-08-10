@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"gorm.io/gorm"
 	"quiz.superfan.com/apis/models"
 	"quiz.superfan.com/apis/services/payment/providers"
-	"gorm.io/gorm"
 )
 
 type PaymentService struct {
@@ -568,12 +568,9 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 		var pendingBal *float64
 		if tx.PendingBalance != nil {
 			pendingBal = tx.PendingBalance
-		} else if hasWallet {
-			bal := w.PersonalBalance
-			if bal == 0 && w.Balance > 0 {
-				bal = w.Balance
-			}
-			pendingBal = &bal
+		} else {
+			zero := 0.0
+			pendingBal = &zero
 		}
 
 		// 9. Total Earnings
@@ -586,11 +583,8 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 			ptsVal := float64(u.LifetimePoints * 10)
 			totalEarnings = &ptsVal
 		} else {
-			amountVal := tx.Amount
-			if amountVal < 0 {
-				amountVal = -amountVal
-			}
-			totalEarnings = &amountVal
+			zero := 0.0
+			totalEarnings = &zero
 		}
 
 		// 10. Last Payout
@@ -1157,5 +1151,3 @@ func (s *PaymentService) GetUserWithdrawalWallets(ctx context.Context, userID in
 	}
 	return wallets, nil
 }
-
-
