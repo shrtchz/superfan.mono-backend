@@ -11,11 +11,14 @@ import {
   Req,
   Res,
 } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Request, Response } from 'express';
 import { ApiRoutes } from '../common/enums/routes.enum';
 import { generateFiveUniqueRandomNumbers } from '../common/utils/utils';
 import { validateHmacChecksum } from '../common/utils/validateHmacChecksum';
 import { NotificationService } from '../notification/notification.service';
+import { DiditService } from '../user/didit.service';
+import { WalletService } from '../wallet/wallet.service';
 import { prisma } from '../prisma/prisma';
 import { MonnifyWebhookService } from './webhook.service';
 
@@ -27,6 +30,9 @@ export class MonnifyWebhookController {
   constructor(
     private readonly webhookService: MonnifyWebhookService,
     private readonly notificationService: NotificationService,
+    private readonly diditService: DiditService,
+    private readonly walletService: WalletService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   /**
@@ -430,6 +436,9 @@ private async handleCardCharge(payload: any) {
 //   }
 // }
 
+    // ✅ Enforce KYC deposit limits (SCRUM-350)
+    await this.walletService.validateTransactionLimits(cardFunding.userId, amount, 'DEPOSIT');
+
     // 💰 update wallet
     console.log('[HANDLE CARD CHARGE] Updating wallet balance by:', amount);
     await prisma.wallet.update({
@@ -488,4 +497,125 @@ private async handleCardCharge(payload: any) {
     throw error;
   }
 }
+
+  /**
+   * POST /webhooks/didit
+   *
+   * Receives Didit verification decisions and updates user KYC status in real-time.
+   */
+  @Post('didit')
+  @HttpCode(HttpStatus.OK)
+  async handleDiditWebhook(
+    @Headers('x-didit-signature') diditSignature: string,
+    @Headers('x-signature-sha256') altSignature: string,
+    @Body() payload: any,
+    @Req() req: RawBodyRequest<Request>,
+  ): Promise<{ status: string }> {
+    this.logger.log(`[Didit Webhook] Received webhook payload: ${JSON.stringify(payload)}`);
+
+    const rawBody = req.rawBody?.toString('utf-8');
+    const signature = diditSignature || altSignature;
+
+    if (rawBody && signature) {
+      const isValid = this.diditService.validateWebhookSignature(rawBody, signature);
+      if (!isValid) {
+        this.logger.warn('[Didit Webhook] Invalid HMAC signature');
+        throw new BadRequestException('Invalid webhook signature');
+      }
+    }
+
+    const sessionId = payload.session_id || payload.sessionId || payload.id;
+    const vendorData = payload.vendor_data || payload.vendorData || payload.client_reference;
+    const status = payload.status || payload.decision?.status;
+    const decision = payload.decision || {};
+
+    let userId: number | null = null;
+    if (vendorData && !isNaN(Number(vendorData))) {
+      userId = Number(vendorData);
+    } else if (sessionId) {
+      const foundUser = await prisma.user.findFirst({
+        where: { didit_session_id: sessionId },
+        select: { id: true },
+      });
+      if (foundUser) {
+        userId = foundUser.id;
+      }
+    }
+
+    if (!userId) {
+      this.logger.warn(
+        `[Didit Webhook] Could not associate webhook event with any user. Session: ${sessionId}, VendorData: ${vendorData}`,
+      );
+      return { status: 'ignored_no_user' };
+    }
+
+    const isApproved =
+      status === 'Approved' ||
+      status === 'verified' ||
+      decision.status === 'Approved' ||
+      decision.status === 'verified';
+
+    const isDeclined =
+      status === 'Declined' ||
+      status === 'Rejected' ||
+      status === 'declined' ||
+      decision.status === 'Declined' ||
+      decision.status === 'Rejected';
+
+    if (isApproved) {
+      const verificationId = payload.verification_id || decision.verification_id || sessionId;
+      await prisma.user.update({
+        where: { id: userId },
+        data: {
+          kyc_status: 'VERIFIED',
+          kyc_tier: 'TIER_1',
+          didit_verification_id: verificationId,
+          kyc_verified_at: new Date(),
+          kyc_rejection_reason: null,
+        },
+      });
+
+      this.logger.log(
+        `[Didit Webhook] User ${userId} successfully verified and upgraded to TIER_1 (₦500k/day, ₦5m/month)`,
+      );
+
+      await this.notificationService.createNotification(
+        userId,
+        'KYC Verification Successful',
+        'Your identity has been verified successfully! Your daily limit is now ₦500,000 and monthly limit is ₦5,000,000.',
+        'kyc_approved',
+      );
+
+      this.eventEmitter.emit('user.kyc.verified', { userId, tier: 'TIER_1' });
+      this.eventEmitter.emit('user.wallet.updated', { userId });
+    } else if (isDeclined) {
+      const rejectionReasons =
+        decision.rejection_reasons ||
+        payload.rejection_reasons ||
+        (decision.reason ? [decision.reason] : ['Identity verification was not approved. Please try again.']);
+      const reasonStr = Array.isArray(rejectionReasons) ? rejectionReasons.join(', ') : String(rejectionReasons);
+
+      await prisma.user.update({
+        where: { id: userId },
+        data: {
+          kyc_status: 'REJECTED',
+          kyc_tier: 'TIER_0',
+          kyc_rejection_reason: reasonStr,
+        },
+      });
+
+      this.logger.warn(`[Didit Webhook] User ${userId} verification declined: ${reasonStr}`);
+
+      await this.notificationService.createNotification(
+        userId,
+        'KYC Verification Failed',
+        `Identity verification was unsuccessful: ${reasonStr}. You can retry verification at any time.`,
+        'kyc_failed',
+      );
+
+      this.eventEmitter.emit('user.kyc.rejected', { userId, reason: reasonStr });
+    }
+
+    return { status: 'processed' };
+  }
 }

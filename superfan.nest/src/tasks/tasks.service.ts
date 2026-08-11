@@ -654,8 +654,11 @@ async createClientHistory(payload: CreateClientHistoryDto) {
     });
 
     if (!user) {
-      throw new Error('User not found');
+      throw new NotFoundException('User not found');
     }
+
+    // ✅ Enforce KYC-based withdrawal limits & ₦9,999 minimum withdrawal (SCRUM-350)
+    await this.walletService.validateTransactionLimits(dto.userId, dto.amount, 'WITHDRAWAL');
 
     // check if reference already exists
     const existingPayout = await prisma.payout.findUnique({

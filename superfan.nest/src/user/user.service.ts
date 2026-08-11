@@ -34,6 +34,7 @@ import {
   VerifyEmailDto,
 } from './dto/auth.dto';
 import { PresenceGateway } from './gateway/presence.gateway';
+import { DiditService } from './didit.service';
 
 type SyncUserMetadata = {
   referralCode?: string;
@@ -55,6 +56,7 @@ export class UserService {
     private readonly es: ElasticsearchService,
     private readonly clerkService: ClerkService,
     private pointsConversionUtil: PointsConversionUtil,
+    private readonly diditService: DiditService,
   ) {}
 
   async signupUser(dto: AuthDto): Promise<any> {
@@ -1267,18 +1269,7 @@ async getCard(userId: number): Promise<any> {
     try {
       const existingUser = await prisma.user.findUnique({
         where: { id: userId },
-        select: {
-          id: true,
-          email: true,
-          firstName: true,
-          lastName: true,
-          phone: true,
-          accountReference: true,
-          flw_customer_id: true,
-          busha_customer_id: true,
-        },
       });
-
 
       if (!existingUser) {
         throw new NotFoundException('User not found');
@@ -1287,306 +1278,93 @@ async getCard(userId: number): Promise<any> {
       const user = await prisma.user.update({
         where: { id: userId },
         data: {
-          dob: new Date(dto.dob),
-          firstName: dto.firstName,
-          lastName: dto.lastName,
-          country: dto.country,
-          address: dto.address,
-          bvn: dto.bvn,
-          nin: dto.nin,
-          state: dto.state,
-          verify_photo: dto.verify_photo,
-          postal_code: dto.postal_code,
+          ...(dto.dob && { dob: new Date(dto.dob) }),
+          ...(dto.firstName && { firstName: dto.firstName }),
+          ...(dto.lastName && { lastName: dto.lastName }),
+          ...(dto.country && { country: dto.country }),
+          ...(dto.address && { address: dto.address }),
+          ...(dto.bvn && { bvn: dto.bvn }),
+          ...(dto.nin && { nin: dto.nin }),
+          ...(dto.state && { state: dto.state }),
+          ...(dto.verify_photo && { verify_photo: dto.verify_photo }),
+          ...(dto.postal_code && { postal_code: dto.postal_code }),
         },
       });
-
-
-      const fullName = `${dto.firstName} ${dto.lastName}`;
-      const generatedAccountReference = `wal-${userId}`;
-
-      let reservedAccount;
-
-      console.log('[KYC] Monnify step', {
-        hasReference: !!existingUser.accountReference,
-      });
-
-      if (existingUser.accountReference) {
-        // reservedAccount = await this.monnifyService.getReservedAccount(
-        //   existingUser.accountReference,
-        // );
-      } else {
-        // try {
-        //   reservedAccount = await this.monnifyService.createReservedAccount({
-        //     accountReference: generatedAccountReference,
-        //     accountName: fullName,
-        //     currencyCode: 'NGN',
-        //     customerEmail: existingUser.email,
-        //     customerName: fullName,
-        //     bvn: dto.bvn,
-        //     getAllAvailableBanks: true,
-        //   });
-        // } catch (error: any) {
-        //   console.error('[KYC][Monnify ERROR]', {
-        //     message: error.message,
-        //     response: error.response?.data,
-        //   });
-
-        //   const responseMessage = error.response?.data?.responseMessage;
-
-        //   if (
-        //     typeof responseMessage === 'string' &&
-        //     responseMessage.includes('same reference')
-        //   ) {
-        //     reservedAccount = await this.monnifyService.getReservedAccount(
-        //       generatedAccountReference,
-        //     );
-        //   } else {
-        //     throw error;
-        //   }
-        // }
-      }
-      
-      reservedAccount = { responseBody: { accounts: [] } };
-
-
-      const responseBody = reservedAccount?.responseBody;
-
-      if (!responseBody?.accounts) {
-        console.error('[KYC] No accounts returned from Monnify', responseBody);
-        throw new Error('Invalid Monnify response: no accounts');
-      }
-
-      const accountsWithType = responseBody.accounts.map((account, index) => ({
-        ...account,
-        accountType: index === 0 ? 'Gold' : 'Personal',
-      }));
-
-      let flutterwaveCustomerId = existingUser.flw_customer_id;
-
-      if (!flutterwaveCustomerId) {
-        flutterwaveCustomerId = null;
-      }
-
-      let flutterwaveAccount = null;
-
-
-
-      // let bushaCustomerId = (existingUser as any).busha_customer_id;
-
-      // console.log('[KYC] Busha check', { bushaCustomerId });
-
-      // if (bushaCustomerId) {
-      //   try {
-      //     const existingBushaCustomer =
-      //       await this.bushaService.getCustomerById(bushaCustomerId);
-
-      //     if (!existingBushaCustomer?.data?.data?.id) {
-      //       throw new Error('Invalid Busha customer');
-      //     }
-
-      //     console.log('[KYC] Busha customer exists');
-      //   } catch (error: any) {
-      //     console.error('[KYC][Busha getCustomer ERROR]', {
-      //       message: error.message,
-      //       response: error.response?.data,
-      //     });
-
-      //     bushaCustomerId = null;
-      //   }
-      // }
-
-      // if (!bushaCustomerId) {
-      //   try {
-      //     console.log('[KYC] Fetching Busha customers');
-
-      //     const customersResponse = await this.bushaService.getCustomers();
-      //     const customers = customersResponse.data || [];
-
-      //     const existingCustomer = customers.find(
-      //       (c) => c.email === existingUser.email,
-      //     );
-
-      //     if (existingCustomer) {
-      //       bushaCustomerId = existingCustomer.id;
-      //       console.log('[KYC] Found existing Busha customer');
-      //     }
-      //   } catch (error: any) {
-      //     console.error('[KYC][Busha getCustomers ERROR]', {
-      //       message: error.message,
-      //       response: error.response?.data,
-      //     });
-      //   }
-
-      //   if (!bushaCustomerId) {
-      //     if (!existingUser.phone) {
-      //       console.error('[KYC] Missing phone number');
-      //       throw new Error('Phone is required for Busha');
-      //     }
-
-      //     const sanitizedPhone = existingUser.phone.replace(/^\+/, '');
-      //     const formattedDob = await this.formatBirthDate(dto.dob);
-
-      //     console.log('[KYC] Creating Busha customer');
-
-      //     try {
-      //       const [idFrontBase64, idBackBase64, selfieBase64] =
-      //         await Promise.all([
-      //           toDataURL(dto.idFrontBase64),
-      //           toDataURL(dto.idBackBase64),
-      //           toDataURL(dto.selfieBase64),
-      //         ]);
-      //       const bushaPayload: CreateBushaCustomerDto = {
-      //         email: existingUser.email,
-      //         has_accepted_terms: true,
-      //         type: 'individual',
-      //         country_id: dto.country,
-      //         phone: sanitizedPhone,
-      //         birth_date: formattedDob,
-      //         first_name: dto.firstName,
-      //         last_name: dto.lastName,
-      //         address: {
-      //           country_id: dto.country,
-      //           address_line_1: dto.address,
-      //           city: dto.city,
-      //           state: dto.state,
-      //           postal_code: dto.postal_code,
-      //         },
-      //         identifying_information: [
-      //           {
-      //             type: dto.id_type,
-      //             number: dto.idNumber,
-      //             country: dto.country,
-      //             image_front: idFrontBase64,
-      //             image_back: idBackBase64,
-      //           },
-      //           {
-      //             type: 'selfie',
-      //             number: dto.idNumber,
-      //             country: dto.country,
-      //             image_front: selfieBase64,
-      //           },
-      //         ],
-      //       };
-
-      //       const bushaCustomer =
-      //         await this.bushaService.createCustomer(bushaPayload);
-
-      //       bushaCustomerId = bushaCustomer?.data?.id;
-
-      //       console.log(bushaPayload, 'bushaPayload');
-
-      //       console.log('[KYC] Busha customer created', bushaCustomerId);
-      //     } catch (error: any) {
-      //       console.error('[KYC][Busha createCustomer ERROR]', {
-      //         message: error.message,
-      //         response: error.response?.data,
-      //       });
-      //       throw error;
-      //     }
-      //   }
-      // }
-
-      // console.log('[KYC] Final DB update');
-
-      let bushaCustomerId = 'CUS_I6WZxboDgD5C8'
-
-
-      // [bitnob services]
-
-      // let createBitnobCustomerResponse = await this.bitnobService.createCustomer({
-      //   email: userDetails.email,
-      //   firstName: userDetails.firstName,
-      //   lastName: userDetails.lastName,
-      //   phone: userDetails.phone,
-      //   countryCode: "+234"
-      // })
-
-      // [generate bitnob address]
-
-const chain = process.env.NODE_ENV === 'production' ? 'polygon' : 'ethereum';
-
-      const bitnobAddress = {
-        bitnob_address: {
-          id: '',
-          chain: '',
-          address: '',
-          label: '',
-          reference: '',
-          status: '',
-        },
-      };
-
-      const updatedAccountsWithType = {
-        ...accountsWithType,
-        ...bitnobAddress,
-      };
-
-      console.log(updatedAccountsWithType, 'updatedAccounts');
-      await prisma.user.update({
-        where: { id: userId },
-        data: {
-          accountReference: responseBody.accountReference,
-          accounts: updatedAccountsWithType,
-          flw_customer_id: flutterwaveCustomerId,
-          busha_customer_id: bushaCustomerId,
-          bitnob_customer_id: null,
-        },
-      });
-
-      console.log('[KYC] Verifying Busha customer');
-
-      // try {
-      //   console.log(bushaCustomerId, 'bushaCustomerId in verify');
-      //   await this.bushaService.verifyCustomer(bushaCustomerId);
-      //   console.log('[KYC] Busha verification success');
-      // } catch (error: any) {
-      //   console.error('[KYC][Busha verify ERROR]', {
-      //     message: error.message,
-      //     response: error.response?.data,
-      //   });
-      //   throw error;
-      // }
-
-      // console.log('[KYC] SUCCESS');
 
       return {
-        message: existingUser.accountReference
-          ? 'KYC updated & existing reserved account retrieved successfully'
-          : 'KYC updated & reserved account created successfully',
-        data: {
-          ...user,
-          accountReference: responseBody.accountReference,
-          accounts: accountsWithType,
-          flw_customer_id: flutterwaveCustomerId,
-        },
+        message: 'KYC details updated successfully',
+        data: user,
       };
     } catch (error: any) {
-      console.error('[KYC] FINAL ERROR', {
-        message: error.message,
-        stack: error.stack,
-        response: error.response?.data,
-      });
-
+      console.error('[KYC] updateKycDetails error', error);
       throw error;
     }
   }
 
-  async checkKycStatus(
-    userId: number,
-  ): Promise<{ isComplete: boolean; reason?: object }> {
+  /**
+   * Initiates a Didit identity verification session for a user
+   */
+  async initiateDiditKyc(userId: number) {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true, kyc_status: true },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const session = await this.diditService.createSession(userId, user.email);
+
+    await prisma.user.update({
+      where: { id: userId },
+      data: {
+        didit_session_id: session.sessionId,
+        kyc_status: 'PENDING',
+        kyc_rejection_reason: null,
+      },
+    });
+
+    this.eventEmitter.emit('user.kyc.pending', { userId, sessionId: session.sessionId });
+
+    return {
+      message: 'Didit verification session initialized successfully',
+      data: session,
+    };
+  }
+
+  /**
+   * Retrieves real-time KYC status, tier, and transaction limits for a user (SCRUM-350)
+   */
+  async checkKycStatus(userId: number): Promise<{
+    isComplete: boolean;
+    isSubmitted: boolean;
+    status: string;
+    tier: string;
+    reason?: string;
+    limits?: any;
+    kycData?: any;
+  }> {
     const user = await prisma.user.findUnique({
       where: { id: userId },
       select: {
+        id: true,
         dob: true,
         firstName: true,
         lastName: true,
         country: true,
         address: true,
         bvn: true,
+        nin: true,
         state: true,
         verify_photo: true,
         postal_code: true,
-        busha_customer_id: true,
+        kyc_status: true,
+        kyc_tier: true,
+        didit_session_id: true,
+        didit_verification_id: true,
+        kyc_rejection_reason: true,
+        kyc_verified_at: true,
       },
     });
 
@@ -1594,50 +1372,32 @@ const chain = process.env.NODE_ENV === 'production' ? 'polygon' : 'ethereum';
       throw new NotFoundException('User not found');
     }
 
-    // 1. Check local KYC fields
-    const requiredFields = [
-      user.dob,
-      user.firstName,
-      user.lastName,
-      user.country,
-      user.address,
-      user.bvn,
-      user.state,
-      user.verify_photo,
-      user.postal_code,
-    ];
-
-    // 2. Call Busha (Mocked)
-    // const customer = await this.bushaService.getCustomerById(
-    //   user.busha_customer_id,
-    // );
-
-    const status = 'active'; // customer?.data?.status;
-    const kycStatus = 'verified'; // customer?.data?.kyc_status;
-
-    // 3. Final decision
-    const isApproved = status === 'active' && kycStatus === 'verified';
+    const isVerified = user.kyc_status === 'VERIFIED';
+    const isSubmitted = user.kyc_status === 'PENDING' || isVerified;
+    const limitStatus = await this.walletService.getTransactionLimitStatus(userId);
 
     return {
-      isComplete: isApproved,
-      reason: isApproved ? undefined : { bushaStatus: status, kycStatus },
+      isComplete: isVerified,
+      isSubmitted,
+      status: user.kyc_status,
+      tier: user.kyc_tier,
+      reason: user.kyc_rejection_reason || (isVerified ? undefined : 'Identity verification incomplete'),
+      limits: limitStatus,
+      kycData: {
+        firstName: user.firstName || '',
+        lastName: user.lastName || '',
+        fullName: [user.firstName, user.lastName].filter(Boolean).join(' '),
+        dob: user.dob ? user.dob.toISOString() : '',
+        country: user.country || '',
+        state: user.state || '',
+        address: user.address || '',
+        bvn: user.bvn || '',
+        nin: user.nin || '',
+        verify_photo: user.verify_photo || '',
+        postal_code: user.postal_code || '',
+      },
     };
   }
-
-  // async onKycApproved(userId: number) {
-  //   const rewards = await prisma.reward.findMany({
-  //     where: { userId, status: 'PENDING' },
-  //   });
-
-  //   for (const reward of rewards) {
-  //     await this.walletService.creditWallet(userId, reward.amount, reward.type);
-
-  //     await prisma.reward.update({
-  //       where: { id: reward.id },
-  //       data: { status: 'PAID_OUT' },
-  //     });
-  //   }
-  // }
 
   async forgotPassword(email: string): Promise<{ message: string }> {
     const user = await prisma.user.findUnique({

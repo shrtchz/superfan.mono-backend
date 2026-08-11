@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { createHmac } from 'crypto';
 import { generateFiveUniqueRandomNumbers } from '../common/utils/utils';
 import { NotificationService } from '../notification/notification.service';
+import { WalletService } from '../wallet/wallet.service';
 import { prisma } from '../prisma/prisma';
 import { DisbursementEventDataDto, MonnifyWebhookDto } from './webhook.dto';
 
@@ -14,6 +15,7 @@ export class MonnifyWebhookService {
   constructor(
     private readonly configService: ConfigService,
     private readonly notificationService: NotificationService,
+    private readonly walletService: WalletService,
   ) {
     this.merchantClientSecret = process.env.MONNIFY_SECRET_KEY;
   }
@@ -245,6 +247,9 @@ if (bankTransfer) {
     return;
   }
 
+  // ✅ Enforce KYC deposit limits (SCRUM-350)
+  await this.walletService.validateTransactionLimits(bankTransfer.userId, amount, 'DEPOSIT');
+
   const paymentStatus = eventData.paymentStatus;
   // Map payment status to valid BankTransferStatus enum values
   // Note: 'SUCCESS' requires migration 20260603124718 to be applied
@@ -426,6 +431,9 @@ if (bankTransfer) {
 
     return;
   }
+
+  // ✅ Enforce KYC deposit limits (SCRUM-350)
+  await this.walletService.validateTransactionLimits(user.id, amount, 'DEPOSIT');
 
   this.logger.log(
     `Processing wallet funding | User: ${user.id} | AccountType: ${accountType} | Amount: ${amount}`,

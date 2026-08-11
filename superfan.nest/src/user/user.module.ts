@@ -12,6 +12,7 @@ import { PresenceGateway } from './gateway/presence.gateway';
 import { UserController } from "./user.controller";
 import { UserService } from "./user.service";
 import { UserListener } from "./user.listener";
+import { DiditService } from "./didit.service";
 
 @Global()
 @Module({
@@ -30,8 +31,9 @@ import { UserListener } from "./user.listener";
         UserService, 
         PresenceGateway, 
         UserListener, 
-        AccessControlService
+        AccessControlService,
+        DiditService,
     ],
-    exports: [UserService, PresenceGateway],
+    exports: [UserService, PresenceGateway, DiditService],
 })
 export class UserModule {}

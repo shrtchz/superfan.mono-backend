@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -105,6 +106,9 @@ func RegisterPaymentRoutes(rg *gin.RouterGroup, pc *PaymentController) {
 	paymentGroup.GET("/user-withdrawal-banks/:userId", pc.GetUserWithdrawalBanks)
 	paymentGroup.POST("/connect-withdrawal-wallet", pc.CreateUserWithdrawalWallet)
 	paymentGroup.GET("/user-withdrawal-wallets/:userId", pc.GetUserWithdrawalWallets)
+	paymentGroup.GET("/rates", pc.GetRates)
+	paymentGroup.GET("/convert", pc.ConvertCurrency)
+	paymentGroup.POST("/convert", pc.ConvertCurrency)
 	paymentGroup.POST("/wallet-withdrawal", pc.WalletWithdrawal)
 	paymentGroup.POST("/validate-otp", pc.ValidateOTP)
 }
@@ -332,6 +336,84 @@ func (pc *PaymentController) SimulateAddressDeposit(c *gin.Context) {
 	}
 
 	utils.Success(c, http.StatusOK, "Address deposit simulated successfully", res)
+}
+
+// GetRates handles GET /v1/payment/rates
+func (pc *PaymentController) GetRates(c *gin.Context) {
+	rates, err := pc.paymentService.GetExchangeRates(c.Request.Context())
+	if err != nil {
+		utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
+		return
+	}
+	c.JSON(http.StatusOK, rates)
+}
+
+// ConvertCurrency handles GET and POST /v1/payment/convert
+func (pc *PaymentController) ConvertCurrency(c *gin.Context) {
+	amount := 1.0
+	fromCurrency := "NGN"
+	toCurrency := "USDT"
+
+	if c.Request.Method == http.MethodPost {
+		var req map[string]interface{}
+		if err := c.ShouldBindJSON(&req); err == nil {
+			if a, ok := req["amount"].(float64); ok {
+				amount = a
+			}
+			if f, ok := req["fromCurrency"].(string); ok && f != "" {
+				fromCurrency = f
+			}
+			if t, ok := req["targetCurrency"].(string); ok && t != "" {
+				toCurrency = t
+			} else if t2, ok := req["toCurrency"].(string); ok && t2 != "" {
+				toCurrency = t2
+			}
+		}
+	} else {
+		amountStr := c.Query("amount")
+		if amountStr != "" {
+			fmt.Sscanf(amountStr, "%f", &amount)
+		}
+		if f := c.Query("fromCurrency"); f != "" {
+			fromCurrency = f
+		} else if f2 := c.Query("from"); f2 != "" {
+			fromCurrency = f2
+		}
+		if t := c.Query("targetCurrency"); t != "" {
+			toCurrency = t
+		} else if t2 := c.Query("toCurrency"); t2 != "" {
+			toCurrency = t2
+		} else if t3 := c.Query("to"); t3 != "" {
+			toCurrency = t3
+		}
+	}
+
+	ratesData, err := pc.paymentService.GetExchangeRates(c.Request.Context())
+	if err != nil {
+		utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
+		return
+	}
+
+	ratesMap, _ := ratesData["rates"].(map[string]float64)
+	pricesMap, _ := ratesData["pricesInNgn"].(map[string]float64)
+
+	toRate := ratesMap[strings.ToUpper(toCurrency)]
+	if toRate == 0 {
+		toRate = 1.0 / 1500.0
+	}
+	convertedAmount := amount * toRate
+
+	c.JSON(http.StatusOK, map[string]interface{}{
+		"success":           true,
+		"requestSuccessful": true,
+		"amount":            amount,
+		"fromCurrency":      fromCurrency,
+		"toCurrency":        toCurrency,
+		"rate":              toRate,
+		"priceInNgn":        pricesMap[strings.ToUpper(toCurrency)],
+		"convertedAmount":   convertedAmount,
+		"timestamp":         time.Now().Format(time.RFC3339),
+	})
 }
 
 // GetUserWalletBalance handles GET /v1/payment/user-wallet-balance?userId=...

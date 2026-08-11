@@ -1,4 +1,11 @@
-import { Injectable, Inject, forwardRef } from '@nestjs/common';
+import {
+  Injectable,
+  Inject,
+  forwardRef,
+  BadRequestException,
+  ForbiddenException,
+  NotFoundException,
+} from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { EarningStatus } from '../common/enums/task.enum';
 import { generateFiveUniqueRandomNumbers } from '../common/utils/utils';
@@ -9,15 +16,141 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { prisma } from '../prisma/prisma';
 import { WalletTransactionFilterDto } from './wallet.dto';
 
+export const MIN_WITHDRAWAL_NGN = 9999;
+
+export const KYC_TRANSACTION_LIMITS = {
+  TIER_0: { daily: 10000, monthly: 50000 },
+  TIER_1: { daily: 500000, monthly: 5000000 },
+};
+
+export interface TransactionLimitStatus {
+  tier: 'TIER_0' | 'TIER_1';
+  isKycVerified: boolean;
+  dailyLimit: number;
+  monthlyLimit: number;
+  dailyUsed: number;
+  monthlyUsed: number;
+  dailyRemaining: number;
+  monthlyRemaining: number;
+  minWithdrawal: number;
+}
 
 @Injectable()
 export class WalletService {
+  readonly MIN_WITHDRAWAL_NGN = MIN_WITHDRAWAL_NGN;
+  readonly KYC_TRANSACTION_LIMITS = KYC_TRANSACTION_LIMITS;
+
   constructor(
     private prisma: PrismaService, 
     private notificationService: NotificationService, 
     private pointsConversionUtil: PointsConversionUtil, 
     private eventEmitter: EventEmitter2
   ) {}
+
+  /**
+   * Retrieves real-time daily/monthly transaction limits and usage for a user (SCRUM-350)
+   */
+  async getTransactionLimitStatus(userId: number): Promise<TransactionLimitStatus> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        kyc_status: true,
+        kyc_tier: true,
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException(`User with ID ${userId} not found`);
+    }
+
+    const isKycVerified = user.kyc_status === 'VERIFIED';
+    const tier: 'TIER_0' | 'TIER_1' = isKycVerified ? 'TIER_1' : 'TIER_0';
+    const limits = this.KYC_TRANSACTION_LIMITS[tier];
+
+    const now = new Date();
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    // Sum all completed and pending deposits/withdrawals since start of current month
+    const transactions = await this.prisma.walletTransaction.findMany({
+      where: {
+        userId,
+        status: { in: ['SUCCESS', 'PENDING'] },
+        type: { in: ['credit', 'debit', 'deposit', 'withdrawal', 'FUNDING', 'WITHDRAWAL'] },
+        createdAt: { gte: startOfMonth },
+      },
+      select: {
+        amount: true,
+        createdAt: true,
+      },
+    });
+
+    let dailyUsed = 0;
+    let monthlyUsed = 0;
+
+    for (const tx of transactions) {
+      const txAmount = Math.abs(Number(tx.amount) || 0);
+      monthlyUsed += txAmount;
+      if (tx.createdAt >= startOfDay) {
+        dailyUsed += txAmount;
+      }
+    }
+
+    return {
+      tier,
+      isKycVerified,
+      dailyLimit: limits.daily,
+      monthlyLimit: limits.monthly,
+      dailyUsed,
+      monthlyUsed,
+      dailyRemaining: Math.max(0, limits.daily - dailyUsed),
+      monthlyRemaining: Math.max(0, limits.monthly - monthlyUsed),
+      minWithdrawal: this.MIN_WITHDRAWAL_NGN,
+    };
+  }
+
+  /**
+   * Validates that a transaction complies with minimum withdrawal and KYC tier limits in real-time (SCRUM-350)
+   */
+  async validateTransactionLimits(
+    userId: number,
+    amount: number,
+    type: 'DEPOSIT' | 'WITHDRAWAL',
+  ): Promise<TransactionLimitStatus> {
+    if (amount <= 0) {
+      throw new BadRequestException('Transaction amount must be greater than zero');
+    }
+
+    // 1. Enforce minimum withdrawal of ₦9,999 on all withdrawal requests regardless of method
+    if (type === 'WITHDRAWAL' && amount < this.MIN_WITHDRAWAL_NGN) {
+      throw new BadRequestException(
+        `Minimum withdrawal amount is ₦${this.MIN_WITHDRAWAL_NGN.toLocaleString()}. Your request was ₦${amount.toLocaleString()}.`,
+      );
+    }
+
+    // 2. Fetch fresh real-time limit status from database
+    const status = await this.getTransactionLimitStatus(userId);
+
+    // 3. Enforce daily limit
+    if (status.dailyUsed + amount > status.dailyLimit) {
+      const msg =
+        status.tier === 'TIER_0'
+          ? `Transaction of ₦${amount.toLocaleString()} exceeds your daily limit of ₦${status.dailyLimit.toLocaleString()} (Remaining: ₦${status.dailyRemaining.toLocaleString()}). Complete KYC identity verification to increase your limit to ₦500,000/day.`
+          : `Transaction of ₦${amount.toLocaleString()} exceeds your daily limit of ₦${status.dailyLimit.toLocaleString()} (Remaining: ₦${status.dailyRemaining.toLocaleString()}).`;
+      throw new ForbiddenException(msg);
+    }
+
+    // 4. Enforce monthly limit
+    if (status.monthlyUsed + amount > status.monthlyLimit) {
+      const msg =
+        status.tier === 'TIER_0'
+          ? `Transaction of ₦${amount.toLocaleString()} exceeds your monthly limit of ₦${status.monthlyLimit.toLocaleString()} (Remaining: ₦${status.monthlyRemaining.toLocaleString()}). Complete KYC identity verification to increase your limit to ₦5,000,000/month.`
+          : `Transaction of ₦${amount.toLocaleString()} exceeds your monthly limit of ₦${status.monthlyLimit.toLocaleString()} (Remaining: ₦${status.monthlyRemaining.toLocaleString()}).`;
+      throw new ForbiddenException(msg);
+    }
+
+    return status;
+  }
   async creditWallet(userId: number, amount: number, title: string, description: string, accountType?: string, currency: string = 'NGN') {
     console.log('[Wallet][creditWallet][START]', {
       userId,
@@ -368,6 +501,9 @@ async getUserWalletTransactions(filters: WalletTransactionFilterDto) {
     if (accountType === 'Personal' && user.subscriptionPlan === 'FREE') {
       throw new Error('Free tier users cannot deposit into Personal Account. Please upgrade to Pro or Pro Max.');
     }
+
+    // ✅ Enforce KYC-based deposit limits (SCRUM-350)
+    await this.validateTransactionLimits(userId, amount, 'DEPOSIT');
 
     // Determine which balance to increment
     const balanceField = accountType === 'Gold' ? 'goldBalance' : 'personalBalance';

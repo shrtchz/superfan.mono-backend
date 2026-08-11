@@ -143,6 +143,16 @@ export class UserController {
     return this.userService.updateKycDetails(req.user.id, dto);
   }
 
+  @Post('/kyc/initiate-didit')
+  async initiateDiditKyc(@Req() req: any) {
+    return this.userService.initiateDiditKyc(req.user.id);
+  }
+
+  @Post('/kyc/initiate-session')
+  async initiateDiditSession(@Req() req: any) {
+    return this.userService.initiateDiditKyc(req.user.id);
+  }
+
   @Get('kyc-status')
   async checkKycStatus(@Req() req: any) {
     const userId = req.user.id; // assuming auth middleware

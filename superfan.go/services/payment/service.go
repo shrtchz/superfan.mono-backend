@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"strings"
 	"time"
 
@@ -27,8 +28,91 @@ func NewPaymentService(db *gorm.DB, monnify *providers.MonnifyProvider, bitnob *
 	}
 }
 
+// ValidateTransactionLimits enforces minimum withdrawal and KYC tier transaction limits (SCRUM-350)
+func (s *PaymentService) ValidateTransactionLimits(ctx context.Context, userID int, amount float64, txType string) error {
+	if amount <= 0 {
+		return fmt.Errorf("transaction amount must be greater than zero")
+	}
+
+	// 1. Enforce minimum withdrawal of ₦9,999 on all withdrawal requests
+	if strings.EqualFold(txType, "WITHDRAWAL") && amount < 9999 {
+		return fmt.Errorf("minimum withdrawal amount is ₦9,999. Requested: ₦%.2f", amount)
+	}
+
+	// 2. Fetch user's KYC tier from User model
+	var user models.User
+	tier := "TIER_0"
+	if err := s.db.WithContext(ctx).Where("id = ?", userID).First(&user).Error; err == nil {
+		if user.KycTier != nil && *user.KycTier != "" {
+			tier = strings.ToUpper(*user.KycTier)
+		}
+	}
+
+	dailyLimit := 10000.0
+	monthlyLimit := 50000.0
+	if tier == "TIER_1" {
+		dailyLimit = 500000.0
+		monthlyLimit = 5000000.0
+	}
+
+	// 3. Compute rolling calendar day and month totals from WalletTransaction
+	now := time.Now()
+	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	startOfMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+
+	type TxRow struct {
+		Amount    float64
+		CreatedAt time.Time
+	}
+	var txRows []TxRow
+	err := s.db.WithContext(ctx).
+		Table("WalletTransaction").
+		Select("amount, \"createdAt\"").
+		Where("\"userId\" = ? AND \"createdAt\" >= ?", userID, startOfMonth).
+		Where("(status IS NULL OR UPPER(status) IN ('SUCCESS', 'PAID', 'COMPLETED'))").
+		Find(&txRows).Error
+
+	if err != nil {
+		log.Printf("[PaymentService] WARNING: Failed to query transactions for limit check: %v", err)
+	}
+
+	dailyUsed := 0.0
+	monthlyUsed := 0.0
+	for _, row := range txRows {
+		absAmt := math.Abs(row.Amount)
+		monthlyUsed += absAmt
+		if !row.CreatedAt.Before(startOfDay) {
+			dailyUsed += absAmt
+		}
+	}
+
+	// 4. Enforce daily limit
+	if dailyUsed+amount > dailyLimit {
+		if tier == "TIER_0" {
+			return fmt.Errorf("transaction of ₦%.2f exceeds your daily limit of ₦%.2f (Used today: ₦%.2f, Remaining: ₦%.2f). Complete KYC identity verification to increase your limit to ₦500,000/day", amount, dailyLimit, dailyUsed, math.Max(0, dailyLimit-dailyUsed))
+		}
+		return fmt.Errorf("transaction of ₦%.2f exceeds your daily limit of ₦%.2f (Used today: ₦%.2f, Remaining: ₦%.2f)", amount, dailyLimit, dailyUsed, math.Max(0, dailyLimit-dailyUsed))
+	}
+
+	// 5. Enforce monthly limit
+	if monthlyUsed+amount > monthlyLimit {
+		if tier == "TIER_0" {
+			return fmt.Errorf("transaction of ₦%.2f exceeds your monthly limit of ₦%.2f (Used this month: ₦%.2f, Remaining: ₦%.2f). Complete KYC identity verification to increase your limit to ₦5,000,000/month", amount, monthlyLimit, monthlyUsed, math.Max(0, monthlyLimit-monthlyUsed))
+		}
+		return fmt.Errorf("transaction of ₦%.2f exceeds your monthly limit of ₦%.2f (Used this month: ₦%.2f, Remaining: ₦%.2f)", amount, monthlyLimit, monthlyUsed, math.Max(0, monthlyLimit-monthlyUsed))
+	}
+
+	return nil
+}
+
 // InitiateDeposit starts the deposit process via provider.
 func (s *PaymentService) InitiateDeposit(ctx context.Context, req providers.DepositRequest) (*providers.DepositResponse, error) {
+	if req.UserID > 0 && req.Amount > 0 {
+		if err := s.ValidateTransactionLimits(ctx, req.UserID, req.Amount, "DEPOSIT"); err != nil {
+			return nil, err
+		}
+	}
+
 	var provider providers.PaymentProvider
 	switch req.Currency {
 	case "NGN":
@@ -95,6 +179,52 @@ func (s *PaymentService) GetWalletByUserID(ctx context.Context, userID int) (*mo
 		return nil, err
 	}
 	return &wallet, nil
+}
+
+// GetExchangeRates returns live conversion rates for currencies
+func (s *PaymentService) GetExchangeRates(ctx context.Context) (map[string]interface{}, error) {
+	var rates []models.ExchangeRate
+	_ = s.db.WithContext(ctx).Order(`"updatedAt" DESC`).Find(&rates).Error
+
+	usdtRate := 1500.0
+	usdcRate := 1500.0
+	cngnRate := 1.0
+
+	for _, r := range rates {
+		from := strings.ToUpper(strings.TrimSpace(r.FromCurrency))
+		to := strings.ToUpper(strings.TrimSpace(r.ToCurrency))
+		if (from == "USDT" && (to == "NGN" || to == "")) || (from == "USD" && to == "NGN") {
+			if r.Rate > 0 {
+				usdtRate = r.Rate
+			}
+		}
+		if (from == "USDC" && (to == "NGN" || to == "")) || (from == "USD" && to == "NGN") {
+			if r.Rate > 0 {
+				usdcRate = r.Rate
+			}
+		}
+		if from == "CNGN" && (to == "NGN" || to == "") {
+			if r.Rate > 0 {
+				cngnRate = r.Rate
+			}
+		}
+	}
+
+	return map[string]interface{}{
+		"base": "NGN",
+		"rates": map[string]float64{
+			"NGN":  1.0,
+			"cNGN": 1.0 / cngnRate,
+			"USDT": 1.0 / usdtRate,
+			"USDC": 1.0 / usdcRate,
+		},
+		"pricesInNgn": map[string]float64{
+			"NGN":  1.0,
+			"cNGN": cngnRate,
+			"USDT": usdtRate,
+			"USDC": usdcRate,
+		},
+	}, nil
 }
 
 // GetPaymentHistoryByUserID returns all wallet transactions for a user.
@@ -655,6 +785,13 @@ func (s *PaymentService) SimulateAddressDeposit(ctx context.Context, req provide
 // InitializeTransaction calls Monnify to register a transaction and returns the transactionReference.
 func (s *PaymentService) InitializeTransaction(ctx context.Context, payload map[string]interface{}) (map[string]interface{}, error) {
 	log.Printf("[PaymentService] InitializeTransaction - amount=%v, ref=%v", payload["amount"], payload["paymentReference"])
+	if uidFloat, ok := payload["userId"].(float64); ok && uidFloat > 0 {
+		if amtFloat, ok := payload["amount"].(float64); ok && amtFloat > 0 {
+			if err := s.ValidateTransactionLimits(ctx, int(uidFloat), amtFloat, "DEPOSIT"); err != nil {
+				return nil, err
+			}
+		}
+	}
 	result, err := s.monnifyProvider.InitializeTransaction(ctx, payload)
 	if err != nil {
 		log.Printf("[PaymentService] InitializeTransaction failed: %v", err)
@@ -670,6 +807,12 @@ func (s *PaymentService) InitializeTransaction(ctx context.Context, payload map[
 func (s *PaymentService) ChargeCardAndCreditWallet(ctx context.Context, userID int, amount float64, currency string, chargePayload map[string]interface{}) (map[string]interface{}, error) {
 	txRef, _ := chargePayload["transactionReference"].(string)
 	log.Printf("[PaymentService] ChargeCardAndCreditWallet - userID=%d amount=%.2f txRef=%s", userID, amount, txRef)
+
+	// Step 0: Enforce KYC Transaction Limits (SCRUM-350)
+	if err := s.ValidateTransactionLimits(ctx, userID, amount, "DEPOSIT"); err != nil {
+		log.Printf("[PaymentService] ChargeCardAndCreditWallet BLOCKED by KYC limits: %v", err)
+		return nil, err
+	}
 
 	// Step 1: Call Monnify charge-card API
 	log.Printf("[PaymentService] Step 1: Calling Monnify ChargeCard...")
@@ -988,6 +1131,11 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 	}
 	if amount <= 0 {
 		return nil, errors.New("amount must be greater than 0")
+	}
+
+	// Enforce Minimum Withdrawal (₦9,999) and KYC Transaction Limits (SCRUM-350)
+	if err := s.ValidateTransactionLimits(ctx, userID, amount, "WITHDRAWAL"); err != nil {
+		return nil, err
 	}
 
 	txRef, _ := payload["reference"].(string)

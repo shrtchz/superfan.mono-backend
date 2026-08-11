@@ -61,6 +61,12 @@ model User {
   busha_customer_id      String?
   busha_balance_id       String?
   bitnob_customer_id     String?
+  kyc_status             KycStatus           @default(UNVERIFIED)
+  kyc_tier               KycTier             @default(TIER_0)
+  didit_session_id       String?             @unique
+  didit_verification_id  String?
+  kyc_rejection_reason   String?
+  kyc_verified_at        DateTime?
   lifetimePoints         Int                 @default(0) @map("lifetime_points")
   dailyStreak            Int                 @default(0)
   lastStreakDate         DateTime? // last date a streak was counted
@@ -1034,3 +1040,16 @@ enum BankTransferStatus {
   CANCELLED
   SUCCESS
 }
+
+enum KycStatus {
+  UNVERIFIED
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+enum KycTier {
+  TIER_0
+  TIER_1
+}
+
