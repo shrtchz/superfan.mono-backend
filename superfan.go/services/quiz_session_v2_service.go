@@ -394,8 +394,8 @@ func loadSessionByID(sessionID string, userID int, allowCompleted bool) (*active
 		return nil, utils.NewAppError(http.StatusForbidden, "FORBIDDEN", "Quiz session does not belong to this user.")
 	}
 
-	if ongoing.IsCompleted {
-		return nil, utils.NewAppError(http.StatusNotFound, "SESSION_NOT_FOUND", "Quiz session not found.")
+	if !allowCompleted && ongoing.IsCompleted {
+		return nil, utils.NewAppError(http.StatusConflict, "SESSION_ALREADY_COMPLETED", "Quiz session has already been completed.")
 	}
 
 	return &activeSessionLookup{

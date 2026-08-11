@@ -22,6 +22,12 @@ type User struct {
 	TestLevel          *string    `gorm:"column:testLevel" json:"testLevel"`
 	DailyStreak        int        `gorm:"column:dailyStreak" json:"dailyStreak"`
 	LastStreakDate     *time.Time `gorm:"column:lastStreakDate" json:"lastStreakDate"`
+	KycStatus          *string    `gorm:"column:kyc_status;default:UNVERIFIED" json:"kyc_status"`
+	KycTier            *string    `gorm:"column:kyc_tier;default:TIER_0" json:"kyc_tier"`
+	DiditSessionID     *string    `gorm:"column:didit_session_id" json:"didit_session_id"`
+	DiditVerificationID *string   `gorm:"column:didit_verification_id" json:"didit_verification_id"`
+	KycRejectionReason *string    `gorm:"column:kyc_rejection_reason" json:"kyc_rejection_reason"`
+	KycVerifiedAt      *time.Time `gorm:"column:kyc_verified_at" json:"kyc_verified_at"`
 	CreatedAt          time.Time  `gorm:"column:createdAt" json:"createdAt"`
 }
 

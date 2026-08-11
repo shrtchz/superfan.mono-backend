@@ -111,6 +111,8 @@ type SessionV2Question struct {
 	Earning       int      `json:"earning"`
 	Images        []string `json:"images"`
 	Videos        []string `json:"videos"`
+	ImageLink     []string `json:"imageLink,omitempty"`
+	VideoLink     []string `json:"videoLink,omitempty"`
 	InputRequired bool     `json:"inputRequired"`
 }
 
