@@ -270,7 +270,7 @@ type WalletTransactionResponse struct {
 	Status          string     `json:"status"`
 	TotalEarnings   *float64   `json:"total_earnings"`
 	Payouts         *float64   `json:"payouts"`
-	LastPayout      *time.Time `json:"last_payout"`
+	LastPayout      *string    `json:"last_payout"`
 	PaymentDate     *time.Time `json:"payment_date"`
 	PendingBalance  *float64   `json:"pending_balance"`
 	RewardType      *string    `json:"rewardType"`
@@ -302,8 +302,11 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 	if filter.UserID > 0 {
 		db = db.Where("\"userId\" = ?", filter.UserID)
 	}
-	if filter.AccountType != "" {
+	if filter.AccountType != "" && !strings.EqualFold(filter.AccountType, "all") {
 		db = db.Where("\"account_type\" = ?", filter.AccountType)
+	} else if filter.AccountType == "" {
+		// Default to Personal Wallet deposits/withdrawals; exclude quiz rewards, gold credits, and referral bonuses
+		db = db.Where("(\"account_type\" IS NULL OR \"account_type\" = '' OR LOWER(\"account_type\") = 'personal') AND (\"rewardType\" IS NULL OR \"rewardType\" = '') AND (\"description\" IS NULL OR (LOWER(\"description\") NOT LIKE '%quiz%' AND LOWER(\"description\") NOT LIKE '%reward%' AND LOWER(\"description\") NOT LIKE '%referral%' AND LOWER(\"description\") NOT LIKE '%bonus%'))")
 	}
 	if filter.Type != "" {
 		db = db.Where("\"type\" ILIKE ?", filter.Type)
@@ -354,8 +357,9 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 	cryptoWalletMap := make(map[int]models.UserWithdrawalWallet)
 	cardMap := make(map[int]models.UserCard)
 	totalEarningsMap := make(map[int]float64)
-	lastPayoutMap := make(map[int]time.Time)
+	lastPayoutDescMap := make(map[int]string)
 	payoutCountMap := make(map[int]float64)
+	pendingPayoutsMap := make(map[int]float64)
 
 	if len(userIDs) > 0 {
 		// 1. Fetch Users
@@ -404,7 +408,8 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 			}
 		}
 
-		// 6. Compute total earnings per user (sum of positive CREDIT transactions + points)
+		// 6. Compute total earnings per user (strictly rewards & earnings: Ads, Quiz, Live Quiz, Referral)
+		// Exclude personal deposits, card funding, bank deposits, crypto deposits
 		type SumResult struct {
 			UserID int     `gorm:"column:userId"`
 			Total  float64 `gorm:"column:total"`
@@ -413,6 +418,8 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 		if err := s.db.WithContext(ctx).Model(&models.WalletTransaction{}).
 			Select("\"userId\", SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as total").
 			Where("\"userId\" IN ?", userIDs).
+			Where("(\"account_type\" ILIKE 'gold' OR (\"rewardType\" IS NOT NULL AND \"rewardType\" != '') OR \"description\" ILIKE '%quiz%' OR \"description\" ILIKE '%reward%' OR \"description\" ILIKE '%referral%' OR \"description\" ILIKE '%ad%' OR \"description\" ILIKE '%bonus%')").
+			Where("(\"description\" IS NULL OR (\"description\" NOT ILIKE '%deposit%' AND \"description\" NOT ILIKE '%card funding%' AND \"description\" NOT ILIKE '%bank transfer deposit%'))").
 			Group("\"userId\"").
 			Scan(&earningsList).Error; err == nil {
 			for _, res := range earningsList {
@@ -420,35 +427,131 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 			}
 		}
 
-		// 7. Fetch Payouts and latest payout date
-		var payouts []models.Payout
-		if err := s.db.WithContext(ctx).Where("\"userId\" IN ?", userIDs).Order("\"createdAt\" DESC").Find(&payouts).Error; err == nil {
-			for _, p := range payouts {
-				payoutCountMap[p.UserID]++
-				if _, exists := lastPayoutMap[p.UserID]; !exists {
-					if p.ProcessedAt != nil {
-						lastPayoutMap[p.UserID] = *p.ProcessedAt
-					} else {
-						lastPayoutMap[p.UserID] = p.CreatedAt
-					}
+		// Also check Reward table for user earnings if available
+		var rewardList []SumResult
+		if err := s.db.WithContext(ctx).Model(&models.Reward{}).
+			Select("\"userId\", SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as total").
+			Where("\"userId\" IN ?", userIDs).
+			Group("\"userId\"").
+			Scan(&rewardList).Error; err == nil {
+			for _, res := range rewardList {
+				if res.Total > 0 && totalEarningsMap[res.UserID] == 0 {
+					totalEarningsMap[res.UserID] = res.Total
 				}
 			}
 		}
 
-		// Also check DEBIT / WITHDRAWAL transactions for last payout date if not found in Payout table
-		type LatestDebitResult struct {
-			UserID   int       `gorm:"column:userId"`
-			LatestAt time.Time `gorm:"column:latestAt"`
+		// 7. Compute total pending payout amount per user
+		type PendingResult struct {
+			UserID int     `gorm:"column:userId"`
+			Total  float64 `gorm:"column:total"`
 		}
-		var debitList []LatestDebitResult
-		if err := s.db.WithContext(ctx).Model(&models.WalletTransaction{}).
-			Select("\"userId\", MAX(\"createdAt\") as \"latestAt\"").
-			Where("\"userId\" IN ? AND (\"type\" ILIKE 'DEBIT' OR \"type\" ILIKE 'WITHDRAWAL' OR \"description\" ILIKE '%withdraw%')", userIDs).
+		var pendingPayoutsList []PendingResult
+		if err := s.db.WithContext(ctx).Model(&models.Payout{}).
+			Select("\"userId\", SUM(amount) as total").
+			Where("\"userId\" IN ? AND (\"status\" ILIKE 'PENDING' OR \"status\" ILIKE 'PROCESSING')", userIDs).
 			Group("\"userId\"").
-			Scan(&debitList).Error; err == nil {
-			for _, res := range debitList {
-				if _, exists := lastPayoutMap[res.UserID]; !exists {
-					lastPayoutMap[res.UserID] = res.LatestAt
+			Scan(&pendingPayoutsList).Error; err == nil {
+			for _, res := range pendingPayoutsList {
+				pendingPayoutsMap[res.UserID] += res.Total
+			}
+		}
+
+		var pendingDebitList []PendingResult
+		if err := s.db.WithContext(ctx).Model(&models.WalletTransaction{}).
+			Select("\"userId\", SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as total").
+			Where("\"userId\" IN ? AND (\"type\" ILIKE 'DEBIT' OR \"type\" ILIKE 'WITHDRAWAL' OR \"description\" ILIKE '%withdraw%') AND (\"status\" ILIKE 'PENDING' OR \"status\" ILIKE 'PROCESSING')", userIDs).
+			Group("\"userId\"").
+			Scan(&pendingDebitList).Error; err == nil {
+			for _, res := range pendingDebitList {
+				if _, exists := pendingPayoutsMap[res.UserID]; !exists {
+					pendingPayoutsMap[res.UserID] = res.Total
+				}
+			}
+		}
+
+		// 8. Compute total number of earnings per user (Payouts count = number of earnings)
+		type CountResult struct {
+			UserID int     `gorm:"column:userId"`
+			Count  float64 `gorm:"column:count"`
+		}
+		var earningsCountList []CountResult
+		if err := s.db.WithContext(ctx).Model(&models.WalletTransaction{}).
+			Select("\"userId\", COUNT(*) as count").
+			Where("\"userId\" IN ?", userIDs).
+			Where("(\"account_type\" ILIKE 'gold' OR (\"rewardType\" IS NOT NULL AND \"rewardType\" != '') OR \"description\" ILIKE '%quiz%' OR \"description\" ILIKE '%reward%' OR \"description\" ILIKE '%referral%' OR \"description\" ILIKE '%ad%' OR \"description\" ILIKE '%bonus%')").
+			Where("(\"description\" IS NULL OR (\"description\" NOT ILIKE '%deposit%' AND \"description\" NOT ILIKE '%card funding%' AND \"description\" NOT ILIKE '%bank transfer deposit%'))").
+			Group("\"userId\"").
+			Scan(&earningsCountList).Error; err == nil {
+			for _, res := range earningsCountList {
+				payoutCountMap[res.UserID] += res.Count
+			}
+		}
+
+		var rewardCountList []CountResult
+		if err := s.db.WithContext(ctx).Model(&models.Reward{}).
+			Select("\"userId\", COUNT(*) as count").
+			Where("\"userId\" IN ?", userIDs).
+			Group("\"userId\"").
+			Scan(&rewardCountList).Error; err == nil {
+			for _, res := range rewardCountList {
+				if _, exists := payoutCountMap[res.UserID]; !exists || payoutCountMap[res.UserID] == 0 {
+					payoutCountMap[res.UserID] = res.Count
+				}
+			}
+		}
+
+		// 9. Compute description of the most recent earning per user (Last Payout description: Ads Earning, Live Quiz Reward, Referral Bonus, etc.)
+		var recentEarnings []models.WalletTransaction
+		if err := s.db.WithContext(ctx).Model(&models.WalletTransaction{}).
+			Where("\"userId\" IN ?", userIDs).
+			Where("(\"account_type\" ILIKE 'gold' OR (\"rewardType\" IS NOT NULL AND \"rewardType\" != '') OR \"description\" ILIKE '%quiz%' OR \"description\" ILIKE '%reward%' OR \"description\" ILIKE '%referral%' OR \"description\" ILIKE '%ad%' OR \"description\" ILIKE '%bonus%')").
+			Where("(\"description\" IS NULL OR (\"description\" NOT ILIKE '%deposit%' AND \"description\" NOT ILIKE '%card funding%' AND \"description\" NOT ILIKE '%bank transfer deposit%'))").
+			Order("\"createdAt\" DESC").
+			Find(&recentEarnings).Error; err == nil {
+			for _, tx := range recentEarnings {
+				if _, exists := lastPayoutDescMap[tx.UserID]; !exists {
+					desc := "Quiz Earning"
+					if tx.RewardType != nil && *tx.RewardType != "" {
+						desc = *tx.RewardType
+					} else if tx.Description != nil && *tx.Description != "" {
+						desc = *tx.Description
+					}
+					descLower := strings.ToLower(desc)
+					if strings.Contains(descLower, "live quiz") {
+						desc = "Live Quiz Reward"
+					} else if strings.Contains(descLower, "referral") {
+						desc = "Referral Bonus"
+					} else if strings.Contains(descLower, "ad") || strings.Contains(descLower, "ads") {
+						desc = "Ads Earning"
+					} else if strings.Contains(descLower, "quiz") {
+						desc = "Quiz Earning"
+					}
+					lastPayoutDescMap[tx.UserID] = desc
+				}
+			}
+		}
+
+		var recentRewards []models.Reward
+		if err := s.db.WithContext(ctx).Model(&models.Reward{}).
+			Where("\"userId\" IN ?", userIDs).
+			Order("\"createdAt\" DESC").
+			Find(&recentRewards).Error; err == nil {
+			for _, r := range recentRewards {
+				if _, exists := lastPayoutDescMap[r.UserID]; !exists {
+					desc := "Quiz Earning"
+					if r.Type != "" {
+						desc = r.Type
+					}
+					descLower := strings.ToLower(desc)
+					if strings.Contains(descLower, "live quiz") {
+						desc = "Live Quiz Reward"
+					} else if strings.Contains(descLower, "referral") {
+						desc = "Referral Bonus"
+					} else if strings.Contains(descLower, "ad") || strings.Contains(descLower, "ads") {
+						desc = "Ads Earning"
+					}
+					lastPayoutDescMap[r.UserID] = desc
 				}
 			}
 		}
@@ -694,45 +797,46 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 			walletAddress = &masked
 		}
 
-		// 8. Pending Balance
+		// 8. Pending Balance (Total pending payout amount)
 		var pendingBal *float64
-		if tx.PendingBalance != nil {
+		if val, ok := pendingPayoutsMap[tx.UserID]; ok {
+			pendingBal = &val
+		} else if tx.PendingBalance != nil {
 			pendingBal = tx.PendingBalance
 		} else {
 			zero := 0.0
 			pendingBal = &zero
 		}
 
-		// 9. Total Earnings
+		// 9. Total Earnings (Ads, Quiz, Live Quiz, Referral)
 		var totalEarnings *float64
-		if tx.TotalEarnings != nil {
-			totalEarnings = tx.TotalEarnings
-		} else if val, ok := totalEarningsMap[tx.UserID]; ok && val > 0 {
+		if val, ok := totalEarningsMap[tx.UserID]; ok && val > 0 {
 			totalEarnings = &val
-		} else if u.LifetimePoints > 0 {
-			ptsVal := float64(u.LifetimePoints * 10)
-			totalEarnings = &ptsVal
+		} else if tx.TotalEarnings != nil && *tx.TotalEarnings > 0 {
+			totalEarnings = tx.TotalEarnings
+		} else if hasWallet && w.GoldBalance > 0 {
+			gVal := w.GoldBalance
+			totalEarnings = &gVal
 		} else {
 			zero := 0.0
 			totalEarnings = &zero
 		}
 
-		// 10. Last Payout
-		var lastPayout *time.Time
-		if tx.LastPayout != nil {
-			lastPayout = tx.LastPayout
-		} else if lp, ok := lastPayoutMap[tx.UserID]; ok {
-			lastPayout = &lp
+		// 10. Last Payout (Description of the newest / most recent earning)
+		var lastPayout *string
+		if desc, ok := lastPayoutDescMap[tx.UserID]; ok && desc != "" {
+			lastPayout = &desc
 		} else {
-			lastPayout = &tx.CreatedAt
+			defaultDesc := "Quiz Earning"
+			lastPayout = &defaultDesc
 		}
 
-		// 11. Payouts count
+		// 11. Payouts (Number of earnings the user has)
 		var payoutsCount *float64
-		if tx.Payouts != nil {
-			payoutsCount = tx.Payouts
-		} else if count, ok := payoutCountMap[tx.UserID]; ok && count > 0 {
+		if count, ok := payoutCountMap[tx.UserID]; ok {
 			payoutsCount = &count
+		} else if tx.Payouts != nil {
+			payoutsCount = tx.Payouts
 		} else {
 			zero := 0.0
 			payoutsCount = &zero
