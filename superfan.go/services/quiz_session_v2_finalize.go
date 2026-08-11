@@ -68,10 +68,6 @@ func (s *QuizSessionV2Service) finalizeSession(
 		return nil, err
 	}
 
-	if lookup.expired {
-		return nil, utils.NewAppError(http.StatusGone, "SESSION_EXPIRED", "Quiz session has expired.")
-	}
-
 	responses := buildSubmitResponsesFromSession(lookup.record)
 	if len(responses) == 0 {
 		responses = buildAllStoredSubmitResponses(lookup.record)
