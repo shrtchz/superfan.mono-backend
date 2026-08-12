@@ -400,6 +400,9 @@ func buildLiveQuizResponseMap(raw bson.M, now time.Time) map[string]interface{} 
 // }
 
 func (u *QuizServiceImpl) CreateQuiz(quiz *models.Quiz) error {
+	if err := validateQuizMediaUrls(quiz.ImageLink); err != nil {
+		return err
+	}
 
 	// Basic validation
 	if quiz.TestQuiz == "" {
@@ -2139,6 +2142,10 @@ func (u *QuizServiceImpl) GetAllQuiz() ([]*models.Quiz, error) {
 }
 
 func (u *QuizServiceImpl) UpdateQuiz(quiz *models.Quiz) error {
+	if err := validateQuizMediaUrls(quiz.ImageLink); err != nil {
+		return err
+	}
+
 	filter := bson.D{bson.E{Key: "_id", Value: quiz.ID}}
 	setFields := bson.D{
 		{Key: "question", Value: quiz.Question},
