@@ -37,6 +37,7 @@ import { StreamingModule } from './stream/stream.module';
 import { ElasticsearchModule } from './elasticsearch/elasticsearch.module';
 import { LoggingMiddleware } from './common/middleware/logging.middleware';
 import { WaitlistModule } from './waitlist/waitlist.module';
+import { ShopModule } from './shop/shop.module';
 
 @Module({
   imports: [
@@ -84,6 +85,7 @@ import { WaitlistModule } from './waitlist/waitlist.module';
     WebhookModule,
     ResetModule,
     WaitlistModule,
+    ShopModule,
     BullModule.forRootAsync({
       imports: [ConfigModule],
       useFactory: (configService: ConfigService) => ({

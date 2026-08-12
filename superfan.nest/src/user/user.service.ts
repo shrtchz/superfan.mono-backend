@@ -1599,7 +1599,6 @@ async getCard(userId: number): Promise<any> {
   }
 
   async createSubscription(userId: number, dto: any): Promise<any> {
-    // 1️⃣ Ensure user exists
     const user = await prisma.user.findUnique({
       where: { id: userId },
     });
@@ -1608,55 +1607,125 @@ async getCard(userId: number): Promise<any> {
       throw new NotFoundException('User not found');
     }
 
-    // 2️⃣ Check if user already has a subscription
-    const existingSubscription = await prisma.subscription.findFirst({
-      where: { userId: user.id },
-    });
-
-    if (existingSubscription) {
-      throw new BadRequestException(
-        'User already has an existing subscription',
-      );
-    }
-
-    // 3️⃣ 🚫 Block superadmin & subadmin
     if (['superadmin', 'subadmin'].includes(user.roleName)) {
       throw new ForbiddenException(
         'Admins are not allowed to create subscriptions',
       );
     }
 
-    // 4️⃣ Call Monnify mandate
-    // const mandate = await this.monnifyService.createMandate(dto);
-    const mandate = { responseBody: { mandateReference: 'mocked', mandateCode: 'mocked', mandateStatus: 'ACTIVE' } };
+    const subscriptionPlan = dto.subscriptionPlan || 'PREMIUM_PRO';
+    const amount = Number(dto.mandateAmount || dto.debitAmount || dto.amount || 6000);
+    const isWalletPayment =
+      dto.paymentMethod === 'wallet' ||
+      dto.paymentMethod === 'WALLET' ||
+      !dto.paymentMethod;
+    const subWallet = (dto.subWallet || 'personal').toLowerCase();
 
-    if (!mandate || !mandate.responseBody) {
-      throw new InternalServerErrorException('Failed to create mandate');
+    if (isWalletPayment) {
+      let wallet = await prisma.wallet.findUnique({ where: { userId } });
+      if (!wallet) {
+        wallet = await prisma.wallet.create({
+          data: { userId, balance: 0, personalBalance: 0, goldBalance: 0 },
+        });
+      }
+
+      const isGold = subWallet === 'gold';
+      const availableBalance = isGold
+        ? Number(wallet.goldBalance) || 0
+        : Number(wallet.personalBalance) || 0;
+
+      if (availableBalance < amount) {
+        throw new BadRequestException(
+          `Insufficient ${isGold ? 'Gold' : 'Personal'} wallet balance. Required: ₦${amount.toFixed(2)}, Available: ₦${availableBalance.toFixed(2)}`,
+        );
+      }
+
+      // Deduct from wallet
+      if (isGold) {
+        await prisma.wallet.update({
+          where: { userId },
+          data: {
+            goldBalance: { decrement: amount },
+            balance: { decrement: amount },
+          },
+        });
+      } else {
+        await prisma.wallet.update({
+          where: { userId },
+          data: {
+            personalBalance: { decrement: amount },
+            balance: { decrement: amount },
+          },
+        });
+      }
+
+      // Record wallet transaction
+      await prisma.walletTransaction.create({
+        data: {
+          userId,
+          amount,
+          type: 'debit',
+          currency: 'NGN',
+          payment_method: 'subscription',
+          reference: `SUB-${Date.now()}`,
+          status: 'SUCCESS',
+          account_name: `Subscription (${subscriptionPlan})`,
+        },
+      });
     }
 
-    const mandateData = mandate.responseBody;
+    // Upsert subscription
+    const existingSubscription = await prisma.subscription.findFirst({
+      where: { userId: user.id },
+    });
 
-    // 5️⃣ Save subscription in DB
-    const subscription = await prisma.subscription.create({
-      data: {
-        userId: user.id,
-        mandateReference: mandateData.mandateReference,
-        mandateCode: mandateData.mandateCode,
-        subscriptionPlan: dto.subscriptionPlan,
-        status: mandateData.mandateStatus,
-        amount: dto.mandateAmount,
-        debitAmount: dto.debitAmount,
-        paymentReference: '',
-        paymentStatus: '',
-        startDate: new Date(dto.mandateStartDate),
-        endDate: new Date(dto.mandateEndDate),
-      },
+    let subscription;
+    const now = new Date();
+    const durationDays = subscriptionPlan === 'PREMIUM_PRO_MAX' ? 365 : 30;
+    const endDate = new Date(now.getTime() + durationDays * 24 * 60 * 60 * 1000);
+
+    if (existingSubscription) {
+      subscription = await prisma.subscription.update({
+        where: { id: existingSubscription.id },
+        data: {
+          subscriptionPlan,
+          status: 'ACTIVE',
+          amount,
+          debitAmount: amount,
+          paymentMethod: isWalletPayment ? 'WALLET' : 'CARD',
+          startDate: now,
+          endDate,
+        },
+      });
+    } else {
+      subscription = await prisma.subscription.create({
+        data: {
+          userId: user.id,
+          mandateReference: `SUB-REF-${Date.now()}`,
+          mandateCode: `SUB-CODE-${Date.now()}`,
+          subscriptionPlan,
+          status: 'ACTIVE',
+          amount,
+          debitAmount: amount,
+          paymentMethod: isWalletPayment ? 'WALLET' : 'CARD',
+          paymentReference: `SUB-${Date.now()}`,
+          paymentStatus: 'PAID',
+          startDate: now,
+          endDate,
+        },
+      });
+    }
+
+    // Update user subscription plan
+    await prisma.user.update({
+      where: { id: userId },
+      data: { subscriptionPlan },
     });
 
     return {
       message: 'Subscription created successfully',
       data: subscription,
-      mandate: mandateData,
+      user: { ...user, subscriptionPlan },
     };
   }
 
