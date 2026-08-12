@@ -87,6 +87,8 @@ model User {
   bankTransfers          BankTransfer[]
   userCards              UserCard[]
   ongoingQuizs           OngoingQuiz[]
+  orders                 Order[]             @relation("UserToOrders")
+  returns                OrderReturn[]       @relation("UserToReturns")
 }
 
 model Reward {
@@ -1051,5 +1053,101 @@ enum KycStatus {
 enum KycTier {
   TIER_0
   TIER_1
+}
+
+model Product {
+  id          Int         @id @default(autoincrement())
+  title       String
+  price       String
+  priceAmount Float       @default(0)
+  images      String[]
+  colors      String[]
+  sizes       String[]
+  badge       String?
+  description String?
+  stock       Int         @default(100)
+  isActive    Boolean     @default(true)
+  orderItems  OrderItem[]
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+}
+
+enum OrderStatus {
+  ORDERED
+  PROCESSING
+  SHIPPED
+  OUT_FOR_DELIVERY
+  DELIVERED
+  CANCELLED
+}
+
+enum ReturnStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  COMPLETED
+}
+
+model Order {
+  id            Int           @id @default(autoincrement())
+  orderNumber   String        @unique
+  userId        Int
+  user          User          @relation("UserToOrders", fields: [userId], references: [id], onDelete: Cascade)
+  status        OrderStatus   @default(ORDERED)
+  totalAmount   Float
+  currency      String        @default("NGN")
+  shippingFee   Float         @default(0)
+  vatAmount     Float         @default(0)
+  paymentMethod String        // e.g. "wallet", "card", "bank", "stablecoin"
+  subWallet     String?       // e.g. "Personal", "Gold"
+  paymentStatus String        @default("PAID")
+  fullName      String
+  country       String
+  address       String
+  phoneCode     String
+  phoneNumber   String
+  items         OrderItem[]
+  returns       OrderReturn[]
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@index([userId])
+}
+
+model OrderItem {
+  id           Int      @id @default(autoincrement())
+  orderId      Int
+  order        Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId    Int?
+  product      Product? @relation(fields: [productId], references: [id])
+  productName  String
+  productImage String?
+  price        Float
+  quantity     Int      @default(1)
+  color        String?
+  size         String?
+  createdAt    DateTime @default(now())
+
+  @@index([orderId])
+}
+
+model OrderReturn {
+  id           Int          @id @default(autoincrement())
+  orderId      Int
+  order        Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  userId       Int
+  user         User         @relation("UserToReturns", fields: [userId], references: [id], onDelete: Cascade)
+  productId    Int?
+  productName  String
+  productImage String?
+  price        Float
+  reason       String
+  refundMethod String       @default("mastercard")
+  status       ReturnStatus @default(PENDING)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  @@index([orderId])
+  @@index([userId])
 }
 
