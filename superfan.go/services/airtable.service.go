@@ -15,7 +15,7 @@ import (
 )
 
 type AirtableRecord struct {
-	ID     string `json:"id"`
+	ID     string                 `json:"id"`
 	Fields map[string]interface{} `json:"fields"`
 }
 
@@ -164,10 +164,18 @@ func SyncFromAirtable(qs QuizService) {
 			imageLinks := extractImageLinksFromFields(fields, imageFieldCandidates)
 
 			var options []string
-			if optionA != "" { options = append(options, optionA) }
-			if optionB != "" { options = append(options, optionB) }
-			if optionC != "" { options = append(options, optionC) }
-			if optionD != "" { options = append(options, optionD) }
+			if optionA != "" {
+				options = append(options, optionA)
+			}
+			if optionB != "" {
+				options = append(options, optionB)
+			}
+			if optionC != "" {
+				options = append(options, optionC)
+			}
+			if optionD != "" {
+				options = append(options, optionD)
+			}
 			log.Printf(
 				"[Airtable Sync] record=%s question=%q level=%s subject=%s options=%d images=%d",
 				record.ID,
@@ -301,10 +309,18 @@ func PushToAirtable(quiz *models.Quiz) {
 		"Educational Product/Purpose": quiz.TestQuiz,
 	}
 
-	if len(quiz.Options) > 0 { fields["Option A"] = quiz.Options[0] }
-	if len(quiz.Options) > 1 { fields["Option B"] = quiz.Options[1] }
-	if len(quiz.Options) > 2 { fields["Option C"] = quiz.Options[2] }
-	if len(quiz.Options) > 3 { fields["Option D"] = quiz.Options[3] }
+	if len(quiz.Options) > 0 {
+		fields["Option A"] = quiz.Options[0]
+	}
+	if len(quiz.Options) > 1 {
+		fields["Option B"] = quiz.Options[1]
+	}
+	if len(quiz.Options) > 2 {
+		fields["Option C"] = quiz.Options[2]
+	}
+	if len(quiz.Options) > 3 {
+		fields["Option D"] = quiz.Options[3]
+	}
 
 	imageFieldName := strings.TrimSpace(os.Getenv("AIRTABLE_IMAGE_FIELD"))
 	if imageFieldName == "" {
@@ -411,15 +427,6 @@ func appendImageCandidates(value interface{}, seen map[string]bool, links *[]str
 	case map[string]interface{}:
 		if rawURL, ok := typed["url"]; ok {
 			addImageCandidate(asString(rawURL), seen, links)
-		}
-		if thumbnailsRaw, ok := typed["thumbnails"].(map[string]interface{}); ok {
-			for _, sizeKey := range []string{"full", "large", "small"} {
-				if sizeRaw, exists := thumbnailsRaw[sizeKey].(map[string]interface{}); exists {
-					if thumbURL, exists := sizeRaw["url"]; exists {
-						addImageCandidate(asString(thumbURL), seen, links)
-					}
-				}
-			}
 		}
 	default:
 		addImageCandidate(asString(value), seen, links)
