@@ -318,7 +318,7 @@ export class WalletService {
     });
 
     // Credit the wallet - quiz rewards go to Gold Account
-    await this.creditWallet(userId, amount, `₦${amount} has  been added to your wallet`, `You earned ${amount} from Quiz`, 'Gold', 'NGN');
+    await this.creditWallet(userId, amount, 'Credit Wallet - Quiz Earning', 'Credit Wallet - Quiz Earning', 'Gold', 'NGN');
 
     await this.prisma.point.create({
       data: {
@@ -337,7 +337,7 @@ export class WalletService {
     // Send notification
     await this.notificationService.createNotification(
       userId,
-      `₦${amount} has  been added to your wallet`,
+      'Credit Wallet - Quiz Earning',
       `You earned ₦${amount} from ${subject} Quiz`,
       'quiz_reward'
     );

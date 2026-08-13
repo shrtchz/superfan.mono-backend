@@ -428,19 +428,32 @@ func creditQuizReward(tx *gorm.DB, userID int, amountInNaira float64, subject st
 		walletAmount = 1
 	}
 
+	// 1. Credit the Gold Wallet (test quiz earnings always go to Gold Account).
+	//    Both the overall "balance" and the "goldBalance" are incremented so the
+	//    earnings are visible in the Gold Wallet.
 	if err := tx.Model(&models.Wallet{}).
 		Where(`"userId" = ?`, userID).
-		UpdateColumn("balance", gorm.Expr(`"balance" + ?`, amountInNaira)).Error; err != nil {
+		Updates(map[string]interface{}{
+			"balance":     gorm.Expr(`"balance" + ?`, amountInNaira),
+			"goldBalance": gorm.Expr(`"goldBalance" + ?`, amountInNaira),
+		}).Error; err != nil {
 		return err
 	}
 
+	// 2. Create WalletTransaction tagged to the Gold Account with the standard
+	//    "Credit Wallet - Quiz Earning" label.
 	trxType := "credit"
-	description := fmt.Sprintf("You earned %v from %s Quiz", amountInNaira, subject)
-	trxRef := fmt.Sprintf("%d", now.UnixNano())
+	goldType := "Gold"
+	status := "SUCCESS"
+	description := "Credit Wallet - Quiz Earning"
+	trxRef := fmt.Sprintf("QUIZ_%d", now.UnixNano())
 	if err := tx.Create(&models.WalletTransaction{
 		UserID:      userID,
 		Amount:      amountInNaira,
 		Type:        &trxType,
+		Currency:    "NGN",
+		AccountType: &goldType,
+		Status:      &status,
 		Description: &description,
 		TrxRef:      &trxRef,
 		CreatedAt:   now,
@@ -448,6 +461,7 @@ func creditQuizReward(tx *gorm.DB, userID int, amountInNaira float64, subject st
 		return err
 	}
 
+	// 3. Create Reward record
 	if err := tx.Create(&models.Reward{
 		ID:        uuid.NewString(),
 		UserID:    userID,
@@ -460,6 +474,21 @@ func creditQuizReward(tx *gorm.DB, userID int, amountInNaira float64, subject st
 		return err
 	}
 
+	// 4. Create ActivityWallet record so the credit appears in the activity table.
+	if err := tx.Create(&models.ActivityWallet{
+		UserID:      userID,
+		Type:        "credit",
+		Title:       "Credit Wallet - Quiz Earning",
+		Description: "Credit Wallet - Quiz Earning",
+		Amount:      amountInNaira,
+		Currency:    "NGN",
+		Status:      "SUCCESS",
+		CreatedAt:   now,
+	}).Error; err != nil {
+		return err
+	}
+
+	// 5. Record the points earned
 	pointRef := fmt.Sprintf("POINTS_%d", now.UnixNano())
 	if err := tx.Create(&models.Point{
 		ID:        uuid.NewString(),
@@ -472,13 +501,13 @@ func creditQuizReward(tx *gorm.DB, userID int, amountInNaira float64, subject st
 		return err
 	}
 
-	// Send notification for wallet credit from quiz
+	// 6. Send notification for the quiz wallet credit
 	if nestBaseURL := utils.GetEnvWithKey("NEST_BASE_URL"); nestBaseURL != "" {
 		payload := map[string]interface{}{
 			"userId":  userID,
-			"title":   fmt.Sprintf("Wallet Credit - Manual"),
-			"message": fmt.Sprintf("Your wallet has been credited with ₦%.0f from %s Quiz", amountInNaira, subject),
-			"type":    "wallet_credit_manual",
+			"title":   "Credit Wallet - Quiz Earning",
+			"message": fmt.Sprintf("Your Gold Wallet has been credited with ₦%.0f from %s Quiz", amountInNaira, subject),
+			"type":    "quiz_reward",
 		}
 		body, _ := json.Marshal(payload)
 		go func() {
