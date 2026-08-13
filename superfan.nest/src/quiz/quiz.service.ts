@@ -911,8 +911,38 @@ async fetchOngoingLiveQuiz(userId: number) {
     },
   });
 
-  return ongoingQuiz;
+  if (!ongoingQuiz) return ongoingQuiz;
+
+  // Airtable signed URLs expire after ~2 hours.
+  // Re-fetch a fresh imageLink from the Go service for each question that has an Airtable URL.
+  const questions: any[] = (ongoingQuiz.questions as any[]) || [];
+  const refreshedQuestions = await Promise.all(
+    questions.map(async (q) => {
+      const isAirtableUrl =
+        typeof q.imageLink === 'string' &&
+        q.imageLink.includes('airtableusercontent.com');
+
+      if (!isAirtableUrl || !q.quizId) return q;
+
+      try {
+        const response = await firstValueFrom(
+          this.httpService.get(`${this.liveQuizGoBaseUrl}/live/${q.quizId}`),
+        );
+        const freshImageLink =
+          response?.data?.imageLink ??
+          response?.data?.data?.imageLink ??
+          q.imageLink;
+        return { ...q, imageLink: freshImageLink };
+      } catch {
+        // If refresh fails, return the original (may be expired but gracefully degrade)
+        return q;
+      }
+    }),
+  );
+
+  return { ...ongoingQuiz, questions: refreshedQuestions };
 }
+
 
 async getCompletedLiveQuizWithStreamId(streamId: number) {
     const ongoingQuiz = await prisma.ongoingLiveQuiz.findMany({
@@ -1879,7 +1909,8 @@ async getOngoingQuiz (userId: number) {
     },
   });
 
-  return ongoingQuiz;
+  if (!ongoingQuiz) return ongoingQuiz;
+  return this.refreshQuizImageLinks(ongoingQuiz);
 
 }
 
@@ -1927,7 +1958,7 @@ async fetchOngoingQuiz(userId: number) {
       };
     }
 
-    return ongoingQuiz;
+    return this.refreshQuizImageLinks(ongoingQuiz);
   }
           const now = new Date(
     new Date().toLocaleString("en-US", {
@@ -1948,7 +1979,35 @@ async fetchOngoingQuiz(userId: number) {
     };
   }
 
-  return ongoingQuiz;
+  return this.refreshQuizImageLinks(ongoingQuiz);
+}
+
+// Refreshes expired Airtable signed image URLs by re-fetching fresh ones from the Go service.
+private async refreshQuizImageLinks(ongoingQuiz: any): Promise<any> {
+  const questions: any[] = (ongoingQuiz.questions as any[]) || [];
+  const refreshedQuestions = await Promise.all(
+    questions.map(async (q) => {
+      const isAirtableUrl =
+        typeof q.imageLink === 'string' &&
+        q.imageLink.includes('airtableusercontent.com');
+
+      if (!isAirtableUrl || !q.quizId) return q;
+
+      try {
+        const response = await firstValueFrom(
+          this.httpService.get(`${this.baseUrl}/get/${q.quizId}`),
+        );
+        const freshImageLink =
+          response?.data?.imageLink ??
+          response?.data?.data?.imageLink ??
+          q.imageLink;
+        return { ...q, imageLink: freshImageLink };
+      } catch {
+        return q;
+      }
+    }),
+  );
+  return { ...ongoingQuiz, questions: refreshedQuestions };
 }
 
 
