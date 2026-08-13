@@ -39,5 +39,8 @@ pnpm prisma migrate deploy || {
 
 echo "Migrations completed successfully!"
 
+echo "Running database seed..."
+npx tsx prisma/seed/seed.ts || echo "Warning: Seed script failed or tsx is not available."
+
 # Execute the main command
 exec "$@"
