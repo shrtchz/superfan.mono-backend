@@ -394,20 +394,29 @@ if (!existingRole) {
       },
     });
 
-    await prisma.liveQuizLeaderboard.create({
-      data: {
+    const existingLeaderboard = await prisma.liveQuizLeaderboard.findFirst({
+      where: {
         userId: String(clientUser.id),
         quizId: "QUIZ_YORUBA_001",
-        question: "What is the capital of Lagos State?",
-        answer: "Ikeja",
-        rewardType: "LIVE_QUIZ",
-        isWinner: true,
-        participants: 10,
-        unitPrize: 500,
-        rewardStatus: "paid",
-        quizDate: new Date(),
       },
     });
+
+    if (!existingLeaderboard) {
+      await prisma.liveQuizLeaderboard.create({
+        data: {
+          userId: String(clientUser.id),
+          quizId: "QUIZ_YORUBA_001",
+          question: "What is the capital of Lagos State?",
+          answer: "Ikeja",
+          rewardType: "LIVE_QUIZ",
+          isWinner: true,
+          participants: 10,
+          unitPrize: 500,
+          rewardStatus: "paid",
+          quizDate: new Date(),
+        },
+      });
+    }
     console.log("✅ Seeded Live Quiz Attempt & Leaderboard");
   }
 
