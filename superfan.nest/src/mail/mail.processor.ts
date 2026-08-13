@@ -7,7 +7,6 @@ import * as path from 'path';
 
 @Processor('mail', {
     stalledInterval: 0, // Disables stalled checks which heavily consume Redis commands
-    metricsTimeWindow: 0, 
 })
 @Injectable()
 export class Mailprocessor extends WorkerHost {
