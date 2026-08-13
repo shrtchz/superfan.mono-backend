@@ -5,7 +5,10 @@ import { Job } from "bullmq";
 import * as fs from 'fs';
 import * as path from 'path';
 
-@Processor('mail')
+@Processor('mail', {
+    stalledInterval: 0, // Disables stalled checks which heavily consume Redis commands
+    metricsTimeWindow: 0, 
+})
 @Injectable()
 export class Mailprocessor extends WorkerHost {
     private readonly logger = new Logger(Mailprocessor.name);
