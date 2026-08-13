@@ -162,6 +162,7 @@ func SyncFromAirtable(qs QuizService) {
 			levelRaw := strings.ToLower(strings.TrimSpace(firstStringField(fields, "Difficulty Level", "difficulty", "Difficulty")))
 			testQuiz := strings.TrimSpace(firstStringField(fields, "Educational Product/Purpose", "educationalProduct", "testQuiz"))
 			imageLinks := extractImageLinksFromFields(fields, imageFieldCandidates)
+			imageLinks = MirrorImagesToCloudinary(imageLinks) // upload images to Cloudinary CDN so permanent URLs are stored in MongoDB
 
 			var options []string
 			if optionA != "" {
