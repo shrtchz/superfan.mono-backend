@@ -6,7 +6,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 @Processor('mail', {
-    stalledInterval: 0, // Disables stalled checks which heavily consume Redis commands
+    stalledInterval: 300000, // 5 minutes (reduces Redis polling to save Upstash quota without crashing)
 })
 @Injectable()
 export class Mailprocessor extends WorkerHost {
