@@ -49,4 +49,4 @@ COPY --from=build /app/src/mail/templates ./dist/src/mail/templates
 
 # Use entrypoint script to run migrations before starting the app
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
-CMD ["npm", "run", "start:prod"]
+CMD ["node", "dist/src/main.js"]

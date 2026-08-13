@@ -31,10 +31,10 @@ for i in $(seq 1 60); do
 done
 
 echo "Running Prisma migrations..."
-pnpm prisma migrate deploy || {
+npx prisma migrate deploy || {
   echo "Migration failed, attempting to resolve rolled-back migrations..."
-  pnpm prisma migrate resolve --rolled-back 20260305104620_initial_username 2>/dev/null || true
-  pnpm prisma migrate deploy
+  npx prisma migrate resolve --rolled-back 20260305104620_initial_username 2>/dev/null || true
+  npx prisma migrate deploy
 }
 
 echo "Migrations completed successfully!"
