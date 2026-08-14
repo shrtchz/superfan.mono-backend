@@ -106,6 +106,10 @@ func (qc *QuizController) CreateQuiz(ctx *gin.Context) {
 		return
 	}
 
+	if strings.TrimSpace(quiz.Answer) == "" && strings.TrimSpace(quiz.TypedAnswer) != "" {
+		quiz.Answer = strings.TrimSpace(quiz.TypedAnswer)
+	}
+
 	// 1. Mirror any images or videos to Cloudinary CDN
 	if len(quiz.ImageLink) > 0 {
 		quiz.ImageLink = services.MirrorImagesToCloudinary(quiz.ImageLink)
@@ -120,7 +124,7 @@ func (qc *QuizController) CreateQuiz(ctx *gin.Context) {
 	// 2. Trigger the 2-way sync to push the new question + Cloudinary media to Airtable in background
 	go services.PushToAirtable(&quiz, qc.QuizService)
 
-	utils.Success(ctx, http.StatusOK, "success", nil)
+	utils.Success(ctx, http.StatusOK, "success", quiz)
 }
 
 // Airtable Webhook Endpoint
@@ -588,6 +592,11 @@ func (qc *QuizController) UpdateQuiz(ctx *gin.Context) {
 		return
 	}
 	quiz.ID = objID
+	quiz.IDHex = id
+
+	if strings.TrimSpace(quiz.Answer) == "" && strings.TrimSpace(quiz.TypedAnswer) != "" {
+		quiz.Answer = strings.TrimSpace(quiz.TypedAnswer)
+	}
 
 	// Mirror any new images or videos to Cloudinary CDN
 	if len(quiz.ImageLink) > 0 {
@@ -602,7 +611,7 @@ func (qc *QuizController) UpdateQuiz(ctx *gin.Context) {
 	// Push update to Airtable in background
 	go services.PushToAirtable(&quiz, qc.QuizService)
 
-	utils.Success(ctx, http.StatusOK, "success", nil)
+	utils.Success(ctx, http.StatusOK, "success", quiz)
 }
 
 // CREATE LIVE QUIZ
