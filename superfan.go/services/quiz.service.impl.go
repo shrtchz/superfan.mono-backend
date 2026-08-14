@@ -430,20 +430,25 @@ func (u *QuizServiceImpl) CreateQuiz(quiz *models.Quiz) error {
 	}
 
 	// Normalize strings (optional but recommended)
-	quiz.TestQuiz = strings.ToLower(quiz.TestQuiz)
-	quiz.TestLevel = strings.ToLower(quiz.TestLevel)
-	quiz.Subject = strings.ToLower(quiz.Subject)
+	quiz.TestQuiz = strings.ToLower(strings.TrimSpace(quiz.TestQuiz))
+	quiz.TestLevel = strings.ToLower(strings.TrimSpace(quiz.TestLevel))
+	quiz.Subject = strings.ToLower(strings.TrimSpace(quiz.Subject))
 
 	// Assign earning based on testLevel (string-based)
 	switch quiz.TestLevel {
-	case "basic":
+	case "basic", "easy":
 		quiz.Earning = "400"
-	case "intermediate":
+		quiz.TestLevel = "basic"
+	case "intermediate", "medium":
 		quiz.Earning = "600"
-	case "advanced":
+		quiz.TestLevel = "intermediate"
+	case "advanced", "hard":
 		quiz.Earning = "800"
+		quiz.TestLevel = "advanced"
 	default:
-		return errors.New("invalid testLevel value")
+		if strings.TrimSpace(quiz.Earning) == "" {
+			quiz.Earning = "600"
+		}
 	}
 
 	// Generate ID
