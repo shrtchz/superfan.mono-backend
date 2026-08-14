@@ -6,11 +6,12 @@ import { TaskModule } from '../tasks/tasks.module';
 import { QuizController } from './quiz.controller';
 import { QuizService } from './quiz.service';
 import { QuestionAddedListener } from './listeners/question-added.listener';
+import { ExchangeRateService } from '../common/services/exchange-rate.service';
 
 @Module({
   imports: [HttpModule, forwardRef(() => UserModule), WalletModule, forwardRef(() => TaskModule)],
   controllers: [QuizController],
-  providers: [QuizService, QuestionAddedListener],
+  providers: [QuizService, QuestionAddedListener, ExchangeRateService],
   exports: [QuizService],
 })
 export class QuizModule {}

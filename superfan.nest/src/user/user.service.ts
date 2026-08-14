@@ -32,9 +32,12 @@ import {
   UpdateOnboardingDto,
   UpdateUserDto,
   VerifyEmailDto,
+  VerifyBvnDto,
+  VerifyNinDto,
+  VerifyIdDocumentDto,
 } from './dto/auth.dto';
 import { PresenceGateway } from './gateway/presence.gateway';
-import { DiditService } from './didit.service';
+import { DiditService, FileUploadInput } from './didit.service';
 
 type SyncUserMetadata = {
   referralCode?: string;
@@ -1288,8 +1291,15 @@ async getCard(userId: number): Promise<any> {
           ...(dto.state && { state: dto.state }),
           ...(dto.verify_photo && { verify_photo: dto.verify_photo }),
           ...(dto.postal_code && { postal_code: dto.postal_code }),
+          kyc_status: 'VERIFIED',
+          kyc_tier: 'TIER_1',
+          kyc_verified_at: new Date(),
+          kyc_rejection_reason: null,
         },
       });
+
+      this.eventEmitter.emit('user.kyc.verified', { userId, tier: 'TIER_1' });
+      this.eventEmitter.emit('user.wallet.updated', { userId });
 
       return {
         message: 'KYC details updated successfully',
@@ -1302,34 +1312,153 @@ async getCard(userId: number): Promise<any> {
   }
 
   /**
-   * Initiates a Didit identity verification session for a user
+   * Validates BVN via Didit Standalone v3 Database Validation
    */
-  async initiateDiditKyc(userId: number) {
+  async verifyBvnWithDidit(userId: number, dto: VerifyBvnDto) {
     const user = await prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, email: true, kyc_status: true },
+      select: { id: true, firstName: true, lastName: true },
     });
 
     if (!user) {
       throw new NotFoundException('User not found');
     }
 
-    const session = await this.diditService.createSession(userId, user.email);
+    const firstName = dto.firstName || user.firstName || '';
+    const lastName = dto.lastName || user.lastName || '';
 
-    await prisma.user.update({
-      where: { id: userId },
-      data: {
-        didit_session_id: session.sessionId,
-        kyc_status: 'PENDING',
-        kyc_rejection_reason: null,
-      },
-    });
+    const result = await this.diditService.validateBvn(
+      userId,
+      firstName,
+      lastName,
+      dto.bvn,
+    );
 
-    this.eventEmitter.emit('user.kyc.pending', { userId, sessionId: session.sessionId });
+    const isMatch =
+      result.status === 'Approved' ||
+      result.match_type === 'full_match' ||
+      result.validations?.some((v) => v.outcome_code === 'MATCH');
+
+    if (isMatch) {
+      await prisma.user.update({
+        where: { id: userId },
+        data: { bvn: dto.bvn.trim() },
+      });
+    }
 
     return {
-      message: 'Didit verification session initialized successfully',
-      data: session,
+      requestSuccessful: isMatch,
+      responseMessage: isMatch ? 'BVN verified successfully' : 'BVN information mismatch',
+      responseBody: {
+        bvnInformationMatch: isMatch,
+        ...result,
+      },
+      ...result,
+    };
+  }
+
+  /**
+   * Validates NIN via Didit Standalone v3 Database Validation
+   */
+  async verifyNinWithDidit(userId: number, dto: VerifyNinDto) {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, firstName: true, lastName: true },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const firstName = dto.firstName || user.firstName || '';
+    const lastName = dto.lastName || user.lastName || '';
+
+    const result = await this.diditService.validateNin(
+      userId,
+      firstName,
+      lastName,
+      dto.nin,
+    );
+
+    const isMatch =
+      result.status === 'Approved' ||
+      result.match_type === 'full_match' ||
+      result.validations?.some((v) => v.outcome_code === 'MATCH');
+
+    if (isMatch) {
+      await prisma.user.update({
+        where: { id: userId },
+        data: { nin: dto.nin.trim() },
+      });
+    }
+
+    return {
+      requestSuccessful: isMatch,
+      responseMessage: isMatch ? 'NIN verified successfully' : 'NIN information mismatch',
+      responseBody: {
+        ninInformationMatch: isMatch,
+        ...result,
+      },
+      ...result,
+    };
+  }
+
+  /**
+   * Verifies ID Document via Didit Standalone v3 ID Verification
+   */
+  async verifyIdWithDidit(
+    userId: number,
+    frontImage: FileUploadInput,
+    backImage?: FileUploadInput,
+  ) {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const result = await this.diditService.verifyIdDocument(userId, frontImage, backImage);
+
+    const isApproved =
+      result.id_verification?.status === 'Approved' ||
+      result.id_verification?.status === 'verified';
+
+    if (isApproved) {
+      const doc = result.id_verification;
+      await prisma.user.update({
+        where: { id: userId },
+        data: {
+          kyc_status: 'VERIFIED',
+          kyc_tier: 'TIER_1',
+          didit_verification_id: result.request_id,
+          kyc_verified_at: new Date(),
+          kyc_rejection_reason: null,
+          ...(doc.date_of_birth && { dob: new Date(doc.date_of_birth) }),
+          ...(doc.first_name && !user.firstName && { firstName: doc.first_name }),
+          ...(doc.last_name && !user.lastName && { lastName: doc.last_name }),
+        },
+      });
+
+      this.eventEmitter.emit('user.kyc.verified', { userId, tier: 'TIER_1' });
+      this.eventEmitter.emit('user.wallet.updated', { userId });
+    }
+
+    return {
+      requestSuccessful: isApproved,
+      message: isApproved ? 'ID document verified successfully' : 'ID document verification pending or declined',
+      data: result,
+    };
+  }
+
+  /**
+   * Fallback for initiating Didit session
+   */
+  async initiateDiditKyc(userId: number) {
+    return {
+      message: 'Didit standalone verification is active',
+      data: { userId },
     };
   }
 

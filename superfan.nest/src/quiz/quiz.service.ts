@@ -13,6 +13,7 @@ import { prisma } from '../prisma/prisma';
 import { UserService } from '../user/user.service';
 import { WalletService } from '../wallet/wallet.service';
 import { TaskService } from '../tasks/tasks.service';
+import { ExchangeRateService } from '../common/services/exchange-rate.service';
 
 import {
   CreateLiveQuizDto,
@@ -121,6 +122,7 @@ export class QuizService {
     private readonly eventEmitter: EventEmitter2,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
+    private readonly exchangeRateService: ExchangeRateService,
     @Inject(forwardRef(() => UserService))
     private readonly userService: UserService,
     @Inject(forwardRef(() => TaskService))
@@ -527,6 +529,10 @@ async submitQuiz(
   const totalPoints = baseScore + accuracyGain + speedGain + adBonusPoints + streakBonus;
   const pointsToNairaRate = parseInt(this.configService.get<string>('POINTS_TO_NAIRA_RATE'), 10);
   const amountInNaira = totalPoints / pointsToNairaRate;
+  
+  // Calculate currency equivalents using exchange rate service
+  const amountInUSDC = amountInNaira / await this.exchangeRateService.getNairaToUSDCRate();
+  const amountInUSDT = amountInNaira / await this.exchangeRateService.getNairaToUSDTRate();
 
   // 6. Save leaderboard rows (only earning > 0)
   const formattedQuizTime = formatSecondsToMMSS(quizTimeSeconds);
@@ -575,6 +581,9 @@ async submitQuiz(
     isCompleted: true,
     completedAt: now,
     totalEarning: amountInNaira,
+    totalEarninginNaira: amountInNaira,
+    totalEarninginUSDC: amountInUSDC,
+    totalEarninginUSDT: amountInUSDT,
     quizTime: formattedQuizTime,
     baseScore,
     accuracyBonus: accuracyGain,
@@ -1710,12 +1719,9 @@ async hasSubmittedLiveQuizForStream(
         const pointsToNairaRate = parseInt(this.configService.get<string>('POINTS_TO_NAIRA_RATE'), 10);
         const amountInNaira = totalEarning / pointsToNairaRate;
 
-        // Still fetch exchange rates for consistency
-        const convertToUSDC = { rate: 1600 }; // await this.paymentService.getExchangeRate('USDC');
-        const convertToUSDT = { rate: 1600 }; // await this.paymentService.getExchangeRate('USDT');
-
-        const amountInUSDC = amountInNaira / Number(convertToUSDC.rate);
-        const amountInUSDT = amountInNaira / Number(convertToUSDT.rate);
+        // Fetch exchange rates from real API
+        const amountInUSDC = amountInNaira / await this.exchangeRateService.getNairaToUSDCRate();
+        const amountInUSDT = amountInNaira / await this.exchangeRateService.getNairaToUSDTRate();
         const totalTime: number = pack.totalTime ?? totalQuestions * 2;
 
         return {
@@ -1758,11 +1764,9 @@ async hasSubmittedLiveQuizForStream(
     const pointsToNairaRate = parseInt(this.configService.get<string>('POINTS_TO_NAIRA_RATE'), 10);
     const amountInNaira = totalEarning / pointsToNairaRate;
 
-    const convertToUSDC = { rate: 1600 };
-    const convertToUSDT = { rate: 1600 };
-
-    const amountInUSDC = amountInNaira / Number(convertToUSDC.rate);
-    const amountInUSDT = amountInNaira / Number(convertToUSDT.rate);
+    // Fetch exchange rates from real API
+    const amountInUSDC = amountInNaira / await this.exchangeRateService.getNairaToUSDCRate();
+    const amountInUSDT = amountInNaira / await this.exchangeRateService.getNairaToUSDTRate();
     const totalTime: number = pack.totalTime ?? totalQuestions * 2;
 
     const now = new Date(
