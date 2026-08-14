@@ -250,6 +250,42 @@ export class KycDto {
   selfieBase64: string;
 }
 
+export class VerifyBvnDto {
+  @IsString()
+  bvn: string;
+
+  @IsOptional()
+  @IsString()
+  firstName?: string;
+
+  @IsOptional()
+  @IsString()
+  lastName?: string;
+}
+
+export class VerifyNinDto {
+  @IsString()
+  nin: string;
+
+  @IsOptional()
+  @IsString()
+  firstName?: string;
+
+  @IsOptional()
+  @IsString()
+  lastName?: string;
+}
+
+export class VerifyIdDocumentDto {
+  @IsOptional()
+  @IsString()
+  frontImageBase64?: string;
+
+  @IsOptional()
+  @IsString()
+  backImageBase64?: string;
+}
+
 export class SubAdminDto {
   @IsOptional()
   @IsString()

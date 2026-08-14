@@ -11,9 +11,11 @@ import {
   Post,
   Query,
   Req,
+  UploadedFiles,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
+import { FileFieldsInterceptor } from '@nestjs/platform-express';
 import { ApiPaginatedResponse, Public } from '../common/decorators';
 import { RealIp } from '../common/decorators/RealIp.decorator';
 import { PaginatedOutputDto } from '../common/dto/paginated-output.dto';
@@ -41,6 +43,9 @@ import {
   UserDto,
   VerifyEmailDto,
   SyncUserDto,
+  VerifyBvnDto,
+  VerifyNinDto,
+  VerifyIdDocumentDto,
 } from './dto/auth.dto';
 import { PresenceGateway } from './gateway/presence.gateway';
 import { UserService } from './user.service';
@@ -141,6 +146,41 @@ export class UserController {
   @Patch('/kyc')
   updateKyc(@Body() dto: KycDto, @Req() req: any) {
     return this.userService.updateKycDetails(req.user.id, dto);
+  }
+
+  @Post('/kyc/verify-bvn')
+  async verifyBvn(@Req() req: any, @Body() dto: VerifyBvnDto) {
+    return this.userService.verifyBvnWithDidit(req.user.id, dto);
+  }
+
+  @Post('/kyc/verify-nin')
+  async verifyNin(@Req() req: any, @Body() dto: VerifyNinDto) {
+    return this.userService.verifyNinWithDidit(req.user.id, dto);
+  }
+
+  @Post('/kyc/verify-id')
+  @UseInterceptors(
+    FileFieldsInterceptor([
+      { name: 'front_image', maxCount: 1 },
+      { name: 'back_image', maxCount: 1 },
+    ]),
+  )
+  async verifyIdDocument(
+    @Req() req: any,
+    @Body() dto: VerifyIdDocumentDto,
+    @UploadedFiles()
+    files?: {
+      front_image?: Express.Multer.File[];
+      back_image?: Express.Multer.File[];
+    },
+  ) {
+    const frontImage = files?.front_image?.[0] || dto.frontImageBase64;
+    const backImage = files?.back_image?.[0] || dto.backImageBase64;
+    return this.userService.verifyIdWithDidit(
+      req.user.id,
+      frontImage as any,
+      backImage as any,
+    );
   }
 
   @Post('/kyc/initiate-didit')
