@@ -14,6 +14,7 @@ import {
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Request, Response } from 'express';
 import { ApiRoutes } from '../common/enums/routes.enum';
+import { Public } from '../common/decorators';
 import { generateFiveUniqueRandomNumbers } from '../common/utils/utils';
 import { validateHmacChecksum } from '../common/utils/validateHmacChecksum';
 import { NotificationService } from '../notification/notification.service';
@@ -22,6 +23,7 @@ import { WalletService } from '../wallet/wallet.service';
 import { prisma } from '../prisma/prisma';
 import { MonnifyWebhookService } from './webhook.service';
 
+@Public()
 @Controller(ApiRoutes.WEBHOOK)
 export class MonnifyWebhookController {
   private readonly logger = new Logger(MonnifyWebhookController.name);
