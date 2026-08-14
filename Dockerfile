@@ -14,7 +14,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o main .
 # Go Development stage
 FROM golang:1.25-alpine AS go-dev
 WORKDIR /app
-RUN go install github.com/air-verse/air@latest
+RUN go install github.com/air-verse/air@v1.61.7
 COPY superfan.go/go.mod superfan.go/go.sum ./
 RUN go mod download
 COPY superfan.go/ .
