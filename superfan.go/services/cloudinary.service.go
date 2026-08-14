@@ -137,15 +137,15 @@ func UploadImageToCloudinary(imageURL, cloudName, apiKey, apiSecret string) (str
 		return "", fmt.Errorf("close multipart writer failed: %w", err)
 	}
 
-	// Step 4: Execute HTTP POST to Cloudinary API
-	uploadEndpoint := fmt.Sprintf("https://api.cloudinary.com/v1_1/%s/image/upload", url.PathEscape(cloudName))
+	// Step 4: Execute HTTP POST to Cloudinary API (use /auto/upload for both images and videos)
+	uploadEndpoint := fmt.Sprintf("https://api.cloudinary.com/v1_1/%s/auto/upload", url.PathEscape(cloudName))
 	req, err := http.NewRequest("POST", uploadEndpoint, &body)
 	if err != nil {
 		return "", fmt.Errorf("create request failed: %w", err)
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
-	client := &http.Client{Timeout: 45 * time.Second}
+	client := &http.Client{Timeout: 90 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("cloudinary upload request failed: %w", err)
@@ -183,13 +183,13 @@ func UploadImageToCloudinary(imageURL, cloudName, apiKey, apiSecret string) (str
 	cloudinaryCache[imageURL] = finalURL
 	cloudinaryCacheMu.Unlock()
 
-	log.Printf("[Cloudinary] Uploaded image (%s, %d bytes) -> %s", contentType, len(imageData), finalURL)
+	log.Printf("[Cloudinary] Uploaded media (%s, %d bytes) -> %s", contentType, len(imageData), finalURL)
 	return finalURL, nil
 }
 
-// downloadImageBytes downloads image data from URL
+// downloadImageBytes downloads image/video data from URL
 func downloadImageBytes(imageURL string) ([]byte, string, string, error) {
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: 60 * time.Second}
 	req, err := http.NewRequest("GET", imageURL, nil)
 	if err != nil {
 		return nil, "", "", err
@@ -206,8 +206,8 @@ func downloadImageBytes(imageURL string) ([]byte, string, string, error) {
 		return nil, "", "", fmt.Errorf("HTTP status %d", resp.StatusCode)
 	}
 
-	// Safety cap: 25 MB max per image
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 25<<20))
+	// Safety cap: 100 MB max per media file
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 100<<20))
 	if err != nil {
 		return nil, "", "", err
 	}
@@ -222,11 +222,29 @@ func downloadImageBytes(imageURL string) ([]byte, string, string, error) {
 
 	// Determine a reasonable filename
 	parsedURL, _ := url.Parse(imageURL)
-	filename := "image.jpg"
+	filename := "media"
 	if parsedURL != nil && parsedURL.Path != "" {
 		base := filepath.Base(parsedURL.Path)
 		if base != "" && base != "." && base != "/" {
 			filename = base
+		}
+	}
+	if !strings.Contains(filename, ".") {
+		switch {
+		case strings.Contains(contentType, "video/mp4"):
+			filename += ".mp4"
+		case strings.Contains(contentType, "video/webm"):
+			filename += ".webm"
+		case strings.Contains(contentType, "video/quicktime"):
+			filename += ".mov"
+		case strings.Contains(contentType, "image/png"):
+			filename += ".png"
+		case strings.Contains(contentType, "image/webp"):
+			filename += ".webp"
+		case strings.Contains(contentType, "image/gif"):
+			filename += ".gif"
+		default:
+			filename += ".jpg"
 		}
 	}
 
