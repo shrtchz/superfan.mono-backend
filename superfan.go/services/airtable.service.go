@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -161,8 +162,23 @@ func SyncFromAirtable(qs QuizService) {
 			subject := strings.TrimSpace(firstStringField(fields, "Subject", "subject"))
 			levelRaw := strings.ToLower(strings.TrimSpace(firstStringField(fields, "Difficulty Level", "difficulty", "Difficulty")))
 			testQuiz := strings.TrimSpace(firstStringField(fields, "Educational Product/Purpose", "educationalProduct", "testQuiz"))
-			imageLinks := extractImageLinksFromFields(fields, imageFieldCandidates)
-			imageLinks = MirrorImagesToCloudinary(imageLinks) // upload images to Cloudinary CDN so permanent URLs are stored in MongoDB
+			var existing *models.Quiz
+			if fromAirtableID, ok := existingByAirtableID[record.ID]; ok {
+				existing = fromAirtableID
+			} else if fromQuestion, ok := existingByQuestion[cleanQText]; ok {
+				existing = fromQuestion
+			}
+
+			rawImageLinks := extractImageLinksFromFields(fields, imageFieldCandidates)
+			var imageLinks []string
+			if len(rawImageLinks) == 0 {
+				imageLinks = nil
+			} else if existing != nil && len(existing.ImageLink) == len(rawImageLinks) && allValidCDNUrls(existing.ImageLink) {
+				// Reuse already-indexed Cloudinary CDN URLs from MongoDB without re-uploading
+				imageLinks = existing.ImageLink
+			} else {
+				imageLinks = MirrorImagesToCloudinary(rawImageLinks)
+			}
 
 			var options []string
 			if optionA != "" {
@@ -219,13 +235,6 @@ func SyncFromAirtable(qs QuizService) {
 				AirtableRecordID: record.ID,
 			}
 
-			var existing *models.Quiz
-			if fromAirtableID, ok := existingByAirtableID[record.ID]; ok {
-				existing = fromAirtableID
-			} else if fromQuestion, ok := existingByQuestion[cleanQText]; ok {
-				existing = fromQuestion
-			}
-
 			if existing != nil {
 				upsertQuiz.ID = existing.ID
 				upsertQuiz.IDHex = existing.ID.Hex()
@@ -273,8 +282,8 @@ func SyncFromAirtable(qs QuizService) {
 	log.Printf("--- Airtable Sync Complete: %d inserted, %d updated ---", inserted, updated)
 }
 
-func PushToAirtable(quiz *models.Quiz) {
-	log.Println("[Debug] Pushing new question to Airtable...")
+func PushToAirtable(quiz *models.Quiz, qs ...QuizService) {
+	log.Printf("[Airtable Push] Pushing question %s to Airtable...", quiz.IDHex)
 
 	rawBaseId := strings.TrimSpace(os.Getenv("AIRTABLE_BASE_ID"))
 	apiKey := strings.TrimSpace(os.Getenv("AIRTABLE_API_KEY"))
@@ -285,8 +294,13 @@ func PushToAirtable(quiz *models.Quiz) {
 	}
 
 	if rawBaseId == "" || apiKey == "" {
-		log.Println("AIRTABLE_BASE_ID or AIRTABLE_API_KEY missing, skipping push.")
+		log.Println("[Airtable Push] AIRTABLE_BASE_ID or AIRTABLE_API_KEY missing, skipping push.")
 		return
+	}
+
+	// 1. Ensure any non-Cloudinary images or videos are mirrored to Cloudinary
+	if len(quiz.ImageLink) > 0 {
+		quiz.ImageLink = MirrorImagesToCloudinary(quiz.ImageLink)
 	}
 
 	baseId := strings.Split(rawBaseId, "/")[0]
@@ -296,9 +310,9 @@ func PushToAirtable(quiz *models.Quiz) {
 
 	// Map Go testLevel to Airtable Difficulty
 	level := "Medium"
-	if quiz.TestLevel == "basic" {
+	if strings.EqualFold(quiz.TestLevel, "basic") || strings.EqualFold(quiz.TestLevel, "easy") {
 		level = "Easy"
-	} else if quiz.TestLevel == "advanced" {
+	} else if strings.EqualFold(quiz.TestLevel, "advanced") || strings.EqualFold(quiz.TestLevel, "hard") {
 		level = "Hard"
 	}
 
@@ -341,44 +355,77 @@ func PushToAirtable(quiz *models.Quiz) {
 		}
 	}
 
-	payload := AirtableCreateRequest{
-		Records: []AirtableCreateRecord{
-			{Fields: fields},
-		},
-	}
-
-	body, err := json.Marshal(payload)
-	if err != nil {
-		log.Println("Error marshalling Airtable payload:", err)
-		return
-	}
-
-	req, err := http.NewRequest("POST", airtableUrl, strings.NewReader(string(body)))
-	if err != nil {
-		log.Println("Error creating Airtable push request:", err)
-		return
+	var req *http.Request
+	var isUpdate bool
+	if quiz.AirtableRecordID != "" {
+		isUpdate = true
+		updateUrl := fmt.Sprintf("%s/%s", airtableUrl, url.PathEscape(quiz.AirtableRecordID))
+		payload := map[string]interface{}{"fields": fields}
+		body, err := json.Marshal(payload)
+		if err != nil {
+			log.Println("[Airtable Push] Error marshalling Airtable update payload:", err)
+			return
+		}
+		req, err = http.NewRequest("PATCH", updateUrl, bytes.NewReader(body))
+		if err != nil {
+			log.Println("[Airtable Push] Error creating Airtable update request:", err)
+			return
+		}
+	} else {
+		payload := AirtableCreateRequest{
+			Records: []AirtableCreateRecord{
+				{Fields: fields},
+			},
+		}
+		body, marshalErr := json.Marshal(payload)
+		if marshalErr != nil {
+			log.Println("[Airtable Push] Error marshalling Airtable create payload:", marshalErr)
+			return
+		}
+		var reqErr error
+		req, reqErr = http.NewRequest("POST", airtableUrl, bytes.NewReader(body))
+		if reqErr != nil {
+			log.Println("[Airtable Push] Error creating Airtable create request:", reqErr)
+			return
+		}
 	}
 
 	req.Header.Add("Authorization", "Bearer "+apiKey)
 	req.Header.Add("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: 15 * time.Second}
 	res, err := client.Do(req)
 	if err != nil {
-		log.Println("Error pushing to Airtable:", err)
+		log.Println("[Airtable Push] Error pushing to Airtable:", err)
 		return
 	}
 	defer res.Body.Close()
 
 	if res.StatusCode != http.StatusOK && res.StatusCode != http.StatusCreated {
-		log.Printf("Airtable push failed with status: %d", res.StatusCode)
+		log.Printf("[Airtable Push] Airtable push failed with status: %d", res.StatusCode)
 		var errRes map[string]interface{}
 		json.NewDecoder(res.Body).Decode(&errRes)
-		log.Printf("Airtable push error details: %+v", errRes)
+		log.Printf("[Airtable Push] Airtable push error details: %+v", errRes)
 		return
 	}
 
-	log.Println("[Debug] Successfully pushed new question to Airtable!")
+	if !isUpdate {
+		var parsedRes AirtableResponse
+		if err := json.NewDecoder(res.Body).Decode(&parsedRes); err == nil && len(parsedRes.Records) > 0 {
+			createdRecordID := parsedRes.Records[0].ID
+			log.Printf("[Airtable Push] Created Airtable record %s for quiz %s", createdRecordID, quiz.IDHex)
+			quiz.AirtableRecordID = createdRecordID
+			if len(qs) > 0 && qs[0] != nil {
+				if err := qs[0].UpdateQuiz(quiz); err != nil {
+					log.Printf("[Airtable Push] Warning: failed to save airtableRecordId to mongo: %v", err)
+				}
+			}
+		}
+	} else {
+		log.Printf("[Airtable Push] Successfully updated Airtable record %s for quiz %s", quiz.AirtableRecordID, quiz.IDHex)
+	}
+
+	log.Println("[Airtable Push] Successfully synced question to Airtable!")
 }
 
 func firstStringField(fields map[string]interface{}, keys ...string) string {
@@ -501,3 +548,23 @@ func truncateForLog(value string, maxLen int) string {
 	}
 	return strings.TrimSpace(trimmed[:maxLen]) + "..."
 }
+
+func allValidCDNUrls(urls []string) bool {
+	if len(urls) == 0 {
+		return false
+	}
+	for _, u := range urls {
+		trimmed := strings.TrimSpace(u)
+		if trimmed == "" {
+			return false
+		}
+		if !strings.HasPrefix(trimmed, "http://") && !strings.HasPrefix(trimmed, "https://") {
+			return false
+		}
+		if !strings.Contains(trimmed, "res.cloudinary.com") && !strings.Contains(trimmed, "cloudinary.com") {
+			return false
+		}
+	}
+	return true
+}
+

@@ -105,14 +105,20 @@ func (qc *QuizController) CreateQuiz(ctx *gin.Context) {
 		utils.SendError(ctx, http.StatusBadRequest, "BAD_REQUEST", err.Error())
 		return
 	}
+
+	// 1. Mirror any images or videos to Cloudinary CDN
+	if len(quiz.ImageLink) > 0 {
+		quiz.ImageLink = services.MirrorImagesToCloudinary(quiz.ImageLink)
+	}
+
 	err := qc.QuizService.CreateQuiz(&quiz)
 	if err != nil {
 		utils.SendError(ctx, http.StatusBadGateway, "BAD_GATEWAY", err.Error())
 		return
 	}
 
-	// Trigger the 2-way sync to push the new question to Airtable in the background!
-	go services.PushToAirtable(&quiz)
+	// 2. Trigger the 2-way sync to push the new question + Cloudinary media to Airtable in background
+	go services.PushToAirtable(&quiz, qc.QuizService)
 
 	utils.Success(ctx, http.StatusOK, "success", nil)
 }
@@ -583,10 +589,19 @@ func (qc *QuizController) UpdateQuiz(ctx *gin.Context) {
 	}
 	quiz.ID = objID
 
+	// Mirror any new images or videos to Cloudinary CDN
+	if len(quiz.ImageLink) > 0 {
+		quiz.ImageLink = services.MirrorImagesToCloudinary(quiz.ImageLink)
+	}
+
 	if err := qc.QuizService.UpdateQuiz(&quiz); err != nil {
 		utils.SendError(ctx, http.StatusBadGateway, "BAD_GATEWAY", err.Error())
 		return
 	}
+
+	// Push update to Airtable in background
+	go services.PushToAirtable(&quiz, qc.QuizService)
+
 	utils.Success(ctx, http.StatusOK, "success", nil)
 }
 
@@ -603,6 +618,11 @@ func (qc *QuizController) CreateLiveQuiz(c *gin.Context) {
 	if err != nil {
 		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", err.Error())
 		return
+	}
+
+	// Mirror any images or videos to Cloudinary CDN
+	if len(liveQuiz.ImageLink) > 0 {
+		liveQuiz.ImageLink = services.MirrorImagesToCloudinary(liveQuiz.ImageLink)
 	}
 
 	// Normalize typed-answer payloads from admin UI
