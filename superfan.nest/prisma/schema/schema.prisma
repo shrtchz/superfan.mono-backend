@@ -1151,3 +1151,70 @@ model OrderReturn {
   @@index([userId])
 }
 
+model AdCampaign {
+  id              Int           @id @default(autoincrement())
+  userId          Int?
+  username        String?
+  headline        String
+  description     String?
+  buttonLabel     String?
+  websiteUrl      String?
+  mediaUrls       String[]      @default([])
+  mediaType       String?       // "video" | "image"
+  dailyFee        Int           @default(500)
+  totalFee        Int
+  days            Int           @default(1)
+  startDate       DateTime
+  endDate         DateTime?
+  runContinuously Boolean       @default(true)
+  ageRange        String?       // "18-24", "18-35", "25-45", "45+"
+  status          AdStatus      @default(PENDING)
+  views           Int           @default(0)
+  clicks          Int           @default(0)
+  paymentStatus   String        @default("PENDING") // PENDING, PAID, FAILED
+  paymentRef      String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  placements      AdPlacement[]
+  events          AdEvent[]
+}
+
+model AdPlacement {
+  id          Int          @id @default(autoincrement())
+  campaignId  Int
+  key         String       // e.g. "QUIZ_MIDPOINT"
+  mediaUrl    String
+  durationSec Int          @default(30)
+  skipAllowed Boolean      @default(false)
+  createdAt   DateTime     @default(now())
+
+  campaign    AdCampaign   @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  events      AdEvent[]
+}
+
+model AdEvent {
+  id          Int         @id @default(autoincrement())
+  userId      Int?
+  campaignId  Int
+  placementId Int?
+  quizId      String?
+  eventType   AdEventType
+  createdAt   DateTime    @default(now())
+
+  campaign    AdCampaign   @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  placement   AdPlacement? @relation(fields: [placementId], references: [id], onDelete: SetNull)
+}
+
+enum AdStatus {
+  PENDING
+  ACTIVE
+  PAUSED
+  COMPLETED
+}
+
+enum AdEventType {
+  VIEW_START
+  COMPLETION
+  CLICK
+}
