@@ -1,12 +1,12 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { v2 as cloudinary, UploadApiResponse } from 'cloudinary';
+import axios from 'axios';
+import * as crypto from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { Readable } from 'stream';
 import 'multer';
 
 const execFileAsync = promisify(execFile);
@@ -16,9 +16,24 @@ export type GenericFileInput =
   | string
   | { buffer: Buffer; mimetype?: string; originalname?: string };
 
+interface CloudinaryDirectUploadResponse {
+  public_id: string;
+  secure_url: string;
+  url: string;
+  format?: string;
+  bytes?: number;
+  resource_type?: string;
+  error?: {
+    message: string;
+  };
+}
+
 @Injectable()
 export class ImageService {
   private readonly logger = new Logger(ImageService.name);
+  private cloudName: string = '';
+  private apiKey: string = '';
+  private apiSecret: string = '';
   private isConfigured = false;
 
   constructor(private config: ConfigService) {
@@ -26,34 +41,41 @@ export class ImageService {
   }
 
   private initCloudinary() {
-    const cloudName =
+    const rawCloudName =
       this.config.get<string>('CLOUDINARY_CLOUD_NAME') ||
-      process.env.CLOUDINARY_CLOUD_NAME;
-    const apiKey =
+      process.env.CLOUDINARY_CLOUD_NAME ||
+      '';
+    const rawApiKey =
       this.config.get<string>('CLOUDINARY_API_KEY') ||
-      process.env.CLOUDINARY_API_KEY;
-    const apiSecret =
+      process.env.CLOUDINARY_API_KEY ||
+      '';
+    const rawApiSecret =
       this.config.get<string>('CLOUDINARY_API_SECRET') ||
-      process.env.CLOUDINARY_API_SECRET;
+      process.env.CLOUDINARY_API_SECRET ||
+      '';
     const cloudinaryUrl =
-      this.config.get<string>('CLOUDINARY_URL') || process.env.CLOUDINARY_URL;
+      this.config.get<string>('CLOUDINARY_URL') ||
+      process.env.CLOUDINARY_URL ||
+      '';
 
     if (cloudinaryUrl) {
-      cloudinary.config({
-        cloudinary_url: cloudinaryUrl,
-        secure: true,
-      });
+      const match = cloudinaryUrl.match(/^cloudinary:\/\/([^:]+):([^@]+)@(.+)$/);
+      if (match) {
+        this.apiKey = match[1];
+        this.apiSecret = match[2];
+        this.cloudName = match[3];
+        this.isConfigured = true;
+        this.logger.log(`Cloudinary configured via CLOUDINARY_URL for cloud: ${this.cloudName}`);
+        return;
+      }
+    }
+
+    if (rawCloudName && rawApiKey && rawApiSecret) {
+      this.cloudName = rawCloudName.trim();
+      this.apiKey = rawApiKey.trim();
+      this.apiSecret = rawApiSecret.trim();
       this.isConfigured = true;
-      this.logger.log('Cloudinary configured via CLOUDINARY_URL');
-    } else if (cloudName && apiKey && apiSecret) {
-      cloudinary.config({
-        cloud_name: cloudName,
-        api_key: apiKey,
-        api_secret: apiSecret,
-        secure: true,
-      });
-      this.isConfigured = true;
-      this.logger.log(`Cloudinary configured for cloud_name: ${cloudName}`);
+      this.logger.log(`Cloudinary configured for cloud_name: ${this.cloudName}`);
     } else {
       this.logger.warn(
         'Cloudinary credentials are not fully configured. Uploads will fail until CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET (or CLOUDINARY_URL) are set.',
@@ -165,6 +187,13 @@ export class ImageService {
     }
   }
 
+  private generateSignature(params: Record<string, string | number>, apiSecret: string): string {
+    const sortedKeys = Object.keys(params).sort();
+    const stringToSign =
+      sortedKeys.map((key) => `${key}=${params[key]}`).join('&') + apiSecret;
+    return crypto.createHash('sha1').update(stringToSign).digest('hex');
+  }
+
   private async getVideoDurationSeconds(file: Express.Multer.File): Promise<number> {
     const tempDir = os.tmpdir();
     const tempPath = path.join(
@@ -199,13 +228,22 @@ export class ImageService {
     }
   }
 
-  async uploadFile(file: Express.Multer.File, folderOrType?: string) {
+  /**
+   * Uploads an Express.Multer.File to Cloudinary.
+   */
+  async uploadFile(file: Express.Multer.File, folderOrType?: string): Promise<string> {
     if (!file || !file.buffer) {
       throw new BadRequestException('No file provided for upload');
     }
 
     if (!this.isConfigured) {
       this.initCloudinary();
+    }
+
+    if (!this.cloudName || !this.apiKey || !this.apiSecret) {
+      throw new BadRequestException(
+        'Cloudinary credentials are not configured on the server. Please check CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET.',
+      );
     }
 
     if (file.mimetype?.startsWith('video/')) {
@@ -220,7 +258,6 @@ export class ImageService {
         if (error instanceof BadRequestException) {
           throw error;
         }
-        // If ffprobe is not installed on the system, log a warning but proceed
         this.logger.warn(
           `ffprobe video validation skipped/failed: ${error?.message || error}`,
         );
@@ -228,37 +265,60 @@ export class ImageService {
     }
 
     const folder = this.resolveFolder(folderOrType, file.mimetype);
+    const timestamp = Math.floor(Date.now() / 1000);
 
-    const uploadResult = await new Promise<UploadApiResponse>((resolve, reject) => {
-      const uploadStream = cloudinary.uploader.upload_stream(
+    const signParams: Record<string, string | number> = {
+      folder,
+      timestamp,
+    };
+
+    const signature = this.generateSignature(signParams, this.apiSecret);
+
+    const formData = new FormData();
+    const blob = new Blob([new Uint8Array(file.buffer)], {
+      type: file.mimetype || 'application/octet-stream',
+    });
+
+    formData.append('file', blob, file.originalname || 'media_upload');
+    formData.append('api_key', this.apiKey);
+    formData.append('timestamp', timestamp.toString());
+    formData.append('folder', folder);
+    formData.append('signature', signature);
+
+    const uploadEndpoint = `https://api.cloudinary.com/v1_1/${encodeURIComponent(this.cloudName)}/auto/upload`;
+
+    try {
+      const response = await axios.post<CloudinaryDirectUploadResponse>(
+        uploadEndpoint,
+        formData,
         {
-          folder,
-          resource_type: 'auto',
-          use_filename: true,
-          unique_filename: true,
-          overwrite: false,
-        },
-        (error, result) => {
-          if (error || !result) {
-            this.logger.error('Cloudinary upload error:', error);
-            return reject(
-              new BadRequestException(
-                error?.message || 'Failed to upload media to Cloudinary',
-              ),
-            );
-          }
-          resolve(result);
+          headers: {
+            'Content-Type': 'multipart/form-data',
+          },
+          timeout: 90000,
         },
       );
 
-      Readable.from(file.buffer).pipe(uploadStream);
-    });
+      if (response.data?.error?.message) {
+        throw new Error(response.data.error.message);
+      }
 
-    this.logger.log(
-      `File uploaded to Cloudinary: ${uploadResult.secure_url} (folder: ${folder})`,
-    );
+      const finalUrl = response.data.secure_url || response.data.url;
+      if (!finalUrl) {
+        throw new Error('Cloudinary response did not contain a secure_url');
+      }
 
-    return uploadResult.secure_url;
+      this.logger.log(`File uploaded to Cloudinary: ${finalUrl} (folder: ${folder})`);
+      return finalUrl;
+    } catch (error: any) {
+      const errMsg =
+        error?.response?.data?.error?.message ||
+        error?.response?.data?.message ||
+        error?.message ||
+        'Failed to upload media to Cloudinary';
+      this.logger.error(`Cloudinary upload failed: ${errMsg}`, error?.stack);
+      throw new BadRequestException(`Cloudinary upload failed: ${errMsg}`);
+    }
   }
 
   /**
@@ -274,6 +334,12 @@ export class ImageService {
 
     if (!this.isConfigured) {
       this.initCloudinary();
+    }
+
+    if (!this.cloudName || !this.apiKey || !this.apiSecret) {
+      throw new BadRequestException(
+        'Cloudinary credentials are not configured on the server. Please check CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, and CLOUDINARY_API_SECRET.',
+      );
     }
 
     // String input: Data URI or raw Base64 string
@@ -292,56 +358,65 @@ export class ImageService {
           mimetype = match[1];
         }
       } else {
-        // Raw Base64: prepend data URI scheme
         dataUri = `data:image/jpeg;base64,${trimmed}`;
       }
 
       const folder = this.resolveFolder(folderOrType, mimetype);
+      const timestamp = Math.floor(Date.now() / 1000);
 
-      const result = await cloudinary.uploader.upload(dataUri, {
+      const signParams: Record<string, string | number> = {
         folder,
-        resource_type: 'auto',
-      });
+        timestamp,
+      };
 
-      this.logger.log(
-        `Base64 file uploaded to Cloudinary: ${result.secure_url} (folder: ${folder})`,
-      );
-      return result.secure_url;
+      const signature = this.generateSignature(signParams, this.apiSecret);
+
+      const formData = new FormData();
+      formData.append('file', dataUri);
+      formData.append('api_key', this.apiKey);
+      formData.append('timestamp', timestamp.toString());
+      formData.append('folder', folder);
+      formData.append('signature', signature);
+
+      const uploadEndpoint = `https://api.cloudinary.com/v1_1/${encodeURIComponent(this.cloudName)}/auto/upload`;
+
+      try {
+        const response = await axios.post<CloudinaryDirectUploadResponse>(
+          uploadEndpoint,
+          formData,
+          {
+            headers: {
+              'Content-Type': 'multipart/form-data',
+            },
+            timeout: 90000,
+          },
+        );
+
+        if (response.data?.error?.message) {
+          throw new Error(response.data.error.message);
+        }
+
+        const finalUrl = response.data.secure_url || response.data.url;
+        if (!finalUrl) {
+          throw new Error('Cloudinary response did not contain a secure_url');
+        }
+
+        this.logger.log(`Base64 uploaded to Cloudinary: ${finalUrl} (folder: ${folder})`);
+        return finalUrl;
+      } catch (error: any) {
+        const errMsg =
+          error?.response?.data?.error?.message ||
+          error?.response?.data?.message ||
+          error?.message ||
+          'Failed to upload Base64 media to Cloudinary';
+        this.logger.error(`Cloudinary upload failed: ${errMsg}`, error?.stack);
+        throw new BadRequestException(`Cloudinary upload failed: ${errMsg}`);
+      }
     }
 
     // Multer file or Buffer object
     if (typeof input === 'object' && 'buffer' in input && Buffer.isBuffer(input.buffer)) {
-      const folder = this.resolveFolder(folderOrType, input.mimetype);
-
-      const uploadResult = await new Promise<UploadApiResponse>((resolve, reject) => {
-        const uploadStream = cloudinary.uploader.upload_stream(
-          {
-            folder,
-            resource_type: 'auto',
-            use_filename: true,
-            unique_filename: true,
-            overwrite: false,
-          },
-          (error, result) => {
-            if (error || !result) {
-              this.logger.error('Cloudinary upload error:', error);
-              return reject(
-                new BadRequestException(
-                  error?.message || 'Failed to upload media to Cloudinary',
-                ),
-              );
-            }
-            resolve(result);
-          },
-        );
-
-        Readable.from(input.buffer).pipe(uploadStream);
-      });
-
-      this.logger.log(
-        `Buffer file uploaded to Cloudinary: ${uploadResult.secure_url} (folder: ${folder})`,
-      );
-      return uploadResult.secure_url;
+      return this.uploadFile(input as Express.Multer.File, folderOrType);
     }
 
     throw new BadRequestException('Unsupported file input type');
