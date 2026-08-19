@@ -249,10 +249,8 @@ export class ImageService {
     if (file.mimetype?.startsWith('video/')) {
       try {
         const durationSeconds = await this.getVideoDurationSeconds(file);
-        if (durationSeconds > 120) {
-          throw new BadRequestException(
-            `Video is ${Math.round(durationSeconds)}s long. Videos must be 120 seconds or less.`,
-          );
+        if (durationSeconds > 180) {
+          throw new BadRequestException('video more than 3mins');
         }
       } catch (error) {
         if (error instanceof BadRequestException) {
@@ -292,9 +290,6 @@ export class ImageService {
         uploadEndpoint,
         formData,
         {
-          headers: {
-            'Content-Type': 'multipart/form-data',
-          },
           timeout: 90000,
         },
       );
@@ -385,9 +380,6 @@ export class ImageService {
           uploadEndpoint,
           formData,
           {
-            headers: {
-              'Content-Type': 'multipart/form-data',
-            },
             timeout: 90000,
           },
         );
