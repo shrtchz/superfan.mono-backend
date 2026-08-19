@@ -13,6 +13,7 @@ import { UserController } from "./user.controller";
 import { UserService } from "./user.service";
 import { UserListener } from "./user.listener";
 import { DiditService } from "./didit.service";
+import { ImageModule } from "../image/image.module";
 
 @Global()
 @Module({
@@ -24,7 +25,8 @@ import { DiditService } from "./didit.service";
         forwardRef(() => TaskModule),
         DatabaseModule,
         WalletModule,
-        NotificationModule
+        NotificationModule,
+        ImageModule,
     ],
     controllers: [UserController],
     providers: [

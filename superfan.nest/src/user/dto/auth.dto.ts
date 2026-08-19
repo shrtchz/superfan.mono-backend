@@ -247,7 +247,15 @@ export class KycDto {
 
   @IsOptional()
   @IsString()
-  selfieBase64: string;
+  selfieBase64?: string;
+
+  @IsOptional()
+  @IsString()
+  callbackUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  workflowId?: string;
 }
 
 export class VerifyBvnDto {

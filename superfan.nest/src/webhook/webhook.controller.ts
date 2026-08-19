@@ -532,8 +532,9 @@ private async handleCardCharge(payload: any) {
     const decision = payload.decision || {};
 
     let userId: number | null = null;
-    if (vendorData && !isNaN(Number(vendorData))) {
-      userId = Number(vendorData);
+    const cleanVendorId = typeof vendorData === 'string' ? vendorData.replace(/^user-/i, '').trim() : vendorData;
+    if (cleanVendorId && !isNaN(Number(cleanVendorId))) {
+      userId = Number(cleanVendorId);
     } else if (sessionId) {
       const foundUser = await prisma.user.findFirst({
         where: { didit_session_id: sessionId },
@@ -554,18 +555,25 @@ private async handleCardCharge(payload: any) {
     const isApproved =
       status === 'Approved' ||
       status === 'verified' ||
+      status === 'approved' ||
       decision.status === 'Approved' ||
-      decision.status === 'verified';
+      decision.status === 'verified' ||
+      decision.status === 'approved';
 
     const isDeclined =
       status === 'Declined' ||
       status === 'Rejected' ||
       status === 'declined' ||
+      status === 'rejected' ||
       decision.status === 'Declined' ||
-      decision.status === 'Rejected';
+      decision.status === 'Rejected' ||
+      decision.status === 'declined' ||
+      decision.status === 'rejected';
 
     if (isApproved) {
       const verificationId = payload.verification_id || decision.verification_id || sessionId;
+      const doc = decision.id_verification;
+
       await prisma.user.update({
         where: { id: userId },
         data: {
@@ -574,6 +582,7 @@ private async handleCardCharge(payload: any) {
           didit_verification_id: verificationId,
           kyc_verified_at: new Date(),
           kyc_rejection_reason: null,
+          ...(doc?.date_of_birth && { dob: new Date(doc.date_of_birth) }),
         },
       });
 

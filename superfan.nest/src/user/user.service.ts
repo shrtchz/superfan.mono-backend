@@ -7,6 +7,7 @@ import {
   Inject,
   Injectable,
   InternalServerErrorException,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -18,6 +19,7 @@ import { generateReferralCode } from '../common/shared/lib';
 import { PointsConversionUtil } from '../common/utils/points-conversion.util';
 import { generateFiveUniqueRandomNumbers } from '../common/utils/utils';
 import { ElasticsearchService } from '../elasticsearch/elasticsearch.service';
+import { ImageService } from '../image/image.service';
 import { MailService } from '../mail/mail.service';
 import { NotificationService } from '../notification/notification.service';
 
@@ -47,6 +49,8 @@ type SyncUserMetadata = {
 
 @Injectable()
 export class UserService {
+  private readonly logger = new Logger(UserService.name);
+
   constructor(
     private mail: MailService,
     @Inject(forwardRef(() => TaskService))
@@ -60,6 +64,7 @@ export class UserService {
     private readonly clerkService: ClerkService,
     private pointsConversionUtil: PointsConversionUtil,
     private readonly diditService: DiditService,
+    private readonly imageService: ImageService,
   ) {}
 
   async signupUser(dto: AuthDto): Promise<any> {
@@ -1291,19 +1296,39 @@ async getCard(userId: number): Promise<any> {
           ...(dto.state && { state: dto.state }),
           ...(dto.verify_photo && { verify_photo: dto.verify_photo }),
           ...(dto.postal_code && { postal_code: dto.postal_code }),
-          kyc_status: 'VERIFIED',
-          kyc_tier: 'TIER_1',
-          kyc_verified_at: new Date(),
-          kyc_rejection_reason: null,
+          kyc_status: 'PENDING',
         },
       });
 
-      this.eventEmitter.emit('user.kyc.verified', { userId, tier: 'TIER_1' });
-      this.eventEmitter.emit('user.wallet.updated', { userId });
+      // Create Didit Hosted Verification Session
+      const session = await this.diditService.createSession({
+        userId,
+        workflowId: dto.workflowId || 'a885a4bb-7c24-45db-a5db-a1ef8eb9e820',
+        vendorData: `user-${userId}`,
+        callbackUrl: dto.callbackUrl,
+      });
+
+      if (session?.session_id) {
+        await prisma.user.update({
+          where: { id: userId },
+          data: {
+            didit_session_id: session.session_id,
+          },
+        });
+      }
 
       return {
-        message: 'KYC details updated successfully',
+        message: 'KYC details saved and Didit verification session created',
         data: user,
+        session: {
+          session_id: session.session_id,
+          sessionId: session.session_id,
+          url: session.url,
+          session_token: session.session_token,
+          status: session.status,
+        },
+        url: session.url,
+        session_id: session.session_id,
       };
     } catch (error: any) {
       console.error('[KYC] updateKycDetails error', error);
@@ -1405,6 +1430,7 @@ async getCard(userId: number): Promise<any> {
 
   /**
    * Verifies ID Document via Didit Standalone v3 ID Verification
+   * and saves copies of front/back ID images to Cloudinary (site_assets/profile/kyc/id_card/front & back)
    */
   async verifyIdWithDidit(
     userId: number,
@@ -1419,6 +1445,37 @@ async getCard(userId: number): Promise<any> {
       throw new NotFoundException('User not found');
     }
 
+    // 1. Upload ID card images to Cloudinary
+    let frontImageUrl: string | undefined;
+    let backImageUrl: string | undefined;
+
+    if (frontImage) {
+      try {
+        frontImageUrl = await this.imageService.uploadFileInput(
+          frontImage,
+          'site_assets/profile/kyc/id_card/front',
+        );
+      } catch (uploadErr: any) {
+        this.logger.warn(
+          `Failed to upload KYC front ID card to Cloudinary: ${uploadErr?.message || uploadErr}`,
+        );
+      }
+    }
+
+    if (backImage) {
+      try {
+        backImageUrl = await this.imageService.uploadFileInput(
+          backImage,
+          'site_assets/profile/kyc/id_card/back',
+        );
+      } catch (uploadErr: any) {
+        this.logger.warn(
+          `Failed to upload KYC back ID card to Cloudinary: ${uploadErr?.message || uploadErr}`,
+        );
+      }
+    }
+
+    // 2. Perform Didit ID verification with base64 / blob
     const result = await this.diditService.verifyIdDocument(userId, frontImage, backImage);
 
     const isApproved =
@@ -1449,16 +1506,169 @@ async getCard(userId: number): Promise<any> {
       requestSuccessful: isApproved,
       message: isApproved ? 'ID document verified successfully' : 'ID document verification pending or declined',
       data: result,
+      frontImageUrl,
+      backImageUrl,
     };
   }
 
   /**
-   * Fallback for initiating Didit session
+   * Initiates a hosted Didit KYC verification session
+   * POST /v3/session/
    */
-  async initiateDiditKyc(userId: number) {
+  async initiateDiditHostedSession(
+    userId: number,
+    dto?: { callbackUrl?: string; workflowId?: string },
+  ) {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const session = await this.diditService.createSession({
+      userId,
+      workflowId: dto?.workflowId,
+      callbackUrl: dto?.callbackUrl,
+      vendorData: `user-${userId}`,
+    });
+
+    await prisma.user.update({
+      where: { id: userId },
+      data: {
+        didit_session_id: session.session_id,
+        ...(user.kyc_status !== 'VERIFIED' && { kyc_status: 'PENDING' }),
+      },
+    });
+
     return {
-      message: 'Didit standalone verification is active',
-      data: { userId },
+      message: 'Didit verification session initiated successfully',
+      data: {
+        session_id: session.session_id,
+        sessionId: session.session_id,
+        url: session.url,
+        session_token: session.session_token,
+        status: session.status,
+      },
+    };
+  }
+
+  /**
+   * Alias for initiateDiditHostedSession
+   */
+  async initiateDiditKyc(
+    userId: number,
+    dto?: { callbackUrl?: string; workflowId?: string },
+  ) {
+    return this.initiateDiditHostedSession(userId, dto);
+  }
+
+  /**
+   * Retrieves decision from Didit v3 session and updates user verification status
+   * GET /v3/session/{session_id}/decision/
+   */
+  async syncDiditSessionDecision(userId: number, sessionId?: string) {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const targetSessionId = sessionId || user.didit_session_id;
+
+    if (!targetSessionId) {
+      throw new BadRequestException('No Didit session ID found for user');
+    }
+
+    const decisionResp = await this.diditService.getSessionDecision(targetSessionId);
+    const rawStatus = decisionResp.status || decisionResp.decision?.status || '';
+    const status = String(rawStatus).toLowerCase();
+
+    const isApproved =
+      status === 'approved' ||
+      status === 'verified' ||
+      decisionResp.decision?.status === 'Approved' ||
+      decisionResp.decision?.status === 'verified';
+
+    const isDeclined =
+      status === 'declined' ||
+      status === 'rejected' ||
+      decisionResp.decision?.status === 'Declined' ||
+      decisionResp.decision?.status === 'Rejected';
+
+    if (isApproved) {
+      const verificationId =
+        decisionResp.decision?.verification_id ||
+        decisionResp.verification_id ||
+        targetSessionId;
+
+      const doc = decisionResp.decision?.id_verification;
+
+      await prisma.user.update({
+        where: { id: userId },
+        data: {
+          kyc_status: 'VERIFIED',
+          kyc_tier: 'TIER_1',
+          didit_verification_id: verificationId,
+          kyc_verified_at: new Date(),
+          kyc_rejection_reason: null,
+          ...(doc?.date_of_birth && { dob: new Date(doc.date_of_birth) }),
+          ...(doc?.first_name && !user.firstName && { firstName: doc.first_name }),
+          ...(doc?.last_name && !user.lastName && { lastName: doc.last_name }),
+        },
+      });
+
+      this.eventEmitter.emit('user.kyc.verified', { userId, tier: 'TIER_1' });
+      this.eventEmitter.emit('user.wallet.updated', { userId });
+
+      await this.notificationService.createNotification(
+        userId,
+        'KYC Verification Successful',
+        'Your identity has been verified successfully! Your account limit has been upgraded.',
+        'kyc_approved',
+      );
+    } else if (isDeclined) {
+      const rejectionReasons =
+        decisionResp.decision?.rejection_reasons ||
+        decisionResp.rejection_reasons ||
+        (decisionResp.decision?.reason
+          ? [decisionResp.decision.reason]
+          : ['Identity verification was not approved. Please try again.']);
+      const reasonStr = Array.isArray(rejectionReasons)
+        ? rejectionReasons.join(', ')
+        : String(rejectionReasons);
+
+      await prisma.user.update({
+        where: { id: userId },
+        data: {
+          kyc_status: 'REJECTED',
+          kyc_tier: 'TIER_0',
+          kyc_rejection_reason: reasonStr,
+        },
+      });
+
+      this.eventEmitter.emit('user.kyc.rejected', { userId, reason: reasonStr });
+
+      await this.notificationService.createNotification(
+        userId,
+        'KYC Verification Failed',
+        `Identity verification was unsuccessful: ${reasonStr}. You can retry verification at any time.`,
+        'kyc_failed',
+      );
+    }
+
+    return {
+      message: 'Didit session decision synchronized successfully',
+      data: {
+        sessionId: targetSessionId,
+        status: decisionResp.status,
+        decision: decisionResp.decision,
+        isApproved,
+        isDeclined,
+      },
     };
   }
 
@@ -1474,7 +1684,7 @@ async getCard(userId: number): Promise<any> {
     limits?: any;
     kycData?: any;
   }> {
-    const user = await prisma.user.findUnique({
+    let user = await prisma.user.findUnique({
       where: { id: userId },
       select: {
         id: true,
@@ -1499,6 +1709,40 @@ async getCard(userId: number): Promise<any> {
 
     if (!user) {
       throw new NotFoundException('User not found');
+    }
+
+    // If status is PENDING and there is a didit_session_id, try a sync in case webhook was delayed
+    if (user.kyc_status === 'PENDING' && user.didit_session_id) {
+      try {
+        await this.syncDiditSessionDecision(userId, user.didit_session_id);
+        const refreshedUser = await prisma.user.findUnique({
+          where: { id: userId },
+          select: {
+            id: true,
+            dob: true,
+            firstName: true,
+            lastName: true,
+            country: true,
+            address: true,
+            bvn: true,
+            nin: true,
+            state: true,
+            verify_photo: true,
+            postal_code: true,
+            kyc_status: true,
+            kyc_tier: true,
+            didit_session_id: true,
+            didit_verification_id: true,
+            kyc_rejection_reason: true,
+            kyc_verified_at: true,
+          },
+        });
+        if (refreshedUser) {
+          user = refreshedUser;
+        }
+      } catch (err: any) {
+        // Non-blocking sync error
+      }
     }
 
     const isVerified = user.kyc_status === 'VERIFIED';
