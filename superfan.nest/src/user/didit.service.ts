@@ -40,8 +40,34 @@ export interface DiditDatabaseValidationResponse {
     service_id: string;
     service_name: string;
     source_data?: Record<string, any>;
-    validation?: Record<string, string>;
   }>;
+}
+
+export interface DiditCreateSessionResponse {
+  session_id: string;
+  url: string;
+  session_token?: string;
+  status?: string;
+  workflow_id?: string;
+  vendor_data?: string;
+  callback?: string;
+}
+
+export interface DiditSessionDecisionResponse {
+  session_id: string;
+  status: 'Approved' | 'Declined' | 'In Review' | 'InReview' | 'Pending' | string;
+  decision?: {
+    status?: 'Approved' | 'Declined' | 'In Review' | 'InReview' | 'Pending' | string;
+    rejection_reasons?: string[];
+    verification_id?: string;
+    id_verification?: any;
+    database_validation?: any;
+    [key: string]: any;
+  };
+  vendor_data?: string;
+  workflow_id?: string;
+  created_at?: string;
+  [key: string]: any;
 }
 
 export type FileUploadInput =
@@ -76,6 +102,22 @@ export class DiditService {
       this.configService.get<string>('DIDIT_WEBHOOK_SECRET') ||
       process.env.DIDIT_WEBHOOK_SECRET ||
       ''
+    );
+  }
+
+  private get workflowId(): string {
+    return (
+      this.configService.get<string>('DIDIT_WORKFLOW_ID') ||
+      process.env.DIDIT_WORKFLOW_ID ||
+      'a885a4bb-7c24-45db-a5db-a1ef8eb9e820'
+    );
+  }
+
+  private get callbackUrl(): string {
+    return (
+      this.configService.get<string>('DIDIT_CALLBACK_URL') ||
+      process.env.DIDIT_CALLBACK_URL ||
+      'https://superfan.ng/profile'
     );
   }
 
@@ -295,6 +337,102 @@ export class DiditService {
         `[DiditService] NIN validation failed for user ${userId}: ${JSON.stringify(error.response?.data || error.message)}`,
       );
       throw new BadRequestException(errorMsg || 'Failed to validate NIN with Didit');
+    }
+  }
+
+  /**
+   * Creates a hosted verification session via Didit v3 Session API
+   * POST https://verification.didit.me/v3/session/
+   */
+  async createSession(params: {
+    userId: number;
+    workflowId?: string;
+    vendorData?: string;
+    callbackUrl?: string;
+  }): Promise<DiditCreateSessionResponse> {
+    const workflowId = params.workflowId || this.workflowId;
+    const vendorData = params.vendorData || `user-${params.userId}`;
+    const callback = params.callbackUrl || this.callbackUrl;
+
+    const payload: Record<string, any> = {
+      vendor_data: vendorData,
+      callback: callback,
+    };
+
+    if (workflowId) {
+      payload.workflow_id = workflowId;
+    }
+
+    try {
+      this.logger.log(
+        `[DiditService] Creating hosted session for user ${params.userId}, callback=${callback}, workflow=${workflowId || 'default'}`,
+      );
+
+      const response = await axios.post<DiditCreateSessionResponse>(
+        `${this.baseUrl}/session/`,
+        payload,
+        {
+          headers: {
+            'x-api-key': this.apiKey,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+
+      this.logger.log(
+        `[DiditService] Hosted session created for user ${params.userId}: sessionId=${response.data?.session_id}, url=${response.data?.url}`,
+      );
+
+      return response.data;
+    } catch (error: any) {
+      const errorMsg =
+        error.response?.data?.message ||
+        error.response?.data?.detail ||
+        error.response?.data?.error ||
+        error.message;
+      this.logger.error(
+        `[DiditService] Failed to create hosted session for user ${params.userId}: ${JSON.stringify(error.response?.data || error.message)}`,
+      );
+      throw new BadRequestException(errorMsg || 'Failed to create Didit verification session');
+    }
+  }
+
+  /**
+   * Retrieves the full decision payload for a verification session
+   * GET https://verification.didit.me/v3/session/{session_id}/decision/
+   */
+  async getSessionDecision(sessionId: string): Promise<DiditSessionDecisionResponse> {
+    if (!sessionId) {
+      throw new BadRequestException('sessionId is required to retrieve decision');
+    }
+
+    try {
+      this.logger.log(`[DiditService] Retrieving session decision for sessionId=${sessionId}`);
+
+      const response = await axios.get<DiditSessionDecisionResponse>(
+        `${this.baseUrl}/session/${sessionId}/decision/`,
+        {
+          headers: {
+            'x-api-key': this.apiKey,
+          },
+        },
+      );
+
+      this.logger.log(
+        `[DiditService] Retrieved decision for session ${sessionId}: status=${response.data?.status || response.data?.decision?.status}`,
+      );
+
+      return response.data;
+    } catch (error: any) {
+      const errorMsg =
+        error.response?.data?.message ||
+        error.response?.data?.detail ||
+        error.response?.data?.error ||
+        error.message;
+      this.logger.error(
+        `[DiditService] Failed to retrieve decision for session ${sessionId}: ${JSON.stringify(error.response?.data || error.message)}`,
+      );
+      throw new BadRequestException(errorMsg || 'Failed to retrieve Didit session decision');
     }
   }
 

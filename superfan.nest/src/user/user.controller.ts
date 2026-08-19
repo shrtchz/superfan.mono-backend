@@ -184,13 +184,26 @@ export class UserController {
   }
 
   @Post('/kyc/initiate-didit')
-  async initiateDiditKyc(@Req() req: any) {
-    return this.userService.initiateDiditKyc(req.user.id);
+  async initiateDiditKyc(@Req() req: any, @Body() dto?: { callbackUrl?: string; workflowId?: string }) {
+    return this.userService.initiateDiditHostedSession(req.user.id, dto);
   }
 
   @Post('/kyc/initiate-session')
-  async initiateDiditSession(@Req() req: any) {
-    return this.userService.initiateDiditKyc(req.user.id);
+  async initiateDiditSession(@Req() req: any, @Body() dto?: { callbackUrl?: string; workflowId?: string }) {
+    return this.userService.initiateDiditHostedSession(req.user.id, dto);
+  }
+
+  @Get('/kyc/session-decision/:sessionId')
+  async getDiditSessionDecision(
+    @Req() req: any,
+    @Param('sessionId') sessionId: string,
+  ) {
+    return this.userService.syncDiditSessionDecision(req.user.id, sessionId);
+  }
+
+  @Get('/kyc/sync-session')
+  async syncDiditSession(@Req() req: any) {
+    return this.userService.syncDiditSessionDecision(req.user.id);
   }
 
   @Get('kyc-status')

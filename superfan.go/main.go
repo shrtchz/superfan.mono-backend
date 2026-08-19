@@ -37,6 +37,10 @@ var (
 	// Payment
 	paymentSvc  *payment.PaymentService
 	paymentCtrl *paymentControllers.PaymentController
+
+	// Ads
+	adsSvc  services.AdsService
+	adsCtrl *controllers.AdsController
 )
 
 type AppError struct {
@@ -166,6 +170,10 @@ func init() {
 	paymentSvc = payment.NewPaymentService(utils.DB, monnify, bitnob)
 	paymentCtrl = paymentControllers.NewPaymentController(paymentSvc)
 
+	// Wire Ads
+	adsSvc = services.NewAdsService(utils.DB)
+	adsCtrl = controllers.NewAdsController(adsSvc)
+
 	// Launch Airtable sync in the background
 	go services.SyncFromAirtable(qs)
 
@@ -228,6 +236,14 @@ func main() {
 	paymentControllers.RegisterPaymentRoutes(apibasepath, paymentCtrl)
 	rootbasepath := server.Group("")
 	paymentControllers.RegisterPaymentRoutes(rootbasepath, paymentCtrl)
+
+	// Ads Routes (v2 primary)
+	controllers.RegisterAdsRoutes(v2path, adsCtrl)
+	apiv2path := server.Group("/api/v2")
+	controllers.RegisterAdsRoutes(apiv2path, adsCtrl)
+	controllers.RegisterAdsRoutes(basepath, adsCtrl)
+	controllers.RegisterAdsRoutes(apibasepath, adsCtrl)
+	controllers.RegisterAdsRoutes(rootbasepath, adsCtrl)
 
 	// WebSocket Streaming Route (token via Authorization header or ?token=)
 	basepath.GET("/streams/ws", middleware.AuthRequired(), controllers.StreamWebSocket)
