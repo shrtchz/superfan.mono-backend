@@ -147,7 +147,7 @@ func (ac *AdsController) LogAdEvent(c *gin.Context) {
 func (ac *AdsController) GetPlacementEligibility(c *gin.Context) {
 	key := c.Param("key")
 	if key == "" {
-		key = "QUIZ_MIDPOINT"
+		key = "MID_QUIZ_AD"
 	}
 
 	userIdStr := c.Query("userId")
@@ -165,10 +165,58 @@ func (ac *AdsController) GetPlacementEligibility(c *gin.Context) {
 	utils.Success(c, http.StatusOK, "Eligibility determined successfully", res)
 }
 
+// GetPlacements handles GET /v2/ads/placements
+func (ac *AdsController) GetPlacements(c *gin.Context) {
+	placements, err := ac.adsService.GetAllPlacements(c.Request.Context())
+	if err != nil {
+		utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
+		return
+	}
+
+	utils.Success(c, http.StatusOK, "Placements retrieved successfully", placements)
+}
+
+// EstimateAdCost handles POST /v2/ads/estimate
+func (ac *AdsController) EstimateAdCost(c *gin.Context) {
+	var req services.EstimateAdCostRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "invalid estimate payload: "+err.Error())
+		return
+	}
+
+	estimate, err := ac.adsService.EstimateAdCost(c.Request.Context(), &req)
+	if err != nil {
+		utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
+		return
+	}
+
+	utils.Success(c, http.StatusOK, "Ad cost and reach estimated successfully", estimate)
+}
+
+// AwardMidQuizReward handles POST /v2/ads/reward
+func (ac *AdsController) AwardMidQuizReward(c *gin.Context) {
+	var req services.AwardAdRewardRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "invalid reward request payload: "+err.Error())
+		return
+	}
+
+	res, err := ac.adsService.AwardMidQuizAdReward(c.Request.Context(), &req)
+	if err != nil {
+		utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
+		return
+	}
+
+	utils.Success(c, http.StatusOK, res.Message, res)
+}
+
 // RegisterAdsRoutes registers all ads routes under a given router group
 func RegisterAdsRoutes(rg *gin.RouterGroup, ac *AdsController) {
 	adsGroup := rg.Group("/ads")
 	{
+		adsGroup.GET("/placements", ac.GetPlacements)
+		adsGroup.POST("/estimate", ac.EstimateAdCost)
+		adsGroup.POST("/reward", ac.AwardMidQuizReward)
 		adsGroup.POST("/campaigns", ac.CreateCampaign)
 		adsGroup.GET("/campaigns", ac.GetCampaigns)
 		adsGroup.GET("/inventory/stats", ac.GetInventoryStats)

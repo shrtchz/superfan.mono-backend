@@ -111,6 +111,9 @@ func init() {
 	pgURI := get("DATABASE_URL")
 	if pgURI != "" {
 		utils.ConnectPostgres(pgURI)
+		if utils.DB != nil {
+			_ = utils.DB.AutoMigrate(&models.AdCampaign{}, &models.AdPlacement{}, &models.AdEvent{})
+		}
 	} else {
 		log.Println("DATABASE_URL environment variable is not set; skipping PostgreSQL connection")
 	}
