@@ -18,6 +18,7 @@ import (
 
 	"quiz.superfan.com/apis/controllers"
 	"quiz.superfan.com/apis/middleware"
+	"quiz.superfan.com/apis/models"
 	"quiz.superfan.com/apis/services"
 
 	paymentControllers "quiz.superfan.com/apis/controllers"

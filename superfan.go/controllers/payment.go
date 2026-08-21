@@ -110,6 +110,7 @@ func RegisterPaymentRoutes(rg *gin.RouterGroup, pc *PaymentController) {
 	paymentGroup.GET("/convert", pc.ConvertCurrency)
 	paymentGroup.POST("/convert", pc.ConvertCurrency)
 	paymentGroup.POST("/wallet-withdrawal", pc.WalletWithdrawal)
+	paymentGroup.POST("/debit", pc.DebitWallet)
 	paymentGroup.POST("/validate-otp", pc.ValidateOTP)
 }
 
@@ -599,6 +600,70 @@ func (pc *PaymentController) WalletWithdrawal(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, res)
+}
+
+// DebitWallet handles POST /v1/payment/debit
+// Debits a user's wallet for ad campaigns, subscriptions, or fees.
+func (pc *PaymentController) DebitWallet(c *gin.Context) {
+	var req map[string]interface{}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		sendDetailedError(c, http.StatusBadRequest, "BAD_REQUEST", "Invalid request payload", err)
+		return
+	}
+
+	amount := 0.0
+	switch v := req["amount"].(type) {
+	case float64:
+		amount = v
+	case int:
+		amount = float64(v)
+	case string:
+		fmt.Sscanf(v, "%f", &amount)
+	}
+
+	if amount <= 0 {
+		sendDetailedError(c, http.StatusBadRequest, "BAD_REQUEST", "amount must be greater than 0", nil)
+		return
+	}
+
+	userId := 0
+	if uid, ok := req["userId"].(float64); ok {
+		userId = int(uid)
+	} else if uidStr, ok := req["userId"].(string); ok {
+		fmt.Sscanf(uidStr, "%d", &userId)
+	}
+	if userId <= 0 {
+		fmt.Sscanf(c.Query("userId"), "%d", &userId)
+	}
+	if userId <= 0 {
+		sendDetailedError(c, http.StatusBadRequest, "BAD_REQUEST", "userId must be a positive integer", nil)
+		return
+	}
+
+	description, _ := req["description"].(string)
+	if description == "" {
+		description = "Ad Fee Wallet Debit"
+	}
+
+	txRef, _ := req["reference"].(string)
+	if txRef == "" {
+		txRef = fmt.Sprintf("DEBIT-ADS-%d", time.Now().UnixNano())
+	}
+
+	log.Printf("[PaymentController] DebitWallet - userId=%d amount=%.2f desc=%s ref=%s", userId, amount, description, txRef)
+
+	res, err := pc.paymentService.DebitUserWallet(c.Request.Context(), userId, amount, description, txRef)
+	if err != nil {
+		sendDetailedError(c, http.StatusBadRequest, "DEBIT_FAILED", err.Error(), err)
+		return
+	}
+
+	c.JSON(http.StatusOK, map[string]interface{}{
+		"requestSuccessful": true,
+		"responseCode":      "0",
+		"responseMessage":   "Wallet debited successfully",
+		"responseBody":      res,
+	})
 }
 
 // ValidateOTP handles POST /v1/payment/validate-otp
