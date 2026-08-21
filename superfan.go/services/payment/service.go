@@ -1331,6 +1331,86 @@ func (s *PaymentService) ValidateWithdrawalOTP(ctx context.Context, reference, a
 	return s.monnifyProvider.ValidateDisbursementOTP(ctx, reference, authCode)
 }
 
+// DebitUserWallet atomically debits a user's wallet for ad campaigns or services, creating both WalletTransaction and ActivityWallet records.
+func (s *PaymentService) DebitUserWallet(ctx context.Context, userID int, amount float64, description, txRef string) (*models.Wallet, error) {
+	if userID <= 0 {
+		return nil, errors.New("invalid userId")
+	}
+	if amount <= 0 {
+		return nil, errors.New("amount must be greater than 0")
+	}
+	if description == "" {
+		description = "Ad Fee Wallet Debit"
+	}
+	if txRef == "" {
+		txRef = fmt.Sprintf("DEBIT-ADS-%d", time.Now().UnixNano())
+	}
+
+	log.Printf("[PaymentService] DebitUserWallet - userID=%d amount=%.2f desc=%s ref=%s", userID, amount, description, txRef)
+
+	var updatedWallet models.Wallet
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var wallet models.Wallet
+		if err := tx.Where("\"userId\" = ?", userID).First(&wallet).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return errors.New("wallet not found for user")
+			}
+			return fmt.Errorf("failed to fetch wallet: %w", err)
+		}
+
+		if wallet.PersonalBalance < amount {
+			return fmt.Errorf("insufficient wallet balance (available: %.2f, required: %.2f)", wallet.PersonalBalance, amount)
+		}
+
+		// Debit personal balance
+		wallet.PersonalBalance -= amount
+		wallet.Balance = wallet.PersonalBalance
+
+		if err := tx.Save(&wallet).Error; err != nil {
+			return fmt.Errorf("failed to debit wallet: %w", err)
+		}
+
+		// Record in WalletTransaction
+		txType := "DEBIT"
+		wTx := models.WalletTransaction{
+			UserID:      userID,
+			Amount:      amount,
+			Type:        &txType,
+			Description: &description,
+			TrxRef:      &txRef,
+			CreatedAt:   time.Now(),
+		}
+		if err := tx.Create(&wTx).Error; err != nil {
+			log.Printf("[PaymentService] WARNING: Failed to create WalletTransaction for debit: %v", err)
+		}
+
+		// Record in ActivityWallet
+		actTx := models.ActivityWallet{
+			UserID:      userID,
+			Type:        "debit",
+			Title:       description,
+			Description: description,
+			Amount:      amount,
+			Currency:    "NGN",
+			Reference:   &txRef,
+			Status:      "SUCCESS",
+			CreatedAt:   time.Now(),
+		}
+		if err := tx.Create(&actTx).Error; err != nil {
+			log.Printf("[PaymentService] WARNING: Failed to create ActivityWallet for debit: %v", err)
+		}
+
+		updatedWallet = wallet
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &updatedWallet, nil
+}
+
 // CreateUserWithdrawalBank saves a withdrawal bank account for a user.
 func (s *PaymentService) CreateUserWithdrawalBank(ctx context.Context, userID int, accountName, accountNumber, bankName, bankCode string) (*models.UserWithdrawalBank, error) {
 	if userID <= 0 {

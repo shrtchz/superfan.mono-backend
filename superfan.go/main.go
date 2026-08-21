@@ -18,6 +18,7 @@ import (
 
 	"quiz.superfan.com/apis/controllers"
 	"quiz.superfan.com/apis/middleware"
+	"quiz.superfan.com/apis/models"
 	"quiz.superfan.com/apis/services"
 
 	paymentControllers "quiz.superfan.com/apis/controllers"
@@ -111,6 +112,9 @@ func init() {
 	pgURI := get("DATABASE_URL")
 	if pgURI != "" {
 		utils.ConnectPostgres(pgURI)
+		if utils.DB != nil {
+			_ = utils.DB.AutoMigrate(&models.AdCampaign{}, &models.AdPlacement{}, &models.AdEvent{})
+		}
 	} else {
 		log.Println("DATABASE_URL environment variable is not set; skipping PostgreSQL connection")
 	}
