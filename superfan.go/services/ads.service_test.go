@@ -168,6 +168,6 @@ func TestAdsService_Integration(t *testing.T) {
 
 	// Cleanup test campaign
 	db.Where("id = ?", created.ID).Delete(&models.AdCampaign{})
-	db.Where("campaignId = ?", created.ID).Delete(&models.AdPlacement{})
-	db.Where("campaignId = ?", created.ID).Delete(&models.AdEvent{})
+	db.Where(`"campaignId" = ?`, created.ID).Delete(&models.AdPlacement{})
+	db.Where(`"campaignId" = ?`, created.ID).Delete(&models.AdEvent{})
 }

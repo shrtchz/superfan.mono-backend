@@ -135,6 +135,7 @@ type CreateCampaignRequest struct {
 	PlacementType   *string            `json:"placementType"`
 	QuestionBlocks  *int               `json:"questionBlocks"`
 	DurationSec     *int               `json:"durationSec"`
+	Status          *string            `json:"status"`
 }
 
 type CampaignListQuery struct {
@@ -641,7 +642,13 @@ func (s *adsServiceImpl) CreateCampaign(ctx context.Context, req *CreateCampaign
 		}
 	}
 
-	status := models.AdStatusActive
+	status := models.AdStatusPending
+	if req.Status != nil && *req.Status != "" {
+		sStr := strings.ToUpper(strings.TrimSpace(*req.Status))
+		if sStr == "ACTIVE" || sStr == "PAUSED" || sStr == "COMPLETED" || sStr == "PENDING" {
+			status = models.AdStatus(sStr)
+		}
+	}
 	paymentStatus := "PAID"
 	if req.PaymentRef == nil || *req.PaymentRef == "" {
 		paymentStatus = "PAID"
@@ -899,37 +906,195 @@ func (s *adsServiceImpl) GetPlacementEligibility(ctx context.Context, userId int
 		}
 	}
 
-	// 2. Find an active ad placement
+	placementKeyUpper := strings.ToUpper(strings.TrimSpace(placementKey))
+	ruleTypeUpper := strings.ToUpper(string(rule.PlacementType))
+
+	// 2. Primary Lookup: Try finding an active/valid AdPlacement linked to an active/valid campaign
 	var placement models.AdPlacement
+	var campaign models.AdCampaign
+
 	err := s.db.WithContext(ctx).
-		Where("key = ? OR key = ?", string(rule.PlacementType), placementKey).
-		Order("id DESC").
+		Table(`"AdPlacement"`).
+		Select(`"AdPlacement".*`).
+		Joins(`JOIN "AdCampaign" ON "AdCampaign".id = "AdPlacement"."campaignId"`).
+		Where(`(UPPER("AdPlacement".key) IN (?, ?) OR UPPER("AdPlacement"."placementType") IN (?, ?)) AND LOWER("AdCampaign".status) IN ('active', 'paid', 'approved', 'pending')`, placementKeyUpper, ruleTypeUpper, placementKeyUpper, ruleTypeUpper).
+		Order(`CASE WHEN LOWER("AdCampaign".status) = 'active' THEN 1 WHEN LOWER("AdCampaign".status) = 'paid' THEN 2 WHEN LOWER("AdCampaign".status) = 'approved' THEN 3 ELSE 4 END, "AdPlacement".id DESC`).
 		First(&placement).Error
 
-	if err != nil {
-		// Fallback: system default placement
+	if err == nil && placement.CampaignID > 0 {
+		_ = s.db.WithContext(ctx).First(&campaign, placement.CampaignID).Error
+
+		media := placement.MediaURL
+		if strings.TrimSpace(media) == "" && len(campaign.MediaURLs) > 0 {
+			media = campaign.MediaURLs[0]
+		}
+		if strings.TrimSpace(media) == "" {
+			media = "/videos/playcommentary.mp4"
+		}
+
+		durationSec := placement.DurationSec
+		if durationSec <= 0 {
+			durationSec = rule.DurationSec
+		}
+
+		skipAfterSec := placement.SkipAfterSec
+		if skipAfterSec <= 0 && rule.SkipAfterSec > 0 {
+			skipAfterSec = rule.SkipAfterSec
+		}
+
+		ptsAmount := placement.PointsAwardAmount
+		if ptsAmount <= 0 && rule.PointsAwardAmount > 0 {
+			ptsAmount = rule.PointsAwardAmount
+		}
+
+		pricingModel := placement.PricingModel
+		if strings.TrimSpace(pricingModel) == "" && campaign.PricingModel != nil {
+			pricingModel = *campaign.PricingModel
+		}
+		if strings.TrimSpace(pricingModel) == "" {
+			pricingModel = rule.PricingModel
+		}
+
+		createdAt := placement.CreatedAt
+		if createdAt.IsZero() {
+			createdAt = campaign.CreatedAt
+		}
+		if createdAt.IsZero() {
+			createdAt = time.Now()
+		}
+
+		key := placement.Key
+		if strings.TrimSpace(key) == "" {
+			key = string(rule.PlacementType)
+		}
+
+		placementType := placement.PlacementType
+		if strings.TrimSpace(string(placementType)) == "" {
+			placementType = rule.PlacementType
+		}
+
 		return &PlacementEligibilityResponse{
 			Eligible: true,
+			Campaign: &campaign,
 			Placement: &models.AdPlacement{
+				ID:                placement.ID,
+				CampaignID:        placement.CampaignID,
+				Key:               key,
+				PlacementType:     placementType,
+				MediaURL:          media,
+				DurationSec:       durationSec,
+				SkipAllowed:       placement.SkipAllowed,
+				SkipAfterSec:      skipAfterSec,
+				PointsAwardActive: placement.PointsAwardActive || rule.PointsAwardActive,
+				PointsAwardAmount: ptsAmount,
+				PricingModel:      pricingModel,
+				CreatedAt:         createdAt,
+			},
+		}, nil
+	}
+
+	// 3. Secondary Lookup: Try finding an AdCampaign directly matching the placement type
+	var directCampaign models.AdCampaign
+	directErr := s.db.WithContext(ctx).
+		Where(`(UPPER("placementType") = ? OR UPPER("placementType") = ?) AND LOWER(status) IN ('active', 'paid', 'approved', 'pending')`, placementKeyUpper, ruleTypeUpper).
+		Order(`CASE WHEN LOWER(status) = 'active' THEN 1 WHEN LOWER(status) = 'paid' THEN 2 WHEN LOWER(status) = 'approved' THEN 3 ELSE 4 END, id DESC`).
+		First(&directCampaign).Error
+
+	if directErr == nil && directCampaign.ID > 0 {
+		media := "/videos/playcommentary.mp4"
+		if len(directCampaign.MediaURLs) > 0 && strings.TrimSpace(directCampaign.MediaURLs[0]) != "" {
+			media = directCampaign.MediaURLs[0]
+		}
+
+		pricingModel := rule.PricingModel
+		if directCampaign.PricingModel != nil && strings.TrimSpace(*directCampaign.PricingModel) != "" {
+			pricingModel = *directCampaign.PricingModel
+		}
+
+		createdAt := directCampaign.CreatedAt
+		if createdAt.IsZero() {
+			createdAt = time.Now()
+		}
+
+		return &PlacementEligibilityResponse{
+			Eligible: true,
+			Campaign: &directCampaign,
+			Placement: &models.AdPlacement{
+				ID:                directCampaign.ID,
+				CampaignID:        directCampaign.ID,
 				Key:               string(rule.PlacementType),
 				PlacementType:     rule.PlacementType,
-				MediaURL:          "/videos/playcommentary.mp4",
+				MediaURL:          media,
 				DurationSec:       rule.DurationSec,
 				SkipAllowed:       rule.SkipAllowed,
 				SkipAfterSec:      rule.SkipAfterSec,
 				PointsAwardActive: rule.PointsAwardActive,
 				PointsAwardAmount: rule.PointsAwardAmount,
-				PricingModel:      rule.PricingModel,
+				PricingModel:      pricingModel,
+				CreatedAt:         createdAt,
 			},
 		}, nil
 	}
 
-	var campaign models.AdCampaign
-	_ = s.db.WithContext(ctx).First(&campaign, placement.CampaignID).Error
+	// 4. Tertiary Lookup: Try finding ANY AdCampaign directly in database
+	var activeCampaign models.AdCampaign
+	campaignErr := s.db.WithContext(ctx).
+		Where(`LOWER(status) IN ('active', 'paid', 'approved', 'pending')`).
+		Order(`CASE WHEN LOWER(status) = 'active' THEN 1 WHEN LOWER(status) = 'paid' THEN 2 WHEN LOWER(status) = 'approved' THEN 3 ELSE 4 END, id DESC`).
+		First(&activeCampaign).Error
 
+	if campaignErr == nil && activeCampaign.ID > 0 {
+		media := "/videos/playcommentary.mp4"
+		if len(activeCampaign.MediaURLs) > 0 && strings.TrimSpace(activeCampaign.MediaURLs[0]) != "" {
+			media = activeCampaign.MediaURLs[0]
+		}
+
+		pricingModel := rule.PricingModel
+		if activeCampaign.PricingModel != nil && strings.TrimSpace(*activeCampaign.PricingModel) != "" {
+			pricingModel = *activeCampaign.PricingModel
+		}
+
+		createdAt := activeCampaign.CreatedAt
+		if createdAt.IsZero() {
+			createdAt = time.Now()
+		}
+
+		return &PlacementEligibilityResponse{
+			Eligible: true,
+			Campaign: &activeCampaign,
+			Placement: &models.AdPlacement{
+				ID:                activeCampaign.ID,
+				CampaignID:        activeCampaign.ID,
+				Key:               string(rule.PlacementType),
+				PlacementType:     rule.PlacementType,
+				MediaURL:          media,
+				DurationSec:       rule.DurationSec,
+				SkipAllowed:       rule.SkipAllowed,
+				SkipAfterSec:      rule.SkipAfterSec,
+				PointsAwardActive: rule.PointsAwardActive,
+				PointsAwardAmount: rule.PointsAwardAmount,
+				PricingModel:      pricingModel,
+				CreatedAt:         createdAt,
+			},
+		}, nil
+	}
+
+	// Fallback: system default placement if no campaign exists in database
 	return &PlacementEligibilityResponse{
-		Eligible:  true,
-		Campaign:  &campaign,
-		Placement: &placement,
+		Eligible: true,
+		Placement: &models.AdPlacement{
+			ID:                0,
+			CampaignID:        0,
+			Key:               string(rule.PlacementType),
+			PlacementType:     rule.PlacementType,
+			MediaURL:          "/videos/playcommentary.mp4",
+			DurationSec:       rule.DurationSec,
+			SkipAllowed:       rule.SkipAllowed,
+			SkipAfterSec:      rule.SkipAfterSec,
+			PointsAwardActive: rule.PointsAwardActive,
+			PointsAwardAmount: rule.PointsAwardAmount,
+			PricingModel:      rule.PricingModel,
+			CreatedAt:         time.Now(),
+		},
 	}, nil
 }
