@@ -1036,7 +1036,7 @@ func (s *adsServiceImpl) GetPlacementEligibility(ctx context.Context, userId int
 		}, nil
 	}
 
-	// 4. Tertiary Lookup: Try finding ANY AdCampaign directly in database
+	// 4. Tertiary Lookup: Try finding ANY active AdCampaign directly in database
 	var activeCampaign models.AdCampaign
 	campaignErr := s.db.WithContext(ctx).
 		Where(`LOWER(status) IN ('active', 'paid', 'approved', 'pending')`).
@@ -1065,6 +1065,120 @@ func (s *adsServiceImpl) GetPlacementEligibility(ctx context.Context, userId int
 			Placement: &models.AdPlacement{
 				ID:                activeCampaign.ID,
 				CampaignID:        activeCampaign.ID,
+				Key:               string(rule.PlacementType),
+				PlacementType:     rule.PlacementType,
+				MediaURL:          media,
+				DurationSec:       rule.DurationSec,
+				SkipAllowed:       rule.SkipAllowed,
+				SkipAfterSec:      rule.SkipAfterSec,
+				PointsAwardActive: rule.PointsAwardActive,
+				PointsAwardAmount: rule.PointsAwardAmount,
+				PricingModel:      pricingModel,
+				CreatedAt:         createdAt,
+			},
+		}, nil
+	}
+
+	// 5. Quaternary Lookup: Try finding ANY AdPlacement or AdCampaign in database regardless of status
+	var anyPlacement models.AdPlacement
+	var anyCampaign models.AdCampaign
+
+	anyPlacementErr := s.db.WithContext(ctx).
+		Table(`"AdPlacement"`).
+		Select(`"AdPlacement".*`).
+		Joins(`JOIN "AdCampaign" ON "AdCampaign".id = "AdPlacement"."campaignId"`).
+		Order(`"AdPlacement".id DESC`).
+		First(&anyPlacement).Error
+
+	if anyPlacementErr == nil && anyPlacement.CampaignID > 0 {
+		_ = s.db.WithContext(ctx).First(&anyCampaign, anyPlacement.CampaignID).Error
+
+		media := anyPlacement.MediaURL
+		if strings.TrimSpace(media) == "" && len(anyCampaign.MediaURLs) > 0 {
+			media = anyCampaign.MediaURLs[0]
+		}
+		if strings.TrimSpace(media) == "" {
+			media = "/videos/playcommentary.mp4"
+		}
+
+		durationSec := anyPlacement.DurationSec
+		if durationSec <= 0 {
+			durationSec = rule.DurationSec
+		}
+
+		skipAfterSec := anyPlacement.SkipAfterSec
+		if skipAfterSec <= 0 && rule.SkipAfterSec > 0 {
+			skipAfterSec = rule.SkipAfterSec
+		}
+
+		ptsAmount := anyPlacement.PointsAwardAmount
+		if ptsAmount <= 0 && rule.PointsAwardAmount > 0 {
+			ptsAmount = rule.PointsAwardAmount
+		}
+
+		pricingModel := anyPlacement.PricingModel
+		if strings.TrimSpace(pricingModel) == "" && anyCampaign.PricingModel != nil {
+			pricingModel = *anyCampaign.PricingModel
+		}
+		if strings.TrimSpace(pricingModel) == "" {
+			pricingModel = rule.PricingModel
+		}
+
+		createdAt := anyPlacement.CreatedAt
+		if createdAt.IsZero() {
+			createdAt = anyCampaign.CreatedAt
+		}
+		if createdAt.IsZero() {
+			createdAt = time.Now()
+		}
+
+		return &PlacementEligibilityResponse{
+			Eligible: true,
+			Campaign: &anyCampaign,
+			Placement: &models.AdPlacement{
+				ID:                anyPlacement.ID,
+				CampaignID:        anyPlacement.CampaignID,
+				Key:               string(rule.PlacementType),
+				PlacementType:     rule.PlacementType,
+				MediaURL:          media,
+				DurationSec:       durationSec,
+				SkipAllowed:       anyPlacement.SkipAllowed,
+				SkipAfterSec:      skipAfterSec,
+				PointsAwardActive: anyPlacement.PointsAwardActive || rule.PointsAwardActive,
+				PointsAwardAmount: ptsAmount,
+				PricingModel:      pricingModel,
+				CreatedAt:         createdAt,
+			},
+		}, nil
+	}
+
+	var fallbackCampaign models.AdCampaign
+	fallbackErr := s.db.WithContext(ctx).
+		Order(`id DESC`).
+		First(&fallbackCampaign).Error
+
+	if fallbackErr == nil && fallbackCampaign.ID > 0 {
+		media := "/videos/playcommentary.mp4"
+		if len(fallbackCampaign.MediaURLs) > 0 && strings.TrimSpace(fallbackCampaign.MediaURLs[0]) != "" {
+			media = fallbackCampaign.MediaURLs[0]
+		}
+
+		pricingModel := rule.PricingModel
+		if fallbackCampaign.PricingModel != nil && strings.TrimSpace(*fallbackCampaign.PricingModel) != "" {
+			pricingModel = *fallbackCampaign.PricingModel
+		}
+
+		createdAt := fallbackCampaign.CreatedAt
+		if createdAt.IsZero() {
+			createdAt = time.Now()
+		}
+
+		return &PlacementEligibilityResponse{
+			Eligible: true,
+			Campaign: &fallbackCampaign,
+			Placement: &models.AdPlacement{
+				ID:                fallbackCampaign.ID,
+				CampaignID:        fallbackCampaign.ID,
 				Key:               string(rule.PlacementType),
 				PlacementType:     rule.PlacementType,
 				MediaURL:          media,
