@@ -117,6 +117,8 @@ type RewardAdQuotaResponse struct {
 	MaxDailyRewardedAds int       `json:"maxDailyRewardedAds"`
 	RewardedAdsToday    int       `json:"rewardedAdsToday"`
 	RemainingAds        int       `json:"remainingAds"`
+	TodayRewardPoints   int       `json:"todayRewardPoints"`
+	AllTimeRewardPoints int       `json:"allTimeRewardPoints"`
 	ResetsAt            time.Time `json:"resetsAt"`
 }
 
@@ -600,10 +602,26 @@ func (s *adsServiceImpl) GetRewardAdQuota(ctx context.Context, userID int) (*Rew
 		remainingAds = 0
 	}
 
+	var todayRewardPoints int64
+	if err := s.db.WithContext(ctx).Model(&models.AdEvent{}).
+		Where(`"userId" = ? AND "eventType" = ? AND "createdAt" >= ?`, userID, models.AdEventTypeRewardAwarded, startOfDay).
+		Select(`COALESCE(SUM("pointsGiven"), 0)`).Scan(&todayRewardPoints).Error; err != nil {
+		return nil, fmt.Errorf("failed to get today's ad reward points: %w", err)
+	}
+
+	var allTimeRewardPoints int64
+	if err := s.db.WithContext(ctx).Model(&models.AdEvent{}).
+		Where(`"userId" = ? AND "eventType" = ?`, userID, models.AdEventTypeRewardAwarded).
+		Select(`COALESCE(SUM("pointsGiven"), 0)`).Scan(&allTimeRewardPoints).Error; err != nil {
+		return nil, fmt.Errorf("failed to get all-time ad reward points: %w", err)
+	}
+
 	return &RewardAdQuotaResponse{
 		MaxDailyRewardedAds: maxDailyRewardedAds,
 		RewardedAdsToday:    int(todayRewardCount),
 		RemainingAds:        remainingAds,
+		TodayRewardPoints:   int(todayRewardPoints),
+		AllTimeRewardPoints: int(allTimeRewardPoints),
 		ResetsAt:            resetsAt,
 	}, nil
 }
