@@ -446,11 +446,8 @@ func (s *adsServiceImpl) EstimateAdCost(ctx context.Context, req *EstimateAdCost
 func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdRewardRequest) (*AwardAdRewardResponse, error) {
 	rule := ResolvePlacementConfig(req.PlacementKey)
 
-	// 1. Completed ad rewards apply to pre-, mid-, and post-quiz placements.
-	isRewardPlacement := rule.PlacementType == models.PlacementMidQuizAd ||
-		rule.PlacementType == models.PlacementPreQuizAd ||
-		rule.PlacementType == models.PlacementPostQuizAd
-	if !isRewardPlacement {
+	// 1. Points award logic is only active for Mid-Quiz Ad.
+	if !rule.PointsAwardActive {
 		return &AwardAdRewardResponse{
 			Awarded:           false,
 			PointsAwarded:     0,
@@ -459,8 +456,8 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 		}, nil
 	}
 
-	// 2. Full placement-duration watch validation (without skipping)
-	if req.Skipped || req.WatchedSeconds < rule.DurationSec {
+	// 2. Full 15-second watch validation (without skipping)
+	if req.Skipped || req.WatchedSeconds < 15 {
 		campaignID := 0
 		if req.CampaignID != nil {
 			campaignID = *req.CampaignID
@@ -475,7 +472,7 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 			Awarded:           false,
 			PointsAwarded:     0,
 			DailyQuotaReached: false,
-			Message:           fmt.Sprintf("Must watch the full %d seconds without skipping to receive reward points", rule.DurationSec),
+			Message:           "Must watch the full 15 seconds without skipping to receive reward points",
 		}, nil
 	}
 
