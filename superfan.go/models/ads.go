@@ -39,6 +39,7 @@ type AdCampaign struct {
 	ID              int            `gorm:"column:id;primaryKey;autoIncrement" json:"id"`
 	UserID          *int           `gorm:"column:userId" json:"userId,omitempty"`
 	Username        *string        `gorm:"column:username" json:"username,omitempty"`
+	FullName        *string        `gorm:"-" json:"fullName,omitempty"`
 	ProfilePicture  *string        `gorm:"-" json:"profilePicture,omitempty"`
 	Headline        string         `gorm:"column:headline" json:"headline"`
 	Description     *string        `gorm:"column:description" json:"description,omitempty"`

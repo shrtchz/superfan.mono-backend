@@ -966,11 +966,12 @@ func (s *adsServiceImpl) GetPlacementEligibility(ctx context.Context, userId int
 		if campaign.UserID != nil && *campaign.UserID > 0 {
 			var owner models.User
 			if ownerErr := s.db.WithContext(ctx).
-				Select("id, username, profilePicture").
+				Select("id, firstName, lastName, username, profilePicture").
 				First(&owner, *campaign.UserID).Error; ownerErr == nil {
 				campaign.ProfilePicture = owner.ProfilePicture
-				if (campaign.Username == nil || strings.TrimSpace(*campaign.Username) == "") && owner.Username != "" {
-					campaign.Username = &owner.Username
+				fullName := strings.TrimSpace(strings.TrimSpace(owner.FirstName) + " " + strings.TrimSpace(owner.LastName))
+				if fullName != "" {
+					campaign.FullName = &fullName
 				}
 			}
 		}
