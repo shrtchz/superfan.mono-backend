@@ -22,6 +22,7 @@ type AdsService interface {
 	GetPlacementEligibility(ctx context.Context, userId int, placementKey string) (*PlacementEligibilityResponse, error)
 	EstimateAdCost(ctx context.Context, req *EstimateAdCostRequest) (*EstimateAdCostResponse, error)
 	GetAllPlacements(ctx context.Context) ([]PlacementFormatRule, error)
+	GetRewardAdQuota(ctx context.Context, userID int) (*RewardAdQuotaResponse, error)
 	AwardMidQuizAdReward(ctx context.Context, req *AwardAdRewardRequest) (*AwardAdRewardResponse, error)
 }
 
@@ -110,6 +111,13 @@ type AwardAdRewardResponse struct {
 	Message           string  `json:"message"`
 	TotalPoints       int     `json:"totalPoints,omitempty"`
 	NewWalletBalance  float64 `json:"newWalletBalance,omitempty"`
+}
+
+type RewardAdQuotaResponse struct {
+	MaxDailyRewardedAds int       `json:"maxDailyRewardedAds"`
+	RewardedAdsToday    int       `json:"rewardedAdsToday"`
+	RemainingAds        int       `json:"remainingAds"`
+	ResetsAt            time.Time `json:"resetsAt"`
 }
 
 type CreateCampaignRequest struct {
@@ -571,6 +579,32 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 		DailyQuotaReached: false,
 		Message:           "200 PTS awarded successfully",
 		NewWalletBalance:  newBalance,
+	}, nil
+}
+
+func (s *adsServiceImpl) GetRewardAdQuota(ctx context.Context, userID int) (*RewardAdQuotaResponse, error) {
+	now := time.Now()
+	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	resetsAt := startOfDay.AddDate(0, 0, 1)
+
+	var todayRewardCount int64
+	if err := s.db.WithContext(ctx).Model(&models.AdEvent{}).
+		Where(`"userId" = ? AND "eventType" = ? AND "createdAt" >= ?`, userID, models.AdEventTypeRewardAwarded, startOfDay).
+		Count(&todayRewardCount).Error; err != nil {
+		return nil, fmt.Errorf("failed to get reward ad quota: %w", err)
+	}
+
+	const maxDailyRewardedAds = 5
+	remainingAds := maxDailyRewardedAds - int(todayRewardCount)
+	if remainingAds < 0 {
+		remainingAds = 0
+	}
+
+	return &RewardAdQuotaResponse{
+		MaxDailyRewardedAds: maxDailyRewardedAds,
+		RewardedAdsToday:    int(todayRewardCount),
+		RemainingAds:        remainingAds,
+		ResetsAt:            resetsAt,
 	}, nil
 }
 
