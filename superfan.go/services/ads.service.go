@@ -881,11 +881,17 @@ func (s *adsServiceImpl) UpdateCampaignStatus(ctx context.Context, id int, statu
 		return nil, fmt.Errorf("campaign not found: %w", err)
 	}
 
-	campaign.Status = status
-	campaign.UpdatedAt = time.Now()
-
-	if err := s.db.WithContext(ctx).Save(&campaign).Error; err != nil {
+	if err := s.db.WithContext(ctx).Model(&models.AdCampaign{}).
+		Where("id = ?", id).
+		Updates(map[string]interface{}{
+			"status":    status,
+			"updatedAt": time.Now(),
+		}).Error; err != nil {
 		return nil, fmt.Errorf("failed to update campaign status: %w", err)
+	}
+
+	if err := s.db.WithContext(ctx).First(&campaign, id).Error; err != nil {
+		return nil, fmt.Errorf("failed to reload campaign after status update: %w", err)
 	}
 
 	return &campaign, nil
