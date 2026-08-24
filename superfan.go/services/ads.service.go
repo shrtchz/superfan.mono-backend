@@ -41,11 +41,11 @@ type PlacementFormatRule struct {
 	DurationSec          int                  `json:"durationSec"`
 	SkipAllowed          bool                 `json:"skipAllowed"`
 	SkipAfterSec         int                  `json:"skipAfterSec"`
-	PricingModel         string               `json:"pricingModel"` // "CPM", "CPA", "SPONSORED_BLOCKS"
-	Rate                 int                  `json:"rate"`         // CPM rate in NGN or CPA rate (150) or Price per block (25000)
-	RateUnit             string               `json:"rateUnit"`     // "per 1,000 impressions", "per view", "per 25-question block"
+	PricingModel         string               `json:"pricingModel"`         // "CPM", "CPA", "SPONSORED_BLOCKS"
+	Rate                 int                  `json:"rate"`                 // CPM rate in NGN or CPA rate (150) or Price per block (25000)
+	RateUnit             string               `json:"rateUnit"`             // "per 1,000 impressions", "per view", "per 25-question block"
 	GuaranteedDailyUnits int                  `json:"guaranteedDailyUnits"` // 5000
-	UnitType             string               `json:"unitType"`     // "Impressions", "Views", "Blocks"
+	UnitType             string               `json:"unitType"`             // "Impressions", "Views", "Blocks"
 	PointsAwardActive    bool                 `json:"pointsAwardActive"`
 	PointsAwardAmount    int                  `json:"pointsAwardAmount"`
 	BaseUnitQuestions    int                  `json:"baseUnitQuestions,omitempty"`
@@ -121,29 +121,29 @@ type RewardAdQuotaResponse struct {
 }
 
 type CreateCampaignRequest struct {
-	UserID          *int               `json:"userId"`
-	Username        *string            `json:"username"`
-	Headline        string             `json:"headline"`
-	Description     *string            `json:"description"`
-	ButtonLabel     *string            `json:"buttonLabel"`
-	WebsiteURL      *string            `json:"websiteUrl"`
-	MediaURLs       []string           `json:"mediaUrls"`
-	MediaType       *string            `json:"mediaType"`
-	DailyFee        int                `json:"dailyFee"`
-	TotalFee        int                `json:"totalFee"`
-	Days            int                `json:"days"`
-	StartDate       string             `json:"startDate"`
-	StartTime       string             `json:"startTime"`
-	EndDate         *string            `json:"endDate"`
-	RunContinuously bool               `json:"runContinuously"`
-	AgeRange        *string            `json:"ageRange"`
-	PaymentMethod   *string            `json:"paymentMethod"`
-	PaymentRef      *string            `json:"paymentRef"`
-	PlacementKey    *string            `json:"placementKey"` // e.g. "QUIZ_AD_Q1", "MID_QUIZ_AD", "POST_QUIZ_AD", "PRE_QUIZ_AD", "SPONSORED_QUESTIONS"
-	PlacementType   *string            `json:"placementType"`
-	QuestionBlocks  *int               `json:"questionBlocks"`
-	DurationSec     *int               `json:"durationSec"`
-	Status          *string            `json:"status"`
+	UserID          *int     `json:"userId"`
+	Username        *string  `json:"username"`
+	Headline        string   `json:"headline"`
+	Description     *string  `json:"description"`
+	ButtonLabel     *string  `json:"buttonLabel"`
+	WebsiteURL      *string  `json:"websiteUrl"`
+	MediaURLs       []string `json:"mediaUrls"`
+	MediaType       *string  `json:"mediaType"`
+	DailyFee        int      `json:"dailyFee"`
+	TotalFee        int      `json:"totalFee"`
+	Days            int      `json:"days"`
+	StartDate       string   `json:"startDate"`
+	StartTime       string   `json:"startTime"`
+	EndDate         *string  `json:"endDate"`
+	RunContinuously bool     `json:"runContinuously"`
+	AgeRange        *string  `json:"ageRange"`
+	PaymentMethod   *string  `json:"paymentMethod"`
+	PaymentRef      *string  `json:"paymentRef"`
+	PlacementKey    *string  `json:"placementKey"` // e.g. "QUIZ_AD_Q1", "MID_QUIZ_AD", "POST_QUIZ_AD", "PRE_QUIZ_AD", "SPONSORED_QUESTIONS"
+	PlacementType   *string  `json:"placementType"`
+	QuestionBlocks  *int     `json:"questionBlocks"`
+	DurationSec     *int     `json:"durationSec"`
+	Status          *string  `json:"status"`
 }
 
 type CampaignListQuery struct {
@@ -963,6 +963,17 @@ func (s *adsServiceImpl) GetPlacementEligibility(ctx context.Context, userId int
 
 	if err == nil && placement.CampaignID > 0 {
 		_ = s.db.WithContext(ctx).First(&campaign, placement.CampaignID).Error
+		if campaign.UserID != nil && *campaign.UserID > 0 {
+			var owner models.User
+			if ownerErr := s.db.WithContext(ctx).
+				Select("id, username, profilePicture").
+				First(&owner, *campaign.UserID).Error; ownerErr == nil {
+				campaign.ProfilePicture = owner.ProfilePicture
+				if (campaign.Username == nil || strings.TrimSpace(*campaign.Username) == "") && owner.Username != "" {
+					campaign.Username = &owner.Username
+				}
+			}
+		}
 
 		media := placement.MediaURL
 		if strings.TrimSpace(media) == "" && len(campaign.MediaURLs) > 0 {

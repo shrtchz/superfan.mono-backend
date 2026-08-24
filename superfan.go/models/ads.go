@@ -28,10 +28,10 @@ const (
 type PlacementType string
 
 const (
-	PlacementQuizAdQ1          PlacementType = "QUIZ_AD_Q1"          // 30s | Non-skippable | CPM
-	PlacementMidQuizAd         PlacementType = "MID_QUIZ_AD"         // 15s | Skip after 5s | CPM | 200 PTS award
-	PlacementPostQuizAd        PlacementType = "POST_QUIZ_AD"        // 20s | Skip after 5s | CPA
-	PlacementPreQuizAd         PlacementType = "PRE_QUIZ_AD"         // 20s | Skip after 5s | CPA
+	PlacementQuizAdQ1           PlacementType = "QUIZ_AD_Q1"          // 30s | Non-skippable | CPM
+	PlacementMidQuizAd          PlacementType = "MID_QUIZ_AD"         // 15s | Skip after 5s | CPM | 200 PTS award
+	PlacementPostQuizAd         PlacementType = "POST_QUIZ_AD"        // 20s | Skip after 5s | CPA
+	PlacementPreQuizAd          PlacementType = "PRE_QUIZ_AD"         // 20s | Skip after 5s | CPA
 	PlacementSponsoredQuestions PlacementType = "SPONSORED_QUESTIONS" // Blocks of 25 Questions
 )
 
@@ -39,6 +39,7 @@ type AdCampaign struct {
 	ID              int            `gorm:"column:id;primaryKey;autoIncrement" json:"id"`
 	UserID          *int           `gorm:"column:userId" json:"userId,omitempty"`
 	Username        *string        `gorm:"column:username" json:"username,omitempty"`
+	ProfilePicture  *string        `gorm:"-" json:"profilePicture,omitempty"`
 	Headline        string         `gorm:"column:headline" json:"headline"`
 	Description     *string        `gorm:"column:description" json:"description,omitempty"`
 	ButtonLabel     *string        `gorm:"column:buttonLabel" json:"buttonLabel,omitempty"`
