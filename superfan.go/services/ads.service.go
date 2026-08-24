@@ -446,8 +446,11 @@ func (s *adsServiceImpl) EstimateAdCost(ctx context.Context, req *EstimateAdCost
 func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdRewardRequest) (*AwardAdRewardResponse, error) {
 	rule := ResolvePlacementConfig(req.PlacementKey)
 
-	// 1. Placement validation: Points award logic is only active for Mid-Quiz Ad
-	if !rule.PointsAwardActive {
+	// 1. Completed ad rewards apply to pre-, mid-, and post-quiz placements.
+	isRewardPlacement := rule.PlacementType == models.PlacementMidQuizAd ||
+		rule.PlacementType == models.PlacementPreQuizAd ||
+		rule.PlacementType == models.PlacementPostQuizAd
+	if !isRewardPlacement {
 		return &AwardAdRewardResponse{
 			Awarded:           false,
 			PointsAwarded:     0,
@@ -456,8 +459,8 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 		}, nil
 	}
 
-	// 2. Full 15-second watch validation (without skipping)
-	if req.Skipped || req.WatchedSeconds < 15 {
+	// 2. Full placement-duration watch validation (without skipping)
+	if req.Skipped || req.WatchedSeconds < rule.DurationSec {
 		campaignID := 0
 		if req.CampaignID != nil {
 			campaignID = *req.CampaignID
@@ -472,7 +475,7 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 			Awarded:           false,
 			PointsAwarded:     0,
 			DailyQuotaReached: false,
-			Message:           "Must watch the full 15 seconds without skipping to receive reward points",
+			Message:           fmt.Sprintf("Must watch the full %d seconds without skipping to receive reward points", rule.DurationSec),
 		}, nil
 	}
 
@@ -506,8 +509,9 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 		}, nil
 	}
 
-	// 4. Award 200 PTS to user account/wallet
+	// 4. Award 200 PTS as NGN 0.20 in the Gold Wallet.
 	const rewardPoints = 200
+	const rewardNaira = float64(rewardPoints) / 1000.0
 	var newBalance float64
 
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -517,8 +521,7 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				wallet = models.Wallet{
 					UserID:      req.UserID,
-					Balance:     rewardPoints,
-					GoldBalance: rewardPoints,
+					GoldBalance: rewardNaira,
 				}
 				if err := tx.Create(&wallet).Error; err != nil {
 					return err
@@ -527,24 +530,27 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 				return err
 			}
 		} else {
-			if err := tx.Model(&wallet).UpdateColumn("balance", gorm.Expr("balance + ?", rewardPoints)).Error; err != nil {
+			if err := tx.Model(&wallet).UpdateColumn("goldBalance", gorm.Expr(`"goldBalance" + ?`, rewardNaira)).Error; err != nil {
 				return err
 			}
-			wallet.Balance += rewardPoints
+			wallet.GoldBalance += rewardNaira
 		}
 
-		newBalance = wallet.Balance
+		newBalance = wallet.GoldBalance
 
-		rewardType := "AD_REWARD"
-		description := "Mid-Quiz Ad Reward (200 PTS)"
-		currency := "PTS"
+		transactionType := "credit"
+		rewardType := "Ads Reward"
+		description := "Ads Reward"
+		goldAccount := "Gold"
 		txRef := fmt.Sprintf("ADREW-%d-%d", req.UserID, time.Now().UnixNano())
 
 		wTx := models.WalletTransaction{
 			UserID:          req.UserID,
-			Amount:          rewardPoints,
-			Type:            &rewardType,
-			Currency:        currency,
+			Amount:          rewardNaira,
+			Type:            &transactionType,
+			Currency:        "NGN",
+			AccountType:     &goldAccount,
+			RewardType:      &rewardType,
 			TransactionType: &rewardType,
 			Description:     &description,
 			TrxRef:          &txRef,
