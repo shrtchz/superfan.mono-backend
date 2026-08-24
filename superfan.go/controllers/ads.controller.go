@@ -176,6 +176,23 @@ func (ac *AdsController) GetPlacements(c *gin.Context) {
 	utils.Success(c, http.StatusOK, "Placements retrieved successfully", placements)
 }
 
+// GetRewardAdQuota handles GET /v2/ads/reward-quota
+func (ac *AdsController) GetRewardAdQuota(c *gin.Context) {
+	userID, err := strconv.Atoi(c.Query("userId"))
+	if err != nil || userID <= 0 {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "a valid userId is required")
+		return
+	}
+
+	quota, err := ac.adsService.GetRewardAdQuota(c.Request.Context(), userID)
+	if err != nil {
+		utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
+		return
+	}
+
+	utils.Success(c, http.StatusOK, "Reward ad quota retrieved successfully", quota)
+}
+
 // EstimateAdCost handles POST /v2/ads/estimate
 func (ac *AdsController) EstimateAdCost(c *gin.Context) {
 	var req services.EstimateAdCostRequest
@@ -215,6 +232,7 @@ func RegisterAdsRoutes(rg *gin.RouterGroup, ac *AdsController) {
 	adsGroup := rg.Group("/ads")
 	{
 		adsGroup.GET("/placements", ac.GetPlacements)
+		adsGroup.GET("/reward-quota", ac.GetRewardAdQuota)
 		adsGroup.POST("/estimate", ac.EstimateAdCost)
 		adsGroup.POST("/reward", ac.AwardMidQuizReward)
 		adsGroup.POST("/campaigns", ac.CreateCampaign)
