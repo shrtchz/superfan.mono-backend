@@ -7,6 +7,8 @@
     "refereeBonus": "Referee Bonus ({{currency}} {{amount}})",
     "adsReward": "Ads Reward",
     "withdrawal": "Withdrawal - {{method}}",
+    "transferGoldToPersonal": "Transfer from Gold Wallet to Personal Wallet",
+    "transferPersonalToGold": "Transfer from Personal Wallet to Gold Wallet",
     "shopPayment": "Shop Merch Payment",
     "proSubscriptionPayment": "Pro Subscription Payment",
     "proMaxSubscriptionPayment": "Pro Max Subscription Payment"

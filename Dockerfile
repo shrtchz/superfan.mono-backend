@@ -9,6 +9,7 @@ WORKDIR /app
 COPY superfan.go/go.mod superfan.go/go.sum ./
 RUN go mod download
 COPY superfan.go/ .
+COPY lables.data.json ./lables.data.json
 RUN CGO_ENABLED=0 GOOS=linux go build -o main .
  
 # Go Development stage
@@ -18,6 +19,7 @@ RUN go install github.com/air-verse/air@v1.61.7
 COPY superfan.go/go.mod superfan.go/go.sum ./
 RUN go mod download
 COPY superfan.go/ .
+COPY lables.data.json ./lables.data.json
 CMD ["air"]
  
 # Go Production stage (Target name: go-production)
@@ -25,6 +27,7 @@ FROM alpine:latest AS go-production
 RUN apk --no-cache add ca-certificates
 WORKDIR /root/
 COPY --from=go-builder /app/main .
+COPY --from=go-builder /app/lables.data.json ./lables.data.json
 COPY --from=go-builder /app/.env* ./
 EXPOSE 7190
 CMD ["./main"]

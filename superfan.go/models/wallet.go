@@ -10,6 +10,8 @@ type Wallet struct {
 	PersonalBalance          float64 `gorm:"column:personalBalance" json:"personalBalance"`
 	UsdcBalance              float64 `gorm:"column:usdcBalance" json:"usdcBalance"`
 	UsdtBalance              float64 `gorm:"column:usdtBalance" json:"usdtBalance"`
+	TotalBalance             float64 `gorm:"-" json:"totalBalance"`
+	HoldBalance              float64 `gorm:"-" json:"holdBalance"`
 	AvailablePersonalBalance float64 `gorm:"-" json:"availablePersonalBalance"`
 	AvailableBalance         float64 `gorm:"-" json:"availableBalance"`
 }
