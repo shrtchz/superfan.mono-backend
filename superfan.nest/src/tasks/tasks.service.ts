@@ -419,7 +419,7 @@ export class TaskService {
     await this.walletService.creditWallet(
       referral.referrerId,
       referrerNaira,
-      'Referral Bonus',
+      'Referral Bonus — First Test: NGN 10',
       `You earned ₦${referrerNaira} because your referee completed their first test.`,
       'Gold'
     );
@@ -431,7 +431,7 @@ export class TaskService {
 
     await this.notificationService.createNotification(
       referral.referrerId,
-      'Credit Wallet - Referral Bonus',
+      'Referral Bonus — First Test: NGN 10',
       'You earned 10,000 PTS (Gold Account) because your referee completed their first test.',
       'referral_reward',
     );
@@ -451,7 +451,7 @@ export class TaskService {
     await this.walletService.creditWallet(
       referral.refereeId,
       refereeNaira,
-      'Referral Bonus',
+      'Referee Bonus (NGN 20)',
       `You earned ₦${refereeNaira} for completing your first test.`,
       'Gold'
     );
@@ -463,7 +463,7 @@ export class TaskService {
 
     await this.notificationService.createNotification(
       referral.refereeId,
-      'Credit Wallet - Referral Bonus',
+      'Referee Bonus (NGN 20)',
       'You earned 20,000 PTS (Gold Account) for completing your first test.',
       'welcome_bonus',
     );

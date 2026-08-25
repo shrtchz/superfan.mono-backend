@@ -129,9 +129,21 @@ export class ShopService {
         }
 
         const isGold = dto.subWallet?.toLowerCase() === 'gold';
-        const availableBalance = isGold
+        let availableBalance = isGold
           ? Number(wallet.goldBalance) || 0
           : Number(wallet.personalBalance) || 0;
+
+        if (!isGold) {
+          const held = await tx.walletTransaction.aggregate({
+            _sum: { amount: true },
+            where: {
+              userId,
+              account_type: 'Personal',
+              holdUntil: { gt: new Date() },
+            },
+          });
+          availableBalance = Math.max(0, availableBalance - Number(held._sum.amount || 0));
+        }
 
         if (availableBalance < totalAmount) {
           throw new BadRequestException(
@@ -169,6 +181,7 @@ export class ShopService {
             reference: `SHOP-${Date.now()}`,
             status: 'SUCCESS',
             account_name: `Shop Purchase (${dto.subWallet || 'Personal'})`,
+            description: 'Shop Merch Payment',
           },
         });
       }

@@ -1,0 +1,19 @@
+{
+  "wallet": {
+    "quizEarning": "Test Quiz Earning",
+    "deposit": "Deposit - {{method}}",
+    "referralSignup": "Referral Bonus — Signup: {{currency}} {{amount}}",
+    "referralFirstTest": "Referral Bonus — First Test: {{currency}} {{amount}}",
+    "refereeBonus": "Referee Bonus ({{currency}} {{amount}})",
+    "adsReward": "Ads Reward",
+    "withdrawal": "Withdrawal - {{method}}",
+    "shopPayment": "Shop Merch Payment",
+    "proSubscriptionPayment": "Pro Subscription Payment",
+    "proMaxSubscriptionPayment": "Pro Max Subscription Payment"
+  },
+  "methods": {
+    "debitCard": "Debit Card",
+    "bankTransfer": "Bank Transfer",
+    "stablecoin": "Stablecoin"
+  }
+}

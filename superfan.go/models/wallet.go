@@ -3,13 +3,15 @@ package models
 import "time"
 
 type Wallet struct {
-	ID              int     `gorm:"column:id;primaryKey" json:"id"`
-	UserID          int     `gorm:"column:userId;uniqueIndex" json:"userId"`
-	Balance         float64 `gorm:"column:balance" json:"balance"`
-	GoldBalance     float64 `gorm:"column:goldBalance" json:"goldBalance"`
-	PersonalBalance float64 `gorm:"column:personalBalance" json:"personalBalance"`
-	UsdcBalance     float64 `gorm:"column:usdcBalance" json:"usdcBalance"`
-	UsdtBalance     float64 `gorm:"column:usdtBalance" json:"usdtBalance"`
+	ID                       int     `gorm:"column:id;primaryKey" json:"id"`
+	UserID                   int     `gorm:"column:userId;uniqueIndex" json:"userId"`
+	Balance                  float64 `gorm:"column:balance" json:"balance"`
+	GoldBalance              float64 `gorm:"column:goldBalance" json:"goldBalance"`
+	PersonalBalance          float64 `gorm:"column:personalBalance" json:"personalBalance"`
+	UsdcBalance              float64 `gorm:"column:usdcBalance" json:"usdcBalance"`
+	UsdtBalance              float64 `gorm:"column:usdtBalance" json:"usdtBalance"`
+	AvailablePersonalBalance float64 `gorm:"-" json:"availablePersonalBalance"`
+	AvailableBalance         float64 `gorm:"-" json:"availableBalance"`
 }
 
 func (Wallet) TableName() string {
@@ -17,33 +19,34 @@ func (Wallet) TableName() string {
 }
 
 type WalletTransaction struct {
-	ID             int        `gorm:"column:id;primaryKey" json:"id"`
-	UserID         int        `gorm:"column:userId" json:"userId"`
-	Amount         float64    `gorm:"column:amount" json:"amount"`
-	Type           *string    `gorm:"column:type" json:"type"`
-	Currency       string     `gorm:"column:currency;default:NGN" json:"currency"`
-	Username       *string    `gorm:"column:username" json:"username"`
-	AccountName    *string    `gorm:"column:account_name" json:"account_name"`
-	PaymentMethod  *string    `gorm:"column:payment_method" json:"payment_method"`
-	BankName       *string    `gorm:"column:bank_name" json:"bank_name"`
-	CardToken      *string    `gorm:"column:cardToken" json:"cardToken"`
-	WalletAddress  *string    `gorm:"column:wallet_address" json:"wallet_address"`
-	AccountNo      *string    `gorm:"column:account_no" json:"account_no"`
-	AccountType    *string    `gorm:"column:account_type" json:"account_type"`
-	SettlementDate *time.Time `gorm:"column:settlement_date" json:"settlement_date"`
-	Reference      *string    `gorm:"column:reference" json:"reference"`
-	Status         *string    `gorm:"column:status" json:"status"`
-	TotalEarnings  *float64   `gorm:"column:total_earnings" json:"total_earnings"`
-	Payouts        *float64   `gorm:"column:payouts" json:"payouts"`
-	LastPayout     *time.Time `gorm:"column:last_payout" json:"last_payout"`
-	PaymentDate    *time.Time `gorm:"column:payment_date" json:"payment_date"`
-	PendingBalance *float64   `gorm:"column:pending_balance" json:"pending_balance"`
-	RewardType     *string    `gorm:"column:rewardType" json:"rewardType"`
-	TransactionType *string   `gorm:"column:transactionType" json:"transactionType"`
-	Description    *string    `gorm:"column:description" json:"description"`
-	TrxRef         *string    `gorm:"column:trx_ref" json:"trx_ref"`
-	WalletID       *int       `gorm:"column:walletId" json:"walletId"`
-	CreatedAt      time.Time  `gorm:"column:createdAt" json:"createdAt"`
+	ID              int        `gorm:"column:id;primaryKey" json:"id"`
+	UserID          int        `gorm:"column:userId" json:"userId"`
+	Amount          float64    `gorm:"column:amount" json:"amount"`
+	Type            *string    `gorm:"column:type" json:"type"`
+	Currency        string     `gorm:"column:currency;default:NGN" json:"currency"`
+	Username        *string    `gorm:"column:username" json:"username"`
+	AccountName     *string    `gorm:"column:account_name" json:"account_name"`
+	PaymentMethod   *string    `gorm:"column:payment_method" json:"payment_method"`
+	BankName        *string    `gorm:"column:bank_name" json:"bank_name"`
+	CardToken       *string    `gorm:"column:cardToken" json:"cardToken"`
+	WalletAddress   *string    `gorm:"column:wallet_address" json:"wallet_address"`
+	AccountNo       *string    `gorm:"column:account_no" json:"account_no"`
+	AccountType     *string    `gorm:"column:account_type" json:"account_type"`
+	SettlementDate  *time.Time `gorm:"column:settlement_date" json:"settlement_date"`
+	Reference       *string    `gorm:"column:reference" json:"reference"`
+	Status          *string    `gorm:"column:status" json:"status"`
+	TotalEarnings   *float64   `gorm:"column:total_earnings" json:"total_earnings"`
+	Payouts         *float64   `gorm:"column:payouts" json:"payouts"`
+	LastPayout      *time.Time `gorm:"column:last_payout" json:"last_payout"`
+	PaymentDate     *time.Time `gorm:"column:payment_date" json:"payment_date"`
+	PendingBalance  *float64   `gorm:"column:pending_balance" json:"pending_balance"`
+	RewardType      *string    `gorm:"column:rewardType" json:"rewardType"`
+	TransactionType *string    `gorm:"column:transactionType" json:"transactionType"`
+	Description     *string    `gorm:"column:description" json:"description"`
+	TrxRef          *string    `gorm:"column:trx_ref" json:"trx_ref"`
+	WalletID        *int       `gorm:"column:walletId" json:"walletId"`
+	CreatedAt       time.Time  `gorm:"column:createdAt" json:"createdAt"`
+	HoldUntil       *time.Time `gorm:"column:holdUntil" json:"holdUntil"`
 }
 
 func (WalletTransaction) TableName() string {
@@ -195,4 +198,3 @@ type Payout struct {
 func (Payout) TableName() string {
 	return "Payout"
 }
-

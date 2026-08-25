@@ -818,14 +818,14 @@ export class UserService {
         await this.walletService.creditWallet(
           referrer.id,
           25,
-          'Credit Wallet - Referral Bonus',
+          'Referral Bonus — Signup: NGN 20',
           `You earned ₦25 because ${user.username} signed up using your referral link.`,
         );
 
                 await this.walletService.creditWallet(
           user.id,
           10,
-          'Referral welcome bonus',
+          'Referee Bonus (NGN 20)',
           `You earned ₦25 because ${user.username} signed up using your referral link.`,
         );
       
@@ -2003,9 +2003,21 @@ async getCard(userId: number): Promise<any> {
       }
 
       const isGold = subWallet === 'gold';
-      const availableBalance = isGold
+      let availableBalance = isGold
         ? Number(wallet.goldBalance) || 0
         : Number(wallet.personalBalance) || 0;
+
+      if (!isGold) {
+        const held = await prisma.walletTransaction.aggregate({
+          _sum: { amount: true },
+          where: {
+            userId,
+            account_type: 'Personal',
+            holdUntil: { gt: new Date() },
+          },
+        });
+        availableBalance = Math.max(0, availableBalance - Number(held._sum.amount || 0));
+      }
 
       if (availableBalance < amount) {
         throw new BadRequestException(
@@ -2040,9 +2052,13 @@ async getCard(userId: number): Promise<any> {
           type: 'debit',
           currency: 'NGN',
           payment_method: 'subscription',
+          account_type: isGold ? 'Gold' : 'Personal',
           reference: `SUB-${Date.now()}`,
           status: 'SUCCESS',
           account_name: `Subscription (${subscriptionPlan})`,
+          description: subscriptionPlan === 'PREMIUM_PRO_MAX'
+            ? 'Pro Max Subscription Payment'
+            : 'Pro Subscription Payment',
         },
       });
     }
@@ -2841,7 +2857,7 @@ async findUserByEmail(email: string): Promise<any> {
     await this.walletService.creditWallet(
       referrer.id,
       nairaAmount,
-      'Credit Wallet - Referral Bonus',
+      'Referral Bonus — Signup: NGN 20',
       `You earned ₦${nairaAmount} because @${user.username} signed up using your referral link.`,
       'Gold',
     );
@@ -2853,7 +2869,7 @@ async findUserByEmail(email: string): Promise<any> {
     // Notification for referrer
     await this.notificationService.createNotification(
       referrer.id,
-      'Credit Wallet - Referral Bonus',
+      'Referral Bonus — Signup: NGN 20',
       `You earned 20,000 PTS (Gold Account) because @${user.username} signed up using your referral link.`,
       'referral_reward',
     );
