@@ -53,6 +53,7 @@ RUN pnpm install --no-frozen-lockfile
 FROM nest-deps AS nest-build
 WORKDIR /app
 COPY superfan.nest/ .
+COPY lables.data.json ./lables.data.json
 # Create dummy credentials.json if missing to satisfy TypeScript compilation
 RUN [ -f credentials.json ] || echo '{"web":{"client_id":"dummy","client_secret":"dummy","redirect_uris":["http://localhost:3000"]}}' > credentials.json
 ENV NODE_OPTIONS="--max-old-space-size=4096"
@@ -69,4 +70,5 @@ COPY --from=nest-build /app/node_modules ./node_modules
 COPY --from=nest-build /app/dist ./dist
 COPY --from=nest-build /app/prisma ./prisma
 COPY --from=nest-build /app/src/mail/templates ./dist/src/mail/templates
+COPY --from=nest-build /app/lables.data.json ./lables.data.json
 CMD ["node", "dist/src/main.js"]

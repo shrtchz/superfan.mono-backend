@@ -20,11 +20,14 @@ var (
 
 func load() {
 	loadOnce.Do(func() {
+		executablePath, _ := os.Executable()
+		executableDir := filepath.Dir(executablePath)
 		candidates := []string{
 			filepath.Join(".", "lables.data.json"),
 			filepath.Join("..", "lables.data.json"),
 			filepath.Join("/app", "lables.data.json"),
 			filepath.Join("/root", "lables.data.json"),
+			filepath.Join(executableDir, "lables.data.json"),
 		}
 
 		var contents []byte
