@@ -1971,6 +1971,29 @@ async getCard(userId: number): Promise<any> {
     };
   }
 
+  private getSubscriptionEndDate(
+    now: Date,
+    durationDays: number,
+    nextPlan: string,
+    existingSubscription?: { subscriptionPlan: string; endDate: Date } | null,
+  ): Date {
+    const newEndDate = new Date(now.getTime() + durationDays * 24 * 60 * 60 * 1000);
+    if (!existingSubscription || existingSubscription.endDate <= now) {
+      return newEndDate;
+    }
+
+    const planRank: Record<string, number> = {
+      FREE: 0,
+      PREMIUM_PRO: 1,
+      PREMIUM_PRO_MAX: 2,
+    };
+    const currentRank = planRank[String(existingSubscription.subscriptionPlan).toUpperCase()] ?? 0;
+    const nextRank = planRank[String(nextPlan).toUpperCase()] ?? 0;
+    if (nextRank <= currentRank) return newEndDate;
+
+    return new Date(newEndDate.getTime() + (existingSubscription.endDate.getTime() - now.getTime()));
+  }
+
   async createSubscription(userId: number, dto: any): Promise<any> {
     const user = await prisma.user.findUnique({
       where: { id: userId },
@@ -2071,7 +2094,12 @@ async getCard(userId: number): Promise<any> {
     let subscription;
     const now = new Date();
     const durationDays = subscriptionPlan === 'PREMIUM_PRO_MAX' ? 365 : 30;
-    const endDate = new Date(now.getTime() + durationDays * 24 * 60 * 60 * 1000);
+    const endDate = this.getSubscriptionEndDate(
+      now,
+      durationDays,
+      subscriptionPlan,
+      existingSubscription,
+    );
 
     if (existingSubscription) {
       subscription = await prisma.subscription.update({
@@ -2136,6 +2164,17 @@ async getCard(userId: number): Promise<any> {
 
     const now = new Date();
 
+    const existingSubscription = await prisma.subscription.findFirst({
+      where: { userId },
+    });
+    const durationDays = dto.subscriptionPlan === 'PREMIUM_PRO_MAX' ? 365 : 30;
+    const endDate = this.getSubscriptionEndDate(
+      now,
+      durationDays,
+      dto.subscriptionPlan,
+      existingSubscription,
+    );
+
     // ✅ create subscription
     const subscription = await prisma.subscription.create({
       data: {
@@ -2149,7 +2188,7 @@ async getCard(userId: number): Promise<any> {
         paymentReference: trx.responseBody.paymentReference,
         paymentStatus: trx.responseBody.paymentStatus,
         startDate: now,
-        endDate: new Date(new Date().setMonth(now.getMonth() + 1)),
+        endDate,
       },
     });
 
