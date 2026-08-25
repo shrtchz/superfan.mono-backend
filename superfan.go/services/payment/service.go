@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"quiz.superfan.com/apis/labels"
 	"quiz.superfan.com/apis/models"
 	"quiz.superfan.com/apis/services/payment/providers"
 )
@@ -19,6 +20,9 @@ type PaymentService struct {
 	monnifyProvider *providers.MonnifyProvider
 	bitnobProvider  *providers.BitnobProvider
 }
+
+const minimumDepositAmount = 1000.0
+const personalDepositHold = 5 * 24 * time.Hour
 
 func NewPaymentService(db *gorm.DB, monnify *providers.MonnifyProvider, bitnob *providers.BitnobProvider) *PaymentService {
 	return &PaymentService{
@@ -107,10 +111,10 @@ func (s *PaymentService) ValidateTransactionLimits(ctx context.Context, userID i
 
 // InitiateDeposit starts the deposit process via provider.
 func (s *PaymentService) InitiateDeposit(ctx context.Context, req providers.DepositRequest) (*providers.DepositResponse, error) {
+	if req.Amount < minimumDepositAmount {
+		return nil, fmt.Errorf("minimum deposit amount is NGN 1,000")
+	}
 	if req.UserID > 0 && req.Amount > 0 {
-		if err := s.ValidateTransactionLimits(ctx, req.UserID, req.Amount, "DEPOSIT"); err != nil {
-			return nil, err
-		}
 	}
 
 	var provider providers.PaymentProvider
@@ -147,13 +151,12 @@ func (s *PaymentService) HandleDepositWebhook(ctx context.Context, currency stri
 	}
 
 	return s.db.Transaction(func(tx *gorm.DB) error {
-		description := "Credit Wallet - Debit Card"
+		methodKey := "bankTransfer"
 		switch currency {
 		case "USDC", "USDT":
-			description = "Credit Wallet - Stable Coins"
-		case "NGN":
-			description = "Credit Wallet - Bank Transfer"
+			methodKey = "stablecoin"
 		}
+		description := labels.Wallet("deposit", map[string]string{"method": labels.Method(methodKey)})
 		txType := "CREDIT"
 		wTx := models.WalletTransaction{
 			Amount:      verification.Amount,
@@ -174,11 +177,37 @@ func (s *PaymentService) GetWalletByUserID(ctx context.Context, userID int) (*mo
 	err := s.db.WithContext(ctx).Where("\"userId\" = ?", userID).First(&wallet).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return &models.Wallet{UserID: userID, Balance: 0, GoldBalance: 0, PersonalBalance: 0, UsdcBalance: 0, UsdtBalance: 0}, nil
+			return &models.Wallet{UserID: userID, Balance: 0, GoldBalance: 0, PersonalBalance: 0, UsdcBalance: 0, UsdtBalance: 0, TotalBalance: 0, HoldBalance: 0, AvailablePersonalBalance: 0, AvailableBalance: 0}, nil
 		}
 		return nil, err
 	}
+	heldBalance, availablePersonal, err := s.getPersonalBalanceBreakdown(ctx, userID, wallet.PersonalBalance)
+	if err != nil {
+		return nil, err
+	}
+	wallet.HoldBalance = heldBalance
+	wallet.AvailablePersonalBalance = availablePersonal
+	wallet.TotalBalance = wallet.PersonalBalance + wallet.GoldBalance
+	wallet.AvailableBalance = wallet.GoldBalance + availablePersonal
 	return &wallet, nil
+}
+
+func (s *PaymentService) availablePersonalBalance(ctx context.Context, userID int, personalBalance float64) (float64, error) {
+	_, available, err := s.getPersonalBalanceBreakdown(ctx, userID, personalBalance)
+	return available, err
+}
+
+func (s *PaymentService) getPersonalBalanceBreakdown(ctx context.Context, userID int, personalBalance float64) (float64, float64, error) {
+	var held float64
+	err := s.db.WithContext(ctx).
+		Table("WalletTransaction").
+		Select("COALESCE(SUM(amount), 0)").
+		Where(`"userId" = ? AND LOWER(COALESCE("account_type", '')) = 'personal' AND "holdUntil" > ?`, userID, time.Now()).
+		Scan(&held).Error
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to calculate available wallet balance: %w", err)
+	}
+	return held, math.Max(0, personalBalance-held), nil
 }
 
 // GetExchangeRates returns live conversion rates for currencies
@@ -906,10 +935,8 @@ func (s *PaymentService) ChargeCardAndCreditWallet(ctx context.Context, userID i
 	txRef, _ := chargePayload["transactionReference"].(string)
 	log.Printf("[PaymentService] ChargeCardAndCreditWallet - userID=%d amount=%.2f txRef=%s", userID, amount, txRef)
 
-	// Step 0: Enforce KYC Transaction Limits (SCRUM-350)
-	if err := s.ValidateTransactionLimits(ctx, userID, amount, "DEPOSIT"); err != nil {
-		log.Printf("[PaymentService] ChargeCardAndCreditWallet BLOCKED by KYC limits: %v", err)
-		return nil, err
+	if amount < minimumDepositAmount {
+		return nil, fmt.Errorf("minimum deposit amount is NGN 1,000")
 	}
 
 	// Step 1: Call Monnify charge-card API
@@ -991,12 +1018,13 @@ func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amoun
 		currency = "NGN"
 	}
 
-	description := "Credit Wallet - Debit Card"
+	methodKey := "debitCard"
 	if strings.EqualFold(paymentMethod, "bank") || strings.Contains(strings.ToLower(paymentMethod), "transfer") {
-		description = "Credit Wallet - Bank Transfer"
+		methodKey = "bankTransfer"
 	} else if strings.EqualFold(paymentMethod, "stablecoin") || currency == "USDC" || currency == "USDT" {
-		description = "Credit Wallet - Stable Coins"
+		methodKey = "stablecoin"
 	}
+	description := labels.Wallet("deposit", map[string]string{"method": labels.Method(methodKey)})
 
 	log.Printf("[DB] creditWalletInDB - userID=%d amount=%.2f description=%s txRef=%s", userID, amount, description, txRef)
 
@@ -1022,6 +1050,8 @@ func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amoun
 		// 2. Increment balances
 		wallet.Balance += amount
 		wallet.PersonalBalance += amount
+		holdUntil := time.Now().Add(personalDepositHold)
+		accountType := "Personal"
 		switch currency {
 		case "USDC":
 			wallet.UsdcBalance += amount
@@ -1041,6 +1071,8 @@ func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amoun
 			Amount:      amount,
 			Type:        &txType,
 			Description: &description,
+			AccountType: &accountType,
+			HoldUntil:   &holdUntil,
 			TrxRef:      &txRef,
 			CreatedAt:   time.Now(),
 		}
@@ -1148,7 +1180,7 @@ func (s *PaymentService) TransferBetweenWallets(ctx context.Context, userID int,
 			wallet.GoldBalance -= amount
 			wallet.PersonalBalance += amount
 			wallet.Balance = wallet.PersonalBalance
-			description = "Transfer from Gold Wallet to Personal Wallet"
+			description = labels.Wallet("transferGoldToPersonal", nil)
 			activityType = "credit"
 		} else {
 			if wallet.PersonalBalance < amount {
@@ -1157,7 +1189,7 @@ func (s *PaymentService) TransferBetweenWallets(ctx context.Context, userID int,
 			wallet.PersonalBalance -= amount
 			wallet.GoldBalance += amount
 			wallet.Balance = wallet.PersonalBalance
-			description = "Transfer from Personal Wallet to Gold Wallet"
+			description = labels.Wallet("transferPersonalToGold", nil)
 			activityType = "debit"
 		}
 
@@ -1252,7 +1284,11 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 			return fmt.Errorf("wallet not found for user: %w", err)
 		}
 
-		if wallet.PersonalBalance < amount {
+		availablePersonal, err := s.availablePersonalBalance(ctx, userID, wallet.PersonalBalance)
+		if err != nil {
+			return err
+		}
+		if availablePersonal < amount {
 			return fmt.Errorf("insufficient wallet balance (available: %.2f, requested: %.2f)", wallet.PersonalBalance, amount)
 		}
 
@@ -1266,7 +1302,7 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 
 		// Record in WalletTransaction
 		txType := "DEBIT"
-		desc := "Debit Wallet - Bank Transfer Withdrawal"
+		desc := labels.Wallet("withdrawal", map[string]string{"method": labels.Method("bankTransfer")})
 		wTx := models.WalletTransaction{
 			UserID:      userID,
 			Amount:      amount,
@@ -1283,7 +1319,7 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 		actTx := models.ActivityWallet{
 			UserID:      userID,
 			Type:        "debit",
-			Title:       "Withdrawal",
+			Title:       desc,
 			Description: desc,
 			Amount:      amount,
 			Currency:    "NGN",
@@ -1358,7 +1394,11 @@ func (s *PaymentService) DebitUserWallet(ctx context.Context, userID int, amount
 			return fmt.Errorf("failed to fetch wallet: %w", err)
 		}
 
-		if wallet.PersonalBalance < amount {
+		availablePersonal, err := s.availablePersonalBalance(ctx, userID, wallet.PersonalBalance)
+		if err != nil {
+			return err
+		}
+		if availablePersonal < amount {
 			return fmt.Errorf("insufficient wallet balance (available: %.2f, required: %.2f)", wallet.PersonalBalance, amount)
 		}
 

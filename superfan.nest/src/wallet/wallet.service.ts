@@ -121,6 +121,11 @@ export class WalletService {
       throw new BadRequestException('Transaction amount must be greater than zero');
     }
 
+    // Deposits are not subject to KYC daily or monthly limits.
+    if (type === 'DEPOSIT') {
+      return this.getTransactionLimitStatus(userId);
+    }
+
     // 1. Enforce minimum withdrawal of ₦9,999 on all withdrawal requests regardless of method
     if (type === 'WITHDRAWAL' && amount < this.MIN_WITHDRAWAL_NGN) {
       throw new BadRequestException(
@@ -225,7 +230,7 @@ export class WalletService {
       // Send notification for manual wallet credit
       await this.notificationService.createNotification(
         userId,
-        'Wallet Credit - Manual',
+        'Deposit - Bank Transfer',
         `Your wallet has been credited with ₦${amount}`,
         'wallet_credit_manual'
       );
@@ -270,12 +275,13 @@ export class WalletService {
     });
 
     // Credit the wallet - system rewards always go to Gold Account
-    await this.creditWallet(userId, amount, `${type} Reward`, `Earned ${amount} ${currency} from ${type}`, 'Gold', currency);
+    const rewardLabel = type.toLowerCase().includes('ad') ? 'Ads Reward' : 'Test Quiz Earning';
+    await this.creditWallet(userId, amount, rewardLabel, rewardLabel, 'Gold', currency);
 
     // Send notification
     await this.notificationService.createNotification(
       userId,
-      'Reward Earned',
+      rewardLabel,
       `You have earned ${amount} ${currency} from ${type}`,
     );
 
@@ -318,7 +324,7 @@ export class WalletService {
     });
 
     // Credit the wallet - quiz rewards go to Gold Account
-    await this.creditWallet(userId, amount, 'Credit Wallet - Quiz Earning', 'Credit Wallet - Quiz Earning', 'Gold', 'NGN');
+    await this.creditWallet(userId, amount, 'Test Quiz Earning', 'Test Quiz Earning', 'Gold', 'NGN');
 
     await this.prisma.point.create({
       data: {
@@ -337,7 +343,7 @@ export class WalletService {
     // Send notification
     await this.notificationService.createNotification(
       userId,
-      'Credit Wallet - Quiz Earning',
+      'Test Quiz Earning',
       `You earned ₦${amount} from ${subject} Quiz`,
       'quiz_reward'
     );
@@ -379,7 +385,7 @@ export class WalletService {
     });
 
     // Credit the wallet - live quiz rewards go to Gold Account
-    await this.creditWallet(userId, amount, `₦${amount} has  been added to your wallet`, `You earned ${amount} from Live Quiz`, 'Gold', 'NGN');
+    await this.creditWallet(userId, amount, 'Test Quiz Earning', 'Test Quiz Earning', 'Gold', 'NGN');
 
     await this.prisma.user.update({
       where: { id: userId },
@@ -388,7 +394,7 @@ export class WalletService {
 
     await this.notificationService.createNotification(
       userId,
-      `₦${amount} has  been added to your wallet`,
+      'Test Quiz Earning',
       `You earned ₦${amount} from Live Quiz`,
       'live_quiz_reward'
     );
@@ -502,9 +508,6 @@ async getUserWalletTransactions(filters: WalletTransactionFilterDto) {
       throw new Error('Free tier users cannot deposit into Personal Account. Please upgrade to Pro or Pro Max.');
     }
 
-    // ✅ Enforce KYC-based deposit limits (SCRUM-350)
-    await this.validateTransactionLimits(userId, amount, 'DEPOSIT');
-
     // Determine which balance to increment
     const balanceField = accountType === 'Gold' ? 'goldBalance' : 'personalBalance';
 
@@ -533,7 +536,8 @@ async getUserWalletTransactions(filters: WalletTransactionFilterDto) {
           bank_name: bankName,
           account_no: accountNumber,
           account_type: accountType,
-          description: 'Wallet funded with card',
+          description: 'Deposit - Debit Card',
+          holdUntil: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000),
           trx_ref: `${generateFiveUniqueRandomNumbers()}`
         },
       }),
@@ -543,8 +547,8 @@ async getUserWalletTransactions(filters: WalletTransactionFilterDto) {
         data: {
           userId,
           type: 'credit',
-          title: 'Card Funding',
-          description: 'Wallet funded with card',
+          title: 'Deposit - Debit Card',
+          description: 'Deposit - Debit Card',
           amount,
           currency: 'NGN',
           reference,

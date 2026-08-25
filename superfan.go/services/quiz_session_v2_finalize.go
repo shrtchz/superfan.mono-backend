@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"quiz.superfan.com/apis/labels"
 	"quiz.superfan.com/apis/models"
 	"quiz.superfan.com/apis/utils"
 )
@@ -445,7 +446,7 @@ func creditQuizReward(tx *gorm.DB, userID int, amountInNaira float64, subject st
 	trxType := "credit"
 	goldType := "Gold"
 	status := "SUCCESS"
-	description := "Credit Wallet - Quiz Earning"
+	description := labels.Wallet("quizEarning", nil)
 	trxRef := fmt.Sprintf("QUIZ_%d", now.UnixNano())
 	if err := tx.Create(&models.WalletTransaction{
 		UserID:      userID,
@@ -478,8 +479,8 @@ func creditQuizReward(tx *gorm.DB, userID int, amountInNaira float64, subject st
 	if err := tx.Create(&models.ActivityWallet{
 		UserID:      userID,
 		Type:        "credit",
-		Title:       "Credit Wallet - Quiz Earning",
-		Description: "Credit Wallet - Quiz Earning",
+		Title:       description,
+		Description: description,
 		Amount:      amountInNaira,
 		Currency:    "NGN",
 		Status:      "SUCCESS",
@@ -505,7 +506,7 @@ func creditQuizReward(tx *gorm.DB, userID int, amountInNaira float64, subject st
 	if nestBaseURL := utils.GetEnvWithKey("NEST_BASE_URL"); nestBaseURL != "" {
 		payload := map[string]interface{}{
 			"userId":  userID,
-			"title":   "Credit Wallet - Quiz Earning",
+			"title":   description,
 			"message": fmt.Sprintf("Your Gold Wallet has been credited with ₦%.0f from %s Quiz", amountInNaira, subject),
 			"type":    "quiz_reward",
 		}

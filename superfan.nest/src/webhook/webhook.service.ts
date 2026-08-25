@@ -247,9 +247,6 @@ if (bankTransfer) {
     return;
   }
 
-  // ✅ Enforce KYC deposit limits (SCRUM-350)
-  await this.walletService.validateTransactionLimits(bankTransfer.userId, amount, 'DEPOSIT');
-
   const paymentStatus = eventData.paymentStatus;
   // Map payment status to valid BankTransferStatus enum values
   // Note: 'SUCCESS' requires migration 20260603124718 to be applied
@@ -286,8 +283,8 @@ if (bankTransfer) {
       data: {
         userId: bankTransfer.userId,
         type: 'credit',
-        title: 'Bank Transfer Funding',
-        description: 'Money funded via bank transfer',
+        title: 'Deposit - Bank Transfer',
+        description: 'Deposit - Bank Transfer',
         amount: amount,
         currency: currency,
         reference: eventData.paymentReference,
@@ -432,18 +429,15 @@ if (bankTransfer) {
     return;
   }
 
-  // ✅ Enforce KYC deposit limits (SCRUM-350)
-  await this.walletService.validateTransactionLimits(user.id, amount, 'DEPOSIT');
-
   this.logger.log(
     `Processing wallet funding | User: ${user.id} | AccountType: ${accountType} | Amount: ${amount}`,
   );
 
-    let notificationTitle = "Credit Wallet - Bank Transfer";
+    let notificationTitle = "Deposit - Bank Transfer";
     if (String(paymentMethod).toUpperCase().includes("CARD")) {
-      notificationTitle = "Credit Wallet - Debit Card";
+      notificationTitle = "Deposit - Debit Card";
     } else if (String(paymentMethod).toUpperCase().includes("CRYPTO") || String(paymentMethod).toUpperCase().includes("STABLE")) {
-      notificationTitle = "Credit Wallet - Stable Coins";
+      notificationTitle = "Deposit - Stablecoin";
     }
 
     await prisma.$transaction([
@@ -470,6 +464,7 @@ if (bankTransfer) {
           account_no: accountNumber,
           account_type: accountType,
           description: notificationTitle,
+          holdUntil: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000),
           trx_ref: `${generateFiveUniqueRandomNumbers()}`
         },
       }),
@@ -878,7 +873,7 @@ if (bankTransfer) {
 
           description:
             eventData.transactionDescription ||
-            'Wallet funded via bank transfer',
+            'Deposit - Bank Transfer',
 
           payment_date: new Date(),
         },
@@ -893,9 +888,9 @@ if (bankTransfer) {
 
           type: 'credit',
 
-          title: 'Wallet Funded',
+          title: 'Deposit - Bank Transfer',
 
-          description: `₦${eventData.amount} credited via ${eventData.destinationBankName}`,
+          description: 'Deposit - Bank Transfer',
 
           amount: Number(eventData.amount),
 

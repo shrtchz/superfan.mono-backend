@@ -200,8 +200,8 @@ private async handleBitnobTransferSuccess(payload: any) {
         data: {
           userId: transaction.userId,
           type: 'debit',
-          title: 'Transfer Completed',
-          description: 'transfer completed successfully',
+          title: 'Withdrawal - Stablecoin',
+          description: 'Withdrawal - Stablecoin',
           amount,
           currency,
           reference,
@@ -284,7 +284,7 @@ const user = await prisma.$queryRaw`
         reference: deposit.reference,
         trx_ref: deposit.transaction_id,
         status: 'SUCCESS',
-        description: `${amount} ${deposit.currency} deposit received`,
+        description: 'Deposit - Stablecoin',
       },
     });
 
@@ -292,8 +292,8 @@ const user = await prisma.$queryRaw`
       data: {
         userId: user[0].id,
         type: 'credit',
-        title: 'Crypto Deposit',
-        description: `${amount} ${deposit.currency} deposited to your wallet`,
+        title: 'Deposit - Stablecoin',
+        description: 'Deposit - Stablecoin',
         amount,
         currency: deposit.currency,
         reference: deposit.reference,
@@ -438,9 +438,6 @@ private async handleCardCharge(payload: any) {
 //   }
 // }
 
-    // ✅ Enforce KYC deposit limits (SCRUM-350)
-    await this.walletService.validateTransactionLimits(cardFunding.userId, amount, 'DEPOSIT');
-
     // 💰 update wallet
     console.log('[HANDLE CARD CHARGE] Updating wallet balance by:', amount);
     await prisma.wallet.update({
@@ -463,7 +460,7 @@ private async handleCardCharge(payload: any) {
         reference,
         payment_method: 'CARD',
         account_type: 'Personal',
-        description: 'Wallet funded with card',
+        description: 'Deposit - Debit Card',
         trx_ref: `${generateFiveUniqueRandomNumbers()}`
       },
     });
@@ -474,8 +471,8 @@ private async handleCardCharge(payload: any) {
       data: {
         userId: cardFunding.userId,
         type: 'credit',
-        title: 'Money Added',
-        description: `Money added to wallet`,
+        title: 'Deposit - Debit Card',
+        description: 'Deposit - Debit Card',
         amount,
         currency: 'NGN',
         reference,

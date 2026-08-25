@@ -576,6 +576,7 @@ model WalletTransaction {
   transactionType String?
   description     String?
   trx_ref         String?
+  holdUntil       DateTime?
 
   walletId Int?
 

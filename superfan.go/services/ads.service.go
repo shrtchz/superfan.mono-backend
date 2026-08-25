@@ -10,6 +10,7 @@ import (
 
 	"github.com/lib/pq"
 	"gorm.io/gorm"
+	"quiz.superfan.com/apis/labels"
 	"quiz.superfan.com/apis/models"
 )
 
@@ -536,8 +537,8 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 		newBalance = wallet.GoldBalance
 
 		transactionType := "credit"
-		rewardType := "Ads Reward"
-		description := "Ads Reward"
+		rewardType := labels.Wallet("adsReward", nil)
+		description := rewardType
 		goldAccount := "Gold"
 		txRef := fmt.Sprintf("ADREW-%d-%d", req.UserID, time.Now().UnixNano())
 
