@@ -37,6 +37,7 @@ RUN apk --no-cache add ca-certificates tzdata
 WORKDIR /root/
 
 COPY --from=builder /app/main .
+COPY --from=builder /app/lables.data.json ./lables.data.json
 COPY --from=builder /app/.env* ./
 
 EXPOSE 7190

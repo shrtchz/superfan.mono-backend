@@ -46,6 +46,7 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/prisma ./prisma
 COPY --from=build /app/src/mail/templates ./dist/src/mail/templates
+COPY --from=build /app/lables.data.json ./lables.data.json
 
 # Use entrypoint script to run migrations before starting the app
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
