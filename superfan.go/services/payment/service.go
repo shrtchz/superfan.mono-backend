@@ -70,11 +70,14 @@ func (s *PaymentService) ValidateTransactionLimits(ctx context.Context, userID i
 		CreatedAt time.Time
 	}
 	var txRows []TxRow
+	// Only count withdrawal transactions, not ad payments (debits)
+	// Withdrawals have "withdrawal" in the description
 	err := s.db.WithContext(ctx).
 		Table("WalletTransaction").
 		Select("amount, \"createdAt\"").
 		Where("\"userId\" = ? AND \"createdAt\" >= ?", userID, startOfMonth).
 		Where("(status IS NULL OR UPPER(status) IN ('SUCCESS', 'PAID', 'COMPLETED'))").
+		Where("LOWER(description) LIKE ?", "%withdrawal%").
 		Find(&txRows).Error
 
 	if err != nil {
