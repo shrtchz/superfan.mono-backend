@@ -1394,11 +1394,7 @@ func (s *PaymentService) DebitUserWallet(ctx context.Context, userID int, amount
 			return fmt.Errorf("failed to fetch wallet: %w", err)
 		}
 
-		availablePersonal, err := s.availablePersonalBalance(ctx, userID, wallet.PersonalBalance)
-		if err != nil {
-			return err
-		}
-		if availablePersonal < amount {
+		if wallet.PersonalBalance < amount {
 			return fmt.Errorf("insufficient wallet balance (available: %.2f, required: %.2f)", wallet.PersonalBalance, amount)
 		}
 
