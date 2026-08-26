@@ -22,6 +22,7 @@ type PaymentService struct {
 }
 
 const minimumDepositAmount = 1000.0
+const minimumWithdrawalAmount = 1000.0
 const personalDepositHold = 5 * 24 * time.Hour
 
 func NewPaymentService(db *gorm.DB, monnify *providers.MonnifyProvider, bitnob *providers.BitnobProvider) *PaymentService {
@@ -32,15 +33,15 @@ func NewPaymentService(db *gorm.DB, monnify *providers.MonnifyProvider, bitnob *
 	}
 }
 
-// ValidateTransactionLimits enforces minimum withdrawal and KYC tier transaction limits (SCRUM-350)
+// ValidateTransactionLimits enforces withdrawal minimums and KYC tier transaction limits (SCRUM-350)
 func (s *PaymentService) ValidateTransactionLimits(ctx context.Context, userID int, amount float64, txType string) error {
 	if amount <= 0 {
 		return fmt.Errorf("transaction amount must be greater than zero")
 	}
 
-	// 1. Enforce minimum withdrawal of ₦9,999 on all withdrawal requests
-	if strings.EqualFold(txType, "WITHDRAWAL") && amount < 9999 {
-		return fmt.Errorf("minimum withdrawal amount is ₦9,999. Requested: ₦%.2f", amount)
+	// 1. Enforce the minimum withdrawal amount on all withdrawal requests.
+	if strings.EqualFold(txType, "WITHDRAWAL") && amount < minimumWithdrawalAmount {
+		return fmt.Errorf("minimum withdrawal amount is ₦%.0f. Requested: ₦%.2f", minimumWithdrawalAmount, amount)
 	}
 
 	// 2. Fetch user's KYC tier from User model
@@ -1263,7 +1264,7 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 		return nil, errors.New("amount must be greater than 0")
 	}
 
-	// Enforce Minimum Withdrawal (₦9,999) and KYC Transaction Limits (SCRUM-350)
+	// Enforce the minimum withdrawal and KYC transaction limits (SCRUM-350).
 	if err := s.ValidateTransactionLimits(ctx, userID, amount, "WITHDRAWAL"); err != nil {
 		return nil, err
 	}
