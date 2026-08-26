@@ -25,6 +25,13 @@ const minimumDepositAmount = 1000.0
 const minimumWithdrawalAmount = 1000.0
 const personalDepositHold = 5 * 24 * time.Hour
 
+func stringValuePtr(value string) *string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return &value
+}
+
 func NewPaymentService(db *gorm.DB, monnify *providers.MonnifyProvider, bitnob *providers.BitnobProvider) *PaymentService {
 	return &PaymentService{
 		db:              db,
@@ -165,7 +172,9 @@ func (s *PaymentService) HandleDepositWebhook(ctx context.Context, currency stri
 		wTx := models.WalletTransaction{
 			Amount:      verification.Amount,
 			Type:        &txType,
+			Currency:    currency,
 			Description: &description,
+			Status:      func() *string { value := "SUCCESS"; return &value }(),
 			TrxRef:      &verification.TransactionReference,
 		}
 		if err := tx.Create(&wTx).Error; err != nil {
@@ -441,8 +450,7 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 			}
 		}
 
-		// 6. Compute total earnings per user (strictly rewards & earnings: Ads, Quiz, Live Quiz, Referral)
-		// Exclude personal deposits, card funding, bank deposits, crypto deposits
+		// 6. Total earnings are the positive credits recorded in the Gold wallet.
 		type SumResult struct {
 			UserID int     `gorm:"column:userId"`
 			Total  float64 `gorm:"column:total"`
@@ -451,26 +459,12 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 		if err := s.db.WithContext(ctx).Model(&models.WalletTransaction{}).
 			Select("\"userId\", SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as total").
 			Where("\"userId\" IN ?", userIDs).
-			Where("(\"account_type\" ILIKE 'gold' OR (\"rewardType\" IS NOT NULL AND \"rewardType\" != '') OR \"description\" ILIKE '%quiz%' OR \"description\" ILIKE '%reward%' OR \"description\" ILIKE '%referral%' OR \"description\" ILIKE '%ad%' OR \"description\" ILIKE '%bonus%')").
-			Where("(\"description\" IS NULL OR (\"description\" NOT ILIKE '%deposit%' AND \"description\" NOT ILIKE '%card funding%' AND \"description\" NOT ILIKE '%bank transfer deposit%'))").
+			Where("LOWER(COALESCE(\"account_type\", '')) = 'gold'").
+			Where("(status IS NULL OR UPPER(status) IN ('SUCCESS', 'PAID', 'COMPLETED'))").
 			Group("\"userId\"").
 			Scan(&earningsList).Error; err == nil {
 			for _, res := range earningsList {
 				totalEarningsMap[res.UserID] = res.Total
-			}
-		}
-
-		// Also check Reward table for user earnings if available
-		var rewardList []SumResult
-		if err := s.db.WithContext(ctx).Model(&models.Reward{}).
-			Select("\"userId\", SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as total").
-			Where("\"userId\" IN ?", userIDs).
-			Group("\"userId\"").
-			Scan(&rewardList).Error; err == nil {
-			for _, res := range rewardList {
-				if res.Total > 0 && totalEarningsMap[res.UserID] == 0 {
-					totalEarningsMap[res.UserID] = res.Total
-				}
 			}
 		}
 
@@ -490,101 +484,31 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 			}
 		}
 
-		var pendingDebitList []PendingResult
-		if err := s.db.WithContext(ctx).Model(&models.WalletTransaction{}).
-			Select("\"userId\", SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as total").
-			Where("\"userId\" IN ? AND (\"type\" ILIKE 'DEBIT' OR \"type\" ILIKE 'WITHDRAWAL' OR \"description\" ILIKE '%withdraw%') AND (\"status\" ILIKE 'PENDING' OR \"status\" ILIKE 'PROCESSING')", userIDs).
-			Group("\"userId\"").
-			Scan(&pendingDebitList).Error; err == nil {
-			for _, res := range pendingDebitList {
-				if _, exists := pendingPayoutsMap[res.UserID]; !exists {
-					pendingPayoutsMap[res.UserID] = res.Total
-				}
-			}
-		}
-
-		// 8. Compute total number of earnings per user (Payouts count = number of earnings)
+		// 8. Count actual payout records per user.
 		type CountResult struct {
 			UserID int     `gorm:"column:userId"`
 			Count  float64 `gorm:"column:count"`
 		}
-		var earningsCountList []CountResult
-		if err := s.db.WithContext(ctx).Model(&models.WalletTransaction{}).
+		var payoutCountList []CountResult
+		if err := s.db.WithContext(ctx).Model(&models.Payout{}).
 			Select("\"userId\", COUNT(*) as count").
 			Where("\"userId\" IN ?", userIDs).
-			Where("(\"account_type\" ILIKE 'gold' OR (\"rewardType\" IS NOT NULL AND \"rewardType\" != '') OR \"description\" ILIKE '%quiz%' OR \"description\" ILIKE '%reward%' OR \"description\" ILIKE '%referral%' OR \"description\" ILIKE '%ad%' OR \"description\" ILIKE '%bonus%')").
-			Where("(\"description\" IS NULL OR (\"description\" NOT ILIKE '%deposit%' AND \"description\" NOT ILIKE '%card funding%' AND \"description\" NOT ILIKE '%bank transfer deposit%'))").
 			Group("\"userId\"").
-			Scan(&earningsCountList).Error; err == nil {
-			for _, res := range earningsCountList {
+			Scan(&payoutCountList).Error; err == nil {
+			for _, res := range payoutCountList {
 				payoutCountMap[res.UserID] += res.Count
 			}
 		}
 
-		var rewardCountList []CountResult
-		if err := s.db.WithContext(ctx).Model(&models.Reward{}).
-			Select("\"userId\", COUNT(*) as count").
-			Where("\"userId\" IN ?", userIDs).
-			Group("\"userId\"").
-			Scan(&rewardCountList).Error; err == nil {
-			for _, res := range rewardCountList {
-				if _, exists := payoutCountMap[res.UserID]; !exists || payoutCountMap[res.UserID] == 0 {
-					payoutCountMap[res.UserID] = res.Count
-				}
-			}
-		}
-
-		// 9. Compute description of the most recent earning per user (Last Payout description: Ads Earning, Live Quiz Reward, Referral Bonus, etc.)
-		var recentEarnings []models.WalletTransaction
-		if err := s.db.WithContext(ctx).Model(&models.WalletTransaction{}).
-			Where("\"userId\" IN ?", userIDs).
-			Where("(\"account_type\" ILIKE 'gold' OR (\"rewardType\" IS NOT NULL AND \"rewardType\" != '') OR \"description\" ILIKE '%quiz%' OR \"description\" ILIKE '%reward%' OR \"description\" ILIKE '%referral%' OR \"description\" ILIKE '%ad%' OR \"description\" ILIKE '%bonus%')").
-			Where("(\"description\" IS NULL OR (\"description\" NOT ILIKE '%deposit%' AND \"description\" NOT ILIKE '%card funding%' AND \"description\" NOT ILIKE '%bank transfer deposit%'))").
-			Order("\"createdAt\" DESC").
-			Find(&recentEarnings).Error; err == nil {
-			for _, tx := range recentEarnings {
-				if _, exists := lastPayoutDescMap[tx.UserID]; !exists {
-					desc := "Quiz Earning"
-					if tx.RewardType != nil && *tx.RewardType != "" {
-						desc = *tx.RewardType
-					} else if tx.Description != nil && *tx.Description != "" {
-						desc = *tx.Description
-					}
-					descLower := strings.ToLower(desc)
-					if strings.Contains(descLower, "live quiz") {
-						desc = "Live Quiz Reward"
-					} else if strings.Contains(descLower, "referral") {
-						desc = "Referral Bonus"
-					} else if strings.Contains(descLower, "ad") || strings.Contains(descLower, "ads") {
-						desc = "Ads Earning"
-					} else if strings.Contains(descLower, "quiz") {
-						desc = "Quiz Earning"
-					}
-					lastPayoutDescMap[tx.UserID] = desc
-				}
-			}
-		}
-
-		var recentRewards []models.Reward
-		if err := s.db.WithContext(ctx).Model(&models.Reward{}).
+		// 9. Use the latest actual payout reference as the last payout value.
+		var payoutList []models.Payout
+		if err := s.db.WithContext(ctx).Model(&models.Payout{}).
 			Where("\"userId\" IN ?", userIDs).
 			Order("\"createdAt\" DESC").
-			Find(&recentRewards).Error; err == nil {
-			for _, r := range recentRewards {
-				if _, exists := lastPayoutDescMap[r.UserID]; !exists {
-					desc := "Quiz Earning"
-					if r.Type != "" {
-						desc = r.Type
-					}
-					descLower := strings.ToLower(desc)
-					if strings.Contains(descLower, "live quiz") {
-						desc = "Live Quiz Reward"
-					} else if strings.Contains(descLower, "referral") {
-						desc = "Referral Bonus"
-					} else if strings.Contains(descLower, "ad") || strings.Contains(descLower, "ads") {
-						desc = "Ads Earning"
-					}
-					lastPayoutDescMap[r.UserID] = desc
+			Find(&payoutList).Error; err == nil {
+			for _, payout := range payoutList {
+				if _, exists := lastPayoutDescMap[payout.UserID]; !exists {
+					lastPayoutDescMap[payout.UserID] = payout.Reference
 				}
 			}
 		}
@@ -829,13 +753,25 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 			masked := maskIDNumber(*u.ClerkUserID)
 			walletAddress = &masked
 		}
+		if tx.BankName == nil || *tx.BankName == "" {
+			if tx.Currency == "USDC" || tx.Currency == "USDT" {
+				scName := tx.Currency
+				bankName = &scName
+			} else {
+				bankName = nil
+			}
+		}
+		if tx.AccountNo == nil || *tx.AccountNo == "" {
+			accountNo = nil
+		}
+		if tx.WalletAddress == nil || *tx.WalletAddress == "" {
+			walletAddress = nil
+		}
 
 		// 8. Pending Balance (Total pending payout amount)
 		var pendingBal *float64
 		if val, ok := pendingPayoutsMap[tx.UserID]; ok {
 			pendingBal = &val
-		} else if tx.PendingBalance != nil {
-			pendingBal = tx.PendingBalance
 		} else {
 			zero := 0.0
 			pendingBal = &zero
@@ -847,9 +783,6 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 			totalEarnings = &val
 		} else if tx.TotalEarnings != nil && *tx.TotalEarnings > 0 {
 			totalEarnings = tx.TotalEarnings
-		} else if hasWallet && w.GoldBalance > 0 {
-			gVal := w.GoldBalance
-			totalEarnings = &gVal
 		} else {
 			zero := 0.0
 			totalEarnings = &zero
@@ -860,7 +793,7 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 		if desc, ok := lastPayoutDescMap[tx.UserID]; ok && desc != "" {
 			lastPayout = &desc
 		} else {
-			defaultDesc := "Quiz Earning"
+			defaultDesc := "N/A"
 			lastPayout = &defaultDesc
 		}
 
@@ -868,8 +801,6 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 		var payoutsCount *float64
 		if count, ok := payoutCountMap[tx.UserID]; ok {
 			payoutsCount = &count
-		} else if tx.Payouts != nil {
-			payoutsCount = tx.Payouts
 		} else {
 			zero := 0.0
 			payoutsCount = &zero
@@ -1029,6 +960,12 @@ func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amoun
 		methodKey = "stablecoin"
 	}
 	description := labels.Wallet("deposit", map[string]string{"method": labels.Method(methodKey)})
+	paymentMethodValue := "ACCOUNT_TRANSFER"
+	if methodKey == "debitCard" {
+		paymentMethodValue = "CARD"
+	} else if methodKey == "stablecoin" {
+		paymentMethodValue = "STABLE_COIN"
+	}
 
 	log.Printf("[DB] creditWalletInDB - userID=%d amount=%.2f description=%s txRef=%s", userID, amount, description, txRef)
 
@@ -1071,17 +1008,21 @@ func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amoun
 		// 3. Insert WalletTransaction record
 		txType := "CREDIT"
 		wTx := models.WalletTransaction{
-			UserID:      userID,
-			Amount:      amount,
-			Type:        &txType,
-			Description: &description,
-			AccountType: &accountType,
-			HoldUntil:   &holdUntil,
-			TrxRef:      &txRef,
-			CreatedAt:   time.Now(),
+			UserID:        userID,
+			Amount:        amount,
+			Type:          &txType,
+			Currency:      currency,
+			PaymentMethod: stringValuePtr(paymentMethodValue),
+			Description:   &description,
+			AccountType:   &accountType,
+			Status:        func() *string { value := "SUCCESS"; return &value }(),
+			WalletID:      &wallet.ID,
+			HoldUntil:     &holdUntil,
+			TrxRef:        &txRef,
+			CreatedAt:     time.Now(),
 		}
 		if err := tx.Create(&wTx).Error; err != nil {
-			log.Printf("[DB] WARNING: Failed to create WalletTransaction: %v", err)
+			return fmt.Errorf("failed to create WalletTransaction: %w", err)
 		} else {
 			log.Printf("[DB] WalletTransaction created: id=%d", wTx.ID)
 		}
@@ -1209,12 +1150,16 @@ func (s *PaymentService) TransferBetweenWallets(ctx context.Context, userID int,
 			UserID:      userID,
 			Amount:      amount,
 			Type:        &txType,
+			Currency:    "NGN",
 			Description: &description,
+			AccountType: func() *string { value := "Personal"; return &value }(),
+			Status:      func() *string { value := "SUCCESS"; return &value }(),
+			WalletID:    &wallet.ID,
 			TrxRef:      &txRef,
 			CreatedAt:   time.Now(),
 		}
 		if err := tx.Create(&wTx).Error; err != nil {
-			log.Printf("[PaymentService] WARNING: Failed to create WalletTransaction for transfer: %v", err)
+			return fmt.Errorf("failed to create WalletTransaction for transfer: %w", err)
 		} else {
 			log.Printf("[PaymentService] WalletTransaction created: id=%d", wTx.ID)
 		}
@@ -1279,6 +1224,19 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 	}
 
 	log.Printf("[PaymentService] ProcessWalletWithdrawal - userID=%d amount=%.2f ref=%s", userID, amount, txRef)
+	accountName, _ := payload["accountName"].(string)
+	accountNumber, _ := payload["destinationAccountNumber"].(string)
+	if accountNumber == "" {
+		accountNumber, _ = payload["accountNumber"].(string)
+	}
+	bankName, _ := payload["destinationBankName"].(string)
+	if bankName == "" {
+		bankName, _ = payload["bankName"].(string)
+	}
+	paymentMethod := "bankTransfer"
+	transactionType := "WITHDRAWAL"
+	status := "SUCCESS"
+	accountType := "Personal"
 
 	// Step 1: Verify user wallet balance and debit in DB transaction
 	var updatedWallet models.Wallet
@@ -1308,15 +1266,24 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 		txType := "DEBIT"
 		desc := labels.Wallet("withdrawal", map[string]string{"method": labels.Method("bankTransfer")})
 		wTx := models.WalletTransaction{
-			UserID:      userID,
-			Amount:      amount,
-			Type:        &txType,
-			Description: &desc,
-			TrxRef:      &txRef,
-			CreatedAt:   time.Now(),
+			UserID:          userID,
+			Amount:          amount,
+			Type:            &txType,
+			Currency:        "NGN",
+			AccountName:     stringValuePtr(accountName),
+			AccountNo:       stringValuePtr(accountNumber),
+			BankName:        stringValuePtr(bankName),
+			PaymentMethod:   &paymentMethod,
+			AccountType:     &accountType,
+			TransactionType: &transactionType,
+			Description:     &desc,
+			Status:          &status,
+			WalletID:        &wallet.ID,
+			TrxRef:          &txRef,
+			CreatedAt:       time.Now(),
 		}
 		if err := tx.Create(&wTx).Error; err != nil {
-			log.Printf("[PaymentService] WARNING: Failed to create WalletTransaction for withdrawal: %v", err)
+			return fmt.Errorf("failed to create WalletTransaction for withdrawal: %w", err)
 		}
 
 		// Record in ActivityWallet
@@ -1416,12 +1383,16 @@ func (s *PaymentService) DebitUserWallet(ctx context.Context, userID int, amount
 			UserID:      userID,
 			Amount:      amount,
 			Type:        &txType,
+			Currency:    "NGN",
 			Description: &description,
+			AccountType: func() *string { value := "Personal"; return &value }(),
+			Status:      func() *string { value := "SUCCESS"; return &value }(),
+			WalletID:    &wallet.ID,
 			TrxRef:      &txRef,
 			CreatedAt:   time.Now(),
 		}
 		if err := tx.Create(&wTx).Error; err != nil {
-			log.Printf("[PaymentService] WARNING: Failed to create WalletTransaction for debit: %v", err)
+			return fmt.Errorf("failed to create WalletTransaction for debit: %w", err)
 		}
 
 		// Record in ActivityWallet
