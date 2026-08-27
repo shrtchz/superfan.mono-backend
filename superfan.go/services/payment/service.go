@@ -21,6 +21,15 @@ type PaymentService struct {
 	bitnobProvider  *providers.BitnobProvider
 }
 
+type savedCardMetadata struct {
+	CardToken string
+	Last4     string
+	First6    string
+	MaskedPan string
+	CardType  string
+	Expiry    string
+}
+
 const minimumDepositAmount = 1000.0
 const minimumWithdrawalAmount = 1000.0
 const personalDepositHold = 5 * 24 * time.Hour
@@ -30,6 +39,202 @@ func stringValuePtr(value string) *string {
 		return nil
 	}
 	return &value
+}
+
+func normalizeCardDigits(value string) string {
+	var digits strings.Builder
+	for _, r := range value {
+		if r >= '0' && r <= '9' {
+			digits.WriteRune(r)
+		}
+	}
+	return digits.String()
+}
+
+func normalizeCardExpiry(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return ""
+	}
+	trimmed = strings.ReplaceAll(trimmed, " ", "")
+	if strings.Contains(trimmed, "/") {
+		return trimmed
+	}
+	digits := normalizeCardDigits(trimmed)
+	if len(digits) != 4 {
+		return trimmed
+	}
+	return digits[:2] + "/" + digits[2:]
+}
+
+func buildMaskedPan(first6, last4 string) string {
+	first := normalizeCardDigits(first6)
+	last := normalizeCardDigits(last4)
+	if len(first) >= 6 && len(last) >= 4 {
+		return first[:6] + "******" + last[len(last)-4:]
+	}
+	if len(last) >= 4 {
+		return "******" + last[len(last)-4:]
+	}
+	return first
+}
+
+func inferCardTypeFromBin(first6 string, brand string) string {
+	brand = strings.TrimSpace(brand)
+	if brand != "" {
+		return brand
+	}
+	bin := normalizeCardDigits(first6)
+	if strings.HasPrefix(bin, "4") {
+		return "Visa"
+	}
+	if strings.HasPrefix(bin, "5") || strings.HasPrefix(bin, "2") {
+		return "Mastercard"
+	}
+	if strings.HasPrefix(bin, "506") || strings.HasPrefix(bin, "6500") {
+		return "Verve"
+	}
+	return "Card"
+}
+
+func stringFromAny(value interface{}) string {
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case fmt.Stringer:
+		return strings.TrimSpace(v.String())
+	case nil:
+		return ""
+	default:
+		return strings.TrimSpace(fmt.Sprint(v))
+	}
+}
+
+func extractCardMetadataFromChargeResponse(payload map[string]interface{}, chargeResult map[string]interface{}) (savedCardMetadata, error) {
+	meta := savedCardMetadata{}
+	cardMap, _ := payload["card"].(map[string]interface{})
+	if cardMap == nil {
+		cardMap = payload
+	}
+
+	if cardMap != nil {
+		meta.CardToken = stringFromAny(cardMap["token"])
+		if meta.CardToken == "" {
+			meta.CardToken = stringFromAny(cardMap["cardToken"])
+		}
+		if meta.CardToken == "" {
+			meta.CardToken = stringFromAny(cardMap["authorizationCode"])
+		}
+		if meta.CardType == "" {
+			meta.CardType = stringFromAny(cardMap["type"])
+		}
+		if meta.CardType == "" {
+			meta.CardType = stringFromAny(cardMap["brand"])
+		}
+		if meta.Expiry == "" {
+			meta.Expiry = normalizeCardExpiry(stringFromAny(cardMap["expiry"]))
+		}
+		if meta.Expiry == "" {
+			meta.Expiry = normalizeCardExpiry(stringFromAny(cardMap["expiryDate"]))
+		}
+		if meta.First6 == "" {
+			meta.First6 = normalizeCardDigits(stringFromAny(cardMap["first6"]))
+		}
+		if meta.First6 == "" {
+			meta.First6 = normalizeCardDigits(stringFromAny(cardMap["first_6digits"]))
+		}
+		if meta.Last4 == "" {
+			meta.Last4 = normalizeCardDigits(stringFromAny(cardMap["last4"]))
+		}
+		if meta.Last4 == "" {
+			meta.Last4 = normalizeCardDigits(stringFromAny(cardMap["last_4digits"]))
+		}
+		if meta.First6 == "" || meta.Last4 == "" {
+			number := normalizeCardDigits(stringFromAny(cardMap["number"]))
+			if len(number) >= 10 {
+				if meta.First6 == "" && len(number) >= 6 {
+					meta.First6 = number[:6]
+				}
+				if meta.Last4 == "" && len(number) >= 4 {
+					meta.Last4 = number[len(number)-4:]
+				}
+			}
+		}
+	}
+
+	body, _ := chargeResult["responseBody"].(map[string]interface{})
+	if body == nil {
+		body = chargeResult
+	}
+	if body != nil {
+		cardDetails, _ := body["cardDetails"].(map[string]interface{})
+		if cardDetails == nil {
+			cardDetails = map[string]interface{}{}
+		}
+		merged := map[string]interface{}{}
+		for k, v := range body {
+			merged[k] = v
+		}
+		for k, v := range cardDetails {
+			merged[k] = v
+		}
+		if meta.CardToken == "" {
+			meta.CardToken = stringFromAny(merged["cardToken"])
+		}
+		if meta.CardToken == "" {
+			meta.CardToken = stringFromAny(merged["token"])
+		}
+		if meta.CardType == "" {
+			meta.CardType = inferCardTypeFromBin(stringFromAny(merged["first6"]), stringFromAny(merged["brand"]))
+		}
+		if meta.CardType == "" {
+			meta.CardType = inferCardTypeFromBin(stringFromAny(merged["first_6digits"]), stringFromAny(merged["cardType"]))
+		}
+		if meta.Expiry == "" {
+			meta.Expiry = normalizeCardExpiry(stringFromAny(merged["expiry"]))
+		}
+		if meta.Expiry == "" {
+			meta.Expiry = normalizeCardExpiry(stringFromAny(merged["expiryDate"]))
+		}
+		if meta.First6 == "" {
+			meta.First6 = normalizeCardDigits(stringFromAny(merged["first6"]))
+		}
+		if meta.First6 == "" {
+			meta.First6 = normalizeCardDigits(stringFromAny(merged["first_6digits"]))
+		}
+		if meta.Last4 == "" {
+			meta.Last4 = normalizeCardDigits(stringFromAny(merged["last4"]))
+		}
+		if meta.Last4 == "" {
+			meta.Last4 = normalizeCardDigits(stringFromAny(merged["last_4digits"]))
+		}
+		if meta.First6 == "" || meta.Last4 == "" {
+			number := normalizeCardDigits(stringFromAny(merged["number"]))
+			if len(number) >= 10 {
+				if meta.First6 == "" && len(number) >= 6 {
+					meta.First6 = number[:6]
+				}
+				if meta.Last4 == "" && len(number) >= 4 {
+					meta.Last4 = number[len(number)-4:]
+				}
+			}
+		}
+	}
+
+	if meta.CardType == "" {
+		meta.CardType = inferCardTypeFromBin(meta.First6, "")
+	}
+	if meta.Last4 == "" && meta.MaskedPan != "" {
+		meta.Last4 = normalizeCardDigits(meta.MaskedPan)
+	}
+	if meta.MaskedPan == "" {
+		meta.MaskedPan = buildMaskedPan(meta.First6, meta.Last4)
+	}
+
+	if meta.CardToken == "" && meta.MaskedPan == "" {
+		return meta, errors.New("card details are missing from the successful charge response")
+	}
+	return meta, nil
 }
 
 func NewPaymentService(db *gorm.DB, monnify *providers.MonnifyProvider, bitnob *providers.BitnobProvider) *PaymentService {
@@ -909,9 +1114,25 @@ func (s *PaymentService) ChargeCardAndCreditWallet(ctx context.Context, userID i
 		log.Printf("[PaymentService] Unexpected charge status: %s - proceeding only if requestSuccessful=true", statusUpper)
 	}
 
+	cardMeta, metaErr := extractCardMetadataFromChargeResponse(chargePayload, chargeResult)
+	if metaErr != nil {
+		log.Printf("[PaymentService] WARNING: unable to extract reusable card metadata from successful charge response: %v", metaErr)
+	}
+	if cardMeta.CardType == "" {
+		cardMeta.CardType = "Card"
+	}
+	if cardMeta.MaskedPan == "" && cardMeta.First6 != "" && cardMeta.Last4 != "" {
+		cardMeta.MaskedPan = buildMaskedPan(cardMeta.First6, cardMeta.Last4)
+	}
+	if cardMeta.CardToken == "" {
+		if rawToken, ok := chargePayload["card"].(map[string]interface{})["token"]; ok {
+			cardMeta.CardToken = stringFromAny(rawToken)
+		}
+	}
+
 	// Step 3: Credit wallet atomically in DB
 	log.Printf("[PaymentService] Step 3: Crediting wallet for userID=%d amount=%.2f", userID, amount)
-	wallet, err := s.creditWalletInDB(ctx, userID, amount, monnifyTxRef, "card", currency)
+	wallet, err := s.creditWalletInDB(ctx, userID, amount, monnifyTxRef, "card", currency, &cardMeta)
 	if err != nil {
 		log.Printf("[PaymentService] CRITICAL: Card charged but wallet credit FAILED for userID=%d txRef=%s: %v", userID, monnifyTxRef, err)
 		return nil, fmt.Errorf("wallet credit failed after successful card charge (txRef: %s): %w", monnifyTxRef, err)
@@ -941,8 +1162,8 @@ func (s *PaymentService) ChargeCardAndCreditWallet(ctx context.Context, userID i
 	}, nil
 }
 
-// creditWalletInDB atomically updates Wallet, WalletTransaction, ActivityWallet, and CardFunding.
-func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amount float64, txRef, paymentMethod, currency string) (*models.Wallet, error) {
+// creditWalletInDB atomically updates Wallet, WalletTransaction, ActivityWallet, CardFunding, and UserCard.
+func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amount float64, txRef, paymentMethod, currency string, cardMeta *savedCardMetadata) (*models.Wallet, error) {
 	if userID <= 0 {
 		return nil, errors.New("invalid userId")
 	}
@@ -1019,7 +1240,13 @@ func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amoun
 			WalletID:      &wallet.ID,
 			HoldUntil:     &holdUntil,
 			TrxRef:        &txRef,
-			CreatedAt:     time.Now(),
+			CardToken: func() *string {
+				if cardMeta != nil {
+					return stringValuePtr(cardMeta.CardToken)
+				}
+				return nil
+			}(),
+			CreatedAt: time.Now(),
 		}
 		if err := tx.Create(&wTx).Error; err != nil {
 			return fmt.Errorf("failed to create WalletTransaction: %w", err)
@@ -1045,7 +1272,7 @@ func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amoun
 			log.Printf("[DB] ActivityWallet created: id=%d", actTx.ID)
 		}
 
-		// 5. Insert CardFunding record for audit
+		// 5. Insert CardFunding record for audit and persist reusable card metadata.
 		if strings.EqualFold(paymentMethod, "card") {
 			cardFunding := models.CardFunding{
 				UserID:    userID,
@@ -1054,6 +1281,18 @@ func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amoun
 				Currency:  currency,
 				Reference: txRef,
 				Status:    "SUCCESS",
+				CardToken: func() string {
+					if cardMeta != nil {
+						return cardMeta.CardToken
+					}
+					return ""
+				}(),
+				CardLast4: func() string {
+					if cardMeta != nil {
+						return cardMeta.Last4
+					}
+					return ""
+				}(),
 				CreatedAt: time.Now(),
 				UpdatedAt: time.Now(),
 			}
@@ -1061,6 +1300,52 @@ func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amoun
 				log.Printf("[DB] WARNING: Failed to create CardFunding record: %v", err)
 			} else {
 				log.Printf("[DB] CardFunding created: id=%d", cardFunding.ID)
+			}
+
+			if cardMeta != nil && (cardMeta.CardToken != "" || cardMeta.MaskedPan != "") {
+				var existing models.UserCard
+				err := tx.Where("\"userId\" = ? AND (COALESCE(\"cardToken\", '') = ? OR COALESCE(\"maskedPan\", '') = ?)", userID, cardMeta.CardToken, cardMeta.MaskedPan).First(&existing).Error
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					cardRecord := models.UserCard{
+						UserID:    userID,
+						CardToken: stringValuePtr(cardMeta.CardToken),
+						MaskedPan: stringValuePtr(cardMeta.MaskedPan),
+						CardType:  stringValuePtr(cardMeta.CardType),
+						Expiry:    stringValuePtr(cardMeta.Expiry),
+						IsDefault: true,
+						CreatedAt: time.Now(),
+						UpdatedAt: time.Now(),
+					}
+					if err := tx.Create(&cardRecord).Error; err != nil {
+						log.Printf("[DB] WARNING: Failed to create UserCard record: %v", err)
+					} else {
+						log.Printf("[DB] UserCard created: id=%d token=%s maskedPan=%s", cardRecord.ID, cardMeta.CardToken, cardMeta.MaskedPan)
+					}
+				} else if err == nil {
+					updates := map[string]interface{}{}
+					if cardMeta.CardToken != "" {
+						updates["cardToken"] = cardMeta.CardToken
+					}
+					if cardMeta.MaskedPan != "" {
+						updates["maskedPan"] = cardMeta.MaskedPan
+					}
+					if cardMeta.CardType != "" {
+						updates["cardType"] = cardMeta.CardType
+					}
+					if cardMeta.Expiry != "" {
+						updates["expiry"] = cardMeta.Expiry
+					}
+					if len(updates) > 0 {
+						updates["updatedAt"] = time.Now()
+						if err := tx.Model(&existing).Updates(updates).Error; err != nil {
+							log.Printf("[DB] WARNING: Failed to update UserCard record: %v", err)
+						} else {
+							log.Printf("[DB] UserCard updated: id=%d", existing.ID)
+						}
+					}
+				} else {
+					log.Printf("[DB] WARNING: Failed to query existing UserCard: %v", err)
+				}
 			}
 		}
 
@@ -1084,7 +1369,7 @@ func (s *PaymentService) QueryTransaction(ctx context.Context, transactionRefere
 // CreditUserWallet is used for bank transfer and webhook-based credits.
 func (s *PaymentService) CreditUserWallet(ctx context.Context, userID int, amount float64, txRef, paymentMethod, currency string) (*models.Wallet, error) {
 	log.Printf("[PaymentService] CreditUserWallet - userID=%d amount=%.2f method=%s", userID, amount, paymentMethod)
-	return s.creditWalletInDB(ctx, userID, amount, txRef, paymentMethod, currency)
+	return s.creditWalletInDB(ctx, userID, amount, txRef, paymentMethod, currency, nil)
 }
 
 // TransferBetweenWallets moves funds between Gold Wallet and Personal Wallet atomically.

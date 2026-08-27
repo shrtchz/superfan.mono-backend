@@ -276,22 +276,35 @@ func (m *MonnifyProvider) ChargeCard(ctx context.Context, payload map[string]int
 	expiryYear, _ := cardMap["expiryYear"].(string)
 	cvv, _ := cardMap["cvv"].(string)
 	pin, _ := cardMap["pin"].(string)
+	cardToken, _ := cardMap["token"].(string)
+	if cardToken == "" {
+		cardToken, _ = cardMap["cardToken"].(string)
+	}
 
-	if number == "" || expiryMonth == "" || expiryYear == "" || cvv == "" {
-		return nil, errors.New("incomplete card details: number, expiryMonth, expiryYear and cvv are required")
+	cardPayload := map[string]interface{}{}
+	if cardToken != "" {
+		cardPayload["token"] = cardToken
+		if pin != "" {
+			cardPayload["pin"] = pin
+		}
+	} else {
+		if number == "" || expiryMonth == "" || expiryYear == "" || cvv == "" {
+			return nil, errors.New("incomplete card details: token or number, expiryMonth, expiryYear and cvv are required")
+		}
+		cardPayload = map[string]interface{}{
+			"number":      number,
+			"expiryMonth": expiryMonth,
+			"expiryYear":  expiryYear,
+			"cvv":         cvv,
+			"pin":         pin,
+		}
 	}
 
 	// Build exact Monnify charge payload per API spec
 	chargePayload := map[string]interface{}{
 		"transactionReference": txRef,
 		"collectionChannel":    "API_NOTIFICATION",
-		"card": map[string]interface{}{
-			"number":      number,
-			"expiryMonth": expiryMonth,
-			"expiryYear":  expiryYear,
-			"cvv":         cvv,
-			"pin":         pin,
-		},
+		"card":                 cardPayload,
 		"deviceInformation": map[string]interface{}{
 			"httpBrowserLanguage":          "en-US",
 			"httpBrowserJavaEnabled":       false,

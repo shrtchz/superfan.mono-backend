@@ -286,7 +286,7 @@ export class AdPricingUtil {
         guaranteedTotalImpressions: guaranteedDailyImp * days,
         matchingUserCount,
         targetAgeRange,
-        notice: `Target demographic (${targetAgeRange}): ${matchingUserCount.toLocaleString()} matching users on platform. Guaranteed daily delivery of ${dailyReach.toLocaleString()} impressions across active sessions.`,
+        notice: '',
       },
     };
   }

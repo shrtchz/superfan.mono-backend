@@ -678,7 +678,8 @@ async createClientHistory(payload: CreateClientHistoryDto) {
         reference: dto.reference,
         currency: dto.currency,
         provider: dto.provider,
-
+        providerRef: dto.providerRef,
+        metadata: dto.metadata,
       }
   })
 
@@ -688,6 +689,11 @@ async createClientHistory(payload: CreateClientHistoryDto) {
 
   async getAllPayouts() {
     return prisma.payout.findMany({
+      include: {
+        user: {
+          select: { username: true, firstName: true, lastName: true },
+        },
+      },
       orderBy: { createdAt: 'desc' },
     });
   }

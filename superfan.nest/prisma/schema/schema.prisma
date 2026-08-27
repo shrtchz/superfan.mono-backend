@@ -1200,7 +1200,7 @@ model AdEvent {
   campaignId  Int
   placementId Int?
   quizId      String?
-  eventType   AdEventType
+  eventType   AdEventType @default(VIEW_START)
   createdAt   DateTime    @default(now())
 
   campaign    AdCampaign   @relation(fields: [campaignId], references: [id], onDelete: Cascade)
