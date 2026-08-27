@@ -42,6 +42,10 @@ var (
 	// Ads
 	adsSvc  services.AdsService
 	adsCtrl *controllers.AdsController
+
+	// Ledger
+	ledgerSvc  services.LedgerService
+	ledgerCtrl *controllers.LedgerController
 )
 
 type AppError struct {
@@ -183,6 +187,10 @@ func init() {
 	adsSvc = services.NewAdsService(utils.DB)
 	adsCtrl = controllers.NewAdsController(adsSvc)
 
+	// Wire Ledger
+	ledgerSvc = services.NewLedgerService(utils.DB)
+	ledgerCtrl = controllers.NewLedgerController(ledgerSvc)
+
 	// Launch Airtable sync in the background
 	go services.SyncFromAirtable(qs)
 
@@ -190,6 +198,13 @@ func init() {
 	finaliser := services.NewLiveQuizFinaliser(liveQuizc)
 	services.LiveQuizFinaliserInstance = finaliser
 	finaliser.Start()
+
+	// Launch background Ledger event listener
+	go func() {
+		for wTx := range utils.LedgerEvents {
+			controllers.BroadcastLedgerUpdate(wTx)
+		}
+	}()
 
 	server = gin.New()
 	server.Use(gin.Logger())
@@ -245,6 +260,10 @@ func main() {
 	paymentControllers.RegisterPaymentRoutes(apibasepath, paymentCtrl)
 	rootbasepath := server.Group("")
 	paymentControllers.RegisterPaymentRoutes(rootbasepath, paymentCtrl)
+
+	// Ledger Routes
+	controllers.RegisterLedgerRoutes(basepath, ledgerCtrl)
+	controllers.RegisterLedgerRoutes(apibasepath, ledgerCtrl)
 
 	// Ads Routes (v2 primary)
 	controllers.RegisterAdsRoutes(v2path, adsCtrl)

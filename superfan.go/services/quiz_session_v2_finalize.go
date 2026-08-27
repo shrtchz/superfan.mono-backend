@@ -445,19 +445,21 @@ func creditQuizReward(tx *gorm.DB, userID int, amountInNaira float64, subject st
 	//    "Credit Wallet - Quiz Earning" label.
 	trxType := "credit"
 	goldType := "Gold"
-	status := "SUCCESS"
-	description := labels.Wallet("quizEarning", nil)
+	status := "Completed"
+	transactionType := "Reward"
+	description := "Credit Wallet - Quiz Earning"
 	trxRef := fmt.Sprintf("QUIZ_%d", now.UnixNano())
 	if err := tx.Create(&models.WalletTransaction{
-		UserID:      userID,
-		Amount:      amountInNaira,
-		Type:        &trxType,
-		Currency:    "NGN",
-		AccountType: &goldType,
-		Status:      &status,
-		Description: &description,
-		TrxRef:      &trxRef,
-		CreatedAt:   now,
+		UserID:          userID,
+		Amount:          amountInNaira,
+		Type:            &trxType,
+		TransactionType: &transactionType,
+		Currency:        "NGN",
+		AccountType:     &goldType,
+		Status:          &status,
+		Description:     &description,
+		TrxRef:          &trxRef,
+		CreatedAt:       now,
 	}).Error; err != nil {
 		return err
 	}

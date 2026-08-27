@@ -542,13 +542,13 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 		goldAccount := "Gold"
 		txRef := fmt.Sprintf("ADREW-%d-%d", req.UserID, time.Now().UnixNano())
 
+		status := "Completed"
 		wTx := models.WalletTransaction{
 			UserID:          req.UserID,
-			Amount:          rewardNaira,
-			Type:            &transactionType,
-			Currency:        "NGN",
-			AccountType:     &goldAccount,
-			RewardType:      &rewardType,
+			Amount:          rewardPoints,
+			Type:            &rewardType,
+			Currency:        currency,
+			Status:          &status,
 			TransactionType: &rewardType,
 			Description:     &description,
 			TrxRef:          &txRef,

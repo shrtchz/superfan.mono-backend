@@ -1,6 +1,11 @@
 package models
 
-import "time"
+import (
+	"time"
+
+	"gorm.io/gorm"
+	"quiz.superfan.com/apis/utils"
+)
 
 type Wallet struct {
 	ID                       int     `gorm:"column:id;primaryKey" json:"id"`
@@ -51,8 +56,28 @@ type WalletTransaction struct {
 	HoldUntil       *time.Time `gorm:"column:holdUntil" json:"holdUntil"`
 }
 
+type LedgerSummary struct {
+	TotalCredits       float64 `json:"totalCredits"`
+	TotalDebits        float64 `json:"totalDebits"`
+	PendingSettlement  float64 `json:"pendingSettlement"`
+	PendingCount       int64   `json:"pendingCount"`
+	CashBank           float64 `json:"cashBank"`
+	PersonalWalletLiab float64 `json:"personalWalletLiab"`
+	GoldWalletLiab     float64 `json:"goldWalletLiab"` // NGN earnings: quiz, ads, referral
+	PlatformRevenue    float64 `json:"platformRevenue"`
+}
+
 func (WalletTransaction) TableName() string {
 	return "WalletTransaction"
+}
+
+func (w *WalletTransaction) AfterCreate(tx *gorm.DB) (err error) {
+	select {
+	case utils.LedgerEvents <- *w:
+	default:
+		// Do not block if the channel is full
+	}
+	return nil
 }
 
 type Reward struct {
