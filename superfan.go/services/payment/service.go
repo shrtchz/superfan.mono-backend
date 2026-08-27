@@ -374,13 +374,18 @@ func (s *PaymentService) HandleDepositWebhook(ctx context.Context, currency stri
 		}
 		description := labels.Wallet("deposit", map[string]string{"method": labels.Method(methodKey)})
 		txType := "CREDIT"
+		status := "Completed"
+		trxType := "Deposit"
 		wTx := models.WalletTransaction{
-			Amount:      verification.Amount,
-			Type:        &txType,
-			Currency:    currency,
-			Description: &description,
-			Status:      func() *string { value := "SUCCESS"; return &value }(),
-			TrxRef:      &verification.TransactionReference,
+			UserID:          0, // Stub or handled via relation
+			Amount:          verification.Amount,
+			Type:            &txType,
+			TransactionType: &trxType,
+			Status:          &status,
+			Currency:        currency,
+			Description:     &description,
+			TrxRef:          &verification.TransactionReference,
+			CreatedAt:       time.Now(),
 		}
 		if err := tx.Create(&wTx).Error; err != nil {
 			return err
@@ -1279,25 +1284,18 @@ func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amoun
 
 		// 3. Insert WalletTransaction record
 		txType := "CREDIT"
+		status := "Completed"
+		trxType := "Deposit"
 		wTx := models.WalletTransaction{
-			UserID:        userID,
-			Amount:        amount,
-			Type:          &txType,
-			Currency:      currency,
-			PaymentMethod: stringValuePtr(paymentMethodValue),
-			Description:   &description,
-			AccountType:   &accountType,
-			Status:        func() *string { value := "SUCCESS"; return &value }(),
-			WalletID:      &wallet.ID,
-			HoldUntil:     &holdUntil,
-			TrxRef:        &txRef,
-			CardToken: func() *string {
-				if cardMeta != nil {
-					return stringValuePtr(cardMeta.CardToken)
-				}
-				return nil
-			}(),
-			CreatedAt: time.Now(),
+			UserID:          userID,
+			Amount:          amount,
+			Type:            &txType,
+			TransactionType: &trxType,
+			Status:          &status,
+			Currency:        currency,
+			Description:     &description,
+			TrxRef:          &txRef,
+			CreatedAt:       time.Now(),
 		}
 		if err := tx.Create(&wTx).Error; err != nil {
 			return fmt.Errorf("failed to create WalletTransaction: %w", err)
@@ -1482,17 +1480,18 @@ func (s *PaymentService) TransferBetweenWallets(ctx context.Context, userID int,
 
 		// 1. Insert WalletTransaction record
 		txType := "TRANSFER"
+		status := "Completed"
+		trxType := "Transfer"
 		wTx := models.WalletTransaction{
-			UserID:      userID,
-			Amount:      amount,
-			Type:        &txType,
-			Currency:    "NGN",
-			Description: &description,
-			AccountType: func() *string { value := "Personal"; return &value }(),
-			Status:      func() *string { value := "SUCCESS"; return &value }(),
-			WalletID:    &wallet.ID,
-			TrxRef:      &txRef,
-			CreatedAt:   time.Now(),
+			UserID:          userID,
+			Amount:          amount,
+			Type:            &txType,
+			TransactionType: &trxType,
+			Status:          &status,
+			Currency:        "NGN",
+			Description:     &description,
+			TrxRef:          &txRef,
+			CreatedAt:       time.Now(),
 		}
 		if err := tx.Create(&wTx).Error; err != nil {
 			return fmt.Errorf("failed to create WalletTransaction for transfer: %w", err)
@@ -1600,21 +1599,17 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 
 		// Record in WalletTransaction
 		txType := "DEBIT"
-		desc := labels.Wallet("withdrawal", map[string]string{"method": labels.Method("bankTransfer")})
+		status := "Pending"
+		trxType := "Withdrawal"
+		desc := "Debit Wallet - Bank Transfer Withdrawal"
 		wTx := models.WalletTransaction{
 			UserID:          userID,
 			Amount:          amount,
 			Type:            &txType,
-			Currency:        "NGN",
-			AccountName:     stringValuePtr(accountName),
-			AccountNo:       stringValuePtr(accountNumber),
-			BankName:        stringValuePtr(bankName),
-			PaymentMethod:   &paymentMethod,
-			AccountType:     &accountType,
-			TransactionType: &transactionType,
-			Description:     &desc,
+			TransactionType: &trxType,
 			Status:          &status,
-			WalletID:        &wallet.ID,
+			Currency:        "NGN",
+			Description:     &desc,
 			TrxRef:          &txRef,
 			CreatedAt:       time.Now(),
 		}
@@ -1715,17 +1710,18 @@ func (s *PaymentService) DebitUserWallet(ctx context.Context, userID int, amount
 
 		// Record in WalletTransaction
 		txType := "DEBIT"
+		status := "Completed"
+		trxType := "Payment"
 		wTx := models.WalletTransaction{
-			UserID:      userID,
-			Amount:      amount,
-			Type:        &txType,
-			Currency:    "NGN",
-			Description: &description,
-			AccountType: func() *string { value := "Personal"; return &value }(),
-			Status:      func() *string { value := "SUCCESS"; return &value }(),
-			WalletID:    &wallet.ID,
-			TrxRef:      &txRef,
-			CreatedAt:   time.Now(),
+			UserID:          userID,
+			Amount:          amount,
+			Type:            &txType,
+			TransactionType: &trxType,
+			Status:          &status,
+			Currency:        "NGN",
+			Description:     &description,
+			TrxRef:          &txRef,
+			CreatedAt:       time.Now(),
 		}
 		if err := tx.Create(&wTx).Error; err != nil {
 			return fmt.Errorf("failed to create WalletTransaction for debit: %w", err)

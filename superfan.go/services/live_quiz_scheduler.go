@@ -396,14 +396,19 @@ func (f *LiveQuizFinaliser) creditGoldWallet(userID string, amount int, quizID, 
 		goldType := "Gold"
 		description := fmt.Sprintf("You earned ₦%d from Live Quiz: %s", amount, truncate(question, 80))
 		trxRef := fmt.Sprintf("LQ_%s_%d", quizID, now.UnixNano())
+		status := "Completed"
+		txnType := "Reward"
 		if err := tx.Create(&models.WalletTransaction{
-			UserID:      userIDInt,
-			Amount:      float64(amount),
-			Type:        &trxType,
-			AccountType: &goldType,
-			Description: &description,
-			TrxRef:      &trxRef,
-			CreatedAt:   now,
+			UserID:          userIDInt,
+			Amount:          float64(amount),
+			Type:            &trxType,
+			AccountType:     &goldType,
+			Description:     &description,
+			TrxRef:          &trxRef,
+			Status:          &status,
+			TransactionType: &txnType,
+			Currency:        "NGN",
+			CreatedAt:       now,
 		}).Error; err != nil {
 			return fmt.Errorf("create wallet transaction: %w", err)
 		}
