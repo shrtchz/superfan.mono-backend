@@ -655,7 +655,7 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 			}
 		}
 
-		// 6. Total earnings are the positive credits recorded in the Gold wallet.
+		// 6. Total earnings are all positive credits recorded in the Gold wallet (rewards, quizzes, referrals, ads).
 		type SumResult struct {
 			UserID int     `gorm:"column:userId"`
 			Total  float64 `gorm:"column:total"`
@@ -664,7 +664,7 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 		if err := s.db.WithContext(ctx).Model(&models.WalletTransaction{}).
 			Select("\"userId\", SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as total").
 			Where("\"userId\" IN ?", userIDs).
-			Where("LOWER(COALESCE(\"account_type\", '')) = 'gold'").
+			Where("(LOWER(COALESCE(\"account_type\", '')) = 'gold' OR \"rewardType\" IS NOT NULL OR LOWER(COALESCE(\"description\", '')) LIKE '%quiz%' OR LOWER(COALESCE(\"description\", '')) LIKE '%reward%' OR LOWER(COALESCE(\"description\", '')) LIKE '%bonus%' OR LOWER(COALESCE(\"description\", '')) LIKE '%referral%')").
 			Where("(status IS NULL OR UPPER(status) IN ('SUCCESS', 'PAID', 'COMPLETED'))").
 			Group("\"userId\"").
 			Scan(&earningsList).Error; err == nil {
@@ -673,7 +673,7 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 			}
 		}
 
-		// 7. Compute total pending payout amount per user
+		// 7. Compute total pending payout/withdrawal amount per user from Payout and WalletTransaction
 		type PendingResult struct {
 			UserID int     `gorm:"column:userId"`
 			Total  float64 `gorm:"column:total"`
@@ -688,11 +688,32 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 				pendingPayoutsMap[res.UserID] += res.Total
 			}
 		}
+		var pendingTxList []PendingResult
+		if err := s.db.WithContext(ctx).Model(&models.WalletTransaction{}).
+			Select("\"userId\", SUM(CASE WHEN amount > 0 THEN amount ELSE -amount END) as total").
+			Where("\"userId\" IN ? AND \"status\" ILIKE 'PENDING' AND (LOWER(COALESCE(type, '')) = 'debit' OR LOWER(COALESCE(\"description\", '')) LIKE '%withdraw%')", userIDs).
+			Group("\"userId\"").
+			Scan(&pendingTxList).Error; err == nil {
+			for _, res := range pendingTxList {
+				pendingPayoutsMap[res.UserID] += res.Total
+			}
+		}
 
-		// 8. Count actual payout records per user.
+		// 8. Count payouts/withdrawals per user from Payout table and Gold Wallet debits
 		type CountResult struct {
 			UserID int     `gorm:"column:userId"`
 			Count  float64 `gorm:"column:count"`
+		}
+		var txPayoutCountList []CountResult
+		if err := s.db.WithContext(ctx).Model(&models.WalletTransaction{}).
+			Select("\"userId\", COUNT(*) as count").
+			Where("\"userId\" IN ?", userIDs).
+			Where("(LOWER(COALESCE(\"account_type\", '')) = 'gold' AND (LOWER(COALESCE(type, '')) = 'debit' OR LOWER(COALESCE(\"description\", '')) LIKE '%withdraw%'))").
+			Group("\"userId\"").
+			Scan(&txPayoutCountList).Error; err == nil {
+			for _, res := range txPayoutCountList {
+				payoutCountMap[res.UserID] += res.Count
+			}
 		}
 		var payoutCountList []CountResult
 		if err := s.db.WithContext(ctx).Model(&models.Payout{}).
@@ -705,7 +726,7 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 			}
 		}
 
-		// 9. Use the latest actual payout reference as the last payout value.
+		// 9. Use the latest actual payout date / reference as the last payout value.
 		var payoutList []models.Payout
 		if err := s.db.WithContext(ctx).Model(&models.Payout{}).
 			Where("\"userId\" IN ?", userIDs).
@@ -713,7 +734,19 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 			Find(&payoutList).Error; err == nil {
 			for _, payout := range payoutList {
 				if _, exists := lastPayoutDescMap[payout.UserID]; !exists {
-					lastPayoutDescMap[payout.UserID] = payout.Reference
+					lastPayoutDescMap[payout.UserID] = payout.CreatedAt.Format(time.RFC3339)
+				}
+			}
+		}
+		var goldTxList []models.WalletTransaction
+		if err := s.db.WithContext(ctx).Model(&models.WalletTransaction{}).
+			Where("\"userId\" IN ?", userIDs).
+			Where("(LOWER(COALESCE(\"account_type\", '')) = 'gold' OR \"rewardType\" IS NOT NULL OR LOWER(COALESCE(\"description\", '')) LIKE '%quiz%' OR LOWER(COALESCE(\"description\", '')) LIKE '%reward%')").
+			Order("\"createdAt\" DESC").
+			Find(&goldTxList).Error; err == nil {
+			for _, gtx := range goldTxList {
+				if _, exists := lastPayoutDescMap[gtx.UserID]; !exists {
+					lastPayoutDescMap[gtx.UserID] = gtx.CreatedAt.Format(time.RFC3339)
 				}
 			}
 		}
@@ -958,19 +991,37 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 			masked := maskIDNumber(*u.ClerkUserID)
 			walletAddress = &masked
 		}
-		if tx.BankName == nil || *tx.BankName == "" {
-			if tx.Currency == "USDC" || tx.Currency == "USDT" {
-				scName := tx.Currency
-				bankName = &scName
-			} else {
-				bankName = nil
-			}
-		}
-		if tx.AccountNo == nil || *tx.AccountNo == "" {
+		descLowerForTransfer := strings.ToLower(desc)
+		txTypeLowerForTransfer := strings.ToLower(transactionType)
+		isInternalTransfer := txTypeLowerForTransfer == "transfer" ||
+			strings.Contains(descLowerForTransfer, "transfer from") ||
+			strings.Contains(descLowerForTransfer, "transfer to") ||
+			strings.Contains(descLowerForTransfer, "between personal") ||
+			strings.Contains(descLowerForTransfer, "between gold") ||
+			strings.Contains(descLowerForTransfer, "gold to personal") ||
+			strings.Contains(descLowerForTransfer, "personal to gold") ||
+			strings.Contains(descLowerForTransfer, "trf-btw-wallets")
+
+		if isInternalTransfer {
+			bankName = nil
+			cardToken = nil
 			accountNo = nil
-		}
-		if tx.WalletAddress == nil || *tx.WalletAddress == "" {
 			walletAddress = nil
+		} else {
+			if tx.BankName == nil || *tx.BankName == "" {
+				if tx.Currency == "USDC" || tx.Currency == "USDT" {
+					scName := tx.Currency
+					bankName = &scName
+				} else {
+					bankName = nil
+				}
+			}
+			if tx.AccountNo == nil || *tx.AccountNo == "" {
+				accountNo = nil
+			}
+			if tx.WalletAddress == nil || *tx.WalletAddress == "" {
+				walletAddress = nil
+			}
 		}
 
 		// 8. Pending Balance (Total pending payout amount)
