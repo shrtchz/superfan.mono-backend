@@ -21,8 +21,221 @@ type PaymentService struct {
 	bitnobProvider  *providers.BitnobProvider
 }
 
+type savedCardMetadata struct {
+	CardToken string
+	Last4     string
+	First6    string
+	MaskedPan string
+	CardType  string
+	Expiry    string
+}
+
 const minimumDepositAmount = 1000.0
+const minimumWithdrawalAmount = 1000.0
 const personalDepositHold = 5 * 24 * time.Hour
+
+func stringValuePtr(value string) *string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return &value
+}
+
+func normalizeCardDigits(value string) string {
+	var digits strings.Builder
+	for _, r := range value {
+		if r >= '0' && r <= '9' {
+			digits.WriteRune(r)
+		}
+	}
+	return digits.String()
+}
+
+func normalizeCardExpiry(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return ""
+	}
+	trimmed = strings.ReplaceAll(trimmed, " ", "")
+	if strings.Contains(trimmed, "/") {
+		return trimmed
+	}
+	digits := normalizeCardDigits(trimmed)
+	if len(digits) != 4 {
+		return trimmed
+	}
+	return digits[:2] + "/" + digits[2:]
+}
+
+func buildMaskedPan(first6, last4 string) string {
+	first := normalizeCardDigits(first6)
+	last := normalizeCardDigits(last4)
+	if len(first) >= 6 && len(last) >= 4 {
+		return first[:6] + "******" + last[len(last)-4:]
+	}
+	if len(last) >= 4 {
+		return "******" + last[len(last)-4:]
+	}
+	return first
+}
+
+func inferCardTypeFromBin(first6 string, brand string) string {
+	brand = strings.TrimSpace(brand)
+	if brand != "" {
+		return brand
+	}
+	bin := normalizeCardDigits(first6)
+	if strings.HasPrefix(bin, "4") {
+		return "Visa"
+	}
+	if strings.HasPrefix(bin, "5") || strings.HasPrefix(bin, "2") {
+		return "Mastercard"
+	}
+	if strings.HasPrefix(bin, "506") || strings.HasPrefix(bin, "6500") {
+		return "Verve"
+	}
+	return "Card"
+}
+
+func stringFromAny(value interface{}) string {
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case fmt.Stringer:
+		return strings.TrimSpace(v.String())
+	case nil:
+		return ""
+	default:
+		return strings.TrimSpace(fmt.Sprint(v))
+	}
+}
+
+func extractCardMetadataFromChargeResponse(payload map[string]interface{}, chargeResult map[string]interface{}) (savedCardMetadata, error) {
+	meta := savedCardMetadata{}
+	cardMap, _ := payload["card"].(map[string]interface{})
+	if cardMap == nil {
+		cardMap = payload
+	}
+
+	if cardMap != nil {
+		meta.CardToken = stringFromAny(cardMap["token"])
+		if meta.CardToken == "" {
+			meta.CardToken = stringFromAny(cardMap["cardToken"])
+		}
+		if meta.CardToken == "" {
+			meta.CardToken = stringFromAny(cardMap["authorizationCode"])
+		}
+		if meta.CardType == "" {
+			meta.CardType = stringFromAny(cardMap["type"])
+		}
+		if meta.CardType == "" {
+			meta.CardType = stringFromAny(cardMap["brand"])
+		}
+		if meta.Expiry == "" {
+			meta.Expiry = normalizeCardExpiry(stringFromAny(cardMap["expiry"]))
+		}
+		if meta.Expiry == "" {
+			meta.Expiry = normalizeCardExpiry(stringFromAny(cardMap["expiryDate"]))
+		}
+		if meta.First6 == "" {
+			meta.First6 = normalizeCardDigits(stringFromAny(cardMap["first6"]))
+		}
+		if meta.First6 == "" {
+			meta.First6 = normalizeCardDigits(stringFromAny(cardMap["first_6digits"]))
+		}
+		if meta.Last4 == "" {
+			meta.Last4 = normalizeCardDigits(stringFromAny(cardMap["last4"]))
+		}
+		if meta.Last4 == "" {
+			meta.Last4 = normalizeCardDigits(stringFromAny(cardMap["last_4digits"]))
+		}
+		if meta.First6 == "" || meta.Last4 == "" {
+			number := normalizeCardDigits(stringFromAny(cardMap["number"]))
+			if len(number) >= 10 {
+				if meta.First6 == "" && len(number) >= 6 {
+					meta.First6 = number[:6]
+				}
+				if meta.Last4 == "" && len(number) >= 4 {
+					meta.Last4 = number[len(number)-4:]
+				}
+			}
+		}
+	}
+
+	body, _ := chargeResult["responseBody"].(map[string]interface{})
+	if body == nil {
+		body = chargeResult
+	}
+	if body != nil {
+		cardDetails, _ := body["cardDetails"].(map[string]interface{})
+		if cardDetails == nil {
+			cardDetails = map[string]interface{}{}
+		}
+		merged := map[string]interface{}{}
+		for k, v := range body {
+			merged[k] = v
+		}
+		for k, v := range cardDetails {
+			merged[k] = v
+		}
+		if meta.CardToken == "" {
+			meta.CardToken = stringFromAny(merged["cardToken"])
+		}
+		if meta.CardToken == "" {
+			meta.CardToken = stringFromAny(merged["token"])
+		}
+		if meta.CardType == "" {
+			meta.CardType = inferCardTypeFromBin(stringFromAny(merged["first6"]), stringFromAny(merged["brand"]))
+		}
+		if meta.CardType == "" {
+			meta.CardType = inferCardTypeFromBin(stringFromAny(merged["first_6digits"]), stringFromAny(merged["cardType"]))
+		}
+		if meta.Expiry == "" {
+			meta.Expiry = normalizeCardExpiry(stringFromAny(merged["expiry"]))
+		}
+		if meta.Expiry == "" {
+			meta.Expiry = normalizeCardExpiry(stringFromAny(merged["expiryDate"]))
+		}
+		if meta.First6 == "" {
+			meta.First6 = normalizeCardDigits(stringFromAny(merged["first6"]))
+		}
+		if meta.First6 == "" {
+			meta.First6 = normalizeCardDigits(stringFromAny(merged["first_6digits"]))
+		}
+		if meta.Last4 == "" {
+			meta.Last4 = normalizeCardDigits(stringFromAny(merged["last4"]))
+		}
+		if meta.Last4 == "" {
+			meta.Last4 = normalizeCardDigits(stringFromAny(merged["last_4digits"]))
+		}
+		if meta.First6 == "" || meta.Last4 == "" {
+			number := normalizeCardDigits(stringFromAny(merged["number"]))
+			if len(number) >= 10 {
+				if meta.First6 == "" && len(number) >= 6 {
+					meta.First6 = number[:6]
+				}
+				if meta.Last4 == "" && len(number) >= 4 {
+					meta.Last4 = number[len(number)-4:]
+				}
+			}
+		}
+	}
+
+	if meta.CardType == "" {
+		meta.CardType = inferCardTypeFromBin(meta.First6, "")
+	}
+	if meta.Last4 == "" && meta.MaskedPan != "" {
+		meta.Last4 = normalizeCardDigits(meta.MaskedPan)
+	}
+	if meta.MaskedPan == "" {
+		meta.MaskedPan = buildMaskedPan(meta.First6, meta.Last4)
+	}
+
+	if meta.CardToken == "" && meta.MaskedPan == "" {
+		return meta, errors.New("card details are missing from the successful charge response")
+	}
+	return meta, nil
+}
 
 func NewPaymentService(db *gorm.DB, monnify *providers.MonnifyProvider, bitnob *providers.BitnobProvider) *PaymentService {
 	return &PaymentService{
@@ -32,15 +245,15 @@ func NewPaymentService(db *gorm.DB, monnify *providers.MonnifyProvider, bitnob *
 	}
 }
 
-// ValidateTransactionLimits enforces minimum withdrawal and KYC tier transaction limits (SCRUM-350)
+// ValidateTransactionLimits enforces withdrawal minimums and KYC tier transaction limits (SCRUM-350)
 func (s *PaymentService) ValidateTransactionLimits(ctx context.Context, userID int, amount float64, txType string) error {
 	if amount <= 0 {
 		return fmt.Errorf("transaction amount must be greater than zero")
 	}
 
-	// 1. Enforce minimum withdrawal of ₦9,999 on all withdrawal requests
-	if strings.EqualFold(txType, "WITHDRAWAL") && amount < 9999 {
-		return fmt.Errorf("minimum withdrawal amount is ₦9,999. Requested: ₦%.2f", amount)
+	// 1. Enforce the minimum withdrawal amount on all withdrawal requests.
+	if strings.EqualFold(txType, "WITHDRAWAL") && amount < minimumWithdrawalAmount {
+		return fmt.Errorf("minimum withdrawal amount is ₦%.0f. Requested: ₦%.2f", minimumWithdrawalAmount, amount)
 	}
 
 	// 2. Fetch user's KYC tier from User model
@@ -69,11 +282,14 @@ func (s *PaymentService) ValidateTransactionLimits(ctx context.Context, userID i
 		CreatedAt time.Time
 	}
 	var txRows []TxRow
+	// Only count withdrawal transactions, not ad payments (debits)
+	// Withdrawals have "withdrawal" in the description
 	err := s.db.WithContext(ctx).
 		Table("WalletTransaction").
 		Select("amount, \"createdAt\"").
 		Where("\"userId\" = ? AND \"createdAt\" >= ?", userID, startOfMonth).
 		Where("(status IS NULL OR UPPER(status) IN ('SUCCESS', 'PAID', 'COMPLETED'))").
+		Where("LOWER(description) LIKE ?", "%withdrawal%").
 		Find(&txRows).Error
 
 	if err != nil {
@@ -161,7 +377,9 @@ func (s *PaymentService) HandleDepositWebhook(ctx context.Context, currency stri
 		wTx := models.WalletTransaction{
 			Amount:      verification.Amount,
 			Type:        &txType,
+			Currency:    currency,
 			Description: &description,
+			Status:      func() *string { value := "SUCCESS"; return &value }(),
 			TrxRef:      &verification.TransactionReference,
 		}
 		if err := tx.Create(&wTx).Error; err != nil {
@@ -437,8 +655,7 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 			}
 		}
 
-		// 6. Compute total earnings per user (strictly rewards & earnings: Ads, Quiz, Live Quiz, Referral)
-		// Exclude personal deposits, card funding, bank deposits, crypto deposits
+		// 6. Total earnings are the positive credits recorded in the Gold wallet.
 		type SumResult struct {
 			UserID int     `gorm:"column:userId"`
 			Total  float64 `gorm:"column:total"`
@@ -447,26 +664,12 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 		if err := s.db.WithContext(ctx).Model(&models.WalletTransaction{}).
 			Select("\"userId\", SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as total").
 			Where("\"userId\" IN ?", userIDs).
-			Where("(\"account_type\" ILIKE 'gold' OR (\"rewardType\" IS NOT NULL AND \"rewardType\" != '') OR \"description\" ILIKE '%quiz%' OR \"description\" ILIKE '%reward%' OR \"description\" ILIKE '%referral%' OR \"description\" ILIKE '%ad%' OR \"description\" ILIKE '%bonus%')").
-			Where("(\"description\" IS NULL OR (\"description\" NOT ILIKE '%deposit%' AND \"description\" NOT ILIKE '%card funding%' AND \"description\" NOT ILIKE '%bank transfer deposit%'))").
+			Where("LOWER(COALESCE(\"account_type\", '')) = 'gold'").
+			Where("(status IS NULL OR UPPER(status) IN ('SUCCESS', 'PAID', 'COMPLETED'))").
 			Group("\"userId\"").
 			Scan(&earningsList).Error; err == nil {
 			for _, res := range earningsList {
 				totalEarningsMap[res.UserID] = res.Total
-			}
-		}
-
-		// Also check Reward table for user earnings if available
-		var rewardList []SumResult
-		if err := s.db.WithContext(ctx).Model(&models.Reward{}).
-			Select("\"userId\", SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as total").
-			Where("\"userId\" IN ?", userIDs).
-			Group("\"userId\"").
-			Scan(&rewardList).Error; err == nil {
-			for _, res := range rewardList {
-				if res.Total > 0 && totalEarningsMap[res.UserID] == 0 {
-					totalEarningsMap[res.UserID] = res.Total
-				}
 			}
 		}
 
@@ -486,101 +689,31 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 			}
 		}
 
-		var pendingDebitList []PendingResult
-		if err := s.db.WithContext(ctx).Model(&models.WalletTransaction{}).
-			Select("\"userId\", SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as total").
-			Where("\"userId\" IN ? AND (\"type\" ILIKE 'DEBIT' OR \"type\" ILIKE 'WITHDRAWAL' OR \"description\" ILIKE '%withdraw%') AND (\"status\" ILIKE 'PENDING' OR \"status\" ILIKE 'PROCESSING')", userIDs).
-			Group("\"userId\"").
-			Scan(&pendingDebitList).Error; err == nil {
-			for _, res := range pendingDebitList {
-				if _, exists := pendingPayoutsMap[res.UserID]; !exists {
-					pendingPayoutsMap[res.UserID] = res.Total
-				}
-			}
-		}
-
-		// 8. Compute total number of earnings per user (Payouts count = number of earnings)
+		// 8. Count actual payout records per user.
 		type CountResult struct {
 			UserID int     `gorm:"column:userId"`
 			Count  float64 `gorm:"column:count"`
 		}
-		var earningsCountList []CountResult
-		if err := s.db.WithContext(ctx).Model(&models.WalletTransaction{}).
+		var payoutCountList []CountResult
+		if err := s.db.WithContext(ctx).Model(&models.Payout{}).
 			Select("\"userId\", COUNT(*) as count").
 			Where("\"userId\" IN ?", userIDs).
-			Where("(\"account_type\" ILIKE 'gold' OR (\"rewardType\" IS NOT NULL AND \"rewardType\" != '') OR \"description\" ILIKE '%quiz%' OR \"description\" ILIKE '%reward%' OR \"description\" ILIKE '%referral%' OR \"description\" ILIKE '%ad%' OR \"description\" ILIKE '%bonus%')").
-			Where("(\"description\" IS NULL OR (\"description\" NOT ILIKE '%deposit%' AND \"description\" NOT ILIKE '%card funding%' AND \"description\" NOT ILIKE '%bank transfer deposit%'))").
 			Group("\"userId\"").
-			Scan(&earningsCountList).Error; err == nil {
-			for _, res := range earningsCountList {
+			Scan(&payoutCountList).Error; err == nil {
+			for _, res := range payoutCountList {
 				payoutCountMap[res.UserID] += res.Count
 			}
 		}
 
-		var rewardCountList []CountResult
-		if err := s.db.WithContext(ctx).Model(&models.Reward{}).
-			Select("\"userId\", COUNT(*) as count").
-			Where("\"userId\" IN ?", userIDs).
-			Group("\"userId\"").
-			Scan(&rewardCountList).Error; err == nil {
-			for _, res := range rewardCountList {
-				if _, exists := payoutCountMap[res.UserID]; !exists || payoutCountMap[res.UserID] == 0 {
-					payoutCountMap[res.UserID] = res.Count
-				}
-			}
-		}
-
-		// 9. Compute description of the most recent earning per user (Last Payout description: Ads Earning, Live Quiz Reward, Referral Bonus, etc.)
-		var recentEarnings []models.WalletTransaction
-		if err := s.db.WithContext(ctx).Model(&models.WalletTransaction{}).
-			Where("\"userId\" IN ?", userIDs).
-			Where("(\"account_type\" ILIKE 'gold' OR (\"rewardType\" IS NOT NULL AND \"rewardType\" != '') OR \"description\" ILIKE '%quiz%' OR \"description\" ILIKE '%reward%' OR \"description\" ILIKE '%referral%' OR \"description\" ILIKE '%ad%' OR \"description\" ILIKE '%bonus%')").
-			Where("(\"description\" IS NULL OR (\"description\" NOT ILIKE '%deposit%' AND \"description\" NOT ILIKE '%card funding%' AND \"description\" NOT ILIKE '%bank transfer deposit%'))").
-			Order("\"createdAt\" DESC").
-			Find(&recentEarnings).Error; err == nil {
-			for _, tx := range recentEarnings {
-				if _, exists := lastPayoutDescMap[tx.UserID]; !exists {
-					desc := "Quiz Earning"
-					if tx.RewardType != nil && *tx.RewardType != "" {
-						desc = *tx.RewardType
-					} else if tx.Description != nil && *tx.Description != "" {
-						desc = *tx.Description
-					}
-					descLower := strings.ToLower(desc)
-					if strings.Contains(descLower, "live quiz") {
-						desc = "Live Quiz Reward"
-					} else if strings.Contains(descLower, "referral") {
-						desc = "Referral Bonus"
-					} else if strings.Contains(descLower, "ad") || strings.Contains(descLower, "ads") {
-						desc = "Ads Earning"
-					} else if strings.Contains(descLower, "quiz") {
-						desc = "Quiz Earning"
-					}
-					lastPayoutDescMap[tx.UserID] = desc
-				}
-			}
-		}
-
-		var recentRewards []models.Reward
-		if err := s.db.WithContext(ctx).Model(&models.Reward{}).
+		// 9. Use the latest actual payout reference as the last payout value.
+		var payoutList []models.Payout
+		if err := s.db.WithContext(ctx).Model(&models.Payout{}).
 			Where("\"userId\" IN ?", userIDs).
 			Order("\"createdAt\" DESC").
-			Find(&recentRewards).Error; err == nil {
-			for _, r := range recentRewards {
-				if _, exists := lastPayoutDescMap[r.UserID]; !exists {
-					desc := "Quiz Earning"
-					if r.Type != "" {
-						desc = r.Type
-					}
-					descLower := strings.ToLower(desc)
-					if strings.Contains(descLower, "live quiz") {
-						desc = "Live Quiz Reward"
-					} else if strings.Contains(descLower, "referral") {
-						desc = "Referral Bonus"
-					} else if strings.Contains(descLower, "ad") || strings.Contains(descLower, "ads") {
-						desc = "Ads Earning"
-					}
-					lastPayoutDescMap[r.UserID] = desc
+			Find(&payoutList).Error; err == nil {
+			for _, payout := range payoutList {
+				if _, exists := lastPayoutDescMap[payout.UserID]; !exists {
+					lastPayoutDescMap[payout.UserID] = payout.Reference
 				}
 			}
 		}
@@ -825,13 +958,25 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 			masked := maskIDNumber(*u.ClerkUserID)
 			walletAddress = &masked
 		}
+		if tx.BankName == nil || *tx.BankName == "" {
+			if tx.Currency == "USDC" || tx.Currency == "USDT" {
+				scName := tx.Currency
+				bankName = &scName
+			} else {
+				bankName = nil
+			}
+		}
+		if tx.AccountNo == nil || *tx.AccountNo == "" {
+			accountNo = nil
+		}
+		if tx.WalletAddress == nil || *tx.WalletAddress == "" {
+			walletAddress = nil
+		}
 
 		// 8. Pending Balance (Total pending payout amount)
 		var pendingBal *float64
 		if val, ok := pendingPayoutsMap[tx.UserID]; ok {
 			pendingBal = &val
-		} else if tx.PendingBalance != nil {
-			pendingBal = tx.PendingBalance
 		} else {
 			zero := 0.0
 			pendingBal = &zero
@@ -843,9 +988,6 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 			totalEarnings = &val
 		} else if tx.TotalEarnings != nil && *tx.TotalEarnings > 0 {
 			totalEarnings = tx.TotalEarnings
-		} else if hasWallet && w.GoldBalance > 0 {
-			gVal := w.GoldBalance
-			totalEarnings = &gVal
 		} else {
 			zero := 0.0
 			totalEarnings = &zero
@@ -856,7 +998,7 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 		if desc, ok := lastPayoutDescMap[tx.UserID]; ok && desc != "" {
 			lastPayout = &desc
 		} else {
-			defaultDesc := "Quiz Earning"
+			defaultDesc := "N/A"
 			lastPayout = &defaultDesc
 		}
 
@@ -864,8 +1006,6 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 		var payoutsCount *float64
 		if count, ok := payoutCountMap[tx.UserID]; ok {
 			payoutsCount = &count
-		} else if tx.Payouts != nil {
-			payoutsCount = tx.Payouts
 		} else {
 			zero := 0.0
 			payoutsCount = &zero
@@ -974,9 +1114,25 @@ func (s *PaymentService) ChargeCardAndCreditWallet(ctx context.Context, userID i
 		log.Printf("[PaymentService] Unexpected charge status: %s - proceeding only if requestSuccessful=true", statusUpper)
 	}
 
+	cardMeta, metaErr := extractCardMetadataFromChargeResponse(chargePayload, chargeResult)
+	if metaErr != nil {
+		log.Printf("[PaymentService] WARNING: unable to extract reusable card metadata from successful charge response: %v", metaErr)
+	}
+	if cardMeta.CardType == "" {
+		cardMeta.CardType = "Card"
+	}
+	if cardMeta.MaskedPan == "" && cardMeta.First6 != "" && cardMeta.Last4 != "" {
+		cardMeta.MaskedPan = buildMaskedPan(cardMeta.First6, cardMeta.Last4)
+	}
+	if cardMeta.CardToken == "" {
+		if rawToken, ok := chargePayload["card"].(map[string]interface{})["token"]; ok {
+			cardMeta.CardToken = stringFromAny(rawToken)
+		}
+	}
+
 	// Step 3: Credit wallet atomically in DB
 	log.Printf("[PaymentService] Step 3: Crediting wallet for userID=%d amount=%.2f", userID, amount)
-	wallet, err := s.creditWalletInDB(ctx, userID, amount, monnifyTxRef, "card", currency)
+	wallet, err := s.creditWalletInDB(ctx, userID, amount, monnifyTxRef, "card", currency, &cardMeta)
 	if err != nil {
 		log.Printf("[PaymentService] CRITICAL: Card charged but wallet credit FAILED for userID=%d txRef=%s: %v", userID, monnifyTxRef, err)
 		return nil, fmt.Errorf("wallet credit failed after successful card charge (txRef: %s): %w", monnifyTxRef, err)
@@ -1006,8 +1162,8 @@ func (s *PaymentService) ChargeCardAndCreditWallet(ctx context.Context, userID i
 	}, nil
 }
 
-// creditWalletInDB atomically updates Wallet, WalletTransaction, ActivityWallet, and CardFunding.
-func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amount float64, txRef, paymentMethod, currency string) (*models.Wallet, error) {
+// creditWalletInDB atomically updates Wallet, WalletTransaction, ActivityWallet, CardFunding, and UserCard.
+func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amount float64, txRef, paymentMethod, currency string, cardMeta *savedCardMetadata) (*models.Wallet, error) {
 	if userID <= 0 {
 		return nil, errors.New("invalid userId")
 	}
@@ -1025,6 +1181,12 @@ func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amoun
 		methodKey = "stablecoin"
 	}
 	description := labels.Wallet("deposit", map[string]string{"method": labels.Method(methodKey)})
+	paymentMethodValue := "ACCOUNT_TRANSFER"
+	if methodKey == "debitCard" {
+		paymentMethodValue = "CARD"
+	} else if methodKey == "stablecoin" {
+		paymentMethodValue = "STABLE_COIN"
+	}
 
 	log.Printf("[DB] creditWalletInDB - userID=%d amount=%.2f description=%s txRef=%s", userID, amount, description, txRef)
 
@@ -1067,17 +1229,27 @@ func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amoun
 		// 3. Insert WalletTransaction record
 		txType := "CREDIT"
 		wTx := models.WalletTransaction{
-			UserID:      userID,
-			Amount:      amount,
-			Type:        &txType,
-			Description: &description,
-			AccountType: &accountType,
-			HoldUntil:   &holdUntil,
-			TrxRef:      &txRef,
-			CreatedAt:   time.Now(),
+			UserID:        userID,
+			Amount:        amount,
+			Type:          &txType,
+			Currency:      currency,
+			PaymentMethod: stringValuePtr(paymentMethodValue),
+			Description:   &description,
+			AccountType:   &accountType,
+			Status:        func() *string { value := "SUCCESS"; return &value }(),
+			WalletID:      &wallet.ID,
+			HoldUntil:     &holdUntil,
+			TrxRef:        &txRef,
+			CardToken: func() *string {
+				if cardMeta != nil {
+					return stringValuePtr(cardMeta.CardToken)
+				}
+				return nil
+			}(),
+			CreatedAt: time.Now(),
 		}
 		if err := tx.Create(&wTx).Error; err != nil {
-			log.Printf("[DB] WARNING: Failed to create WalletTransaction: %v", err)
+			return fmt.Errorf("failed to create WalletTransaction: %w", err)
 		} else {
 			log.Printf("[DB] WalletTransaction created: id=%d", wTx.ID)
 		}
@@ -1100,7 +1272,7 @@ func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amoun
 			log.Printf("[DB] ActivityWallet created: id=%d", actTx.ID)
 		}
 
-		// 5. Insert CardFunding record for audit
+		// 5. Insert CardFunding record for audit and persist reusable card metadata.
 		if strings.EqualFold(paymentMethod, "card") {
 			cardFunding := models.CardFunding{
 				UserID:    userID,
@@ -1109,6 +1281,18 @@ func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amoun
 				Currency:  currency,
 				Reference: txRef,
 				Status:    "SUCCESS",
+				CardToken: func() string {
+					if cardMeta != nil {
+						return cardMeta.CardToken
+					}
+					return ""
+				}(),
+				CardLast4: func() string {
+					if cardMeta != nil {
+						return cardMeta.Last4
+					}
+					return ""
+				}(),
 				CreatedAt: time.Now(),
 				UpdatedAt: time.Now(),
 			}
@@ -1116,6 +1300,52 @@ func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amoun
 				log.Printf("[DB] WARNING: Failed to create CardFunding record: %v", err)
 			} else {
 				log.Printf("[DB] CardFunding created: id=%d", cardFunding.ID)
+			}
+
+			if cardMeta != nil && (cardMeta.CardToken != "" || cardMeta.MaskedPan != "") {
+				var existing models.UserCard
+				err := tx.Where("\"userId\" = ? AND (COALESCE(\"cardToken\", '') = ? OR COALESCE(\"maskedPan\", '') = ?)", userID, cardMeta.CardToken, cardMeta.MaskedPan).First(&existing).Error
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					cardRecord := models.UserCard{
+						UserID:    userID,
+						CardToken: stringValuePtr(cardMeta.CardToken),
+						MaskedPan: stringValuePtr(cardMeta.MaskedPan),
+						CardType:  stringValuePtr(cardMeta.CardType),
+						Expiry:    stringValuePtr(cardMeta.Expiry),
+						IsDefault: true,
+						CreatedAt: time.Now(),
+						UpdatedAt: time.Now(),
+					}
+					if err := tx.Create(&cardRecord).Error; err != nil {
+						log.Printf("[DB] WARNING: Failed to create UserCard record: %v", err)
+					} else {
+						log.Printf("[DB] UserCard created: id=%d token=%s maskedPan=%s", cardRecord.ID, cardMeta.CardToken, cardMeta.MaskedPan)
+					}
+				} else if err == nil {
+					updates := map[string]interface{}{}
+					if cardMeta.CardToken != "" {
+						updates["cardToken"] = cardMeta.CardToken
+					}
+					if cardMeta.MaskedPan != "" {
+						updates["maskedPan"] = cardMeta.MaskedPan
+					}
+					if cardMeta.CardType != "" {
+						updates["cardType"] = cardMeta.CardType
+					}
+					if cardMeta.Expiry != "" {
+						updates["expiry"] = cardMeta.Expiry
+					}
+					if len(updates) > 0 {
+						updates["updatedAt"] = time.Now()
+						if err := tx.Model(&existing).Updates(updates).Error; err != nil {
+							log.Printf("[DB] WARNING: Failed to update UserCard record: %v", err)
+						} else {
+							log.Printf("[DB] UserCard updated: id=%d", existing.ID)
+						}
+					}
+				} else {
+					log.Printf("[DB] WARNING: Failed to query existing UserCard: %v", err)
+				}
 			}
 		}
 
@@ -1139,7 +1369,7 @@ func (s *PaymentService) QueryTransaction(ctx context.Context, transactionRefere
 // CreditUserWallet is used for bank transfer and webhook-based credits.
 func (s *PaymentService) CreditUserWallet(ctx context.Context, userID int, amount float64, txRef, paymentMethod, currency string) (*models.Wallet, error) {
 	log.Printf("[PaymentService] CreditUserWallet - userID=%d amount=%.2f method=%s", userID, amount, paymentMethod)
-	return s.creditWalletInDB(ctx, userID, amount, txRef, paymentMethod, currency)
+	return s.creditWalletInDB(ctx, userID, amount, txRef, paymentMethod, currency, nil)
 }
 
 // TransferBetweenWallets moves funds between Gold Wallet and Personal Wallet atomically.
@@ -1205,12 +1435,16 @@ func (s *PaymentService) TransferBetweenWallets(ctx context.Context, userID int,
 			UserID:      userID,
 			Amount:      amount,
 			Type:        &txType,
+			Currency:    "NGN",
 			Description: &description,
+			AccountType: func() *string { value := "Personal"; return &value }(),
+			Status:      func() *string { value := "SUCCESS"; return &value }(),
+			WalletID:    &wallet.ID,
 			TrxRef:      &txRef,
 			CreatedAt:   time.Now(),
 		}
 		if err := tx.Create(&wTx).Error; err != nil {
-			log.Printf("[PaymentService] WARNING: Failed to create WalletTransaction for transfer: %v", err)
+			return fmt.Errorf("failed to create WalletTransaction for transfer: %w", err)
 		} else {
 			log.Printf("[PaymentService] WalletTransaction created: id=%d", wTx.ID)
 		}
@@ -1263,7 +1497,7 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 		return nil, errors.New("amount must be greater than 0")
 	}
 
-	// Enforce Minimum Withdrawal (₦9,999) and KYC Transaction Limits (SCRUM-350)
+	// Enforce the minimum withdrawal and KYC transaction limits (SCRUM-350).
 	if err := s.ValidateTransactionLimits(ctx, userID, amount, "WITHDRAWAL"); err != nil {
 		return nil, err
 	}
@@ -1275,6 +1509,19 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 	}
 
 	log.Printf("[PaymentService] ProcessWalletWithdrawal - userID=%d amount=%.2f ref=%s", userID, amount, txRef)
+	accountName, _ := payload["accountName"].(string)
+	accountNumber, _ := payload["destinationAccountNumber"].(string)
+	if accountNumber == "" {
+		accountNumber, _ = payload["accountNumber"].(string)
+	}
+	bankName, _ := payload["destinationBankName"].(string)
+	if bankName == "" {
+		bankName, _ = payload["bankName"].(string)
+	}
+	paymentMethod := "bankTransfer"
+	transactionType := "WITHDRAWAL"
+	status := "SUCCESS"
+	accountType := "Personal"
 
 	// Step 1: Verify user wallet balance and debit in DB transaction
 	var updatedWallet models.Wallet
@@ -1304,15 +1551,24 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 		txType := "DEBIT"
 		desc := labels.Wallet("withdrawal", map[string]string{"method": labels.Method("bankTransfer")})
 		wTx := models.WalletTransaction{
-			UserID:      userID,
-			Amount:      amount,
-			Type:        &txType,
-			Description: &desc,
-			TrxRef:      &txRef,
-			CreatedAt:   time.Now(),
+			UserID:          userID,
+			Amount:          amount,
+			Type:            &txType,
+			Currency:        "NGN",
+			AccountName:     stringValuePtr(accountName),
+			AccountNo:       stringValuePtr(accountNumber),
+			BankName:        stringValuePtr(bankName),
+			PaymentMethod:   &paymentMethod,
+			AccountType:     &accountType,
+			TransactionType: &transactionType,
+			Description:     &desc,
+			Status:          &status,
+			WalletID:        &wallet.ID,
+			TrxRef:          &txRef,
+			CreatedAt:       time.Now(),
 		}
 		if err := tx.Create(&wTx).Error; err != nil {
-			log.Printf("[PaymentService] WARNING: Failed to create WalletTransaction for withdrawal: %v", err)
+			return fmt.Errorf("failed to create WalletTransaction for withdrawal: %w", err)
 		}
 
 		// Record in ActivityWallet
@@ -1394,11 +1650,7 @@ func (s *PaymentService) DebitUserWallet(ctx context.Context, userID int, amount
 			return fmt.Errorf("failed to fetch wallet: %w", err)
 		}
 
-		availablePersonal, err := s.availablePersonalBalance(ctx, userID, wallet.PersonalBalance)
-		if err != nil {
-			return err
-		}
-		if availablePersonal < amount {
+		if wallet.PersonalBalance < amount {
 			return fmt.Errorf("insufficient wallet balance (available: %.2f, required: %.2f)", wallet.PersonalBalance, amount)
 		}
 
@@ -1416,12 +1668,16 @@ func (s *PaymentService) DebitUserWallet(ctx context.Context, userID int, amount
 			UserID:      userID,
 			Amount:      amount,
 			Type:        &txType,
+			Currency:    "NGN",
 			Description: &description,
+			AccountType: func() *string { value := "Personal"; return &value }(),
+			Status:      func() *string { value := "SUCCESS"; return &value }(),
+			WalletID:    &wallet.ID,
 			TrxRef:      &txRef,
 			CreatedAt:   time.Now(),
 		}
 		if err := tx.Create(&wTx).Error; err != nil {
-			log.Printf("[PaymentService] WARNING: Failed to create WalletTransaction for debit: %v", err)
+			return fmt.Errorf("failed to create WalletTransaction for debit: %w", err)
 		}
 
 		// Record in ActivityWallet

@@ -128,6 +128,8 @@ type CardFunding struct {
 	Currency  string    `gorm:"column:currency" json:"currency"`
 	Reference string    `gorm:"column:reference" json:"reference"`
 	Status    string    `gorm:"column:status" json:"status"`
+	CardLast4 string    `gorm:"column:cardLast4" json:"cardLast4"`
+	CardToken string    `gorm:"column:cardToken" json:"cardToken"`
 	CreatedAt time.Time `gorm:"column:createdAt" json:"createdAt"`
 	UpdatedAt time.Time `gorm:"column:updatedAt" json:"updatedAt"`
 }

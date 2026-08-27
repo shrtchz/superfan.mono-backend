@@ -113,7 +113,12 @@ func init() {
 	if pgURI != "" {
 		utils.ConnectPostgres(pgURI)
 		if utils.DB != nil {
-			_ = utils.DB.AutoMigrate(&models.AdCampaign{}, &models.AdPlacement{}, &models.AdEvent{})
+			if err := utils.DB.AutoMigrate(&models.AdCampaign{}, &models.AdPlacement{}, &models.AdEvent{}); err != nil {
+				log.Fatalf("failed to migrate ads tables: %v", err)
+			}
+			if err := utils.DB.Exec(`ALTER TABLE "AdCampaign" ADD COLUMN IF NOT EXISTS "placementType" TEXT`).Error; err != nil {
+				log.Fatalf("failed to migrate AdCampaign.placementType: %v", err)
+			}
 		}
 	} else {
 		log.Println("DATABASE_URL environment variable is not set; skipping PostgreSQL connection")
