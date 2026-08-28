@@ -143,6 +143,7 @@
     }
   },
   "prisma": {
+    "schema": "prisma/schema/schema.prisma",
     "seed": "tsx prisma/seed/seed.ts"
   }
 }

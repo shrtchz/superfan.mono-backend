@@ -31,7 +31,7 @@ for i in $(seq 1 60); do
 done
 
 echo "Synchronizing Prisma schema tables..."
-npx prisma db push --accept-data-loss
+npx prisma db push --schema=prisma/schema/schema.prisma --accept-data-loss
 
 echo "Schema sync completed successfully!"
 
