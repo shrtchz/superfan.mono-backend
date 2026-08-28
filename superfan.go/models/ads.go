@@ -94,7 +94,7 @@ func (AdPlacement) TableName() string {
 type AdEvent struct {
 	ID          int         `gorm:"column:id;primaryKey;autoIncrement" json:"id"`
 	UserID      *int        `gorm:"column:userId" json:"userId,omitempty"`
-	CampaignID  int         `gorm:"column:campaignId" json:"campaignId"`
+	CampaignID  *int        `gorm:"column:campaignId" json:"campaignId,omitempty"`
 	PlacementID *int        `gorm:"column:placementId" json:"placementId,omitempty"`
 	QuizID      *string     `gorm:"column:quizId" json:"quizId,omitempty"`
 	EventType   AdEventType `gorm:"column:eventType" json:"eventType"`
