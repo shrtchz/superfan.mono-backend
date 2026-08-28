@@ -227,8 +227,8 @@ export class UserController {
   }
 
   @Post('/create-card')
-  createUserCard(@Req() req: any, @Body() cardNumber: number) {
-    return this.userService.createCard(req.user.id, cardNumber);
+  createUserCard(@Req() req: any, @Body() dto: any) {
+    return this.userService.createCard(req.user.id, dto);
   }
 
   @Get('/get-card')
