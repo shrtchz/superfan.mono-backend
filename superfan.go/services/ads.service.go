@@ -600,8 +600,12 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 }
 
 func (s *adsServiceImpl) GetRewardAdQuota(ctx context.Context, userID int) (*RewardAdQuotaResponse, error) {
-	now := time.Now()
-	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	lagosLoc, err := time.LoadLocation("Africa/Lagos")
+	if err != nil {
+		lagosLoc = time.FixedZone("WAT", 1*60*60)
+	}
+	now := time.Now().In(lagosLoc)
+	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, lagosLoc)
 	resetsAt := startOfDay.AddDate(0, 0, 1)
 
 	var todayRewardCount int64
