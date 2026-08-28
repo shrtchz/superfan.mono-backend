@@ -23,7 +23,7 @@ export class AutoSeedService implements OnApplicationBootstrap {
       if (!tablesExist) {
         this.logger.log('🔨 Database tables are missing. Running schema push (npx prisma db push)...');
         try {
-          execSync('npx prisma db push --skip-generate --accept-data-loss', {
+          execSync('npx prisma db push --accept-data-loss', {
             stdio: 'inherit',
             env: { ...process.env },
           });
