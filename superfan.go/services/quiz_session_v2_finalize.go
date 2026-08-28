@@ -263,23 +263,30 @@ func (s *QuizSessionV2Service) completeSessionWithZeroAnswers(
 		return nil, err
 	}
 	streakBonus := getStreakBonusPoints(dailyStreak)
+	totalPoints := streakBonus + req.AdBonuses
+	amountInNaira, finalNairaAmount, finalUSDCAmount, finalUSDTAmount := convertTotalEarningToRewardAmounts(totalPoints)
+
+	testSubject := lookup.record.Subject
 
 	if err := utils.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&models.OngoingQuiz{}).
 			Where(`"id" = ? AND "userId" = ?`, sessionID, req.UserID).
 			Updates(map[string]interface{}{
-				"isCompleted":      true,
-				"completedAt":      now,
-				"totalEarning":     0,
-				"quizTime":         strconv.Itoa(req.QuizTimeSeconds),
-				"baseScore":        0,
-				"accuracyBonus":    0,
-				"speedBonus":       0,
-				"streakMultiplier": streakBonus,
-				"adBonuses":        req.AdBonuses,
-				"earnedAmount":     0,
-				"timeRemaining":    0,
-				"updatedAt":        now,
+				"isCompleted":         true,
+				"completedAt":         now,
+				"totalEarning":        totalPoints,
+				"totalEarninginNaira": finalNairaAmount,
+				"totalEarninginUSDC":  finalUSDCAmount,
+				"totalEarninginUSDT":  finalUSDTAmount,
+				"quizTime":            strconv.Itoa(req.QuizTimeSeconds),
+				"baseScore":           0,
+				"accuracyBonus":       0,
+				"speedBonus":          0,
+				"streakMultiplier":    streakBonus,
+				"adBonuses":           req.AdBonuses,
+				"earnedAmount":        totalPoints,
+				"timeRemaining":       0,
+				"updatedAt":           now,
 			}).Error; err != nil {
 			return err
 		}
@@ -297,7 +304,7 @@ func (s *QuizSessionV2Service) completeSessionWithZeroAnswers(
 			}
 		}
 
-		return nil
+		return creditQuizReward(tx, req.UserID, amountInNaira, testSubject, 0, totalPoints, now)
 	}); err != nil {
 		return nil, utils.NewAppError(http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to finalize quiz session")
 	}
@@ -314,8 +321,8 @@ func (s *QuizSessionV2Service) completeSessionWithZeroAnswers(
 		"correctAnswers":   0,
 		"attemptedAnswers": 0,
 		"baseEarning":      0,
-		"totalPoints":      streakBonus + req.AdBonuses,
-		"amountInNaira":    0.0,
+		"totalPoints":      totalPoints,
+		"amountInNaira":    amountInNaira,
 		"rewardType":       req.RewardType,
 		"quizTimeSeconds":  req.QuizTimeSeconds,
 		"submittedAt":      isoTime(now),
