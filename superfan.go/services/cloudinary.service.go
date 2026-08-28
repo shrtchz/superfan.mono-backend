@@ -145,7 +145,7 @@ func UploadImageToCloudinary(imageURL, cloudName, apiKey, apiSecret string) (str
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
-	client := &http.Client{Timeout: 90 * time.Second}
+	client := &http.Client{Timeout: 300 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("cloudinary upload request failed: %w", err)
@@ -189,7 +189,7 @@ func UploadImageToCloudinary(imageURL, cloudName, apiKey, apiSecret string) (str
 
 // downloadImageBytes downloads image/video data from URL
 func downloadImageBytes(imageURL string) ([]byte, string, string, error) {
-	client := &http.Client{Timeout: 60 * time.Second}
+	client := &http.Client{Timeout: 300 * time.Second}
 	req, err := http.NewRequest("GET", imageURL, nil)
 	if err != nil {
 		return nil, "", "", err
