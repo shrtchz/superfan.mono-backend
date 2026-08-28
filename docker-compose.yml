@@ -64,7 +64,7 @@ services:
       context: ./superfan.nest
       target: build
     container_name: superfan-nest-api
-    command: pnpm start:dev
+    command: /bin/sh /app/docker-entrypoint.sh pnpm start:dev
     ports:
       - '3001:3000'
     env_file:
@@ -79,9 +79,12 @@ services:
       - ./superfan.nest:/app
       - /app/node_modules
     depends_on:
-      - redis
-      - db
-      - maildev
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      maildev:
+        condition: service_started
     restart: unless-stopped
 
   superfan-go:
@@ -103,8 +106,10 @@ services:
     volumes:
       - ./superfan.go:/app
     depends_on:
-      - mongo
-      - db
+      db:
+        condition: service_healthy
+      mongo:
+        condition: service_started
     restart: unless-stopped
 
 volumes:
