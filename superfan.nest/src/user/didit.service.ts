@@ -90,11 +90,26 @@ export class DiditService {
   }
 
   private get baseUrl(): string {
-    return (
+    let url = (
       this.configService.get<string>('DIDIT_BASE_URL') ||
       process.env.DIDIT_BASE_URL ||
       'https://verification.didit.me/v3'
-    ).replace(/\/+$/, '');
+    )
+      .trim()
+      .replace(/\/+$/, '');
+
+    // Normalize known misconfigurations (e.g. https://api.didit.me or missing /v3 suffix)
+    if (
+      url === 'https://api.didit.me' ||
+      url === 'https://api.didit.me/v3' ||
+      url === 'https://verification.didit.me'
+    ) {
+      url = 'https://verification.didit.me/v3';
+    } else if (!url.endsWith('/v3')) {
+      url = `${url}/v3`;
+    }
+
+    return url;
   }
 
   private get webhookSecret(): string {
