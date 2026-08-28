@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"quiz.superfan.com/apis/labels"
 	"quiz.superfan.com/apis/models"
 	"quiz.superfan.com/apis/utils"
 )
@@ -453,7 +454,10 @@ func creditQuizReward(tx *gorm.DB, userID int, amountInNaira float64, subject st
 	goldType := "Gold"
 	status := "Completed"
 	transactionType := "Reward"
-	description := "Credit Wallet - Quiz Earning"
+	description := labels.Wallet("quizEarning", nil)
+	if description == "" {
+		description = "Test Quiz Earning"
+	}
 	trxRef := fmt.Sprintf("QUIZ_%d", now.UnixNano())
 	if err := tx.Create(&models.WalletTransaction{
 		UserID:          userID,

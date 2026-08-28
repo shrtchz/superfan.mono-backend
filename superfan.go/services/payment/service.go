@@ -775,6 +775,36 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 		if tx.Description != nil {
 			desc = *tx.Description
 		}
+		if desc == "Credit Wallet - Quiz Earning" || desc == "quiz_reward" {
+			quizDesc := labels.Wallet("quizEarning", nil)
+			if quizDesc != "" {
+				desc = quizDesc
+			} else {
+				desc = "Test Quiz Earning"
+			}
+		} else if desc == "Debit Wallet - Bank Transfer Withdrawal" || desc == "bank_withdrawal" {
+			wdDesc := labels.Wallet("withdrawal", map[string]string{"method": labels.Method("bankTransfer")})
+			if wdDesc != "" {
+				desc = wdDesc
+			} else {
+				desc = "Withdrawal - Bank Transfer"
+			}
+		} else if desc == "Credit wallet - Debit Card" || desc == "Credit Wallet - Debit Card" {
+			desc = labels.Wallet("deposit", map[string]string{"method": labels.Method("debitCard")})
+			if desc == "" {
+				desc = "Deposit - Debit Card"
+			}
+		} else if desc == "Credit wallet - Bank Transfer" || desc == "Credit Wallet - Bank Transfer" {
+			desc = labels.Wallet("deposit", map[string]string{"method": labels.Method("bankTransfer")})
+			if desc == "" {
+				desc = "Deposit - Bank Transfer"
+			}
+		} else if desc == "Credit wallet - Stablecoin" || desc == "Credit wallet - Stable Coins" || desc == "Credit Wallet - Stable Coins" {
+			desc = labels.Wallet("deposit", map[string]string{"method": labels.Method("stablecoin")})
+			if desc == "" {
+				desc = "Deposit - Stablecoin"
+			}
+		}
 
 		// 2. Payment Method
 		paymentMethod := "ACCOUNT_TRANSFER"
@@ -1602,7 +1632,10 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 
 		// Record in WalletTransaction
 		txType := "DEBIT"
-		desc := "Debit Wallet - Bank Transfer Withdrawal"
+		desc := labels.Wallet("withdrawal", map[string]string{"method": labels.Method("bankTransfer")})
+		if desc == "" {
+			desc = "Withdrawal - Bank Transfer"
+		}
 		wTx := models.WalletTransaction{
 			UserID:          userID,
 			Amount:          amount,
