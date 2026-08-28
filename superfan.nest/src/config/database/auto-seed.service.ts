@@ -1,5 +1,7 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
 import { execSync } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
 import { PrismaService } from './prisma.service';
 
 @Injectable()
@@ -7,6 +9,24 @@ export class AutoSeedService implements OnApplicationBootstrap {
   private readonly logger = new Logger(AutoSeedService.name);
 
   constructor(private readonly prisma: PrismaService) {}
+
+  private resolveSchemaPath(): string {
+    const candidates = [
+      path.resolve(process.cwd(), 'prisma/schema/schema.prisma'),
+      path.resolve(process.cwd(), 'prisma/schema.prisma'),
+      path.resolve(__dirname, '../../../prisma/schema/schema.prisma'),
+      path.resolve(__dirname, '../../prisma/schema/schema.prisma'),
+      'prisma/schema/schema.prisma',
+      'prisma/schema.prisma',
+    ];
+
+    for (const candidate of candidates) {
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+    return 'prisma/schema/schema.prisma';
+  }
 
   async onApplicationBootstrap() {
     process.env.NEST_APP_INIT = 'true';
@@ -21,9 +41,10 @@ export class AutoSeedService implements OnApplicationBootstrap {
 
       // 2. If tables are missing, push the Prisma schema to create all tables
       if (!tablesExist) {
-        this.logger.log('🔨 Database tables are missing. Running schema push (npx prisma db push)...');
+        const schemaPath = this.resolveSchemaPath();
+        this.logger.log(`🔨 Database tables are missing. Running schema push (npx prisma db push --schema="${schemaPath}")...`);
         try {
-          execSync('npx prisma db push --accept-data-loss', {
+          execSync(`npx prisma db push --schema="${schemaPath}" --accept-data-loss`, {
             stdio: 'inherit',
             env: { ...process.env },
           });
