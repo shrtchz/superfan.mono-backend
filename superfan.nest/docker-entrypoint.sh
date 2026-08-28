@@ -30,14 +30,10 @@ for i in $(seq 1 60); do
   sleep 1
 done
 
-echo "Running Prisma migrations..."
-npx prisma migrate deploy || {
-  echo "Migration failed, attempting to resolve rolled-back migrations..."
-  npx prisma migrate resolve --rolled-back 20260305104620_initial_username 2>/dev/null || true
-  npx prisma migrate deploy
-}
+echo "Synchronizing Prisma schema tables..."
+npx prisma db push
 
-echo "Migrations completed successfully!"
+echo "Schema sync completed successfully!"
 
 echo "Running database seed..."
 npx tsx prisma/seed/seed.ts || echo "Warning: Seed script failed or tsx is not available."
