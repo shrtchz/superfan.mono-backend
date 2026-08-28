@@ -39,6 +39,8 @@ RUN sed -i 's/\r$//' /app/docker-entrypoint.sh && chmod +x /app/docker-entrypoin
 FROM node:22-slim AS production
 WORKDIR /app
 
+RUN apt-get update -y && apt-get install -y openssl ca-certificates && rm -rf /var/lib/apt/lists/*
+
 ENV NODE_ENV=production
 
 COPY --from=build /app/package.json ./
