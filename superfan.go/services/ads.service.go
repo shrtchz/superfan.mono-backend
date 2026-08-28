@@ -600,8 +600,12 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 }
 
 func (s *adsServiceImpl) GetRewardAdQuota(ctx context.Context, userID int) (*RewardAdQuotaResponse, error) {
-	now := time.Now()
-	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	lagosLoc, err := time.LoadLocation("Africa/Lagos")
+	if err != nil {
+		lagosLoc = time.FixedZone("WAT", 1*60*60)
+	}
+	now := time.Now().In(lagosLoc)
+	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, lagosLoc)
 	resetsAt := startOfDay.AddDate(0, 0, 1)
 
 	var todayRewardCount int64
@@ -845,6 +849,10 @@ func (s *adsServiceImpl) GetCampaigns(ctx context.Context, q *CampaignListQuery)
 		return nil, err
 	}
 
+	for i := range campaigns {
+		s.enrichCampaignUser(ctx, &campaigns[i])
+	}
+
 	totalPages := 0
 	if q.Limit > 0 {
 		totalPages = int(math.Ceil(float64(total) / float64(q.Limit)))
@@ -857,6 +865,28 @@ func (s *adsServiceImpl) GetCampaigns(ctx context.Context, q *CampaignListQuery)
 		Limit:      q.Limit,
 		TotalPages: totalPages,
 	}, nil
+}
+
+func (s *adsServiceImpl) enrichCampaignUser(ctx context.Context, campaign *models.AdCampaign) {
+	if campaign == nil || campaign.UserID == nil || *campaign.UserID <= 0 {
+		return
+	}
+	var owner models.User
+	if err := s.db.WithContext(ctx).
+		Select(`id, "firstName", "lastName", username, "profilePicture"`).
+		First(&owner, *campaign.UserID).Error; err == nil {
+		if owner.ProfilePicture != nil && strings.TrimSpace(*owner.ProfilePicture) != "" {
+			campaign.ProfilePicture = owner.ProfilePicture
+		}
+		fullName := strings.TrimSpace(strings.TrimSpace(owner.FirstName) + " " + strings.TrimSpace(owner.LastName))
+		if fullName != "" {
+			campaign.FullName = &fullName
+		}
+		if (campaign.Username == nil || strings.TrimSpace(*campaign.Username) == "") && strings.TrimSpace(owner.Username) != "" {
+			u := strings.TrimSpace(owner.Username)
+			campaign.Username = &u
+		}
+	}
 }
 
 func (s *adsServiceImpl) GetInventoryStats(ctx context.Context) (*InventoryStatsResponse, error) {
@@ -1008,31 +1038,22 @@ func (s *adsServiceImpl) GetPlacementEligibility(ctx context.Context, userId int
 		Table(`"AdPlacement"`).
 		Select(`"AdPlacement".*`).
 		Joins(`JOIN "AdCampaign" ON "AdCampaign".id = "AdPlacement"."campaignId"`).
-		Where(`(UPPER("AdPlacement".key) IN (?, ?) OR UPPER("AdPlacement"."placementType") IN (?, ?)) AND LOWER("AdCampaign".status) IN ('active', 'approved', 'paid')`, placementKeyUpper, ruleTypeUpper, placementKeyUpper, ruleTypeUpper).
-		Order(`CASE WHEN LOWER("AdCampaign".status) = 'active' THEN 1 WHEN LOWER("AdCampaign".status) = 'approved' THEN 2 ELSE 3 END, "AdPlacement".id DESC`).
+		Where(`(UPPER("AdPlacement".key) IN (?, ?) OR UPPER("AdPlacement"."placementType") IN (?, ?)) AND LOWER("AdCampaign".status) IN ('active', 'approved', 'paid', 'pending')`, placementKeyUpper, ruleTypeUpper, placementKeyUpper, ruleTypeUpper).
+		Order(`CASE WHEN LOWER("AdCampaign".status) = 'active' THEN 1 WHEN LOWER("AdCampaign".status) = 'approved' THEN 2 WHEN LOWER("AdCampaign".status) = 'paid' THEN 3 ELSE 4 END, "AdPlacement".id DESC`).
 		First(&placement).Error
 
 	if err == nil && placement.CampaignID > 0 {
 		_ = s.db.WithContext(ctx).First(&campaign, placement.CampaignID).Error
-		if campaign.UserID != nil && *campaign.UserID > 0 {
-			var owner models.User
-			if ownerErr := s.db.WithContext(ctx).
-				Select("id, firstName, lastName, username, profilePicture").
-				First(&owner, *campaign.UserID).Error; ownerErr == nil {
-				campaign.ProfilePicture = owner.ProfilePicture
-				fullName := strings.TrimSpace(strings.TrimSpace(owner.FirstName) + " " + strings.TrimSpace(owner.LastName))
-				if fullName != "" {
-					campaign.FullName = &fullName
-				}
-			}
-		}
+		s.enrichCampaignUser(ctx, &campaign)
 
 		media := placement.MediaURL
 		if strings.TrimSpace(media) == "" && len(campaign.MediaURLs) > 0 {
 			media = campaign.MediaURLs[0]
 		}
 		if strings.TrimSpace(media) == "" {
-			media = "/videos/playcommentary.mp4"
+			return &PlacementEligibilityResponse{
+				Eligible: false,
+			}, nil
 		}
 
 		durationSec := placement.DurationSec
@@ -1099,14 +1120,18 @@ func (s *adsServiceImpl) GetPlacementEligibility(ctx context.Context, userId int
 	// 3. Secondary Lookup: Try finding an AdCampaign directly matching the placement type
 	var directCampaign models.AdCampaign
 	directErr := s.db.WithContext(ctx).
-		Where(`(UPPER("placementType") = ? OR UPPER("placementType") = ?) AND LOWER(status) IN ('active', 'approved', 'paid')`, placementKeyUpper, ruleTypeUpper).
-		Order(`CASE WHEN LOWER(status) = 'active' THEN 1 WHEN LOWER(status) = 'approved' THEN 2 ELSE 3 END, id DESC`).
+		Where(`(UPPER("placementType") = ? OR UPPER("placementType") = ?) AND LOWER(status) IN ('active', 'approved', 'paid', 'pending')`, placementKeyUpper, ruleTypeUpper, placementKeyUpper, ruleTypeUpper).
+		Order(`CASE WHEN LOWER(status) = 'active' THEN 1 WHEN LOWER(status) = 'approved' THEN 2 WHEN LOWER(status) = 'paid' THEN 3 ELSE 4 END, id DESC`).
 		First(&directCampaign).Error
 
 	if directErr == nil && directCampaign.ID > 0 {
-		media := "/videos/playcommentary.mp4"
+		s.enrichCampaignUser(ctx, &directCampaign)
+		media := ""
 		if len(directCampaign.MediaURLs) > 0 && strings.TrimSpace(directCampaign.MediaURLs[0]) != "" {
 			media = directCampaign.MediaURLs[0]
+		}
+		if media == "" {
+			return &PlacementEligibilityResponse{Eligible: false}, nil
 		}
 
 		pricingModel := rule.PricingModel
@@ -1142,14 +1167,18 @@ func (s *adsServiceImpl) GetPlacementEligibility(ctx context.Context, userId int
 	// 4. Tertiary Lookup: Try finding ANY active AdCampaign directly in database
 	var activeCampaign models.AdCampaign
 	campaignErr := s.db.WithContext(ctx).
-		Where(`LOWER(status) IN ('active', 'approved', 'paid')`).
-		Order(`CASE WHEN LOWER(status) = 'active' THEN 1 WHEN LOWER(status) = 'approved' THEN 2 ELSE 3 END, id DESC`).
+		Where(`LOWER(status) IN ('active', 'approved', 'paid', 'pending')`).
+		Order(`CASE WHEN LOWER(status) = 'active' THEN 1 WHEN LOWER(status) = 'approved' THEN 2 WHEN LOWER(status) = 'paid' THEN 3 ELSE 4 END, id DESC`).
 		First(&activeCampaign).Error
 
 	if campaignErr == nil && activeCampaign.ID > 0 {
-		media := "/videos/playcommentary.mp4"
+		s.enrichCampaignUser(ctx, &activeCampaign)
+		media := ""
 		if len(activeCampaign.MediaURLs) > 0 && strings.TrimSpace(activeCampaign.MediaURLs[0]) != "" {
 			media = activeCampaign.MediaURLs[0]
+		}
+		if media == "" {
+			return &PlacementEligibilityResponse{Eligible: false}, nil
 		}
 
 		pricingModel := rule.PricingModel
@@ -1182,22 +1211,8 @@ func (s *adsServiceImpl) GetPlacementEligibility(ctx context.Context, userId int
 		}, nil
 	}
 
-	// Fallback: system default placement if no active campaign exists in database
+	// No active campaign in database
 	return &PlacementEligibilityResponse{
-		Eligible: true,
-		Placement: &models.AdPlacement{
-			ID:                0,
-			CampaignID:        0,
-			Key:               string(rule.PlacementType),
-			PlacementType:     rule.PlacementType,
-			MediaURL:          "/videos/playcommentary.mp4",
-			DurationSec:       rule.DurationSec,
-			SkipAllowed:       rule.SkipAllowed,
-			SkipAfterSec:      rule.SkipAfterSec,
-			PointsAwardActive: rule.PointsAwardActive,
-			PointsAwardAmount: rule.PointsAwardAmount,
-			PricingModel:      rule.PricingModel,
-			CreatedAt:         time.Now(),
-		},
+		Eligible: false,
 	}, nil
 }
