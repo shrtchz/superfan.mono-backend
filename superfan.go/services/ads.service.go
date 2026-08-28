@@ -563,14 +563,21 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 			return err
 		}
 
-		campaignID := 0
-		if req.CampaignID != nil {
-			campaignID = *req.CampaignID
+		var campaignIDPtr *int
+		if req.CampaignID != nil && *req.CampaignID > 0 {
+			var exists bool
+			if err := tx.Model(&models.AdCampaign{}).
+				Select("count(*) > 0").
+				Where("id = ?", *req.CampaignID).
+				Find(&exists).Error; err == nil && exists {
+				cid := *req.CampaignID
+				campaignIDPtr = &cid
+			}
 		}
 		ptsGiven := rewardPoints
 		event := models.AdEvent{
 			UserID:      &req.UserID,
-			CampaignID:  campaignID,
+			CampaignID:  campaignIDPtr,
 			QuizID:      req.QuizID,
 			EventType:   models.AdEventTypeRewardAwarded,
 			PointsGiven: ptsGiven,
@@ -924,6 +931,22 @@ func (s *adsServiceImpl) UpdateCampaignStatus(ctx context.Context, id int, statu
 }
 
 func (s *adsServiceImpl) LogAdEvent(ctx context.Context, req *LogAdEventRequest) error {
+	if req == nil {
+		return nil
+	}
+
+	var campaignIDPtr *int
+	if req.CampaignID > 0 {
+		var exists bool
+		if err := s.db.WithContext(ctx).Model(&models.AdCampaign{}).
+			Select("count(*) > 0").
+			Where("id = ?", req.CampaignID).
+			Find(&exists).Error; err == nil && exists {
+			cid := req.CampaignID
+			campaignIDPtr = &cid
+		}
+	}
+
 	pts := 0
 	if req.PointsGiven != nil {
 		pts = *req.PointsGiven
@@ -931,7 +954,7 @@ func (s *adsServiceImpl) LogAdEvent(ctx context.Context, req *LogAdEventRequest)
 
 	event := models.AdEvent{
 		UserID:      req.UserID,
-		CampaignID:  req.CampaignID,
+		CampaignID:  campaignIDPtr,
 		PlacementID: req.PlacementID,
 		QuizID:      req.QuizID,
 		EventType:   req.EventType,
@@ -943,12 +966,14 @@ func (s *adsServiceImpl) LogAdEvent(ctx context.Context, req *LogAdEventRequest)
 		return err
 	}
 
-	// Update campaign counters
-	switch req.EventType {
-	case models.AdEventTypeViewStart, models.AdEventTypeCompletion, models.AdEventTypeRewardAwarded:
-		_ = s.db.WithContext(ctx).Model(&models.AdCampaign{}).Where("id = ?", req.CampaignID).UpdateColumn("views", gorm.Expr("views + 1")).Error
-	case models.AdEventTypeClick:
-		_ = s.db.WithContext(ctx).Model(&models.AdCampaign{}).Where("id = ?", req.CampaignID).UpdateColumn("clicks", gorm.Expr("clicks + 1")).Error
+	// Update campaign counters if valid campaign
+	if campaignIDPtr != nil {
+		switch req.EventType {
+		case models.AdEventTypeViewStart, models.AdEventTypeCompletion, models.AdEventTypeRewardAwarded:
+			_ = s.db.WithContext(ctx).Model(&models.AdCampaign{}).Where("id = ?", *campaignIDPtr).UpdateColumn("views", gorm.Expr("views + 1")).Error
+		case models.AdEventTypeClick:
+			_ = s.db.WithContext(ctx).Model(&models.AdCampaign{}).Where("id = ?", *campaignIDPtr).UpdateColumn("clicks", gorm.Expr("clicks + 1")).Error
+		}
 	}
 
 	return nil
