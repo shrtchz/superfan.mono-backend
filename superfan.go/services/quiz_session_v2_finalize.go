@@ -13,7 +13,6 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
-	"quiz.superfan.com/apis/labels"
 	"quiz.superfan.com/apis/models"
 	"quiz.superfan.com/apis/utils"
 )

@@ -1295,6 +1295,9 @@ func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amoun
 			Currency:        currency,
 			Description:     &description,
 			TrxRef:          &txRef,
+			PaymentMethod:   &paymentMethodValue,
+			AccountType:     &accountType,
+			HoldUntil:       &holdUntil,
 			CreatedAt:       time.Now(),
 		}
 		if err := tx.Create(&wTx).Error; err != nil {
@@ -1570,7 +1573,7 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 	}
 	paymentMethod := "bankTransfer"
 	transactionType := "WITHDRAWAL"
-	status := "SUCCESS"
+	txStatus := "Pending"
 	accountType := "Personal"
 
 	// Step 1: Verify user wallet balance and debit in DB transaction
@@ -1599,18 +1602,21 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 
 		// Record in WalletTransaction
 		txType := "DEBIT"
-		status := "Pending"
-		trxType := "Withdrawal"
 		desc := "Debit Wallet - Bank Transfer Withdrawal"
 		wTx := models.WalletTransaction{
 			UserID:          userID,
 			Amount:          amount,
 			Type:            &txType,
-			TransactionType: &trxType,
-			Status:          &status,
+			TransactionType: &transactionType,
+			Status:          &txStatus,
 			Currency:        "NGN",
 			Description:     &desc,
 			TrxRef:          &txRef,
+			AccountName:     &accountName,
+			AccountNo:       &accountNumber,
+			BankName:        &bankName,
+			PaymentMethod:   &paymentMethod,
+			AccountType:     &accountType,
 			CreatedAt:       time.Now(),
 		}
 		if err := tx.Create(&wTx).Error; err != nil {
