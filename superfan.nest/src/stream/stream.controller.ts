@@ -152,8 +152,11 @@ export class StreamingController {
   }
 
   @Get('/comment')
-  async getStreamcomment(@Query('streamId') streamId: number) {
-    return this.streamingService.getStreamCommentsandReplies(streamId);
+  async getStreamcomment(@Query('streamId') streamId: number, @Req() req) {
+    return this.streamingService.getStreamCommentsandReplies(
+      streamId,
+      Number(req.user?.id),
+    );
   }
 
   @Get(':id/chat/search')
@@ -186,6 +189,8 @@ export class StreamingController {
     );
   }
 
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin, Role.moderator)
   @Post('comment/:commentId/reply')
   async reply(
     @Param('commentId', ParseIntPipe) commentId: number,
@@ -213,6 +218,7 @@ export class StreamingController {
       this.streamGateway.broadcastChat('pinComment', {
         commentId,
         streamId: pinned.streamId,
+        isPinned: true,
       });
     }
     return pinned;
@@ -222,7 +228,15 @@ export class StreamingController {
   @Roles(Role.superadmin, Role.subadmin, Role.moderator)
   @Delete('pin-comment/:commentId')
   async unpinComment(@Param('commentId', ParseIntPipe) commentId: number) {
-    return this.streamingService.unpinComment(commentId);
+    const unpinned = await this.streamingService.unpinComment(commentId);
+    if (unpinned?.streamId) {
+      this.streamGateway.broadcastChat('pinComment', {
+        commentId,
+        streamId: unpinned.streamId,
+        isPinned: false,
+      });
+    }
+    return unpinned;
   }
 
   @UseGuards(RoleGuard)
@@ -297,7 +311,7 @@ export class StreamingController {
       likesCount: result?.data?.likesCount,
       data: result?.data,
     });
-    return { message: 'stream successfully deleted', data: result };
+    return result;
   }
 
   @UseGuards(RoleGuard)

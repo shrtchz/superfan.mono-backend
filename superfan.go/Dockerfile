@@ -19,7 +19,7 @@ RUN apk add --no-cache tzdata
 
 WORKDIR /app
 
-RUN go install github.com/air-verse/air@latest
+RUN go install github.com/air-verse/air@v1.61.7
 
 COPY go.mod go.sum ./
 RUN go mod download
@@ -37,6 +37,7 @@ RUN apk --no-cache add ca-certificates tzdata
 WORKDIR /root/
 
 COPY --from=builder /app/main .
+COPY --from=builder /app/lables.data.json ./lables.data.json
 COPY --from=builder /app/.env* ./
 
 EXPOSE 7190

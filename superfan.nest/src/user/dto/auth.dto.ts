@@ -24,6 +24,7 @@ export class AuthDto {
   @IsString()
   lastName: string;
 
+  @IsOptional()
   @IsString()
   phone?: string;
 
@@ -246,7 +247,51 @@ export class KycDto {
 
   @IsOptional()
   @IsString()
-  selfieBase64: string;
+  selfieBase64?: string;
+
+  @IsOptional()
+  @IsString()
+  callbackUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  workflowId?: string;
+}
+
+export class VerifyBvnDto {
+  @IsString()
+  bvn: string;
+
+  @IsOptional()
+  @IsString()
+  firstName?: string;
+
+  @IsOptional()
+  @IsString()
+  lastName?: string;
+}
+
+export class VerifyNinDto {
+  @IsString()
+  nin: string;
+
+  @IsOptional()
+  @IsString()
+  firstName?: string;
+
+  @IsOptional()
+  @IsString()
+  lastName?: string;
+}
+
+export class VerifyIdDocumentDto {
+  @IsOptional()
+  @IsString()
+  frontImageBase64?: string;
+
+  @IsOptional()
+  @IsString()
+  backImageBase64?: string;
 }
 
 export class SubAdminDto {

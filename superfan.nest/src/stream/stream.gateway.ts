@@ -39,6 +39,7 @@ export class StreamGateway
   @WebSocketServer()
   server: Server;
   private readonly logger = new Logger(StreamGateway.name);
+  private liveQuizTicker: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     private readonly streamingService: StreamingService,
@@ -89,10 +90,38 @@ export class StreamGateway
       typedAnswer: this.toValidString(source.typedAnswer) || undefined,
       isTypedAnswer: Boolean(source.isTypedAnswer),
       imageLink: Array.isArray(source.imageLink) ? source.imageLink : [],
+      customCountdownLabel:
+        this.toValidString(source.customCountdownLabel) || '',
+      customCountdownLabelBefore:
+        this.toValidString(source.customCountdownLabelBefore) || '',
+      customCountdownLabelDuring:
+        this.toValidString(source.customCountdownLabelDuring) || '',
+      customCountdownLabelAfter:
+        this.toValidString(source.customCountdownLabelAfter) || '',
+      customCountdownLabels: Array.isArray(source.customCountdownLabels)
+        ? source.customCountdownLabels
+            .filter((label) => label && typeof label === 'object')
+            .map((label) => {
+              const item = label as Record<string, unknown>;
+              return {
+                id: this.toValidString(item.id),
+                phase: this.toValidString(item.phase),
+                text: this.toValidString(item.text),
+              };
+            })
+            .filter((label) => Boolean(label.id && label.phase && label.text))
+        : [],
       status:
         this.toValidString(source.status) ||
         this.toValidString(source.quizStatus) ||
         'scheduled',
+      quizCountdownState:
+        this.toValidString(source.quizCountdownState) ||
+        this.toValidString(source.status) ||
+        'scheduled',
+      quizCountdownLabel:
+        this.toValidString(source.quizCountdownLabel) ||
+        'Waiting for Live Quiz to start.',
       quizScheduleDate:
         this.toValidString(source.quizScheduleDate) ||
         this.toValidString(source.scheduleDate),
@@ -231,11 +260,15 @@ export class StreamGateway
     return tryCollect(payload);
   }
 
-  private async getCurrentLiveQuizSnapshot(): Promise<Record<string, unknown> | null> {
+  private async getCurrentLiveQuizSnapshot(
+    quizId?: string,
+  ): Promise<Record<string, unknown> | null> {
     try {
-      const response = await this.quizService.getAllLiveQuiz();
+      const response = quizId
+        ? await this.quizService.getLiveQuiz(quizId)
+        : await this.quizService.getAllLiveQuiz();
       const quizzes = this.extractLiveQuizArray(response);
-      const current = this.pickCurrentLiveQuiz(quizzes);
+      const current = quizId ? quizzes[0] ?? null : this.pickCurrentLiveQuiz(quizzes);
       const displayQuiz = this.toDisplayLiveQuiz(current);
       this.logger.log(
         `[LiveQuiz] fetched=${quizzes.length} selectedId=${displayQuiz?.id ?? 'none'} question=${displayQuiz?.question ?? 'none'}`,
@@ -250,10 +283,11 @@ export class StreamGateway
   private async emitLiveQuizUpdate(
     action: 'created' | 'updated' | 'deleted' | 'sync' = 'sync',
     socket?: Socket,
+    quizId?: string,
   ) {
     if (!this.server) return;
 
-    const quiz = await this.getCurrentLiveQuizSnapshot();
+    const quiz = await this.getCurrentLiveQuizSnapshot(quizId);
     const payload = {
       action,
       quiz,
@@ -272,9 +306,28 @@ export class StreamGateway
   }
 
   @OnEvent('liveQuiz.changed')
-  async handleLiveQuizChanged(event?: { action?: 'created' | 'updated' | 'deleted' }) {
+  async handleLiveQuizChanged(event?: {
+    action?: 'created' | 'updated' | 'deleted';
+    id?: string;
+  }) {
     const action = event?.action ?? 'updated';
-    await this.emitLiveQuizUpdate(action);
+    await this.emitLiveQuizUpdate(action, undefined, event?.id);
+  }
+
+  private startLiveQuizTicker() {
+    if (this.liveQuizTicker) return;
+    this.liveQuizTicker = setInterval(() => {
+      if (!this.server || this.server.sockets.sockets.size === 0) {
+        return;
+      }
+      void this.emitLiveQuizUpdate('sync');
+    }, 1000);
+  }
+
+  private stopLiveQuizTicker() {
+    if (!this.liveQuizTicker) return;
+    clearInterval(this.liveQuizTicker);
+    this.liveQuizTicker = null;
   }
 
   handleConnection(client: Socket) {
@@ -282,10 +335,14 @@ export class StreamGateway
     if (Number.isFinite(queryUserId) && queryUserId > 0) {
       (client.data as { userId?: number }).userId = queryUserId;
     }
+    this.startLiveQuizTicker();
   }
 
   handleDisconnect(client: Socket) {
     // Disconnect handled - no chat room cleanup needed
+    if (this.server?.sockets?.sockets.size === 0) {
+      this.stopLiveQuizTicker();
+    }
   }
 
   private resolveSocketUserId(
@@ -318,8 +375,21 @@ export class StreamGateway
         : Number(payload);
     if (Number.isFinite(userId) && userId > 0) {
       (client.data as { userId?: number }).userId = userId;
+      void client.join(`user_${userId}`);
     }
     return { status: 'success' };
+  }
+
+  @OnEvent('user.wallet.updated')
+  handleUserWalletUpdated(payload: { userId: number }) {
+    if (!payload?.userId) return;
+    this.server.to(`user_${payload.userId}`).emit('wallet_updated');
+  }
+
+  @OnEvent('user.payment.history')
+  handleUserPaymentHistoryUpdated(payload: { userId: number }) {
+    if (!payload?.userId) return;
+    this.server.to(`user_${payload.userId}`).emit('payment_history_updated');
   }
 
   @SubscribeMessage('joinStream')
@@ -436,20 +506,31 @@ export class StreamGateway
 
   @SubscribeMessage('fetchComments')
   async fetchComments(
-    @MessageBody() payload: { streamId: string | number },
+    @MessageBody() payload: { streamId: string | number; userId?: string | number },
     @ConnectedSocket() client: Socket,
   ) {
     try {
       const { streamId } = payload;
+      const userId = this.resolveSocketUserId(client, payload?.userId);
       this.logger.log(`[StreamGateway] fetchComments streamId=${streamId}`);
-      
-      // Return empty array for now - this should fetch from database
-      const comments = await this.streamingService.getStreamCommentsandReplies(Number(streamId));
-      
+
+      const comments = await this.streamingService.getStreamCommentsandReplies(
+        Number(streamId),
+        userId,
+      );
+
       return { status: 'success', comments };
     } catch (error) {
       this.logger.error('[StreamGateway] fetchComments error:', error);
-      return { status: 'error', error: 'Failed to fetch comments', comments: [] };
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : 'Failed to fetch comments';
+      return {
+        status: 'error',
+        error: `Failed to fetch comments: ${message}`,
+        comments: [],
+      };
     }
   }
 }

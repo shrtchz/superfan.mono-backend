@@ -1,18 +1,45 @@
 package services
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"math"
 	"net/http"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"quiz.superfan.com/apis/labels"
 	"quiz.superfan.com/apis/models"
 	"quiz.superfan.com/apis/utils"
 )
+
+const defaultPointsToNairaRate = 1000
+
+func getPointsToNairaRate() int {
+	value := strings.TrimSpace(os.Getenv("POINTS_TO_NAIRA_RATE"))
+	if value == "" {
+		return defaultPointsToNairaRate
+	}
+
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return defaultPointsToNairaRate
+	}
+
+	return parsed
+}
+
+func convertTotalEarningToRewardAmounts(totalEarning int) (amountInNaira float64, finalNairaAmount int, finalUSDCAmount int, finalUSDTAmount int) {
+	pointsToNairaRate := getPointsToNairaRate()
+	amountInNaira = float64(totalEarning) / float64(pointsToNairaRate)
+	finalNairaAmount, finalUSDCAmount, finalUSDTAmount = computeSessionEarnings(totalEarning)
+	return amountInNaira, finalNairaAmount, finalUSDCAmount, finalUSDTAmount
+}
 
 // SubmitSession grades saved answers, applies rewards, and completes the session.
 func (s *QuizSessionV2Service) SubmitSession(sessionID string, req models.FinalizeSessionV2Request) (*models.FinalizeSessionV2Result, error) {
@@ -40,10 +67,6 @@ func (s *QuizSessionV2Service) finalizeSession(
 	lookup, err := loadSessionByID(sessionID, req.UserID, false)
 	if err != nil {
 		return nil, err
-	}
-
-	if lookup.expired {
-		return nil, utils.NewAppError(http.StatusGone, "SESSION_EXPIRED", "Quiz session has expired.")
 	}
 
 	responses := buildSubmitResponsesFromSession(lookup.record)
@@ -84,6 +107,10 @@ func (s *QuizSessionV2Service) finalizeSession(
 	correctAnswers := countCorrectResponses(submission)
 	baseScore := submission.TotalEarning
 	accuracyBonusPercent := getAccuracyBonusPercent(correctAnswers, totalQuestions)
+	accuracyPercent := 0
+	if totalQuestions > 0 {
+		accuracyPercent = int(math.Round(float64(correctAnswers) / float64(totalQuestions) * 100.0))
+	}
 	speedBonusPercent := getSpeedBonusPercent(req.QuizTimeSeconds)
 	dailyStreak, err := updateDailyStreak(req.UserID, now)
 	if err != nil {
@@ -95,7 +122,7 @@ func (s *QuizSessionV2Service) finalizeSession(
 	speedGain := int(math.Round(float64(baseScore) * (float64(speedBonusPercent) / 100.0)))
 	adBonusPoints := req.AdBonuses
 	totalPoints := baseScore + accuracyGain + speedGain + adBonusPoints + streakBonus
-	amountInNaira := float64(totalPoints) / 1000.0
+	amountInNaira, finalNairaAmount, finalUSDCAmount, finalUSDTAmount := convertTotalEarningToRewardAmounts(totalPoints)
 
 	testLevel := lookup.record.TestLevel
 	status := "completed"
@@ -107,18 +134,21 @@ func (s *QuizSessionV2Service) finalizeSession(
 		if err := tx.Model(&models.OngoingQuiz{}).
 			Where(`"id" = ? AND "userId" = ?`, sessionID, req.UserID).
 			Updates(map[string]interface{}{
-				"isCompleted":      true,
-				"completedAt":      now,
-				"totalEarning":     int(math.Round(amountInNaira * 1000)),
-				"quizTime":         strconv.Itoa(req.QuizTimeSeconds),
-				"baseScore":        baseScore,
-				"accuracyBonus":    accuracyGain,
-				"speedBonus":       speedGain,
-				"streakMultiplier": streakBonus,
-				"adBonuses":        adBonusPoints,
-				"earnedAmount":     int(math.Round(amountInNaira * 1000)),
-				"timeRemaining":    0,
-				"updatedAt":        now,
+				"isCompleted":         true,
+				"completedAt":         now,
+				"totalEarning":        totalPoints,
+				"totalEarninginNaira": finalNairaAmount,
+				"totalEarninginUSDC":  finalUSDCAmount,
+				"totalEarninginUSDT":  finalUSDTAmount,
+				"quizTime":            strconv.Itoa(req.QuizTimeSeconds),
+				"baseScore":           baseScore,
+				"accuracyBonus":       accuracyGain,
+				"speedBonus":          speedGain,
+				"streakMultiplier":    streakBonus,
+				"adBonuses":           adBonusPoints,
+				"earnedAmount":        totalPoints,
+				"timeRemaining":       0,
+				"updatedAt":           now,
 			}).Error; err != nil {
 			return err
 		}
@@ -173,12 +203,13 @@ func (s *QuizSessionV2Service) finalizeSession(
 		"totalQuestions":   totalQuestions,
 		"correctAnswers":   correctAnswers,
 		"attemptedAnswers": len(responses),
-		"baseEarning":     baseScore,
-		"totalPoints":     totalPoints,
-		"amountInNaira":   amountInNaira,
-		"rewardType":      req.RewardType,
-		"quizTimeSeconds": req.QuizTimeSeconds,
-		"submittedAt":     isoTime(submission.SubmittedAt),
+		"baseEarning":      baseScore,
+		"totalPoints":      totalPoints,
+		"amountInNaira":    amountInNaira,
+		"rewardType":       req.RewardType,
+		"accuracyPercent":  accuracyPercent,
+		"quizTimeSeconds":  req.QuizTimeSeconds,
+		"submittedAt":      isoTime(submission.SubmittedAt),
 		"bonuses": map[string]interface{}{
 			"accuracy": map[string]interface{}{"percent": accuracyBonusPercent, "points": accuracyGain},
 			"speed":    map[string]interface{}{"percent": speedBonusPercent, "points": speedGain},
@@ -233,23 +264,30 @@ func (s *QuizSessionV2Service) completeSessionWithZeroAnswers(
 		return nil, err
 	}
 	streakBonus := getStreakBonusPoints(dailyStreak)
+	totalPoints := streakBonus + req.AdBonuses
+	amountInNaira, finalNairaAmount, finalUSDCAmount, finalUSDTAmount := convertTotalEarningToRewardAmounts(totalPoints)
+
+	testSubject := lookup.record.Subject
 
 	if err := utils.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&models.OngoingQuiz{}).
 			Where(`"id" = ? AND "userId" = ?`, sessionID, req.UserID).
 			Updates(map[string]interface{}{
-				"isCompleted":      true,
-				"completedAt":      now,
-				"totalEarning":     0,
-				"quizTime":         strconv.Itoa(req.QuizTimeSeconds),
-				"baseScore":        0,
-				"accuracyBonus":    0,
-				"speedBonus":       0,
-				"streakMultiplier": streakBonus,
-				"adBonuses":        req.AdBonuses,
-				"earnedAmount":     0,
-				"timeRemaining":    0,
-				"updatedAt":        now,
+				"isCompleted":         true,
+				"completedAt":         now,
+				"totalEarning":        totalPoints,
+				"totalEarninginNaira": finalNairaAmount,
+				"totalEarninginUSDC":  finalUSDCAmount,
+				"totalEarninginUSDT":  finalUSDTAmount,
+				"quizTime":            strconv.Itoa(req.QuizTimeSeconds),
+				"baseScore":           0,
+				"accuracyBonus":       0,
+				"speedBonus":          0,
+				"streakMultiplier":    streakBonus,
+				"adBonuses":           req.AdBonuses,
+				"earnedAmount":        totalPoints,
+				"timeRemaining":       0,
+				"updatedAt":           now,
 			}).Error; err != nil {
 			return err
 		}
@@ -267,7 +305,7 @@ func (s *QuizSessionV2Service) completeSessionWithZeroAnswers(
 			}
 		}
 
-		return nil
+		return creditQuizReward(tx, req.UserID, amountInNaira, testSubject, 0, totalPoints, now)
 	}); err != nil {
 		return nil, utils.NewAppError(http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to finalize quiz session")
 	}
@@ -284,8 +322,8 @@ func (s *QuizSessionV2Service) completeSessionWithZeroAnswers(
 		"correctAnswers":   0,
 		"attemptedAnswers": 0,
 		"baseEarning":      0,
-		"totalPoints":      streakBonus + req.AdBonuses,
-		"amountInNaira":    0.0,
+		"totalPoints":      totalPoints,
+		"amountInNaira":    amountInNaira,
 		"rewardType":       req.RewardType,
 		"quizTimeSeconds":  req.QuizTimeSeconds,
 		"submittedAt":      isoTime(now),
@@ -361,7 +399,18 @@ func updateDailyStreak(userID int, now time.Time) (int, error) {
 		case diffDays == 1:
 			newStreak = user.DailyStreak + 1
 		default:
-			newStreak = 1
+			// Missed one or more days: reset streak. For the quiz that detects the miss
+			// we give no streak bonus (return 0), but record a new streak start so
+			// subsequent quizzes begin at 1.
+			if err := utils.DB.Model(&models.User{}).
+				Where("id = ?", userID).
+				Updates(map[string]interface{}{
+					"dailyStreak":    1,
+					"lastStreakDate": now,
+				}).Error; err != nil {
+				return 0, utils.NewAppError(http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to reset daily streak")
+			}
+			return 0, nil
 		}
 	}
 
@@ -387,26 +436,45 @@ func creditQuizReward(tx *gorm.DB, userID int, amountInNaira float64, subject st
 		walletAmount = 1
 	}
 
+	// 1. Credit the Gold Wallet (test quiz earnings always go to Gold Account).
+	//    Both the overall "balance" and the "goldBalance" are incremented so the
+	//    earnings are visible in the Gold Wallet.
 	if err := tx.Model(&models.Wallet{}).
 		Where(`"userId" = ?`, userID).
-		UpdateColumn("balance", gorm.Expr(`"balance" + ?`, amountInNaira)).Error; err != nil {
+		Updates(map[string]interface{}{
+			"balance":     gorm.Expr(`"balance" + ?`, amountInNaira),
+			"goldBalance": gorm.Expr(`"goldBalance" + ?`, amountInNaira),
+		}).Error; err != nil {
 		return err
 	}
 
+	// 2. Create WalletTransaction tagged to the Gold Account with the standard
+	//    "Credit Wallet - Quiz Earning" label.
 	trxType := "credit"
-	description := fmt.Sprintf("You earned %v from %s Quiz", amountInNaira, subject)
-	trxRef := fmt.Sprintf("%d", now.UnixNano())
+	goldType := "Gold"
+	status := "Completed"
+	transactionType := "Reward"
+	description := labels.Wallet("quizEarning", nil)
+	if description == "" {
+		description = "Test Quiz Earning"
+	}
+	trxRef := fmt.Sprintf("QUIZ_%d", now.UnixNano())
 	if err := tx.Create(&models.WalletTransaction{
-		UserID:      userID,
-		Amount:      amountInNaira,
-		Type:        &trxType,
-		Description: &description,
-		TrxRef:      &trxRef,
-		CreatedAt:   now,
+		UserID:          userID,
+		Amount:          amountInNaira,
+		Type:            &trxType,
+		TransactionType: &transactionType,
+		Currency:        "NGN",
+		AccountType:     &goldType,
+		Status:          &status,
+		Description:     &description,
+		TrxRef:          &trxRef,
+		CreatedAt:       now,
 	}).Error; err != nil {
 		return err
 	}
 
+	// 3. Create Reward record
 	if err := tx.Create(&models.Reward{
 		ID:        uuid.NewString(),
 		UserID:    userID,
@@ -419,13 +487,50 @@ func creditQuizReward(tx *gorm.DB, userID int, amountInNaira float64, subject st
 		return err
 	}
 
+	// 4. Create ActivityWallet record so the credit appears in the activity table.
+	if err := tx.Create(&models.ActivityWallet{
+		UserID:      userID,
+		Type:        "credit",
+		Title:       description,
+		Description: description,
+		Amount:      amountInNaira,
+		Currency:    "NGN",
+		Status:      "SUCCESS",
+		CreatedAt:   now,
+	}).Error; err != nil {
+		return err
+	}
+
+	// 5. Record the points earned
 	pointRef := fmt.Sprintf("POINTS_%d", now.UnixNano())
-	return tx.Create(&models.Point{
+	if err := tx.Create(&models.Point{
 		ID:        uuid.NewString(),
 		UserID:    userID,
 		Points:    score,
 		Reference: &pointRef,
 		Type:      "quiz_reward",
 		CreatedAt: now,
-	}).Error
+	}).Error; err != nil {
+		return err
+	}
+
+	// 6. Send notification for the quiz wallet credit
+	if nestBaseURL := utils.GetEnvWithKey("NEST_BASE_URL"); nestBaseURL != "" {
+		payload := map[string]interface{}{
+			"userId":  userID,
+			"title":   description,
+			"message": fmt.Sprintf("Your Gold Wallet has been credited with ₦%.0f from %s Quiz", amountInNaira, subject),
+			"type":    "quiz_reward",
+		}
+		body, _ := json.Marshal(payload)
+		go func() {
+			http.Post(
+				fmt.Sprintf("%s/api/v1/notifications/create", nestBaseURL),
+				"application/json",
+				bytes.NewReader(body),
+			)
+		}()
+	}
+
+	return nil
 }

@@ -13,8 +13,12 @@ import {
   Put,
   Query,
   Req,
+  Res,
   UseGuards,
+  BadRequestException,
 } from '@nestjs/common';
+import { Request, Response } from 'express';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Public, Roles } from '../common/decorators';
 import { ApiRoutes } from '../common/enums/routes.enum';
 import { Role } from '../common/enums/role.enum';
@@ -39,7 +43,10 @@ import { QuizService } from './quiz.service';
 @UseGuards(JwtGuard)
 @Controller(ApiRoutes.QUIZ)
 export class QuizController {
-  constructor(private readonly quizService: QuizService) {}
+  constructor(
+    private readonly quizService: QuizService,
+    private readonly eventEmitter: EventEmitter2,
+  ) {}
 
   @Public()
   @Post('/create')
@@ -105,11 +112,30 @@ export class QuizController {
 
   @Post('/submit-quiz')
   async submitQuiz(@Body() body: SubmitQuizDto) {
-    const { userId, rewardType, quizTime, responses, ad_bonuses = 0 } = body;
+    const {
+      userId,
+      rewardType,
+      quizTimeSeconds,
+      quizTime,
+      responses,
+      ad_bonuses = 0,
+    } = body;
+
+    const effectiveQuizTimeSeconds =
+      typeof quizTimeSeconds === 'number' && Number.isFinite(quizTimeSeconds)
+        ? quizTimeSeconds
+        : this.quizService.parseQuizTimeToSeconds(quizTime);
+
+    if (effectiveQuizTimeSeconds < 1) {
+      throw new BadRequestException(
+        'quizTimeSeconds must be provided and at least 1 second',
+      );
+    }
+
     return this.quizService.submitQuiz(
       userId,
       rewardType,
-      quizTime,
+      effectiveQuizTimeSeconds,
       ad_bonuses,
       responses,
     );
@@ -240,7 +266,53 @@ export class QuizController {
     }
   }
 
-    @Get('lq-leaderboard')
+    @Public()
+  @Get('lq-leaderboard/stream')
+  streamLiveQuizLeaderboard(
+    @Req() req: Request,
+    @Res() res: Response,
+  ) {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+
+    const sendEvent = (payload: Record<string, unknown>) => {
+      if (res.writableEnded) return;
+      try {
+        res.write(`data: ${JSON.stringify(payload)}\n\n`);
+      } catch {
+        // Ignore when client disconnected.
+      }
+    };
+
+    const listener = (event: { action: string }) => {
+      sendEvent({
+        action: event.action,
+        timestamp: new Date().toISOString(),
+      });
+    };
+
+    this.eventEmitter.on('liveQuiz.changed', listener);
+    sendEvent({ action: 'connected', timestamp: new Date().toISOString() });
+
+    const heartbeat = setInterval(() => {
+      if (!res.writableEnded) {
+        res.write(': heartbeat\n\n');
+      }
+    }, 20000);
+
+    const cleanup = () => {
+      clearInterval(heartbeat);
+      this.eventEmitter.off('liveQuiz.changed', listener);
+    };
+
+    req.on('close', cleanup);
+    req.on('end', cleanup);
+  }
+
+  @Get('lq-leaderboard')
   async getLiveQuizLeaderboard() {
     try {
       return await this.quizService.getLiveQuizLeaderboard();
@@ -368,16 +440,6 @@ async getOngoingLiveQuiz(@Param('id', ParseIntPipe) id: number) {
   }
 
 
-    @Public()
-  @Get('/get-live-quiz-answer/:id')
-  getCompletedLiveQuizAnswer(@Param('id') id: string) {
-    try {
-      return this.quizService.getLiveQuizAnswer(id);
-    } catch (error) {
-      throw failureResponse(error.message || 'Failed to get live quiz answer');
-    }
-  }
-
   @Get('/get-random-live-quiz/:id/:streamId')
   getRandomLiveQuiz(@Param('id', ParseIntPipe) id: number, @Param('streamId', ParseIntPipe) streamId: number, @Req() req: any) {
     try {
@@ -427,14 +489,19 @@ async getOngoingLiveQuiz(@Param('id', ParseIntPipe) id: number) {
     };
   }
 
+  @Public()
   @Post('live/:id/answer')
   async submitLiveAnswerByQuizId(
     @Req() req: any,
     @Param('id') quizId: string,
     @Body() dto: SubmitLiveAnswerDto,
   ) {
+    if (!req.user?.id && !dto.userId) {
+      throw new BadRequestException('userId is required for public live answer submission');
+    }
+
     const data = await this.quizService.submitLiveAnswerByQuizId(
-      req.user.id,
+      req.user?.id ?? dto.userId,
       quizId,
       dto.selectedAnswer,
     );

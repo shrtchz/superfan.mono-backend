@@ -11,17 +11,18 @@ type CreateSessionV2Result struct {
 type CreateSessionV2Request struct {
 	UserID          int                   `json:"userId" binding:"required,min=1"`
 	Mode            string                `json:"mode" binding:"omitempty,oneof=random custom"`
+	SubmissionMode  string                `json:"submissionMode" binding:"omitempty,oneof=interval end_of_quiz"`
 	Preferences     *SessionV2Preferences `json:"preferences"`
 	ReplaceExisting bool                  `json:"replaceExisting"`
 }
 
 // SessionV2Preferences applies when mode is "custom".
 type SessionV2Preferences struct {
-	Language       string `json:"language"`
-	Subject        string `json:"subject"`
-	Level          string `json:"level"`
-	QuestionCount  int    `json:"questionCount"`
-	TimerMinutes   *int   `json:"timerMinutes"`
+	Language      string `json:"language"`
+	Subject       string `json:"subject"`
+	Level         string `json:"level"`
+	QuestionCount int    `json:"questionCount"`
+	TimerMinutes  *int   `json:"timerMinutes"`
 }
 
 // BeginSessionV2Request is the body for PATCH /v2/quiz/sessions/:sessionId/begin.
@@ -70,11 +71,11 @@ type FinalizeSessionV2Request struct {
 
 // FinalizeSessionV2Result is returned by submit and quit.
 type FinalizeSessionV2Result struct {
-	Result     map[string]interface{}   `json:"result"`
-	Responses  []map[string]interface{} `json:"responses"`
-	Streak     map[string]interface{}   `json:"streak"`
-	Session    SessionV2Summary         `json:"session"`
-	Submitted  bool                     `json:"submitted"`
+	Result    map[string]interface{}   `json:"result"`
+	Responses []map[string]interface{} `json:"responses"`
+	Streak    map[string]interface{}   `json:"streak"`
+	Session   SessionV2Summary         `json:"session"`
+	Submitted bool                     `json:"submitted"`
 }
 
 type SessionV2Summary struct {
@@ -87,6 +88,7 @@ type SessionV2 struct {
 	ID               string              `json:"id"`
 	UserID           int                 `json:"userId"`
 	Mode             string              `json:"mode"`
+	SubmissionMode   string              `json:"submissionMode"`
 	Status           string              `json:"status"`
 	Questions        []SessionV2Question `json:"questions"`
 	Answers          []SessionV2Answer   `json:"answers"`
@@ -109,6 +111,8 @@ type SessionV2Question struct {
 	Earning       int      `json:"earning"`
 	Images        []string `json:"images"`
 	Videos        []string `json:"videos"`
+	ImageLink     []string `json:"imageLink,omitempty"`
+	VideoLink     []string `json:"videoLink,omitempty"`
 	InputRequired bool     `json:"inputRequired"`
 }
 

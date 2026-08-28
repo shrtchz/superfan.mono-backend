@@ -8,11 +8,12 @@ import { JsonArray } from '@prisma/client/runtime/client';
 import { firstValueFrom } from 'rxjs';
 import { EarningStatus } from '../common/enums/task.enum';
 import { QuizQuestion, UserAnswer } from '../common/utils/types';
-import { getAccuracyBonus, getSpeedBonus, getStreakBonus } from '../common/utils/utils';
-import { PaymentService } from '../payment/payment.service';
+import { getAccuracyBonus, getSpeedBonus, getStreakBonus, formatSecondsToMMSS } from '../common/utils/utils';
 import { prisma } from '../prisma/prisma';
 import { UserService } from '../user/user.service';
 import { WalletService } from '../wallet/wallet.service';
+import { TaskService } from '../tasks/tasks.service';
+import { ExchangeRateService } from '../common/services/exchange-rate.service';
 
 import {
   CreateLiveQuizDto,
@@ -26,6 +27,88 @@ import {
 } from './quiz.dto';
 import { QuestionAddedEvent } from './quiz.events';
 
+export function buildLiveQuizLeaderboardRows(
+  leaderboardEntries: any[],
+  ongoingQuizzes: any[],
+) {
+  const participantMap = new Map<string, Set<string>>();
+
+  ongoingQuizzes.forEach((attempt) => {
+    (attempt.quizIds ?? []).forEach((quizId: string) => {
+      if (!quizId) return;
+      if (!participantMap.has(quizId)) {
+        participantMap.set(quizId, new Set());
+      }
+      participantMap.get(quizId)?.add(attempt.userId);
+    });
+  });
+
+  const entriesByQuizId = new Map<string, typeof leaderboardEntries>();
+  leaderboardEntries.forEach((entry) => {
+    const existing = entriesByQuizId.get(entry.quizId) ?? [];
+    existing.push(entry);
+    entriesByQuizId.set(entry.quizId, existing);
+  });
+
+  const quizIds = new Set<string>([
+    ...Array.from(entriesByQuizId.keys()),
+    ...Array.from(participantMap.keys()),
+  ]);
+
+  let totalRewardDistributed = 0;
+
+  const leaderboard = Array.from(quizIds).map((quizId) => {
+    const quizEntries = entriesByQuizId.get(quizId) ?? [];
+    const sortedEntries = [...quizEntries].sort(
+      (a, b) =>
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    );
+    const latestEntry = sortedEntries[0] ?? null;
+
+    const winners = [
+      ...new Set(
+        quizEntries
+          .filter((entry) => entry.isWinner)
+          .map((entry) => entry.userId),
+      ),
+    ];
+
+    totalRewardDistributed += quizEntries.reduce(
+      (sum, entry) => sum + Number(entry.unitPrize || 0),
+      0,
+    );
+
+    const recordedParticipants = quizEntries.reduce(
+      (max, entry) => Math.max(max, Number(entry.participants || 0)),
+      0,
+    );
+
+    return {
+      quizDate: latestEntry?.quizDate ?? null,
+      quizId,
+      question: latestEntry?.question ?? '',
+      answer: latestEntry?.answer ?? null,
+      participants:
+        participantMap.get(quizId)?.size || recordedParticipants || 0,
+      quizWinners: winners,
+      reward: latestEntry?.rewardType ?? null,
+      status: latestEntry?.rewardStatus ?? 'NONE',
+    };
+  });
+
+  const totalParticipants = leaderboard.reduce(
+    (sum, quiz) => sum + (quiz.participants || 0),
+    0,
+  );
+
+  return {
+    totalQuizzes: leaderboard.length,
+    totalParticipants,
+    totalRewardDistributed,
+    leaderboard,
+  };
+}
+
 @Injectable()
 export class QuizService {
   private readonly logger = new Logger(QuizService.name);
@@ -36,12 +119,14 @@ export class QuizService {
   constructor(
     private readonly httpService: HttpService,
     private readonly walletService: WalletService,
-    private readonly paymentService: PaymentService,
     private readonly eventEmitter: EventEmitter2,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
+    private readonly exchangeRateService: ExchangeRateService,
     @Inject(forwardRef(() => UserService))
     private readonly userService: UserService,
+    @Inject(forwardRef(() => TaskService))
+    private readonly taskService: TaskService,
   ) {}
 
   /** Service JWT for server-to-server calls to the Go quiz API (AuthRequired routes). */
@@ -114,6 +199,28 @@ export class QuizService {
       selectedAnswer: String(row.selectedAnswer),
       submittedAt,
     };
+  }
+
+  public parseQuizTimeToSeconds(value?: string | number | null): number {
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+      return Math.max(0, Math.floor(value));
+    }
+
+    const raw = String(value ?? '').trim();
+    if (!raw) {
+      return 0;
+    }
+
+    if (/^\d+$/.test(raw)) {
+      return Number(raw);
+    }
+
+    const parts = raw.split(':').map((part) => Number(part.trim()));
+    if (parts.length === 2 && Number.isFinite(parts[0]) && Number.isFinite(parts[1])) {
+      return Math.max(0, parts[0] * 60 + parts[1]);
+    }
+
+    return 0;
   }
 
   private parseLiveQuizPayload(response: any) {
@@ -288,12 +395,16 @@ export class QuizService {
 async submitQuiz(
   userId: string,
   rewardType: string,
-  quizTime: string,
+  quizTimeSeconds: number,
   ad_bonuses: number,
   responses: SubmitQuizDto['responses'],
 ) {
   if (!Array.isArray(responses) || responses.length === 0) {
     throw new BadRequestException('At least one quiz response is required');
+  }
+
+  if (!Number.isFinite(quizTimeSeconds) || quizTimeSeconds < 0) {
+    throw new BadRequestException('quizTimeSeconds must be a valid non-negative number');
   }
 
   const objectIdPattern = /^[a-f\d]{24}$/i;
@@ -336,6 +447,8 @@ async submitQuiz(
     );
   }
 
+  const normalizedQuizTime = String(quizTimeSeconds);
+
   let response;
   try {
     response = await firstValueFrom(
@@ -343,7 +456,7 @@ async submitQuiz(
         userId,
         responses,
         rewardType,
-        quizTime,
+        quizTime: normalizedQuizTime,
       }),
     );
   } catch (error: any) {
@@ -398,8 +511,9 @@ async submitQuiz(
   const get_ongoing_quiz = await this.getOngoingQuiz(Number(userId));
   const ongoingQuestions = (get_ongoing_quiz?.questions as JsonArray) || [];
   const totalQuestions = ongoingQuestions.length || submissionResponses?.length || 0;
+  const attemptedAnswers = submissionResponses?.length || 0;
   const baseScore = Number(totalEarning ?? 0);
-  const speed_bonus = getSpeedBonus(quizTime);
+  const speed_bonus = getSpeedBonus(quizTimeSeconds);
   const accuracy_bonus = getAccuracyBonus(correctAnswers, totalQuestions);
   const streakData = await this.userService.updateDailyStreak(Number(userId));
   const { streakBonus, dailyStreak } = getStreakBonus({
@@ -413,9 +527,16 @@ async submitQuiz(
   const adBonusPoints = Number(ad_bonuses ?? 0);
 
   const totalPoints = baseScore + accuracyGain + speedGain + adBonusPoints + streakBonus;
-  const amountInNaira = totalPoints / 1000;
+  const pointsToNairaRate = parseInt(this.configService.get<string>('POINTS_TO_NAIRA_RATE'), 10);
+  const amountInNaira = totalPoints / pointsToNairaRate;
+  
+  // Calculate currency equivalents using exchange rate service
+  const amountInUSDC = amountInNaira / await this.exchangeRateService.getNairaToUSDCRate();
+  const amountInUSDT = amountInNaira / await this.exchangeRateService.getNairaToUSDTRate();
 
   // 6. Save leaderboard rows (only earning > 0)
+  const formattedQuizTime = formatSecondsToMMSS(quizTimeSeconds);
+
   const leaderboardRows = (submissionResponses || [])
     .map((item: any) => ({
       userId: String(userId),
@@ -427,7 +548,8 @@ async submitQuiz(
       selectedAnswer: item.selectedAnswer ?? null,
       correctAnswer: item.correctAnswer ?? null,
       earning: Number(item.earning ?? 0),
-      quizTime: String(quizTime),
+      quizTimeSeconds,
+      quizTime: formattedQuizTime,
       submittedAt: submittedAt ? new Date(submittedAt) : new Date(),
     }))
     .filter((row) => row.earning > 0);
@@ -459,7 +581,10 @@ async submitQuiz(
     isCompleted: true,
     completedAt: now,
     totalEarning: amountInNaira,
-    quizTime: String(quizTime),
+    totalEarninginNaira: amountInNaira,
+    totalEarninginUSDC: amountInUSDC,
+    totalEarninginUSDT: amountInUSDT,
+    quizTime: formattedQuizTime,
     baseScore,
     accuracyBonus: accuracyGain,
     speedBonus: speedGain,
@@ -503,20 +628,32 @@ async submitQuiz(
   });
 }
 
-  // 8. Create wallet reward
+  // 8. Create wallet reward - pass points, convert to NGN internally
   await this.walletService.createQuizReward(
     Number(userId),
-    amountInNaira,
-    'NGN',
+    totalPoints,
     subject,
     EarningStatus.PAID_OUT,
-    score,
+    `quiz_reward:${userId}:${checkQuiz.id}`,
   );
+
+  // Check and process first quiz completion referral bonus
+  try {
+    await this.taskService.rewardFirstTest(Number(userId));
+  } catch (referralErr) {
+    this.logger.warn(`Failed to process first test referral bonus for user ${userId}:`, referralErr);
+  }
+
+  const scoreText = `${correctAnswers}/${totalQuestions}`;
+  const accuracyPercent = totalQuestions > 0 ? Math.round((correctAnswers / totalQuestions) * 100) : 0;
 
   // 9. Return enriched response
   return {
     ...response.data,
+    score: scoreText,
     totalQuestions: totalQuestions,
+    correctAnswers,
+    attemptedAnswers,
     streak: {
       current: dailyStreak,
       flameIcon: '🔥',
@@ -540,6 +677,7 @@ async submitQuiz(
         accuracy_bonus,
         speed_bonus,
         streak_bonus: streakBonus,
+        accuracyPercent,
       },
     },
   };
@@ -602,10 +740,11 @@ async quitQuiz(
   let submitResult: any = null;
 
   if (responses.length > 0) {
+    const effectiveQuizTimeSeconds = this.parseQuizTimeToSeconds(quizTime);
     submitResult = await this.submitQuiz(
       String(userId),
       rewardType,
-      quizTime,
+      effectiveQuizTimeSeconds,
       ad_bonuses,
       responses,
     );
@@ -781,8 +920,38 @@ async fetchOngoingLiveQuiz(userId: number) {
     },
   });
 
-  return ongoingQuiz;
+  if (!ongoingQuiz) return ongoingQuiz;
+
+  // Airtable signed URLs expire after ~2 hours.
+  // Re-fetch a fresh imageLink from the Go service for each question that has an Airtable URL.
+  const questions: any[] = (ongoingQuiz.questions as any[]) || [];
+  const refreshedQuestions = await Promise.all(
+    questions.map(async (q) => {
+      const isAirtableUrl =
+        typeof q.imageLink === 'string' &&
+        q.imageLink.includes('airtableusercontent.com');
+
+      if (!isAirtableUrl || !q.quizId) return q;
+
+      try {
+        const response = await firstValueFrom(
+          this.httpService.get(`${this.liveQuizGoBaseUrl}/live/${q.quizId}`),
+        );
+        const freshImageLink =
+          response?.data?.imageLink ??
+          response?.data?.data?.imageLink ??
+          q.imageLink;
+        return { ...q, imageLink: freshImageLink };
+      } catch {
+        // If refresh fails, return the original (may be expired but gracefully degrade)
+        return q;
+      }
+    }),
+  );
+
+  return { ...ongoingQuiz, questions: refreshedQuestions };
 }
+
 
 async getCompletedLiveQuizWithStreamId(streamId: number) {
     const ongoingQuiz = await prisma.ongoingLiveQuiz.findMany({
@@ -991,78 +1160,7 @@ async getLiveQuizLeaderboard() {
       prisma.ongoingLiveQuiz.findMany(),
     ]);
 
-    const participantMap = new Map<string, Set<string>>();
-
-    ongoingQuizzes.forEach((attempt) => {
-      attempt.quizIds?.forEach((quizId) => {
-        if (!participantMap.has(quizId)) {
-          participantMap.set(quizId, new Set());
-        }
-
-        participantMap.get(quizId)?.add(attempt.userId);
-      });
-    });
-
-    const entriesByQuizId = new Map<string, typeof leaderboardEntries>();
-    leaderboardEntries.forEach((entry) => {
-      const existing = entriesByQuizId.get(entry.quizId) ?? [];
-      existing.push(entry);
-      entriesByQuizId.set(entry.quizId, existing);
-    });
-
-    let totalRewardDistributed = 0;
-
-    const leaderboard = Array.from(entriesByQuizId.entries()).map(
-      ([quizId, quizEntries]) => {
-        const sortedEntries = [...quizEntries].sort(
-          (a, b) =>
-            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-        );
-        const latestEntry = sortedEntries[0] ?? null;
-
-        const winners = [
-          ...new Set(
-            quizEntries
-              .filter((entry) => entry.isWinner)
-              .map((entry) => entry.userId),
-          ),
-        ];
-
-        totalRewardDistributed += quizEntries.reduce(
-          (sum, entry) => sum + Number(entry.unitPrize || 0),
-          0,
-        );
-
-        const recordedParticipants = quizEntries.reduce(
-          (max, entry) => Math.max(max, Number(entry.participants || 0)),
-          0,
-        );
-
-        return {
-          quizDate: latestEntry?.quizDate ?? null,
-          quizId,
-          question: latestEntry?.question ?? '',
-          answer: latestEntry?.answer ?? null,
-          participants:
-            participantMap.get(quizId)?.size || recordedParticipants || 0,
-          quizWinners: winners,
-          reward: latestEntry?.rewardType ?? null,
-          status: latestEntry?.rewardStatus ?? 'NONE',
-        };
-      },
-    );
-
-    const totalParticipants = leaderboard.reduce(
-      (sum, quiz) => sum + (quiz.participants || 0),
-      0,
-    );
-
-    return {
-      totalQuizzes: leaderboard.length,
-      totalParticipants,
-      totalRewardDistributed,
-      leaderboard,
-    };
+    return buildLiveQuizLeaderboardRows(leaderboardEntries, ongoingQuizzes);
   } catch (error) {
     throw new HttpException(
       error?.message ||
@@ -1195,6 +1293,7 @@ async submitLiveQuiz(userId: string) {
       Number(userId),
       Math.round(totalEarning),
       EarningStatus.PAID_OUT,
+      `live_quiz_reward:${userId}:${updatedQuiz?.id ?? 'session'}`,
     );
   }
 
@@ -1478,7 +1577,11 @@ async hasSubmittedLiveQuizForStream(
       }
     }); 
 
-    return completedQuiz;
+    if (!completedQuiz) return completedQuiz;
+    return {
+      ...completedQuiz,
+      quizTime: formatSecondsToMMSS((completedQuiz as any).quizTime),
+    };
   }
 
       async getAllCompletedQuiz() {
@@ -1487,18 +1590,57 @@ async hasSubmittedLiveQuizForStream(
       where: {
         isCompleted: true,
       },
+      include: {
+        user: {
+          select: {
+            username: true,
+            firstName: true,
+            lastName: true,
+          },
+        },
+      },
     }); 
 
-    return completedQuiz;
+    return completedQuiz.map((q) => {
+      const fullName = [q.user?.firstName, q.user?.lastName]
+        .filter(Boolean)
+        .join(" ")
+        .trim();
+
+      const answers = Array.isArray(q.answers) ? q.answers : [];
+      const totalQuestions =
+        q.totalQuestions ??
+        (Array.isArray(q.questions) ? q.questions.length : 0);
+      const correctAnswers = answers.filter((answer: any) => {
+        if (typeof answer?.isCorrect === "boolean") {
+          return answer.isCorrect;
+        }
+        if (
+          answer?.selectedAnswer != null &&
+          answer?.correctAnswer != null
+        ) {
+          return String(answer.selectedAnswer) === String(answer.correctAnswer);
+        }
+        return false;
+      }).length;
+
+      return {
+        ...q,
+        username: q.user?.username ?? String(q.userId),
+        fullName: fullName || undefined,
+        quizTime: formatSecondsToMMSS((q as any).quizTime),
+        score: `${correctAnswers}/${totalQuestions}`,
+        totalQuestions,
+        correctAnswers,
+      };
+    });
   }
 
-
-
-/**
- * Create a quick-start quiz session from a pack already fetched from Go.
- * Nest no longer needs to call Go when the client supplies the pack.
- */
-async startQuickQuizSession(
+  /**
+   * Create a quick-start quiz session from a pack already fetched from Go.
+   * Nest no longer needs to call Go when the client supplies the pack.
+   */
+  async startQuickQuizSession(
   userId: number,
   pack: Record<string, any>,
   isRandom = true,
@@ -1574,14 +1716,12 @@ async startQuickQuizSession(
             0,
           );
 
-        const amountInNaira = totalEarning / 1000;
+        const pointsToNairaRate = parseInt(this.configService.get<string>('POINTS_TO_NAIRA_RATE'), 10);
+        const amountInNaira = totalEarning / pointsToNairaRate;
 
-        // Still fetch exchange rates for consistency
-        const convertToUSDC = await this.paymentService.getExchangeRate('USDC');
-        const convertToUSDT = await this.paymentService.getExchangeRate('USDT');
-
-        const amountInUSDC = amountInNaira / Number(convertToUSDC.rate);
-        const amountInUSDT = amountInNaira / Number(convertToUSDT.rate);
+        // Fetch exchange rates from real API
+        const amountInUSDC = amountInNaira / await this.exchangeRateService.getNairaToUSDCRate();
+        const amountInUSDT = amountInNaira / await this.exchangeRateService.getNairaToUSDTRate();
         const totalTime: number = pack.totalTime ?? totalQuestions * 2;
 
         return {
@@ -1621,13 +1761,12 @@ async startQuickQuizSession(
         0,
       );
 
-    const amountInNaira = totalEarning / 1000;
+    const pointsToNairaRate = parseInt(this.configService.get<string>('POINTS_TO_NAIRA_RATE'), 10);
+    const amountInNaira = totalEarning / pointsToNairaRate;
 
-    const convertToUSDC = await this.paymentService.getExchangeRate('USDC');
-    const convertToUSDT = await this.paymentService.getExchangeRate('USDT');
-
-    const amountInUSDC = amountInNaira / Number(convertToUSDC.rate);
-    const amountInUSDT = amountInNaira / Number(convertToUSDT.rate);
+    // Fetch exchange rates from real API
+    const amountInUSDC = amountInNaira / await this.exchangeRateService.getNairaToUSDCRate();
+    const amountInUSDT = amountInNaira / await this.exchangeRateService.getNairaToUSDTRate();
     const totalTime: number = pack.totalTime ?? totalQuestions * 2;
 
     const now = new Date(
@@ -1774,7 +1913,8 @@ async getOngoingQuiz (userId: number) {
     },
   });
 
-  return ongoingQuiz;
+  if (!ongoingQuiz) return ongoingQuiz;
+  return this.refreshQuizImageLinks(ongoingQuiz);
 
 }
 
@@ -1822,7 +1962,7 @@ async fetchOngoingQuiz(userId: number) {
       };
     }
 
-    return ongoingQuiz;
+    return this.refreshQuizImageLinks(ongoingQuiz);
   }
           const now = new Date(
     new Date().toLocaleString("en-US", {
@@ -1843,7 +1983,35 @@ async fetchOngoingQuiz(userId: number) {
     };
   }
 
-  return ongoingQuiz;
+  return this.refreshQuizImageLinks(ongoingQuiz);
+}
+
+// Refreshes expired Airtable signed image URLs by re-fetching fresh ones from the Go service.
+private async refreshQuizImageLinks(ongoingQuiz: any): Promise<any> {
+  const questions: any[] = (ongoingQuiz.questions as any[]) || [];
+  const refreshedQuestions = await Promise.all(
+    questions.map(async (q) => {
+      const isAirtableUrl =
+        typeof q.imageLink === 'string' &&
+        q.imageLink.includes('airtableusercontent.com');
+
+      if (!isAirtableUrl || !q.quizId) return q;
+
+      try {
+        const response = await firstValueFrom(
+          this.httpService.get(`${this.baseUrl}/get/${q.quizId}`),
+        );
+        const freshImageLink =
+          response?.data?.imageLink ??
+          response?.data?.data?.imageLink ??
+          q.imageLink;
+        return { ...q, imageLink: freshImageLink };
+      } catch {
+        return q;
+      }
+    }),
+  );
+  return { ...ongoingQuiz, questions: refreshedQuestions };
 }
 
 
@@ -2214,7 +2382,7 @@ async getOngoingQuizAnswers(userId: number) {
       const response = await firstValueFrom(
         this.httpService.patch(`${this.liveQuizGoBaseUrl}/live/${id}`, updateData),
       );
-      this.eventEmitter.emit('liveQuiz.changed', { action: 'updated' });
+      this.eventEmitter.emit('liveQuiz.changed', { action: 'updated', id });
       return response.data;
     } catch (error) {
       this.rethrowGoProxyError(error, 'Failed to update live quiz');

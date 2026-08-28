@@ -26,9 +26,14 @@ type QuizService interface {
 	GetLiveQuiz(string) (*models.LiveQuiz, error)
 	GetRandomLiveQuiz(string) ([]models.LiveQuiz, error)
 	GetAllLiveQuiz() ([]map[string]interface{}, error)
-	GetLiveQuizAnswerById(id string) (map[string]interface{}, error)
+	GetLiveQuizAnswerById(userID int, id string) (map[string]interface{}, error)
 	UpdateLiveQuiz(*models.LiveQuiz) error
 	DeleteLiveQuiz(string) error
+	UpdateLiveQuizCustomCountdownLabel(id string, phase string, label string) error
+	DeleteLiveQuizCustomCountdownLabel(id string, phase string) error
+	CreateLiveQuizCustomCountdownLabel(id string, phase string, text string) (*models.LiveQuiz, error)
+	UpdateLiveQuizCustomCountdownLabelByID(id string, labelID string, phase string, text string) (*models.LiveQuiz, error)
+	DeleteLiveQuizCustomCountdownLabelByID(id string, labelID string) (*models.LiveQuiz, error)
 
 	// QUIZ CATEGORY
 	CreateQuizCategory(category *models.QuizCategory) (*models.QuizCategory, error)

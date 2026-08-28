@@ -1,4 +1,3 @@
-version: '3.8'
 
 services:
   # ----------------------------------------------------
@@ -16,6 +15,12 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d superfan"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
   redis:
     image: redis:7
@@ -68,7 +73,6 @@ services:
       - path: ./superfan.nest/.env
         required: false
     environment:
-      - DATABASE_URL=postgresql://postgres:password@db:5432/superfan?connection_limit=10&pool_timeout=20
       - LOCAL_REDIS_HOST=redis
       - GO_ENDPOINT=http://superfan-go:7190
     volumes:
@@ -93,8 +97,7 @@ services:
       - path: ./superfan.go/.env
         required: false
     environment:
-      - MONGO_URI=mongodb://mongo:27017/quizdb
-      - DATABASE_URL=postgresql://postgres:password@db:5432/superfan
+      - MONGO_URI=${MONGO_URI:-mongodb://mongo:27017/quizdb}
       - PORT=7190
       - GIN_MODE=debug
     volumes:

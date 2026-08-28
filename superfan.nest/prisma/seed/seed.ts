@@ -44,7 +44,7 @@ async function seedAll() {
       email: "superfanng@superfan.ng",
       password: "Shortchase#2019@",
       phone: "+2348098765432",
-      username: "superfan_admin",
+      username: "odofin",
       subscriptionPlan: SubscriptionPlan.FREE,
       roleName: "superadmin",
       referral_code: generateReferralCode("admin"),
@@ -161,13 +161,16 @@ if (!existingRole) {
       where: { username: user.username },
     });
 
+    const existingUser = existingByEmail || existingByUsername;
+    const stableReferralCode = existingUser?.referral_code || user.referral_code;
+
     const sharedUpdate = {
       firstName: user.firstName,
       lastName: user.lastName,
       phone: user.phone,
       subscriptionPlan: user.subscriptionPlan,
       roleName: role.name,
-      referral_code: user.referral_code,
+      referral_code: stableReferralCode,
       password: hashedPassword,
       profilePicture: user.profilePicture || null,
     };
@@ -256,6 +259,255 @@ if (!existingRole) {
     }
   }
   console.log('✅ All seeded users have been synced to Clerk');
+
+  // ✅ Seed Stream, Stream Comments, Nested Replies, and Live Quiz
+  const adminUser = await prisma.user.findFirst({
+    where: { roleName: 'superadmin' },
+  });
+  const clientUser = await prisma.user.findFirst({
+    where: { roleName: 'client' },
+  });
+
+  if (adminUser && clientUser) {
+    // 1. Seed Stream
+    const stream = await prisma.stream.upsert({
+      where: { id: 1 },
+      update: {
+        title: "Superfan Live Yoruba & General Knowledge Quiz",
+        status: "live",
+        isActive: true,
+      },
+      create: {
+        id: 1,
+        userId: adminUser.id,
+        title: "Superfan Live Yoruba & General Knowledge Quiz",
+        description: "Join our weekly interactive stream to answer questions live and win prizes!",
+        privacyStatus: "public",
+        networkPlatform: "youtube",
+        broadcastId: "sample_broadcast_001",
+        streamUrl: "https://www.youtube.com/watch?v=sample_live",
+        status: "live",
+        category: "quiz",
+        isActive: true,
+      },
+    });
+    console.log("✅ Seeded Stream (ID: 1)");
+
+    // 2. Seed Stream Comments & Nested Replies
+    const rootComment1 = await prisma.streamComment.upsert({
+      where: { id: 1 },
+      update: {},
+      create: {
+        id: 1,
+        streamId: stream.id,
+        userId: clientUser.id,
+        message: "Hello everyone! Ready for the live quiz show!",
+        depth: 0,
+        isDeleted: false,
+        likesCount: 5,
+      },
+    });
+
+    const replyComment1 = await prisma.streamComment.upsert({
+      where: { id: 2 },
+      update: {},
+      create: {
+        id: 2,
+        streamId: stream.id,
+        userId: adminUser.id,
+        parentId: rootComment1.id,
+        rootId: rootComment1.id,
+        replyToUserId: clientUser.id,
+        message: "Welcome! The quiz is about to start in 2 minutes.",
+        depth: 1,
+        isDeleted: false,
+        likesCount: 3,
+      },
+    });
+
+    await prisma.streamComment.upsert({
+      where: { id: 3 },
+      update: {},
+      create: {
+        id: 3,
+        streamId: stream.id,
+        userId: clientUser.id,
+        parentId: replyComment1.id,
+        rootId: rootComment1.id,
+        replyToUserId: adminUser.id,
+        message: "Awesome! Locking in my answers.",
+        depth: 2,
+        isDeleted: false,
+        likesCount: 1,
+      },
+    });
+    console.log("✅ Seeded Stream Comments & Nested Replies");
+
+    // 3. Seed Ongoing Live Quiz
+    const liveQuiz = await prisma.ongoingLiveQuiz.upsert({
+      where: { id: 1 },
+      update: {},
+      create: {
+        id: 1,
+        userId: String(adminUser.id),
+        quizIds: ["QUIZ_YORUBA_001"],
+        streamId: stream.id,
+        questions: [
+          {
+            id: "q1",
+            question: "What is the capital of Lagos State?",
+            options: ["Ikeja", "Lekki", "Badagry", "Epe"],
+            correctAnswer: "Ikeja",
+          },
+          {
+            id: "q2",
+            question: "Translate 'Good morning' in Yoruba:",
+            options: ["E kaaro", "E kaasan", "E ku ale", "O dababo"],
+            correctAnswer: "E kaaro",
+          },
+        ],
+        totalEarning: 5000,
+        completed: false,
+      },
+    });
+    console.log("✅ Seeded Ongoing Live Quiz");
+
+    // 4. Seed Live Quiz Attempt & Leaderboard
+    await prisma.liveQuizAttempt.upsert({
+      where: {
+        userId_quizId: {
+          userId: String(clientUser.id),
+          quizId: "QUIZ_YORUBA_001",
+        },
+      },
+      update: {},
+      create: {
+        userId: String(clientUser.id),
+        quizId: "QUIZ_YORUBA_001",
+        ongoingLiveQuizId: liveQuiz.id,
+        totalPrize: 5000,
+        recipients: 10,
+        unitPrize: 500,
+        earning: 500,
+        isWinner: true,
+        isCompleted: true,
+      },
+    });
+
+    const existingLeaderboard = await prisma.liveQuizLeaderboard.findFirst({
+      where: {
+        userId: String(clientUser.id),
+        quizId: "QUIZ_YORUBA_001",
+      },
+    });
+
+    if (!existingLeaderboard) {
+      await prisma.liveQuizLeaderboard.create({
+        data: {
+          userId: String(clientUser.id),
+          quizId: "QUIZ_YORUBA_001",
+          question: "What is the capital of Lagos State?",
+          answer: "Ikeja",
+          rewardType: "LIVE_QUIZ",
+          isWinner: true,
+          participants: 10,
+          unitPrize: 500,
+          rewardStatus: "paid",
+          quizDate: new Date(),
+        },
+      });
+    }
+    console.log("✅ Seeded Live Quiz Attempt & Leaderboard");
+  }
+
+  // 5. Seed Products
+  const products = [
+    {
+      id: 1,
+      title: "Selfin Hoodie",
+      price: "NGN37.50",
+      priceAmount: 37.5,
+      images: ["/download (1).jpeg", "/download.jpeg"],
+      colors: ["White", "Light Gray", "Beige"],
+      sizes: ["S", "M", "L", "XL", "2XL", "3XL"],
+      badge: "Promo available",
+      description: "65% ring-spun cotton, 35% polyester. Regular fit, unisex sizing.",
+      stock: 100,
+      isActive: true,
+    },
+    {
+      id: 2,
+      title: "Selfin T-shirt",
+      price: "NGN27.20",
+      priceAmount: 27.2,
+      images: ["/download.jpeg"],
+      colors: ["Light Blue", "Silver", "Gray"],
+      sizes: ["S", "M", "L", "XL"],
+      badge: null,
+      description: "65% ring-spun cotton, 35% polyester. Lightweight and breathable.",
+      stock: 100,
+      isActive: true,
+    },
+    {
+      id: 3,
+      title: "Selfin Hoodie (Black)",
+      price: "NGN57.20",
+      priceAmount: 57.2,
+      images: ["/download (1).jpeg"],
+      colors: ["Black", "Dark Gray", "Charcoal"],
+      sizes: ["S", "M", "L", "XL"],
+      badge: null,
+      description: "Heavyweight fabric (8.5 oz), charcoal fleece lining.",
+      stock: 100,
+      isActive: true,
+    },
+    {
+      id: 4,
+      title: "Selfin sweatshirt",
+      price: "NGN51.74",
+      priceAmount: 51.74,
+      images: ["/download.jpeg"],
+      colors: ["Dark Gray", "Graphite"],
+      sizes: ["S", "M", "L"],
+      badge: null,
+      description: "Side-seamed construction, double-needle stitched bottom hem.",
+      stock: 100,
+      isActive: true,
+    },
+    {
+      id: 5,
+      title: "Selfin oversized t-shirt",
+      price: "NGN37.37",
+      priceAmount: 37.37,
+      images: ["/download (1).jpeg"],
+      colors: ["Navy Blue", "Royal Blue", "Black"],
+      sizes: ["S", "M", "L", "XL", "2XL"],
+      badge: null,
+      description: "Relaxed oversized cut, premium heavyweight cotton.",
+      stock: 100,
+      isActive: true,
+    },
+  ];
+
+  for (const prod of products) {
+    await prisma.product.upsert({
+      where: { id: prod.id },
+      update: {
+        title: prod.title,
+        price: prod.price,
+        priceAmount: prod.priceAmount,
+        images: prod.images,
+        colors: prod.colors,
+        sizes: prod.sizes,
+        badge: prod.badge,
+        description: prod.description,
+        stock: prod.stock,
+        isActive: prod.isActive,
+      },
+      create: prod,
+    });
+  }
+  console.log("✅ Seeded Products");
 }
 
 // ✅ Run everything
@@ -266,4 +518,4 @@ seedAll()
   })
   .finally(async () => {
     await prisma.$disconnect();
-  });
+  });

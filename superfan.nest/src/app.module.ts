@@ -25,7 +25,6 @@ import { CronJobModule } from './cronjobs/cronjob.module';
 import { HealthModule } from './health/health.module';
 import { ImageModule } from './image/image.module';
 import { NotificationModule } from './notification/notification.module';
-import { PaymentModule } from './payment/payment.module';
 import { PermissionModule } from './permission/permission.module';
 import { QuizModule } from './quiz/quiz.module';
 import { QuotesModule } from './quote/quote.module';
@@ -38,6 +37,7 @@ import { StreamingModule } from './stream/stream.module';
 import { ElasticsearchModule } from './elasticsearch/elasticsearch.module';
 import { LoggingMiddleware } from './common/middleware/logging.middleware';
 import { WaitlistModule } from './waitlist/waitlist.module';
+import { ShopModule } from './shop/shop.module';
 
 @Module({
   imports: [
@@ -81,11 +81,11 @@ import { WaitlistModule } from './waitlist/waitlist.module';
     UserModule,
     NotificationModule,
     QuizModule,
-    PaymentModule,
     StreamingModule,
     WebhookModule,
     ResetModule,
     WaitlistModule,
+    ShopModule,
     BullModule.forRootAsync({
       imports: [ConfigModule],
       useFactory: (configService: ConfigService) => ({

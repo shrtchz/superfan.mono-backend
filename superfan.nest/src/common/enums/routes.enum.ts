@@ -14,5 +14,6 @@ export enum ApiRoutes {
     STREAMING = 'api/v1/streams/',
     STREAM_USER = 'api/v1/stream',
     WEBHOOK = 'webhooks/',
-    WAITLIST = 'api/v1/waitlist'
+    WAITLIST = 'api/v1/waitlist',
+    SHOP = 'api/v1/shop'
 }

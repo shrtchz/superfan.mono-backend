@@ -1,14 +1,17 @@
 import { TestLevel } from '@prisma/client';
 import { Transform, Type } from 'class-transformer';
 import {
+  ArrayNotEmpty,
   IsArray,
   IsBoolean,
   IsEnum,
+  IsInt,
   IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
   Matches,
+  Min,
   ValidateNested,
 } from 'class-validator';
 
@@ -167,6 +170,35 @@ export class UpdateLiveQuizDto {
   @IsOptional()
   @IsString()
   quizFinishDate?: string;
+
+  @IsOptional()
+  @IsString()
+  customCountdownLabelBefore?: string;
+
+  @IsOptional()
+  @IsString()
+  customCountdownLabelDuring?: string;
+
+  @IsOptional()
+  @IsString()
+  customCountdownLabelAfter?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => CustomCountdownLabelDto)
+  customCountdownLabels?: CustomCountdownLabelDto[];
+}
+
+export class CustomCountdownLabelDto {
+  @IsString()
+  id: string;
+
+  @IsString()
+  phase: 'before' | 'during' | 'after';
+
+  @IsString()
+  text: string;
 }
 
 export class startRandomQuiz {
@@ -266,9 +298,16 @@ export class SubmitQuizDto {
   @IsNotEmpty()
   rewardType: string;
 
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  quizTimeSeconds?: number;
+
+  @IsOptional()
   @IsString()
   @IsNotEmpty()
-  quizTime: string;
+  quizTime?: string;
 
   @IsOptional()
   @Type(() => Number)

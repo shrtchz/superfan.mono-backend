@@ -279,6 +279,8 @@ func (s *QuizSessionV2Service) createNewSession(req models.CreateSessionV2Reques
 		timeRemaining = *sessionTotalTime
 	}
 
+	submissionMode := normalizeSubmissionMode(req.SubmissionMode)
+
 	ongoingQuiz := models.OngoingQuiz{
 		ID:                  cuid.New(),
 		UserID:              req.UserID,
@@ -292,6 +294,7 @@ func (s *QuizSessionV2Service) createNewSession(req models.CreateSessionV2Reques
 		TotalQuestions:      totalQuestions,
 		TotalTime:           sessionTotalTime,
 		IsRandom:            isRandom,
+		SubmissionMode:      submissionMode,
 		TimeRemaining:       timeRemaining,
 		Questions:           questionsJSON,
 		Answers:             json.RawMessage("[]"),
@@ -391,8 +394,8 @@ func loadSessionByID(sessionID string, userID int, allowCompleted bool) (*active
 		return nil, utils.NewAppError(http.StatusForbidden, "FORBIDDEN", "Quiz session does not belong to this user.")
 	}
 
-	if ongoing.IsCompleted {
-		return nil, utils.NewAppError(http.StatusNotFound, "SESSION_NOT_FOUND", "Quiz session not found.")
+	if !allowCompleted && ongoing.IsCompleted {
+		return nil, utils.NewAppError(http.StatusConflict, "SESSION_ALREADY_COMPLETED", "Quiz session has already been completed.")
 	}
 
 	return &activeSessionLookup{
@@ -530,6 +533,7 @@ func (s *QuizSessionV2Service) buildPreviewSession(
 		TotalQuestions: totalQuestions,
 		TotalTime:      sessionTotalTime,
 		IsRandom:       isRandom,
+		SubmissionMode: normalizeSubmissionMode(req.SubmissionMode),
 		Questions:      questionsJSON,
 		Answers:        json.RawMessage("[]"),
 		CurrentIndex:   0,
@@ -713,7 +717,8 @@ func extractQuizPack(pack map[string]interface{}) ([]map[string]interface{}, int
 }
 
 func computeSessionEarnings(totalEarning int) (amountInNaira int, amountInUSDC int, amountInUSDT int) {
-	amountInNaira = int(math.Floor(float64(totalEarning) / 1000.0))
+	pointsToNairaRate := getPointsToNairaRate()
+	amountInNaira = int(math.Floor(float64(totalEarning) / float64(pointsToNairaRate)))
 
 	usdcRate := lookupExchangeRate("USDC")
 	usdtRate := lookupExchangeRate("USDT")

@@ -42,13 +42,30 @@ func normalizeStoredQuestions(raw json.RawMessage) []models.SessionV2Question {
 func mapStoredQuestion(item map[string]interface{}) models.SessionV2Question {
 	level := strings.ToLower(strings.TrimSpace(stringField(item, "testLevel")))
 	options := stringSliceField(item["options"])
+
 	images := stringSliceField(item["imageLink"])
+	if len(images) == 0 {
+		images = stringSliceField(item["ImageLink"])
+	}
 	if len(images) == 0 {
 		images = stringSliceField(item["images"])
 	}
+	if len(images) == 0 {
+		images = stringSliceField(item["image"])
+	}
+	if len(images) == 0 {
+		images = stringSliceField(item["media"])
+	}
+
 	videos := stringSliceField(item["videoLink"])
 	if len(videos) == 0 {
+		videos = stringSliceField(item["VideoLink"])
+	}
+	if len(videos) == 0 {
 		videos = stringSliceField(item["videos"])
+	}
+	if len(videos) == 0 {
+		videos = stringSliceField(item["video"])
 	}
 
 	earning := 0
@@ -73,6 +90,8 @@ func mapStoredQuestion(item map[string]interface{}) models.SessionV2Question {
 		Earning:       earning,
 		Images:        images,
 		Videos:        videos,
+		ImageLink:     images,
+		VideoLink:     videos,
 		InputRequired: level == "basic" && len(options) == 0,
 	}
 }
@@ -87,6 +106,7 @@ func mapOngoingQuizToSessionV2(record *models.OngoingQuiz, expired bool) models.
 		ID:               record.ID,
 		UserID:           record.UserID,
 		Mode:             mode,
+		SubmissionMode:   normalizeSubmissionMode(record.SubmissionMode),
 		Status:           deriveSessionStatus(record, expired),
 		Questions:        normalizeStoredQuestions(record.Questions),
 		Answers:          normalizeStoredAnswers(record.Answers),
@@ -140,6 +160,17 @@ func sessionExpiresAt(record *models.OngoingQuiz) *string {
 		return nil
 	}
 	return isoTimePtr(record.ExpiresAt)
+}
+
+func normalizeSubmissionMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "end_of_quiz":
+		return "end_of_quiz"
+	case "interval":
+		return "interval"
+	default:
+		return "interval"
+	}
 }
 
 func normalizeStoredAnswers(raw json.RawMessage) []models.SessionV2Answer {
@@ -203,7 +234,29 @@ func stringField(item map[string]interface{}, key string) string {
 }
 
 func stringSliceField(value interface{}) []string {
+	if value == nil {
+		return []string{}
+	}
 	switch typed := value.(type) {
+	case string:
+		trimmed := strings.TrimSpace(typed)
+		if trimmed == "" || trimmed == "null" || trimmed == "undefined" {
+			return []string{}
+		}
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			var parsed []string
+			if err := json.Unmarshal([]byte(trimmed), &parsed); err == nil {
+				out := make([]string, 0, len(parsed))
+				for _, item := range parsed {
+					itemTrimmed := strings.TrimSpace(item)
+					if itemTrimmed != "" {
+						out = append(out, itemTrimmed)
+					}
+				}
+				return out
+			}
+		}
+		return []string{trimmed}
 	case []string:
 		out := make([]string, 0, len(typed))
 		for _, item := range typed {
@@ -217,7 +270,7 @@ func stringSliceField(value interface{}) []string {
 		out := make([]string, 0, len(typed))
 		for _, item := range typed {
 			text := strings.TrimSpace(fmt.Sprint(item))
-			if text != "" {
+			if text != "" && text != "<nil>" && text != "null" {
 				out = append(out, text)
 			}
 		}

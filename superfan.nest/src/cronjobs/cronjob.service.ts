@@ -3,8 +3,6 @@ import { Cron, CronExpression, SchedulerRegistry } from "@nestjs/schedule";
 import { randomBytes } from "crypto";
 import { subMinutes } from 'date-fns';
 import { NotificationService } from "../notification/notification.service";
-import { BitnobService } from "../payment/bitnob.service";
-import { MonnifyService } from "../payment/monnify.service";
 import { prisma } from "../prisma/prisma";
 import { QuizService } from "../quiz/quiz.service";
 import { UserService } from "../user/user.service";
@@ -17,9 +15,7 @@ export class CronJobService {
         private readonly notificationService: NotificationService,
         @Inject(forwardRef(() => UserService))
         private readonly userService: UserService,
-        private readonly monnifyService: MonnifyService,
         private readonly quizService: QuizService,
-        private readonly bitnobService: BitnobService,
         private readonly schedulerRegistry: SchedulerRegistry
     ) {}
 
@@ -120,14 +116,14 @@ async handleDeleteInactiveSubscription() {
         continue;
       }
 
-      // Call Monnify debit API
-      await this.monnifyService.debitMandate({
-        paymentReference,
-        mandateCode: sub.mandateCode,
-        debitAmount: sub.debitAmount,
-        narration: 'Superfan Subscription monthly debit',
-        customerEmail: userDetails.email,
-      });
+      // Call Monnify debit API (Now moved to Go)
+      // await this.monnifyService.debitMandate({
+      //   paymentReference,
+      //   mandateCode: sub.mandateCode,
+      //   debitAmount: sub.debitAmount,
+      //   narration: 'Superfan Subscription monthly debit',
+      //   customerEmail: userDetails.email,
+      // });
     }
   }
 
@@ -239,7 +235,7 @@ async handleExpiredQuizzes() {
           await this.quizService.submitQuiz(
             String(quiz.userId),
             quiz.testQuiz,
-            String(timeUsed),
+            timeUsed,
             0, // ad bonuses
             responses,
           );
@@ -288,24 +284,24 @@ async handleExpiredQuizzes() {
 async handleUpdateCryptoPrices() {
   try {
     this.logger.log('Updating cryptocurrency prices...');
-    const [usdtQuote, usdcQuote] = await Promise.all([
-  this.bitnobService.createPayoutQuote({
-    amount: '10',
-    country: 'NG',
-    from_asset: 'USDT',
-    reference: `PAYOUT-USDT-${randomBytes(8).toString('hex')}`,
-    source: 'offchain',
-    to_currency: 'NGN',
-  }),
-  this.bitnobService.createPayoutQuote({
-    amount: '10',
-    country: 'NG',
-    from_asset: 'USDC',
-    reference: `PAYOUT-USDC-${randomBytes(8).toString('hex')}`,
-    source: 'offchain',
-    to_currency: 'NGN',
-  }),
-]);
+//     const [usdtQuote, usdcQuote] = await Promise.all([
+//   this.bitnobService.createPayoutQuote({
+//     amount: '10',
+//     country: 'NG',
+//     from_asset: 'USDT',
+//     reference: `PAYOUT-USDT-${randomBytes(8).toString('hex')}`,
+//     source: 'offchain',
+//     to_currency: 'NGN',
+//   }),
+//   this.bitnobService.createPayoutQuote({
+//     amount: '10',
+//     country: 'NG',
+//     from_asset: 'USDC',
+//     reference: `PAYOUT-USDC-${randomBytes(8).toString('hex')}`,
+//     source: 'offchain',
+//     to_currency: 'NGN',
+//   }),
+// ]);
 
 // this.logger.log({ usdtQuote, usdcQuote }, 'Cryptocurrency prices updated successfully')
   } catch (error) {

@@ -9,17 +9,19 @@
     "build": "nest build",
     "format": "prettier --write \"src/**/*.ts\"",
     "startup": "nest start --watch",
-    "start": "pnpm prisma migrate deploy && pnpm exec tsx prisma/seed/seed.ts && nest start",
-    "dev": "pnpm prisma migrate deploy && pnpm exec tsx prisma/seed/seed.ts && nest start --watch",
-    "start:dev": "pnpm prisma generate && pnpm prisma migrate deploy && pnpm exec tsx prisma/seed/seed.ts && ts-node-dev --respawn --transpile-only src/main.ts",
+    "start": "pnpm prisma generate && nest start",
+    "dev": "pnpm prisma generate && nest start --watch",
+    "start:dev": "pnpm prisma generate && ts-node-dev --respawn --transpile-only src/main.ts",
     "start:debug": "nest start --debug --watch",
-    "start:prod": "node dist/src/main",
+    "start:prod": "pnpm prisma generate && node dist/src/main",
     "lint": "eslint \"{src,apps,libs}/**/*.ts\" --fix",
     "typecheck": "tsc --noEmit",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
-    "migrate": "pnpm prisma migrate dev"
+    "migrate": "pnpm prisma migrate dev",
+    "seed": "pnpm exec tsx prisma/seed/seed.ts",
+    "db:push": "pnpm prisma db push"
   },
   "dependencies": {
     "@clerk/backend": "^3.4.7",
@@ -64,6 +66,7 @@
     "cache-manager": "7.2.0",
     "class-transformer": "0.5.1",
     "class-validator": "0.14.2",
+    "cloudinary": "^2.10.0",
     "crypto-js": "^4.2.0",
     "date-fns": "^4.1.0",
     "exceljs": "^4.4.0",
@@ -117,7 +120,7 @@
     "typescript": "5.9.2"
   },
   "engines": {
-    "node": ">=24"
+    "node": ">=20"
   },
   "jest": {
     "moduleFileExtensions": [

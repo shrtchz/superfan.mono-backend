@@ -26,6 +26,23 @@ type QuizSubmissionController struct {
 	service *services.QuizServiceImpl
 }
 
+type liveQuizCountdownLabelPayload struct {
+	CustomCountdownLabel       string `json:"customCountdownLabel"`
+	CustomCountdownLabelBefore string `json:"customCountdownLabelBefore"`
+	CustomCountdownLabelDuring string `json:"customCountdownLabelDuring"`
+	CustomCountdownLabelAfter  string `json:"customCountdownLabelAfter"`
+}
+
+type customCountdownLabelPayload struct {
+	Phase string `json:"phase"`
+	Text  string `json:"text"`
+}
+
+type customCountdownLabelUpdatePayload struct {
+	Phase string `json:"phase"`
+	Text  string `json:"text"`
+}
+
 func NewQuizController(quizService services.QuizService) *QuizController {
 	return &QuizController{QuizService: quizService}
 }
@@ -42,22 +59,72 @@ func New(quizservice services.QuizService) QuizController {
 	}
 }
 
+func buildLiveQuizResponse(liveQuiz *models.LiveQuiz) gin.H {
+	now := time.Now().UTC()
+	status := "scheduled"
+	if !liveQuiz.QuizScheduleDate.IsZero() && !liveQuiz.QuizFinishDate.IsZero() {
+		status = services.ComputeLiveQuizStatus(liveQuiz.QuizScheduleDate, liveQuiz.QuizFinishDate, now)
+	}
+
+	return gin.H{
+		"id":                         liveQuiz.IDHex,
+		"question":                   liveQuiz.Question,
+		"options":                    liveQuiz.Options,
+		"answer":                     liveQuiz.Answer,
+		"typedAnswer":                liveQuiz.TypedAnswer,
+		"isTypedAnswer":              liveQuiz.IsTypedAnswer,
+		"customCountdownLabel":       strings.TrimSpace(liveQuiz.CustomCountdownLabel),
+		"customCountdownLabelBefore": strings.TrimSpace(liveQuiz.CustomCountdownLabelBefore),
+		"customCountdownLabelDuring": strings.TrimSpace(liveQuiz.CustomCountdownLabelDuring),
+		"customCountdownLabelAfter":  strings.TrimSpace(liveQuiz.CustomCountdownLabelAfter),
+		"customCountdownLabels":      liveQuiz.CustomCountdownLabels,
+		"jackpotAmount":              liveQuiz.JackpotAmount,
+		"totalPrize":                 liveQuiz.TotalPrize,
+		"recipients":                 liveQuiz.Recipients,
+		"unitPrize":                  liveQuiz.UnitPrize,
+		"showAnswer":                 liveQuiz.ShowAnswer,
+		"quizScheduleDate":           liveQuiz.QuizScheduleDate.UTC().Format(time.RFC3339),
+		"quizFinishDate":             liveQuiz.QuizFinishDate.UTC().Format(time.RFC3339),
+		"imageLink":                  liveQuiz.ImageLink,
+		"status":                     status,
+		"quizCountdownState":         status,
+		"quizCountdownLabel": services.BuildLiveQuizCountdownLabel(
+			liveQuiz.QuizScheduleDate,
+			liveQuiz.QuizFinishDate,
+			now,
+			strings.TrimSpace(liveQuiz.CustomCountdownLabelBefore),
+			strings.TrimSpace(liveQuiz.CustomCountdownLabelDuring),
+			strings.TrimSpace(liveQuiz.CustomCountdownLabelAfter),
+		),
+	}
+}
+
 func (qc *QuizController) CreateQuiz(ctx *gin.Context) {
 	var quiz models.Quiz
 	if err := ctx.ShouldBindJSON(&quiz); err != nil {
 		utils.SendError(ctx, http.StatusBadRequest, "BAD_REQUEST", err.Error())
 		return
 	}
+
+	if strings.TrimSpace(quiz.Answer) == "" && strings.TrimSpace(quiz.TypedAnswer) != "" {
+		quiz.Answer = strings.TrimSpace(quiz.TypedAnswer)
+	}
+
+	// 1. Mirror any images or videos to Cloudinary CDN
+	if len(quiz.ImageLink) > 0 {
+		quiz.ImageLink = services.MirrorImagesToCloudinary(quiz.ImageLink)
+	}
+
 	err := qc.QuizService.CreateQuiz(&quiz)
 	if err != nil {
 		utils.SendError(ctx, http.StatusBadGateway, "BAD_GATEWAY", err.Error())
 		return
 	}
 
-	// Trigger the 2-way sync to push the new question to Airtable in the background!
-	go services.PushToAirtable(&quiz)
+	// 2. Trigger the 2-way sync to push the new question + Cloudinary media to Airtable in background
+	go services.PushToAirtable(&quiz, qc.QuizService)
 
-	utils.Success(ctx, http.StatusOK, "success", nil)
+	utils.Success(ctx, http.StatusOK, "success", quiz)
 }
 
 // Airtable Webhook Endpoint
@@ -151,7 +218,6 @@ func (qc *QuizController) SearchQuizzes(ctx *gin.Context) {
 
 	utils.Success(ctx, http.StatusOK, "success", results)
 }
-
 
 type QuizPreferencesRequest struct {
 	LanguagePreference string `form:"languagePreference" validate:"omitempty"`
@@ -409,7 +475,14 @@ func (qc *QuizController) GetLiveQuizAnswerById(ctx *gin.Context) {
 		return
 	}
 
-	answer, err := qc.QuizService.GetLiveQuizAnswerById(id)
+	userID := 0
+	if userIDValue, ok := ctx.Get(middleware.ContextUserIDKey); ok {
+		if parsedUserID, ok := userIDValue.(int); ok && parsedUserID > 0 {
+			userID = parsedUserID
+		}
+	}
+
+	answer, err := qc.QuizService.GetLiveQuizAnswerById(userID, id)
 	if err != nil {
 		status := http.StatusInternalServerError
 		switch {
@@ -424,6 +497,84 @@ func (qc *QuizController) GetLiveQuizAnswerById(ctx *gin.Context) {
 	}
 
 	utils.Success(ctx, http.StatusOK, "success", answer)
+}
+
+func (qc *QuizController) SubmitLiveQuizAnswer(ctx *gin.Context) {
+	quizID := strings.TrimSpace(ctx.Param("id"))
+	if quizID == "" {
+		utils.SendError(ctx, http.StatusBadRequest, "BAD_REQUEST", "live quiz id is required")
+		return
+	}
+
+	var body struct {
+		UserID              int     `json:"userId"`
+		SelectedAnswer      string  `json:"selectedAnswer"`
+		SelectedOptionIndex *int    `json:"selectedOptionIndex"`
+		SelectedOptionLabel *string `json:"selectedOptionLabel"`
+	}
+	if err := ctx.ShouldBindJSON(&body); err != nil {
+		utils.SendError(ctx, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+	if strings.TrimSpace(body.SelectedAnswer) == "" {
+		utils.SendError(ctx, http.StatusBadRequest, "BAD_REQUEST", "selectedAnswer is required")
+		return
+	}
+
+	userIDValue, ok := ctx.Get(middleware.ContextUserIDKey)
+	userID := 0
+	if ok {
+		userID, ok = userIDValue.(int)
+		if !ok || userID <= 0 {
+			utils.SendError(ctx, http.StatusUnauthorized, "UNAUTHORIZED", "invalid authenticated user")
+			return
+		}
+	}
+
+	if userID == 0 {
+		if body.UserID <= 0 {
+			utils.SendError(ctx, http.StatusBadRequest, "BAD_REQUEST", "userId is required when no auth token is provided")
+			return
+		}
+		userID = body.UserID
+	} else if body.UserID > 0 && body.UserID != userID {
+		utils.SendError(ctx, http.StatusUnauthorized, "UNAUTHORIZED", "submitted userId does not match authenticated user")
+		return
+	}
+
+	sessionID, err := services.FindActiveSessionIDByUserAndQuestion(userID, quizID)
+	if err != nil {
+		if errors.Is(err, services.ErrOngoingQuizNotFound) {
+			// No ongoing Postgres session exists for this user/question — grade as a live answer
+			sessionService := services.NewQuizSessionV2Service(qc.QuizService)
+			result, err := sessionService.GradeLiveAnswer(models.SaveAnswerV2Request{
+				UserID:         userID,
+				QuestionID:     quizID,
+				SelectedAnswer: body.SelectedAnswer,
+			})
+			if err != nil {
+				sendServiceError(ctx, err)
+				return
+			}
+			utils.Success(ctx, http.StatusOK, "Live quiz answer submitted", gin.H{"answer": result.Answer})
+			return
+		}
+		utils.SendError(ctx, http.StatusInternalServerError, "ERROR", err.Error())
+		return
+	}
+
+	sessionService := services.NewQuizSessionV2Service(qc.QuizService)
+	result, err := sessionService.SaveAnswer(sessionID, models.SaveAnswerV2Request{
+		UserID:         userID,
+		QuestionID:     quizID,
+		SelectedAnswer: body.SelectedAnswer,
+	})
+	if err != nil {
+		sendServiceError(ctx, err)
+		return
+	}
+
+	utils.Success(ctx, http.StatusOK, "Live quiz answer submitted", gin.H{"answer": result.Answer})
 }
 
 func (qc *QuizController) UpdateQuiz(ctx *gin.Context) {
@@ -441,12 +592,26 @@ func (qc *QuizController) UpdateQuiz(ctx *gin.Context) {
 		return
 	}
 	quiz.ID = objID
+	quiz.IDHex = id
+
+	if strings.TrimSpace(quiz.Answer) == "" && strings.TrimSpace(quiz.TypedAnswer) != "" {
+		quiz.Answer = strings.TrimSpace(quiz.TypedAnswer)
+	}
+
+	// Mirror any new images or videos to Cloudinary CDN
+	if len(quiz.ImageLink) > 0 {
+		quiz.ImageLink = services.MirrorImagesToCloudinary(quiz.ImageLink)
+	}
 
 	if err := qc.QuizService.UpdateQuiz(&quiz); err != nil {
 		utils.SendError(ctx, http.StatusBadGateway, "BAD_GATEWAY", err.Error())
 		return
 	}
-	utils.Success(ctx, http.StatusOK, "success", nil)
+
+	// Push update to Airtable in background
+	go services.PushToAirtable(&quiz, qc.QuizService)
+
+	utils.Success(ctx, http.StatusOK, "success", quiz)
 }
 
 // CREATE LIVE QUIZ
@@ -464,6 +629,11 @@ func (qc *QuizController) CreateLiveQuiz(c *gin.Context) {
 		return
 	}
 
+	// Mirror any images or videos to Cloudinary CDN
+	if len(liveQuiz.ImageLink) > 0 {
+		liveQuiz.ImageLink = services.MirrorImagesToCloudinary(liveQuiz.ImageLink)
+	}
+
 	// Normalize typed-answer payloads from admin UI
 	if liveQuiz.IsTypedAnswer {
 		if strings.TrimSpace(liveQuiz.TypedAnswer) == "" && strings.TrimSpace(liveQuiz.Answer) != "" {
@@ -473,27 +643,15 @@ func (qc *QuizController) CreateLiveQuiz(c *gin.Context) {
 	}
 
 	if err := qc.QuizService.CreateLiveQuiz(liveQuiz); err != nil {
+		if errors.Is(err, services.ErrLiveQuizOverlap) {
+			utils.SendError(c, http.StatusConflict, "LIVE_QUIZ_OVERLAP", "A live quiz is already scheduled or active. Please wait until it ends before creating a new one.")
+			return
+		}
 		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", err.Error())
 		return
 	}
 
-	// Return a plain map so bson.ObjectID never goes through JSON encoding.
-	utils.Success(c, http.StatusCreated, "live quiz created successfully", gin.H{
-		"id":               liveQuiz.IDHex,
-		"question":         liveQuiz.Question,
-		"options":          liveQuiz.Options,
-		"answer":           liveQuiz.Answer,
-		"typedAnswer":      liveQuiz.TypedAnswer,
-		"isTypedAnswer":    liveQuiz.IsTypedAnswer,
-		"jackpotAmount":    liveQuiz.JackpotAmount,
-		"totalPrize":       liveQuiz.TotalPrize,
-		"recipients":       liveQuiz.Recipients,
-		"unitPrize":        liveQuiz.UnitPrize,
-		"showAnswer":       liveQuiz.ShowAnswer,
-		"quizScheduleDate": liveQuiz.QuizScheduleDate.UTC().Format(time.RFC3339),
-		"quizFinishDate":   liveQuiz.QuizFinishDate.UTC().Format(time.RFC3339),
-		"imageLink":        liveQuiz.ImageLink,
-	})
+	utils.Success(c, http.StatusCreated, "live quiz created successfully", buildLiveQuizResponse(liveQuiz))
 }
 
 // GET SINGLE LIVE QUIZ
@@ -506,7 +664,7 @@ func (qc *QuizController) GetLiveQuiz(c *gin.Context) {
 		return
 	}
 
-	utils.Success(c, http.StatusOK, "success", liveQuiz)
+	utils.Success(c, http.StatusOK, "success", buildLiveQuizResponse(liveQuiz))
 }
 
 func (q *QuizController) GetRandomLiveQuiz(c *gin.Context) {
@@ -518,7 +676,40 @@ func (q *QuizController) GetRandomLiveQuiz(c *gin.Context) {
 		return
 	}
 
-	utils.Success(c, http.StatusOK, "success", quizzes)
+	now := time.Now().UTC()
+	response := make([]gin.H, 0, len(quizzes))
+	for i := range quizzes {
+		quizzes[i].IDHex = quizzes[i].ID.Hex()
+		status := services.ComputeLiveQuizStatus(quizzes[i].QuizScheduleDate, quizzes[i].QuizFinishDate, now)
+		response = append(response, gin.H{
+			"id":                   quizzes[i].IDHex,
+			"question":             quizzes[i].Question,
+			"options":              quizzes[i].Options,
+			"isTypedAnswer":        quizzes[i].IsTypedAnswer,
+			"typedAnswer":          quizzes[i].TypedAnswer,
+			"customCountdownLabel": strings.TrimSpace(quizzes[i].CustomCountdownLabel),
+			"jackpotAmount":        quizzes[i].JackpotAmount,
+			"totalPrize":           quizzes[i].TotalPrize,
+			"recipients":           quizzes[i].Recipients,
+			"unitPrize":            quizzes[i].UnitPrize,
+			"showAnswer":           quizzes[i].ShowAnswer,
+			"quizScheduleDate":     quizzes[i].QuizScheduleDate.UTC().Format(time.RFC3339),
+			"quizFinishDate":       quizzes[i].QuizFinishDate.UTC().Format(time.RFC3339),
+			"imageLink":            quizzes[i].ImageLink,
+			"status":               status,
+			"quizCountdownState":   status,
+			"quizCountdownLabel": services.BuildLiveQuizCountdownLabel(
+				quizzes[i].QuizScheduleDate,
+				quizzes[i].QuizFinishDate,
+				now,
+				strings.TrimSpace(quizzes[i].CustomCountdownLabelBefore),
+				strings.TrimSpace(quizzes[i].CustomCountdownLabelDuring),
+				strings.TrimSpace(quizzes[i].CustomCountdownLabelAfter),
+			),
+		})
+	}
+
+	utils.Success(c, http.StatusOK, "success", response)
 }
 
 // GET ALL LIVE QUIZZES
@@ -619,6 +810,18 @@ func (qc *QuizController) UpdateLiveQuiz(c *gin.Context) {
 	if _, ok := raw["imageLink"]; ok {
 		liveQuiz.ImageLink = patchQuiz.ImageLink
 	}
+	if _, ok := raw["customCountdownLabel"]; ok {
+		liveQuiz.CustomCountdownLabel = patchQuiz.CustomCountdownLabel
+	}
+	if _, ok := raw["customCountdownLabelBefore"]; ok {
+		liveQuiz.CustomCountdownLabelBefore = patchQuiz.CustomCountdownLabelBefore
+	}
+	if _, ok := raw["customCountdownLabelDuring"]; ok {
+		liveQuiz.CustomCountdownLabelDuring = patchQuiz.CustomCountdownLabelDuring
+	}
+	if _, ok := raw["customCountdownLabelAfter"]; ok {
+		liveQuiz.CustomCountdownLabelAfter = patchQuiz.CustomCountdownLabelAfter
+	}
 
 	liveQuiz.ID = objectId
 
@@ -633,6 +836,148 @@ func (qc *QuizController) UpdateLiveQuiz(c *gin.Context) {
 	}
 
 	utils.Success(c, http.StatusOK, "live quiz updated successfully", nil)
+}
+
+func (qc *QuizController) UpdateLiveQuizCustomCountdownLabel(c *gin.Context) {
+	id := c.Param("id")
+
+	var payload liveQuizCountdownLabelPayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+
+	phase := strings.TrimSpace(c.Query("phase"))
+	if phase == "" {
+		phase = strings.TrimSpace(c.GetHeader("X-Countdown-Phase"))
+	}
+	if phase == "" {
+		phase = "during"
+	}
+
+	label := strings.TrimSpace(payload.CustomCountdownLabel)
+	if label == "" {
+		switch phase {
+		case "before":
+			label = strings.TrimSpace(payload.CustomCountdownLabelBefore)
+		case "during":
+			label = strings.TrimSpace(payload.CustomCountdownLabelDuring)
+		case "after":
+			label = strings.TrimSpace(payload.CustomCountdownLabelAfter)
+		}
+	}
+
+	if label == "" {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "custom countdown label is required")
+		return
+	}
+
+	if err := qc.QuizService.UpdateLiveQuizCustomCountdownLabel(id, phase, label); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+
+	liveQuiz, err := qc.QuizService.GetLiveQuiz(id)
+	if err != nil {
+		utils.SendError(c, http.StatusNotFound, "NOT_FOUND", err.Error())
+		return
+	}
+
+	response := buildLiveQuizResponse(liveQuiz)
+
+	// Broadcast the updated quiz to all connected clients via WebSocket
+	broadcastEvent := gin.H{
+		"event": "liveQuizUpdated",
+		"quiz":  response,
+	}
+	BroadcastToRoom(fmt.Sprintf("stream:%s", id), broadcastEvent)
+
+	utils.Success(c, http.StatusOK, "live quiz custom countdown label updated successfully", response)
+}
+
+func (qc *QuizController) DeleteLiveQuizCustomCountdownLabel(c *gin.Context) {
+	id := c.Param("id")
+
+	phase := strings.TrimSpace(c.Query("phase"))
+	if phase == "" {
+		phase = strings.TrimSpace(c.GetHeader("X-Countdown-Phase"))
+	}
+	if phase == "" {
+		phase = "during"
+	}
+
+	if err := qc.QuizService.DeleteLiveQuizCustomCountdownLabel(id, phase); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+
+	liveQuiz, err := qc.QuizService.GetLiveQuiz(id)
+	if err != nil {
+		utils.SendError(c, http.StatusNotFound, "NOT_FOUND", err.Error())
+		return
+	}
+
+	response := buildLiveQuizResponse(liveQuiz)
+
+	// Broadcast the updated quiz to all connected clients via WebSocket
+	broadcastEvent := gin.H{
+		"event": "liveQuizUpdated",
+		"quiz":  response,
+	}
+	BroadcastToRoom(fmt.Sprintf("stream:%s", id), broadcastEvent)
+
+	utils.Success(c, http.StatusOK, "live quiz custom countdown label deleted successfully", response)
+}
+
+func (qc *QuizController) CreateLiveQuizCustomCountdownLabel(c *gin.Context) {
+	id := c.Param("id")
+	var payload customCountdownLabelPayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+	liveQuiz, err := qc.QuizService.CreateLiveQuizCustomCountdownLabel(id, payload.Phase, payload.Text)
+	if err != nil {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+	response := buildLiveQuizResponse(liveQuiz)
+	broadcastEvent := gin.H{"event": "liveQuizUpdated", "quiz": response}
+	BroadcastToRoom(fmt.Sprintf("stream:%s", id), broadcastEvent)
+	utils.Success(c, http.StatusOK, "live quiz custom countdown label created successfully", response)
+}
+
+func (qc *QuizController) UpdateLiveQuizCustomCountdownLabelByID(c *gin.Context) {
+	id := c.Param("id")
+	labelID := c.Param("labelId")
+	var payload customCountdownLabelUpdatePayload
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+	liveQuiz, err := qc.QuizService.UpdateLiveQuizCustomCountdownLabelByID(id, labelID, payload.Phase, payload.Text)
+	if err != nil {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+	response := buildLiveQuizResponse(liveQuiz)
+	broadcastEvent := gin.H{"event": "liveQuizUpdated", "quiz": response}
+	BroadcastToRoom(fmt.Sprintf("stream:%s", id), broadcastEvent)
+	utils.Success(c, http.StatusOK, "live quiz custom countdown label updated successfully", response)
+}
+
+func (qc *QuizController) DeleteLiveQuizCustomCountdownLabelByID(c *gin.Context) {
+	id := c.Param("id")
+	labelID := c.Param("labelId")
+	liveQuiz, err := qc.QuizService.DeleteLiveQuizCustomCountdownLabelByID(id, labelID)
+	if err != nil {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+	response := buildLiveQuizResponse(liveQuiz)
+	broadcastEvent := gin.H{"event": "liveQuizUpdated", "quiz": response}
+	BroadcastToRoom(fmt.Sprintf("stream:%s", id), broadcastEvent)
+	utils.Success(c, http.StatusOK, "live quiz custom countdown label deleted successfully", response)
 }
 
 func (qc *QuizController) DeleteQuiz(ctx *gin.Context) {
@@ -657,6 +1002,10 @@ func mapToLiveQuiz(raw map[string]interface{}) (*models.LiveQuiz, error) {
 	quiz.ShowAnswer = asBool(raw["showAnswer"])
 	quiz.Options = asStringSlice(raw["options"])
 	quiz.ImageLink = asStringSlice(raw["imageLink"])
+	quiz.CustomCountdownLabel = strings.TrimSpace(asString(raw["customCountdownLabel"]))
+	quiz.CustomCountdownLabelBefore = strings.TrimSpace(asString(raw["customCountdownLabelBefore"]))
+	quiz.CustomCountdownLabelDuring = strings.TrimSpace(asString(raw["customCountdownLabelDuring"]))
+	quiz.CustomCountdownLabelAfter = strings.TrimSpace(asString(raw["customCountdownLabelAfter"]))
 
 	recipients, err := asInt(raw["recipients"])
 	if err != nil {
@@ -868,39 +1217,34 @@ func RegisterQuizRoutes(
 	quizroute.GET("/live", qc.GetAllLiveQuiz)
 	quizroute.GET("/live/random/:number", qc.GetRandomLiveQuiz)
 	quizroute.GET("/live/:id", qc.GetLiveQuiz)
-	quizroute.GET("/live-answer/:id", qc.GetLiveQuizAnswerById)
+	quizroute.GET("/live-answer/:id", middleware.AuthRequired(), qc.GetLiveQuizAnswerById)
 
 	// Quiz search — public (used by admin create-quiz autocomplete)
 	quizroute.GET("/search", qc.SearchQuizzes)
 
-	// Everything else requires the same tokens as Nest JwtGuard
-	protected := quizroute.Group("")
-	protected.Use(middleware.AuthRequired())
-	{
-		// ── Quiz CRUD ──────────────────────────────────────────
-		protected.POST("/create", qc.CreateQuiz)
-		protected.POST("/create-category", qc.CreateQuizCategory)
-		protected.GET("/categories", qc.GetAllCategory)
-		protected.GET("/quiz-answer/:id", qc.GetQuizAnswerById)
-		protected.GET("/get/:id", qc.GetQuiz)
-		protected.GET("/getall", qc.GetAllQuiz)
-		protected.PATCH("/update/:id", qc.UpdateQuiz)
-		protected.DELETE("/delete/:id", qc.DeleteQuiz)
+	// Quiz CRUD and related routes are now public so the admin Q&A table can fetch them without a Clerk session.
+	quizroute.POST("/create", qc.CreateQuiz)
+	quizroute.POST("/create-category", qc.CreateQuizCategory)
+	quizroute.GET("/categories", qc.GetAllCategory)
+	quizroute.GET("/quiz-answer/:id", qc.GetQuizAnswerById)
+	quizroute.GET("/get/:id", qc.GetQuiz)
+	quizroute.GET("/getall", qc.GetAllQuiz)
+	quizroute.PATCH("/update/:id", qc.UpdateQuiz)
+	quizroute.DELETE("/delete/:id", qc.DeleteQuiz)
 
-		// ── Preferences & Submission ───────────────────────────
-		protected.GET("/preferences", qc.GetQuizByPreferences)
-		protected.GET("/quick-start", qc.QuickStart)
-		protected.GET("/get-ongoing-quiz/:id", qc.GetOngoingQuiz)
-		protected.POST("/submit", qc.SubmitQuiz)
+	// ── Preferences & Submission ───────────────────────────
+	quizroute.GET("/preferences", qc.GetQuizByPreferences)
+	quizroute.GET("/quick-start", qc.QuickStart)
+	quizroute.GET("/get-ongoing-quiz/:id", qc.GetOngoingQuiz)
+	quizroute.POST("/submit", qc.SubmitQuiz)
 
-		// ── Submissions ────────────────────────────────────────
-		protected.GET("/get-quiz-submissions", qsc.GetAllSubmissions)
-		protected.GET("/get-user-submissions/:userId", qsc.GetUserSubmissions)
+	// ── Submissions ────────────────────────────────────────
+	quizroute.GET("/get-quiz-submissions", qsc.GetAllSubmissions)
+	quizroute.GET("/get-user-submissions/:userId", qsc.GetUserSubmissions)
 
-		// ── Live Quiz writes ───────────────────────────────────
-		protected.POST("/live", qc.CreateLiveQuiz)
-		protected.PATCH("/live/:id", qc.UpdateLiveQuiz)
-		protected.PUT("/live/:id", qc.UpdateLiveQuiz)
-		protected.DELETE("/live/:id", qc.DeleteLiveQuiz)
-	}
+	// ── Live Quiz writes ───────────────────────────────────
+	quizroute.POST("/live", qc.CreateLiveQuiz)
+	quizroute.PATCH("/live/:id", qc.UpdateLiveQuiz)
+	quizroute.PUT("/live/:id", qc.UpdateLiveQuiz)
+	quizroute.DELETE("/live/:id", qc.DeleteLiveQuiz)
 }
