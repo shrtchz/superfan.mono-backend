@@ -1,4 +1,10 @@
-import { IsOptional, IsString, IsBoolean, IsNumber } from 'class-validator';
+import {
+  IsOptional,
+  IsString,
+  IsBoolean,
+  IsNumber,
+  IsArray,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class GetProductsQueryDto {
@@ -22,18 +28,97 @@ export class GetProductsQueryDto {
   isActive?: boolean;
 }
 
-export class ProductDto {
-  id: number;
+export class CreateProductDto {
+  @IsString()
   title: string;
+
+  @IsString()
   price: string;
-  priceAmount: number;
-  images: string[];
-  colors: string[];
-  sizes: string[];
-  badge?: string | null;
-  description?: string | null;
-  stock: number;
-  isActive: boolean;
-  createdAt: Date;
-  updatedAt: Date;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  priceAmount?: number;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  images?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  colors?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  sizes?: string[];
+
+  @IsOptional()
+  @IsString()
+  badge?: string;
+
+  @IsOptional()
+  @IsString()
+  description?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  stock?: number;
+
+  @IsOptional()
+  @Type(() => Boolean)
+  @IsBoolean()
+  isActive?: boolean;
 }
+
+export class UpdateProductDto {
+  @IsOptional()
+  @IsString()
+  title?: string;
+
+  @IsOptional()
+  @IsString()
+  price?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  priceAmount?: number;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  images?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  colors?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  sizes?: string[];
+
+  @IsOptional()
+  @IsString()
+  badge?: string;
+
+  @IsOptional()
+  @IsString()
+  description?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  stock?: number;
+
+  @IsOptional()
+  @Type(() => Boolean)
+  @IsBoolean()
+  isActive?: boolean;
+}
+
