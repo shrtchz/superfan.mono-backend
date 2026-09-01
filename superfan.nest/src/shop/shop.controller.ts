@@ -1,9 +1,11 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   ParseIntPipe,
+  Patch,
   Post,
   Query,
   Req,
@@ -11,7 +13,11 @@ import {
 } from '@nestjs/common';
 import { ApiRoutes } from '../common/enums/routes.enum';
 import { ShopService } from './shop.service';
-import { GetProductsQueryDto } from './dto/product.dto';
+import {
+  GetProductsQueryDto,
+  CreateProductDto,
+  UpdateProductDto,
+} from './dto/product.dto';
 import { CreateOrderDto, CreateReturnDto } from './dto/order.dto';
 import { Public } from '../common/decorators';
 
@@ -29,6 +35,27 @@ export class ShopController {
   @Get('products/:id')
   getProductById(@Param('id', ParseIntPipe) id: number) {
     return this.shopService.getProductById(id);
+  }
+
+  @Public()
+  @Post('products')
+  createProduct(@Body() dto: CreateProductDto) {
+    return this.shopService.createProduct(dto);
+  }
+
+  @Public()
+  @Patch('products/:id')
+  updateProduct(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateProductDto,
+  ) {
+    return this.shopService.updateProduct(id, dto);
+  }
+
+  @Public()
+  @Delete('products/:id')
+  deleteProduct(@Param('id', ParseIntPipe) id: number) {
+    return this.shopService.deleteProduct(id);
   }
 
   @Post('orders')

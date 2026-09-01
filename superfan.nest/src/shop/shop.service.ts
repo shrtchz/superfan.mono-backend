@@ -5,7 +5,11 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { prisma } from '../prisma/prisma';
-import { GetProductsQueryDto } from './dto/product.dto';
+import {
+  GetProductsQueryDto,
+  CreateProductDto,
+  UpdateProductDto,
+} from './dto/product.dto';
 import { CreateOrderDto, CreateReturnDto } from './dto/order.dto';
 
 function generateOrderNumber(): string {
@@ -66,6 +70,97 @@ export class ShopService {
     }
 
     return product;
+  }
+
+  async createProduct(dto: CreateProductDto) {
+    const rawPrice = String(dto.price || '');
+    const priceAmount =
+      dto.priceAmount !== undefined && !isNaN(dto.priceAmount)
+        ? Number(dto.priceAmount)
+        : parseFloat(rawPrice.replace(/[^0-9.]/g, '')) || 0;
+
+    const data = {
+      title: dto.title,
+      price: dto.price,
+      priceAmount,
+      images: dto.images || [],
+      colors: dto.colors || [],
+      sizes: dto.sizes || [],
+      badge: dto.badge || null,
+      description: dto.description || null,
+      stock: dto.stock ?? 100,
+      isActive: dto.isActive ?? true,
+    };
+
+    try {
+      return await prisma.product.create({ data });
+    } catch (err: any) {
+      const isPkeyError =
+        err?.code === 'P2002' ||
+        String(err?.message || '').includes('Product_pkey') ||
+        String(err?.cause?.originalMessage || '').includes('Product_pkey');
+
+      if (isPkeyError) {
+        try {
+          await prisma.$executeRawUnsafe(`
+            SELECT setval(
+              pg_get_serial_sequence('"Product"', 'id'),
+              COALESCE((SELECT MAX(id) FROM "Product"), 0) + 1,
+              false
+            );
+          `);
+          return await prisma.product.create({ data });
+        } catch (retryErr) {
+          const maxProduct = await prisma.product.findFirst({
+            orderBy: { id: 'desc' },
+            select: { id: true },
+          });
+          const nextId = (maxProduct?.id ?? 0) + 1;
+          return await prisma.product.create({
+            data: {
+              ...data,
+              id: nextId,
+            },
+          });
+        }
+      }
+
+      throw err;
+    }
+  }
+
+  async updateProduct(id: number, dto: UpdateProductDto) {
+    const existing = await prisma.product.findUnique({
+      where: { id },
+    });
+
+    if (!existing) {
+      throw new NotFoundException(`Product with ID ${id} not found`);
+    }
+
+    const data: any = { ...dto };
+    if (dto.price && dto.priceAmount === undefined) {
+      data.priceAmount = parseFloat(String(dto.price).replace(/[^0-9.]/g, '')) || 0;
+    }
+
+    return prisma.product.update({
+      where: { id },
+      data,
+    });
+  }
+
+  async deleteProduct(id: number) {
+    const existing = await prisma.product.findUnique({
+      where: { id },
+    });
+
+    if (!existing) {
+      throw new NotFoundException(`Product with ID ${id} not found`);
+    }
+
+    return prisma.product.delete({
+      where: { id },
+    });
   }
 
   async createOrder(userId: number, dto: CreateOrderDto) {
