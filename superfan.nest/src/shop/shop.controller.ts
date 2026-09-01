@@ -106,4 +106,40 @@ export class ShopController {
     }
     return this.shopService.getUserReturns(userId);
   }
+
+  @Public()
+  @Get('admin/orders')
+  getAdminOrders(
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
+    @Query('status') status?: string,
+    @Query('productId') productId?: number,
+    @Query('search') search?: string,
+  ) {
+    return this.shopService.getAdminOrders({
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined,
+      status,
+      productId: productId ? Number(productId) : undefined,
+      search,
+    });
+  }
+
+  @Public()
+  @Patch('admin/orders/:id/status')
+  updateAdminOrderStatus(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { status: string },
+  ) {
+    return this.shopService.updateOrderStatus(id, body?.status);
+  }
+
+  @Public()
+  @Patch('orders/:id/status')
+  updateOrderStatus(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { status: string },
+  ) {
+    return this.shopService.updateOrderStatus(id, body?.status);
+  }
 }

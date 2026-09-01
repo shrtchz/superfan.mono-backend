@@ -51,8 +51,48 @@ export class ShopService {
       prisma.product.count({ where }),
     ]);
 
+    const productIds = products.map((p) => p.id);
+    let orderCountsByProduct: Record<number, { orders: number; fulfilledOrders: number }> = {};
+
+    if (productIds.length > 0) {
+      const orderItems = await prisma.orderItem.findMany({
+        where: {
+          productId: { in: productIds },
+        },
+        select: {
+          productId: true,
+          order: {
+            select: {
+              status: true,
+            },
+          },
+        },
+      });
+
+      orderCountsByProduct = productIds.reduce((acc, id) => {
+        acc[id] = { orders: 0, fulfilledOrders: 0 };
+        return acc;
+      }, {} as Record<number, { orders: number; fulfilledOrders: number }>);
+
+      for (const item of orderItems) {
+        if (!item.productId || !(item.productId in orderCountsByProduct)) continue;
+        const status = item.order?.status;
+        if (status === 'DELIVERED') {
+          orderCountsByProduct[item.productId].fulfilledOrders += 1;
+        } else if (status && status !== 'CANCELLED') {
+          orderCountsByProduct[item.productId].orders += 1;
+        }
+      }
+    }
+
+    const productsWithCounts = products.map((p) => ({
+      ...p,
+      orders: orderCountsByProduct[p.id]?.orders || 0,
+      fulfilledOrders: orderCountsByProduct[p.id]?.fulfilledOrders || 0,
+    }));
+
     return {
-      products,
+      products: productsWithCounts,
       total,
       page,
       limit,
@@ -158,9 +198,22 @@ export class ShopService {
       throw new NotFoundException(`Product with ID ${id} not found`);
     }
 
-    return prisma.product.delete({
+    // Detach from any orderItems or returns so orders are preserved
+    await prisma.orderItem.updateMany({
+      where: { productId: id },
+      data: { productId: null },
+    });
+
+    await prisma.orderReturn.updateMany({
+      where: { productId: id },
+      data: { productId: null },
+    });
+
+    const deleted = await prisma.product.delete({
       where: { id },
     });
+
+    return { message: 'Product deleted successfully', product: deleted };
   }
 
   async createOrder(userId: number, dto: CreateOrderDto) {
@@ -434,5 +487,187 @@ export class ShopService {
     });
 
     return { returns };
+  }
+
+  async getAdminOrders(query?: {
+    page?: number;
+    limit?: number;
+    status?: string;
+    productId?: number;
+    search?: string;
+  }) {
+    const where: any = {};
+
+    if (query?.productId) {
+      where.items = {
+        some: {
+          productId: Number(query.productId),
+        },
+      };
+    }
+
+    if (query?.status) {
+      const rawStatus = String(query.status).trim().toUpperCase();
+      if (rawStatus === 'NEW') {
+        where.status = {
+          in: ['ORDERED', 'PROCESSING', 'SHIPPED', 'OUT_FOR_DELIVERY'],
+        };
+      } else if (rawStatus === 'FULFILLED') {
+        where.status = 'DELIVERED';
+      } else if (
+        ['ORDERED', 'PROCESSING', 'SHIPPED', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED'].includes(
+          rawStatus,
+        )
+      ) {
+        where.status = rawStatus;
+      }
+    }
+
+    if (query?.search) {
+      const s = String(query.search).trim();
+      where.OR = [
+        { orderNumber: { contains: s, mode: 'insensitive' } },
+        { fullName: { contains: s, mode: 'insensitive' } },
+        { address: { contains: s, mode: 'insensitive' } },
+        { phoneNumber: { contains: s, mode: 'insensitive' } },
+        { user: { username: { contains: s, mode: 'insensitive' } } },
+        { user: { firstName: { contains: s, mode: 'insensitive' } } },
+        { user: { lastName: { contains: s, mode: 'insensitive' } } },
+        { items: { some: { productName: { contains: s, mode: 'insensitive' } } } },
+      ];
+    }
+
+    const page = query?.page && query.page > 0 ? Number(query.page) : 1;
+    const limit = query?.limit && query.limit > 0 ? Number(query.limit) : 50;
+    const skip = (page - 1) * limit;
+
+    const baseWhereForCounts: any = {};
+    if (query?.productId) {
+      baseWhereForCounts.items = {
+        some: {
+          productId: Number(query.productId),
+        },
+      };
+    }
+
+    const [orders, total, newOrdersCount, fulfilledOrdersCount] = await Promise.all([
+      prisma.order.findMany({
+        where,
+        include: {
+          user: {
+            select: {
+              id: true,
+              username: true,
+              firstName: true,
+              lastName: true,
+              profilePicture: true,
+              email: true,
+              phone: true,
+            },
+          },
+          items: {
+            include: {
+              product: true,
+            },
+          },
+          returns: true,
+        },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      prisma.order.count({ where }),
+      prisma.order.count({
+        where: {
+          ...baseWhereForCounts,
+          status: { in: ['ORDERED', 'PROCESSING', 'SHIPPED', 'OUT_FOR_DELIVERY'] },
+        },
+      }),
+      prisma.order.count({
+        where: {
+          ...baseWhereForCounts,
+          status: 'DELIVERED',
+        },
+      }),
+    ]);
+
+    return {
+      orders,
+      total,
+      newOrdersCount,
+      fulfilledOrdersCount,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+    };
+  }
+
+  async updateOrderStatus(orderId: number, status: string) {
+    const existing = await prisma.order.findUnique({
+      where: { id: orderId },
+      include: {
+        user: {
+          select: {
+            id: true,
+            username: true,
+            firstName: true,
+            lastName: true,
+          },
+        },
+        items: true,
+      },
+    });
+
+    if (!existing) {
+      throw new NotFoundException(`Order with ID ${orderId} not found`);
+    }
+
+    // Normalize status string
+    const normalized = status.trim().toUpperCase().replace(/\s+/g, '_');
+    const validStatuses = [
+      'ORDERED',
+      'PROCESSING',
+      'SHIPPED',
+      'OUT_FOR_DELIVERY',
+      'DELIVERED',
+      'CANCELLED',
+    ];
+
+    if (!validStatuses.includes(normalized)) {
+      throw new BadRequestException(
+        `Invalid status: ${status}. Valid options are: ${validStatuses.join(', ')}`,
+      );
+    }
+
+    const updatedOrder = await prisma.order.update({
+      where: { id: orderId },
+      data: {
+        status: normalized as any,
+        updatedAt: new Date(),
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            username: true,
+            firstName: true,
+            lastName: true,
+            profilePicture: true,
+            email: true,
+          },
+        },
+        items: {
+          include: {
+            product: true,
+          },
+        },
+        returns: true,
+      },
+    });
+
+    return {
+      message: `Order status updated to ${normalized}`,
+      order: updatedOrder,
+    };
   }
 }
