@@ -486,6 +486,90 @@ export class TaskService {
     });
   }
 
+  /**
+   * Returns comprehensive referral stats + list for the "Your Referrals" modal UI.
+   * - status SIGNED_UP           → "pending"   (referee joined but hasn't completed a test yet)
+   * - status FIRST_TEST_COMPLETED → "completed"
+   *
+   * Bonus amounts per referral (referrer perspective):
+   *   sign-up bonus: signupRewardGiven ? ₦10 : 0
+   *   first-test bonus: testRewardGiven ? ₦10 : 0  (pending if not yet given)
+   */
+  async getMyReferralSummary(userId: number) {
+    const REFERRER_SIGNUP_BONUS = 10;   // ₦ credited on referee sign-up
+    const REFERRER_TEST_BONUS   = 10;   // ₦ credited when referee completes first test
+
+    const referrals = await prisma.referral.findMany({
+      where: { referrerId: userId },
+      include: {
+        referee: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            username: true,
+            profilePicture: true,
+            createdAt: true,
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const list = referrals.map((r) => {
+      const isCompleted = r.status === 'FIRST_TEST_COMPLETED';
+      const earned =
+        (r.signupRewardGiven ? REFERRER_SIGNUP_BONUS : 0) +
+        (r.testRewardGiven   ? REFERRER_TEST_BONUS   : 0);
+      const pending = isCompleted ? 0 : REFERRER_TEST_BONUS;
+
+      return {
+        id: r.id,
+        status: isCompleted ? 'completed' : 'pending',
+        earned,
+        pending,
+        joinedAt: r.createdAt,
+        referee: {
+          id: r.referee.id,
+          firstName: r.referee.firstName,
+          lastName: r.referee.lastName,
+          username: r.referee.username,
+          profilePicture: r.referee.profilePicture ?? null,
+        },
+      };
+    });
+
+    const totalReferrals = list.length;
+    const totalEarned    = list.reduce((sum, r) => sum + r.earned,  0);
+    const pendingBonus   = list.reduce((sum, r) => sum + r.pending, 0);
+    const avgPerReferral = totalReferrals > 0
+      ? Math.round(totalEarned / totalReferrals)
+      : 0;
+
+    const signupTotal     = referrals.filter((r) => r.signupRewardGiven).length * REFERRER_SIGNUP_BONUS;
+    const completionTotal = referrals.filter((r) => r.testRewardGiven).length   * REFERRER_TEST_BONUS;
+
+    return {
+      totalReferrals,
+      totalEarned,
+      pendingBonus,
+      avgPerReferral,
+      earningsBreakdown: {
+        signupBonuses: {
+          count: referrals.filter((r) => r.signupRewardGiven).length,
+          amountEach: REFERRER_SIGNUP_BONUS,
+          total: signupTotal,
+        },
+        completionBonuses: {
+          count: referrals.filter((r) => r.testRewardGiven).length,
+          amountEach: REFERRER_TEST_BONUS,
+          total: completionTotal,
+        },
+      },
+      referrals: list,
+    };
+  }
+
   async referralEarnings(userId: number) {
     const transactions = await prisma.walletTransaction.aggregate({
       where: {
