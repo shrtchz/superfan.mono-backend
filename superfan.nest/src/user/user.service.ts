@@ -1,3 +1,4 @@
+import { verifyToken } from '@clerk/backend';
 import {
   BadRequestException,
   ForbiddenException,
@@ -6,28 +7,22 @@ import {
   Inject,
   Injectable,
   InternalServerErrorException,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { JwtService } from '@nestjs/jwt';
 import { TestLevel, User } from '@prisma/client';
 import * as argon from 'argon2';
 import { PostHog } from 'posthog-node';
-import { EarningStatus } from '../common/enums/task.enum';
+import { ClerkService } from '../common/clerk/clerk.service';
 import { generateReferralCode } from '../common/shared/lib';
+import { PointsConversionUtil } from '../common/utils/points-conversion.util';
 import { generateFiveUniqueRandomNumbers } from '../common/utils/utils';
 import { ElasticsearchService } from '../elasticsearch/elasticsearch.service';
+import { ImageService } from '../image/image.service';
 import { MailService } from '../mail/mail.service';
 import { NotificationService } from '../notification/notification.service';
-import { BitnobService } from '../payment/bitnob.service';
-import { BushaService } from '../payment/busha.service';
-import { FlutterwaveSuperfanService } from '../payment/flutterwave.service';
-import { MonnifyService } from '../payment/monnify.service';
-import {
-  PaymentDto,
-  SubscriptionCardPaymentDto
-} from '../payment/payment.dto';
+
 import { prisma } from '../prisma/prisma';
 import { TaskService } from '../tasks/tasks.service';
 import { WalletService } from '../wallet/wallet.service';
@@ -39,311 +34,407 @@ import {
   UpdateOnboardingDto,
   UpdateUserDto,
   VerifyEmailDto,
+  VerifyBvnDto,
+  VerifyNinDto,
+  VerifyIdDocumentDto,
 } from './dto/auth.dto';
 import { PresenceGateway } from './gateway/presence.gateway';
-import { JwtPayload } from './types/jwtPayload.type';
+import { DiditService, FileUploadInput } from './didit.service';
+
+type SyncUserMetadata = {
+  referralCode?: string;
+  ip_address?: string;
+  location?: string;
+};
 
 @Injectable()
 export class UserService {
+  private readonly logger = new Logger(UserService.name);
+
   constructor(
     private mail: MailService,
-    private jwtService: JwtService,
-    private configService: ConfigService,
     @Inject(forwardRef(() => TaskService))
     private taskService: TaskService,
     private walletService: WalletService,
     private notificationService: NotificationService,
-    private monnifyService: MonnifyService,
     private readonly eventEmitter: EventEmitter2,
-    private bushaService: BushaService,
-    private bitnobService: BitnobService,
-    private flutterwaveService: FlutterwaveSuperfanService,
     private readonly posthog: PostHog,
     private presenceGateway: PresenceGateway,
     private readonly es: ElasticsearchService,
+    private readonly clerkService: ClerkService,
+    private pointsConversionUtil: PointsConversionUtil,
+    private readonly diditService: DiditService,
+    private readonly imageService: ImageService,
   ) {}
 
   async signupUser(dto: AuthDto): Promise<any> {
-    // ✅ Check if email already exists
-    const existingEmail = await prisma.user.findUnique({
-      where: { email: dto.email },
-    });
-
-    if (existingEmail) {
-      throw new ForbiddenException('Email already in use');
-    }
-
-    // ✅ Check if phone already exists
-    const existingPhone = await prisma.user.findFirst({
-      where: { phone: dto.phone },
-    });
-
-    if (existingPhone) {
-      throw new ForbiddenException('Phone number already in use');
-    }
-
-    let referrer = null;
-
-    if (dto.referralCode) {
-      referrer = await prisma.user.findUnique({
-        where: { referral_code: dto.referralCode },
+    try {
+      // ✅ Check if email already exists
+      const existingEmail = await prisma.user.findUnique({
+        where: { email: dto.email },
       });
 
-      if (!referrer) {
-        throw new ForbiddenException('Invalid referral code');
+      if (existingEmail) {
+        throw new ForbiddenException('Email already in use');
       }
-    }
 
-    // ✅ ✅ NEW: Check if username already exists
-    const existingUsername = await prisma.user.findUnique({
-      where: { username: dto.username },
-    });
-
-    if (existingUsername) {
-      throw new ForbiddenException('Username already taken');
-    }
-
-    // ✅ Check if roleName already exists
-    let role = await prisma.role.findFirst({
-      where: { name: dto.roleName },
-    });
-
-    // If role does not exist, create it
-    if (!role) {
-      role = await prisma.role.create({
-        data: {
-          name: dto.roleName,
-        },
-      });
-    }
-
-    const password = await argon.hash(dto.password);
-
-    const referralCode = generateReferralCode(dto.firstName);
-
-    const verificationCode = Math.floor(
-      100000 + Math.random() * 900000,
-    ).toString();
-
-    const verificationExpiry = new Date(Date.now() + 15 * 60 * 1000);
-
-    const user = await prisma.user.create({
-      data: {
-        email: dto.email,
-        firstName: dto.firstName,
-        lastName: dto.lastName,
-        username: dto.username,
-        password,
-        phone: dto.phone,
-        roleName: dto.roleName,
-        subscriptionPlan: dto.subscriptionPlan || 'FREE',
-
-        referral_code: referralCode,
-        referredByCode: dto.referralCode,
-
-        verificationCode,
-        verificationCodeExpiry: verificationExpiry,
-        active: false,
-      },
-    });
-
-    // Create wallet for new user
-    await prisma.wallet.create({
-      data: {
-        userId: user.id,
-      },
-    });
-
-    /**
-     * HANDLE REFERRAL
-     */
-    if (dto.referralCode) {
-      const referrer = await prisma.user.findUnique({
-        where: { referral_code: dto.referralCode },
-      });
-
-      if (referrer) {
-        await prisma.referral.create({
-          data: {
-            referrerId: referrer.id,
-            refereeId: user.id,
-          },
+      // ✅ Check if phone already exists
+      if (dto.phone) {
+        const existingPhone = await prisma.user.findFirst({
+          where: { phone: dto.phone },
         });
 
-        await this.walletService.creditWallet(
-          referrer.id,
-          30,
-          'Referral signup reward',
-          `You earned ₦25 because ${user.username} signed up using your referral link.`,
-        );
+        if (existingPhone) {
+          throw new ForbiddenException('Phone number already in use');
+        }
+      }
 
-        const referrer_pts = 30000;
-          await prisma.point.create({
-            data: {
-              userId: referrer.id,
-              points: referrer_pts,
-              reference: `POINTS_${generateFiveUniqueRandomNumbers()}`,
-              type: 'referral_reward',
-            },
-          });
+      // ✅ Check if username already exists
+      const existingUsername = await prisma.user.findUnique({
+        where: { username: dto.username },
+      });
 
-        await this.walletService.userCreateReward(
-          referrer.id,
-          25,
-          'NGN',
-          'Referral signup reward',
-          EarningStatus.PAID_OUT,
-        );
+      if (existingUsername) {
+        throw new ForbiddenException('Username already taken');
+      }
 
-        await this.notificationService.createNotification(
-          referrer.id,
-          'Referral Reward',
-          `You earned ₦25 because ${user.username} signed up using your referral link.`,
-          'referral_reward'
-        );
+      let referrer = null;
 
-        await this.walletService.creditWallet(
-          user.id,
-          10,
-          'Referral welcome bonus',
-          `You earned ₦25 because ${user.username} signed up using your referral link.`,
-        );
+      if (dto.referralCode) {
+        referrer = await prisma.user.findUnique({
+          where: { referral_code: dto.referralCode.toUpperCase() },
+        });
 
-                // let referreral_pts = 10000;
-            // await prisma.point.create({
-            //   data: {
-            //     userId: user.id,
-            //     points: referreral_pts,
-            //     reference: `POINTS_${generateFiveUniqueRandomNumbers()}`,
-            //     type: 'referral_reward',
-            //   }
-            //   })
+        if (!referrer) {
+          throw new ForbiddenException('Invalid referral code');
+        }
+      }
 
-              
-        const referreral_pts = 10000;
-          await prisma.point.create({
-            data: {
-              userId: user.id,
-              points: referreral_pts,
-              reference: `POINTS_${generateFiveUniqueRandomNumbers()}`,
-              type: 'referral_reward',
-            },
-          });
+      // ✅ Check if roleName already exists
+      let role = await prisma.role.findFirst({
+        where: { name: dto.roleName },
+      });
 
-        // INVITER USER ALREADY HAS A ACCOUNT AND WALLET
-        await this.walletService.userCreateReward(
-          user.id,
-          10,
-          'NGN',
-          'Referral welcome bonus',
-          EarningStatus.PAID_OUT,
-        );
+      // If role does not exist, create it
+      if (!role) {
+        role = await prisma.role.create({
+          data: {
+            name: dto.roleName,
+          },
+        });
+      }
 
-        await this.notificationService.createNotification(
-          user.id,
-          'Welcome Bonus',
-          'You received ₦10 for signing up with a referral code.',
-          'welcome_bonus'
+      // Create user in Clerk first
+      try {
+        await this.clerkService.getClient().users.createUser({
+          emailAddress: [dto.email],
+          password: dto.password,
+          username: dto.username,
+          firstName: dto.firstName,
+          lastName: dto.lastName || '',
+          ...(dto.phone && { phoneNumber: [dto.phone] }),
+        });
+      } catch (err: any) {
+        console.error('Failed to create user in Clerk:', err);
+        throw new ForbiddenException(
+          err.errors?.[0]?.message || err.message || 'Failed to create user in Clerk'
         );
       }
+
+      const password = await argon.hash(dto.password);
+
+      const referralCode = generateReferralCode(dto.firstName);
+
+      const verificationCode = Math.floor(
+        100000 + Math.random() * 900000,
+      ).toString();
+
+      const verificationExpiry = new Date(Date.now() + 15 * 60 * 1000);
+
+      const user = await prisma.user.create({
+        data: {
+          email: dto.email,
+          firstName: dto.firstName,
+          lastName: dto.lastName,
+          username: dto.username,
+          password,
+          phone: dto.phone,
+          roleName: dto.roleName,
+          login_method: 'clerk',
+          subscriptionPlan: dto.subscriptionPlan || 'FREE',
+
+          referral_code: referralCode,
+          referredByCode: dto.referralCode,
+
+          verificationCode,
+          verificationCodeExpiry: verificationExpiry,
+          active: false,
+        },
+      });
+
+      // Create wallet for new user
+      await prisma.wallet.create({
+        data: {
+          userId: user.id,
+        },
+      });
+
+      /**
+       * HANDLE REFERRAL
+       */
+      if (dto.referralCode) {
+        await this.processReferralSignup(user, dto.referralCode);
+      }
+
+      try {
+        this.posthog.capture({
+          event: 'user_registered',
+          // distinctId, sessionId, and request properties
+          // are automatically included from the interceptor context
+        });
+      } catch (posthogError) {
+        console.warn('PostHog capture failed during signup (non-fatal):', posthogError);
+      }
+
+      await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          userCode: user.id.toString().padStart(4, '0'),
+        },
+      });
+
+      try {
+        await this.mail.verifyEmail(dto.email, verificationCode, dto.firstName);
+      } catch (mailError) {
+        console.warn('Verification email failed to queue during signup (non-fatal):', mailError);
+      }
+
+      return {
+        message:
+          'Signup successful. Please check your email to verify your account.',
+        email: user.email,
+        id: user.id,
+        suscriptionPlan: user.subscriptionPlan,
+      };
+    } catch (error) {
+      console.error('Signup error:', error);
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      throw new InternalServerErrorException(
+        error instanceof Error ? error.message : 'Something went wrong'
+      );
     }
-
-
-    this.posthog.capture({
-      event: 'user_registered',
-      // distinctId, sessionId, and request properties
-      // are automatically included from the interceptor context
-    });
-
-    await prisma.user.update({
-      where: { id: user.id },
-      data: {
-        userCode: user.id.toString().padStart(4, '0'),
-      },
-    });
-
-    await this.mail.verifyEmail(dto.email, verificationCode, dto.firstName);
-
-    return {
-      message:
-        'Signup successful. Please check your email to verify your account.',
-      email: user.email,
-      id: user.id,
-      suscriptionPlan: user.subscriptionPlan,
-    };
   }
 
   async verifyEmailCode(dto: VerifyEmailDto): Promise<any> {
-    const user = await prisma.user.findUnique({
-      where: { email: dto.email },
-    });
+    try {
+      const user = await prisma.user.findUnique({
+        where: { email: dto.email },
+      });
 
-    if (!user) {
-      throw new ForbiddenException('User not found');
+      if (!user) {
+        throw new ForbiddenException('User not found');
+      }
+
+      if (user.verificationCode !== dto.verificationCode) {
+        throw new ForbiddenException('Invalid verification code');
+      }
+
+      if (user.verificationCodeExpiry < new Date()) {
+        throw new ForbiddenException('Verification code has expired');
+      }
+
+      await prisma.user.update({
+        where: { email: dto.email },
+        data: {
+          active: true,
+          verificationCode: null,
+          verificationCodeExpiry: null,
+        },
+      });
+
+      // Call userRegistered after signup
+      await this.taskService.userRegistered({
+        id: user.id,
+        name: user.username,
+        email: user.email,
+        role: user.roleName,
+      });
+
+      const magicLink = await this.generateMagicLink(user);
+
+      await this.mail.welcomeUserEmail(
+        dto.email,
+        user.firstName,
+        magicLink.magicLinkURI,
+      );
+
+      return { message: 'Email verified successfully', id: user.id };
+    } catch (error) {
+      console.error('Email verification error:', error);
+      throw new InternalServerErrorException(
+        error instanceof Error ? error.message : 'Verification failed'
+      );
     }
-
-    if (user.verificationCode !== dto.verificationCode) {
-      throw new ForbiddenException('Invalid verification code');
-    }
-
-    if (user.verificationCodeExpiry < new Date()) {
-      throw new ForbiddenException('Verification code has expired');
-    }
-
-    await prisma.user.update({
-      where: { email: dto.email },
-      data: {
-        active: true,
-        verificationCode: null,
-        verificationCodeExpiry: null,
-      },
-    });
-
-        // ✅ Call userRegistered after signup
-    await this.taskService.userRegistered({
-      id: user.id,
-      name: user.username,
-      email: user.email,
-      role: user.roleName,
-    });
-
-    const magicLink = await this.generateMagicLink(user);
-
-    await this.mail.welcomeUserEmail(
-      dto.email,
-      user.firstName,
-      magicLink.magicLinkURI,
-    );
-
-    //generate tokens
-    const userRoleName = user.roleName;
-    const tokens = await this.getTokens(user, userRoleName);
-
-    return { message: 'Email verified successfully', id: user.id };
   }
 
-  async getTokens(user: User, role: string): Promise<any> {
-    const jwtPayload: JwtPayload = {
-      id: user.id,
-      email: user.email,
-      role: role,
-    };
-
-    const [accessToken, refreshToken] = await Promise.all([
-      this.jwtService.signAsync(jwtPayload, {
-        secret: this.configService.get<string>('AT_SECRET'),
-        // expiresIn: '15m'
-      }),
-      this.jwtService.signAsync(jwtPayload, {
-        secret: this.configService.get<string>('RT_SECRET'),
-        // expiresIn: '7d'
-      }),
-    ]);
+  private formatSyncUser(user: User) {
+    const onboarded = Boolean(
+      user.languagePreference &&
+        user.subjectPreference &&
+        user.testLevel &&
+        user.questionPreference &&
+        user.timePreference,
+    );
 
     return {
-      accessToken,
-      refreshToken,
+      id: user.id,
+      email: user.email,
+      phone: user.phone,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      username: user.username,
+      role: user.roleName,
+      roleName: user.roleName,
+      active: user.active,
+      subscriptionPlan: user.subscriptionPlan,
+      lastLoginTimeStamp: user.login_timestamp,
+      state: user.state,
+      country: user.country,
+      ip_address: user.ip_address,
+      location: user.location,
+      profilePicture: user.profilePicture,
+      clerkUserId: user.clerkUserId,
+      onboarded,
+      isOnboarded: onboarded,
     };
+  }
+
+  async findUserByClerkId(clerkUserId: string): Promise<User | null> {
+    return prisma.user.findUnique({
+      where: { clerkUserId },
+    });
+  }
+
+  async syncFromClerkToken(
+    authorizationHeader: string | undefined,
+    metadata: SyncUserMetadata = {},
+  ) {
+    try {
+      const token = (authorizationHeader || '')
+        .replace(/^Bearer\s+/i, '')
+        .trim();
+
+      if (!token) {
+        throw new ForbiddenException('No Clerk session token provided');
+      }
+
+      if (token.startsWith('sit_')) {
+        throw new ForbiddenException(
+          'Clerk sign-in tickets cannot be used for sync. Complete Clerk sign-in first.',
+        );
+      }
+
+      const payload = await verifyToken(token, {
+        secretKey: process.env.CLERK_SECRET_KEY,
+        clockSkewInMs: 300000,
+      });
+
+      const clerkUser = await this.clerkService.getClient().users.getUser(payload.sub);
+      return this.syncFromClerk(clerkUser, metadata);
+    } catch (error) {
+      console.error('Sync from Clerk token error:', error);
+      throw new ForbiddenException(
+        error instanceof Error ? error.message : 'Failed to sync with Clerk'
+      );
+    }
+  }
+
+  async syncFromClerk(clerkUser: any, metadata: SyncUserMetadata = {}) {
+    try {
+      const clerkUserId = clerkUser.id as string;
+      const email = clerkUser.emailAddresses?.[0]?.emailAddress as
+        | string
+        | undefined;
+
+      if (!email) {
+        throw new BadRequestException('Clerk user has no email address');
+      }
+
+      const phone =
+        (clerkUser.unsafeMetadata?.phone as string) ||
+        clerkUser.phoneNumbers?.[0]?.phoneNumber ||
+        '';
+      const referralCode =
+        metadata.referralCode ||
+        (clerkUser.unsafeMetadata?.referralCode as string | undefined);
+      const loginMethod =
+        clerkUser.externalAccounts?.[0]?.provider || 'clerk';
+
+      let user = await this.findUserByClerkId(clerkUserId);
+
+      if (!user) {
+        user = await this.findUserByEmail(email);
+        if (user) {
+          user = await prisma.user.update({
+            where: { id: user.id },
+            data: { clerkUserId },
+          });
+        }
+      }
+
+      if (!user) {
+        user = await this.registerClerkUser({
+          clerkUserId,
+          email,
+          firstName: clerkUser.firstName || 'User',
+          lastName: clerkUser.lastName || '',
+          username:
+            clerkUser.username ||
+            clerkUser.firstName?.toLowerCase() ||
+            `user_${clerkUserId.slice(-6)}`,
+          phone,
+          login_method: loginMethod,
+          referralCode,
+        });
+      }
+
+      const clerkImageUrl =
+        typeof clerkUser.imageUrl === 'string' ? clerkUser.imageUrl.trim() : '';
+
+      user = await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          login_timestamp: new Date(),
+          isOnline: true,
+          ...(metadata.ip_address ? { ip_address: metadata.ip_address } : {}),
+          ...(metadata.location ? { location: metadata.location } : {}),
+          ...(clerkImageUrl && !user.profilePicture?.trim()
+            ? { profilePicture: clerkImageUrl }
+            : {}),
+        },
+      });
+
+      try {
+        this.presenceGateway.setUserOnline(user.id);
+      } catch (presenceError) {
+        console.warn('Presence update failed during sync (non-fatal):', presenceError);
+      }
+
+      try {
+        await this.eventEmitter.emit('user.logged_in', { userId: user.id });
+      } catch (eventError) {
+        console.warn('user.logged_in event failed during sync (non-fatal):', eventError);
+      }
+
+      return this.formatSyncUser(user);
+    } catch (error) {
+      console.error('Sync from Clerk error:', error);
+      throw new InternalServerErrorException(
+        error instanceof Error ? error.message : 'Failed to sync with Clerk'
+      );
+    }
   }
 
   async updateOnboarding(
@@ -439,35 +530,6 @@ export class UserService {
     };
   }
 
-  async refreshTokens(userId: string, rt: string): Promise<any> {
-    const user = await prisma.user.findUnique({
-      where: { id: parseInt(userId) },
-    });
-
-    if (!user || !user.hashedRt) {
-      throw new ForbiddenException('Access Denied');
-    }
-
-    const rtMatches = await argon.verify(user.hashedRt, rt);
-
-    if (!rtMatches) {
-      throw new ForbiddenException('Access Denied');
-    }
-
-    const role = await prisma.role.findFirst({
-      where: { name: user.roleName },
-    });
-
-    if (!role) {
-      throw new ForbiddenException('Role not found');
-    }
-
-    const tokens = await this.getTokens(user, role.name);
-    await this.updateRtHash(user.id, tokens.refreshToken);
-
-    return tokens;
-  }
-
   async resendVerificationEmail(
     currentEmail: string,
     newEmail?: string,
@@ -528,33 +590,138 @@ export class UserService {
     };
   }
 
+  private async authenticateExistingUser(
+    user: User,
+    password: string,
+  ): Promise<{ verified: boolean; clerkUserId: string | null; user: User }> {
+    const clerkUser = await this.clerkService.findByEmail(user.email);
+
+    if (clerkUser?.id) {
+      const verified = await this.clerkService.verifyPassword(
+        clerkUser.id,
+        password,
+      );
+      return { verified, clerkUserId: clerkUser.id, user };
+    }
+
+    const passwordMatches = await argon.verify(user.password, password);
+    if (!passwordMatches) {
+      return { verified: false, clerkUserId: null, user };
+    }
+
+    const migrated = await this.clerkService.migrateLocalUser(user, password);
+    return { verified: true, clerkUserId: migrated.id, user };
+  }
+
+  private async authenticateClerkOnlyUser(dto: LoginDto): Promise<{
+    verified: boolean;
+    clerkUserId: string | null;
+    user: User | null;
+  }> {
+    const clerkUser = await this.clerkService.findByIdentifier(dto.identifier);
+    if (!clerkUser?.id) {
+      return { verified: false, clerkUserId: null, user: null };
+    }
+
+    const verified = await this.clerkService.verifyPassword(
+      clerkUser.id,
+      dto.password,
+    );
+    if (!verified) {
+      return { verified: false, clerkUserId: clerkUser.id, user: null };
+    }
+
+    const email = clerkUser.emailAddresses?.[0]?.emailAddress;
+    if (!email) {
+      return { verified: true, clerkUserId: clerkUser.id, user: null };
+    }
+
+    let user = await this.findUserByClerkId(clerkUser.id);
+    if (!user) {
+      const phone =
+        (clerkUser.unsafeMetadata?.phone as string) ||
+        clerkUser.phoneNumbers?.[0]?.phoneNumber ||
+        '';
+      const referralCode = clerkUser.unsafeMetadata?.referralCode as
+        | string
+        | undefined;
+      const loginMethod =
+        clerkUser.externalAccounts?.[0]?.provider || 'clerk';
+
+      user = await this.registerClerkUser({
+        clerkUserId: clerkUser.id,
+        email,
+        firstName: clerkUser.firstName || 'User',
+        lastName: clerkUser.lastName || '',
+        username:
+          clerkUser.username ||
+          clerkUser.firstName?.toLowerCase() ||
+          `user_${clerkUser.id.slice(-6)}`,
+        phone,
+        login_method: loginMethod,
+        referralCode,
+      });
+    }
+
+    return { verified: true, clerkUserId: clerkUser.id, user };
+  }
+
   async signinUser(dto: LoginDto): Promise<any> {
-    const user = await prisma.user.findFirst({
+    let user = await prisma.user.findFirst({
       where: {
         OR: [
-          { email: dto.email },
-          { phone: dto.phone },
-          { username: dto.username },
+          { email: dto.identifier },
+          { phone: dto.identifier },
+          { username: dto.identifier },
         ],
       },
     });
 
-    if (!user) {
-      throw new ForbiddenException('User not found');
-    }
-
-    // 🚫 check if user is banned
-    if (user.isBanned) {
+    if (user?.isBanned) {
       throw new ForbiddenException(
         'Your account has been banned. Contact support.',
       );
     }
 
-    const passwordMatches = await argon.verify(user.password, dto.password);
+    const authResult = user
+      ? await this.authenticateExistingUser(user, dto.password)
+      : await this.authenticateClerkOnlyUser(dto);
 
-    if (!passwordMatches) {
+    user = authResult.user ?? user;
+
+    if (!user) {
+      throw new ForbiddenException('Identifier is invalid.');
+    }
+
+    if (!authResult.verified) {
       throw new ForbiddenException('Incorrect password');
     }
+
+    const clerkUserId =
+      authResult.clerkUserId ??
+      user.clerkUserId ??
+      (await this.clerkService.findByEmail(user.email))?.id ??
+      null;
+
+    if (!clerkUserId) {
+      throw new ForbiddenException(
+        'This account is not linked to Clerk. Try signing in with Google or contact support.',
+      );
+    }
+
+    if (user.clerkUserId !== clerkUserId) {
+      try {
+        user = await prisma.user.update({
+          where: { id: user.id },
+          data: { clerkUserId },
+        });
+      } catch (linkError) {
+        console.warn('Failed to link clerkUserId during signin:', linkError);
+      }
+    }
+
+    const clerkSignInToken =
+      await this.clerkService.createSignInTicket(clerkUserId);
 
     const role = await prisma.role.findFirst({
       where: { name: user.roleName },
@@ -564,7 +731,6 @@ export class UserService {
       throw new ForbiddenException('Role not found');
     }
 
-    // ✅ fetch subadmin permissions if role is subadmin
     let permissions: string[] = [];
 
     if (user.roleName === 'subadmin') {
@@ -583,10 +749,7 @@ export class UserService {
         subAdmin?.subAdminPermissions.map((p) => p.permission.name) || [];
     }
 
-    const tokens = await this.getTokens(user, role.name);
-    await this.updateRtHash(user.id, tokens.refreshToken);
-
-    let log_ip = await prisma.user.update({
+    await prisma.user.update({
       where: { id: user.id },
       data: {
         login_timestamp: new Date(),
@@ -596,21 +759,15 @@ export class UserService {
       },
     });
 
-    // const dailyStreak = await this.updateDailyStreak(user.id);
-    let emit_details = await this.eventEmitter.emit('user.logged_in', {
-  userId: user.id,
-});
-
-
-
+    this.eventEmitter.emit('user.logged_in', { userId: user.id });
     this.presenceGateway.setUserOnline(user.id);
 
     return {
       message: 'Signin successful',
-      tokens: tokens,
+      clerkSignInToken,
       role: user.roleName,
       userId: user.id,
-      permissions: user.roleName === 'subadmin' ? permissions : undefined, // 👈 key addition
+      permissions: user.roleName === 'subadmin' ? permissions : undefined,
       lastLoginTimeStamp: user.login_timestamp,
       subscriptionPlan: user.subscriptionPlan,
     };
@@ -661,14 +818,14 @@ export class UserService {
         await this.walletService.creditWallet(
           referrer.id,
           25,
-          'Referral signup reward',
+          'Referral Bonus — Signup: NGN 20',
           `You earned ₦25 because ${user.username} signed up using your referral link.`,
         );
 
                 await this.walletService.creditWallet(
           user.id,
           10,
-          'Referral welcome bonus',
+          'Referee Bonus (NGN 20)',
           `You earned ₦25 because ${user.username} signed up using your referral link.`,
         );
       
@@ -676,21 +833,7 @@ export class UserService {
         }
       }
 
-      // 4️⃣ Generate JWT tokens
-      const role = await prisma.role.findFirst({
-        where: { name: user.roleName },
-      });
-      if (!role) {
-        let role = await prisma.role.create({
-          data: {
-            name: user.roleName,
-          },
-        });
-      }
-      const tokens = await this.getTokens(user, role.name);
-      await this.updateRtHash(user.id, tokens.refreshToken);
-
-      // 5️⃣ Update last login timestamp
+      // 4️⃣ Update last login timestamp
       await prisma.user.update({
         where: { id: user.id },
         data: {
@@ -701,9 +844,8 @@ export class UserService {
         },
       });
 
-      // 6️⃣ Return user info and tokens
+      // 5️⃣ Return user info (Clerk session handles auth)
       return {
-        tokens,
         id: user.id,
         email: user.email,
         firstName: user.firstName,
@@ -742,14 +884,6 @@ export class UserService {
       email: user.email,
       loginMethod: user.login_method,
     };
-  }
-
-  async updateRtHash(userId: number, rt: string): Promise<void> {
-    const hash = await argon.hash(rt);
-    await prisma.user.update({
-      where: { id: userId },
-      data: { hashedRt: hash },
-    });
   }
 
   async findUserAccount(userId: number): Promise<any> {
@@ -807,11 +941,29 @@ export class UserService {
       throw new BadRequestException('Invalid card number');
     }
 
-    const first_6digits = cardNumber.slice(0, 6);
     const last_4digits = cardNumber.slice(-4);
-    const maskedPan = `${first_6digits}******${last_4digits}`;
+    // Mask all digits except the last 4
+    const maskedPan = `**** **** **** ${last_4digits}`;
 
-    // const maskedPan = `${payload.first_6digits}******${payload.last_4digits}`;
+    // Extract and normalize expiry
+    let expiry = String(
+      payload.expiry ||
+      payload.expiryDate ||
+      payload.cardExpiry ||
+      payload.card_expiry ||
+      payload.expiration ||
+      ''
+    ).trim();
+
+    if (!expiry && (payload.expiryMonth || payload.month) && (payload.expiryYear || payload.year)) {
+      const month = String(payload.expiryMonth || payload.month).padStart(2, '0');
+      const rawYear = String(payload.expiryYear || payload.year);
+      const year = rawYear.length === 4 ? rawYear.slice(2) : rawYear;
+      expiry = `${month}/${year}`;
+    } else if (expiry && !expiry.includes('/') && expiry.replace(/\D/g, '').length === 4) {
+      const digits = expiry.replace(/\D/g, '');
+      expiry = `${digits.slice(0, 2)}/${digits.slice(2, 4)}`;
+    }
 
     // check if card already exists
     const existingCard = await prisma.userCard.findFirst({
@@ -822,6 +974,18 @@ export class UserService {
     });
 
     if (existingCard) {
+      // If existing card is missing expiry, update it
+      if (expiry && !existingCard.expiry) {
+        const updated = await prisma.userCard.update({
+          where: { id: existingCard.id },
+          data: { expiry },
+        });
+        return {
+          success: true,
+          message: 'Card already exists',
+          data: updated,
+        };
+      }
       return {
         success: true,
         message: 'Card already exists',
@@ -837,13 +1001,13 @@ export class UserService {
     const card = await prisma.userCard.create({
       data: {
         userId,
-        cardToken: payload.token,
+        cardToken: payload.token || payload.cardToken || payload.card_token || null,
         cardNumber: payload.cardNumber,
         maskedPan,
-        cardType: payload.type,
-        expiry: payload.expiry,
-        issuer: payload.issuer,
-        country: payload.country,
+        cardType: payload.type || payload.cardType || payload.brand || 'Card',
+        expiry: expiry || null,
+        issuer: payload.issuer || null,
+        country: payload.country || null,
         isDefault: totalCards === 0,
       },
     });
@@ -1032,7 +1196,12 @@ async getCard(userId: number): Promise<any> {
     if (!user) {
       throw new NotFoundException('User not found');
     }
-    return user;
+
+    const badgeInfo = await this.getUserBadge(userId);
+    return {
+      ...user,
+      ...badgeInfo,
+    };
   }
 
 
@@ -1138,18 +1307,7 @@ async getCard(userId: number): Promise<any> {
     try {
       const existingUser = await prisma.user.findUnique({
         where: { id: userId },
-        select: {
-          id: true,
-          email: true,
-          firstName: true,
-          lastName: true,
-          phone: true,
-          accountReference: true,
-          flw_customer_id: true,
-          busha_customer_id: true,
-        },
       });
-
 
       if (!existingUser) {
         throw new NotFoundException('User not found');
@@ -1158,395 +1316,424 @@ async getCard(userId: number): Promise<any> {
       const user = await prisma.user.update({
         where: { id: userId },
         data: {
-          dob: new Date(dto.dob),
-          firstName: dto.firstName,
-          lastName: dto.lastName,
-          country: dto.country,
-          address: dto.address,
-          bvn: dto.bvn,
-          nin: dto.nin,
-          state: dto.state,
-          verify_photo: dto.verify_photo,
-          postal_code: dto.postal_code,
+          ...(dto.dob && { dob: new Date(dto.dob) }),
+          ...(dto.firstName && { firstName: dto.firstName }),
+          ...(dto.lastName && { lastName: dto.lastName }),
+          ...(dto.country && { country: dto.country }),
+          ...(dto.address && { address: dto.address }),
+          ...(dto.bvn && { bvn: dto.bvn }),
+          ...(dto.nin && { nin: dto.nin }),
+          ...(dto.state && { state: dto.state }),
+          ...(dto.verify_photo && { verify_photo: dto.verify_photo }),
+          ...(dto.postal_code && { postal_code: dto.postal_code }),
+          kyc_status: 'PENDING',
         },
       });
 
-
-      const fullName = `${dto.firstName} ${dto.lastName}`;
-      const generatedAccountReference = `wal-${userId}`;
-
-      let reservedAccount;
-
-      console.log('[KYC] Monnify step', {
-        hasReference: !!existingUser.accountReference,
+      // Create Didit Hosted Verification Session
+      const session = await this.diditService.createSession({
+        userId,
+        workflowId: dto.workflowId || 'a885a4bb-7c24-45db-a5db-a1ef8eb9e820',
+        vendorData: `user-${userId}`,
+        callbackUrl: dto.callbackUrl,
       });
 
-      if (existingUser.accountReference) {
-        reservedAccount = await this.monnifyService.getReservedAccount(
-          existingUser.accountReference,
-        );
-      } else {
-        try {
-          reservedAccount = await this.monnifyService.createReservedAccount({
-            accountReference: generatedAccountReference,
-            accountName: fullName,
-            currencyCode: 'NGN',
-            customerEmail: existingUser.email,
-            customerName: fullName,
-            bvn: dto.bvn,
-            getAllAvailableBanks: true,
-          });
-        } catch (error: any) {
-          console.error('[KYC][Monnify ERROR]', {
-            message: error.message,
-            response: error.response?.data,
-          });
-
-          const responseMessage = error.response?.data?.responseMessage;
-
-          if (
-            typeof responseMessage === 'string' &&
-            responseMessage.includes('same reference')
-          ) {
-            reservedAccount = await this.monnifyService.getReservedAccount(
-              generatedAccountReference,
-            );
-          } else {
-            throw error;
-          }
-        }
-      }
-
-
-      const responseBody = reservedAccount?.responseBody;
-
-      if (!responseBody?.accounts) {
-        console.error('[KYC] No accounts returned from Monnify', responseBody);
-        throw new Error('Invalid Monnify response: no accounts');
-      }
-
-      const accountsWithType = responseBody.accounts.map((account, index) => ({
-        ...account,
-        accountType: index === 0 ? 'Gold' : 'Personal',
-      }));
-
-      let flutterwaveCustomerId = existingUser.flw_customer_id;
-
-      if (!flutterwaveCustomerId) {
-        try {
-          const createFlwCustomer =
-            await this.flutterwaveService.createCustomer({
-              email: existingUser.email,
-              firstName: dto.firstName,
-              lastName: dto.lastName,
-              phoneNumber: existingUser.phone,
-              city: dto.city,
-              country: dto.country,
-              line1: dto.address,
-              postal_code: dto.postal_code,
-              state: dto.state,
-              country_code: dto.country_code,
-              number: dto.number,
-            });
-
-          flutterwaveCustomerId =
-            createFlwCustomer.data?.id?.toString() ?? null;
-        } catch (error: any) {
-          console.error('[KYC][Flutterwave ERROR]', {
-            message: error.message,
-            response: error.response?.data,
-          });
-          throw error;
-        }
-      }
-
-      
-
-      // Create Flutterwave virtual account if customer exists
-      let flutterwaveAccount = null;
-      if (flutterwaveCustomerId) {
-        try {
-          const virtualAccountDto = {
-            account_name: `${dto.firstName} ${dto.lastName}`,
-            email: existingUser.email,
-            country: dto.country,
-            mobilenumber: dto.number,
-            bank_code: '035'
-          };
-
-          const virtualAccountResponse = await this.flutterwaveService.createPayoutSubaccount(virtualAccountDto);
-          flutterwaveAccount = virtualAccountResponse.data;
-
-        } catch (error: any) {
-          console.error('[KYC][Flutterwave Virtual Account ERROR]', {
-            message: error.message,
-            response: error.response?.data,
-          });
-          // Don't throw error, continue with Monnify accounts
-        }
-      }
-
-            // Add Flutterwave account if created
-      if (flutterwaveAccount?.nuban) {
-        accountsWithType.push({
-          accountNumber: flutterwaveAccount.nuban,
-          bankName: flutterwaveAccount.bank_name,
-          bankCode: flutterwaveAccount.bank_code,
-          accountType: 'Flutterwave',
-          accountReference: flutterwaveAccount.account_reference,
-          barterId: flutterwaveAccount.barter_id
+      if (session?.session_id) {
+        await prisma.user.update({
+          where: { id: userId },
+          data: {
+            didit_session_id: session.session_id,
+          },
         });
       }
 
-
-
-      // let bushaCustomerId = (existingUser as any).busha_customer_id;
-
-      // console.log('[KYC] Busha check', { bushaCustomerId });
-
-      // if (bushaCustomerId) {
-      //   try {
-      //     const existingBushaCustomer =
-      //       await this.bushaService.getCustomerById(bushaCustomerId);
-
-      //     if (!existingBushaCustomer?.data?.data?.id) {
-      //       throw new Error('Invalid Busha customer');
-      //     }
-
-      //     console.log('[KYC] Busha customer exists');
-      //   } catch (error: any) {
-      //     console.error('[KYC][Busha getCustomer ERROR]', {
-      //       message: error.message,
-      //       response: error.response?.data,
-      //     });
-
-      //     bushaCustomerId = null;
-      //   }
-      // }
-
-      // if (!bushaCustomerId) {
-      //   try {
-      //     console.log('[KYC] Fetching Busha customers');
-
-      //     const customersResponse = await this.bushaService.getCustomers();
-      //     const customers = customersResponse.data || [];
-
-      //     const existingCustomer = customers.find(
-      //       (c) => c.email === existingUser.email,
-      //     );
-
-      //     if (existingCustomer) {
-      //       bushaCustomerId = existingCustomer.id;
-      //       console.log('[KYC] Found existing Busha customer');
-      //     }
-      //   } catch (error: any) {
-      //     console.error('[KYC][Busha getCustomers ERROR]', {
-      //       message: error.message,
-      //       response: error.response?.data,
-      //     });
-      //   }
-
-      //   if (!bushaCustomerId) {
-      //     if (!existingUser.phone) {
-      //       console.error('[KYC] Missing phone number');
-      //       throw new Error('Phone is required for Busha');
-      //     }
-
-      //     const sanitizedPhone = existingUser.phone.replace(/^\+/, '');
-      //     const formattedDob = await this.formatBirthDate(dto.dob);
-
-      //     console.log('[KYC] Creating Busha customer');
-
-      //     try {
-      //       const [idFrontBase64, idBackBase64, selfieBase64] =
-      //         await Promise.all([
-      //           toDataURL(dto.idFrontBase64),
-      //           toDataURL(dto.idBackBase64),
-      //           toDataURL(dto.selfieBase64),
-      //         ]);
-      //       const bushaPayload: CreateBushaCustomerDto = {
-      //         email: existingUser.email,
-      //         has_accepted_terms: true,
-      //         type: 'individual',
-      //         country_id: dto.country,
-      //         phone: sanitizedPhone,
-      //         birth_date: formattedDob,
-      //         first_name: dto.firstName,
-      //         last_name: dto.lastName,
-      //         address: {
-      //           country_id: dto.country,
-      //           address_line_1: dto.address,
-      //           city: dto.city,
-      //           state: dto.state,
-      //           postal_code: dto.postal_code,
-      //         },
-      //         identifying_information: [
-      //           {
-      //             type: dto.id_type,
-      //             number: dto.idNumber,
-      //             country: dto.country,
-      //             image_front: idFrontBase64,
-      //             image_back: idBackBase64,
-      //           },
-      //           {
-      //             type: 'selfie',
-      //             number: dto.idNumber,
-      //             country: dto.country,
-      //             image_front: selfieBase64,
-      //           },
-      //         ],
-      //       };
-
-      //       const bushaCustomer =
-      //         await this.bushaService.createCustomer(bushaPayload);
-
-      //       bushaCustomerId = bushaCustomer?.data?.id;
-
-      //       console.log(bushaPayload, 'bushaPayload');
-
-      //       console.log('[KYC] Busha customer created', bushaCustomerId);
-      //     } catch (error: any) {
-      //       console.error('[KYC][Busha createCustomer ERROR]', {
-      //         message: error.message,
-      //         response: error.response?.data,
-      //       });
-      //       throw error;
-      //     }
-      //   }
-      // }
-
-      // console.log('[KYC] Final DB update');
-
-      let bushaCustomerId = 'CUS_I6WZxboDgD5C8'
-
-
-      // [bitnob services]
-
-      let createBitnobCustomerResponse = await this.bitnobService.createCustomer({
-        email: existingUser.email,
-        first_name: dto.firstName,
-        last_name: dto.lastName,
-        phone: existingUser.phone,
-        country_code: dto.country,
-      })
-
-      // [generate bitnob address]
-
-const chain = process.env.NODE_ENV === 'production' ? 'polygon' : 'ethereum';
-
-let create_bitnob_address = await this.bitnobService.generateAddress({
-  chain,
-  customer_email: existingUser.email,
-  label: 'bitnobSuperfanWallet',
-  reference: `wal-ref-${Date.now()}`
-})
-
-let validate_bitnob_adddress = await this.bitnobService.validateAddress({
-  address: create_bitnob_address.data.address,
-  chain
-})
-
-                const bitnobAddress = {
-            bitnob_address: {
-              id: create_bitnob_address.data.id,
-              chain: create_bitnob_address.data.chain,
-              address: create_bitnob_address.data.address,
-              label: create_bitnob_address.data.label,
-              reference: create_bitnob_address.data.reference,
-              status: create_bitnob_address.data.status,
-            },
-          };
-
-          const updatedAccountsWithType = {
-            ...accountsWithType,
-            ...bitnobAddress,
-          };
-
-          console.log(updatedAccountsWithType, 'updatedAccounts')
-      await prisma.user.update({
-        where: { id: userId },
-        data: {
-          accountReference: responseBody.accountReference,
-          accounts: updatedAccountsWithType,
-          flw_customer_id: flutterwaveCustomerId,
-          busha_customer_id: bushaCustomerId,
-          bitnob_customer_id: createBitnobCustomerResponse?.data?.id,
-        },
-      });
-      console.log('flutterwave account reference', flutterwaveAccount.account_reference)
-
-            // issue static account for user
-      let issueStaticAccount = await this.flutterwaveService.fetchStaticVirtualAccount(flutterwaveAccount.account_reference)
-      console.log('issueStaticAccount', issueStaticAccount)
-
-      console.log('[KYC] Verifying Busha customer');
-
-      // try {
-      //   console.log(bushaCustomerId, 'bushaCustomerId in verify');
-      //   await this.bushaService.verifyCustomer(bushaCustomerId);
-      //   console.log('[KYC] Busha verification success');
-      // } catch (error: any) {
-      //   console.error('[KYC][Busha verify ERROR]', {
-      //     message: error.message,
-      //     response: error.response?.data,
-      //   });
-      //   throw error;
-      // }
-
-      // console.log('[KYC] SUCCESS');
-
       return {
-        message: existingUser.accountReference
-          ? 'KYC updated & existing reserved account retrieved successfully'
-          : 'KYC updated & reserved account created successfully',
-        data: {
-          ...user,
-          accountReference: responseBody.accountReference,
-          accounts: accountsWithType,
-          flw_customer_id: flutterwaveCustomerId,
+        message: 'KYC details saved and Didit verification session created',
+        data: user,
+        session: {
+          session_id: session.session_id,
+          sessionId: session.session_id,
+          url: session.url,
+          session_token: session.session_token,
+          status: session.status,
         },
+        url: session.url,
+        session_id: session.session_id,
       };
-    // } catch (error: any) {
-    //   console.error('[KYC] FINAL ERROR', {
-    //     message: error.message,
-    //     stack: error.stack,
-    //     response: error.response?.data,
-    //   });
-
-    //   throw error;
-    // }
-
     } catch (error: any) {
-  // ADD THIS:
-  console.error('fetchStaticVirtualAccount error:', {
-    message: error.message,
-    response: error.response?.data,
-    status: error.response?.status,
-  });
-
-  throw new HttpException(
-    error.response?.data || error.message || 'Failed to fetch static virtual account',
-    error.response?.status || 500,
-  );
+      console.error('[KYC] updateKycDetails error', error);
+      throw error;
     }
   }
 
-  async checkKycStatus(
-    userId: number,
-  ): Promise<{ isComplete: boolean; reason?: object }> {
+  /**
+   * Validates BVN via Didit Standalone v3 Database Validation
+   */
+  async verifyBvnWithDidit(userId: number, dto: VerifyBvnDto) {
     const user = await prisma.user.findUnique({
       where: { id: userId },
+      select: { id: true, firstName: true, lastName: true },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const firstName = dto.firstName || user.firstName || '';
+    const lastName = dto.lastName || user.lastName || '';
+
+    const result = await this.diditService.validateBvn(
+      userId,
+      firstName,
+      lastName,
+      dto.bvn,
+    );
+
+    const isMatch =
+      result.status === 'Approved' ||
+      result.match_type === 'full_match' ||
+      result.validations?.some((v) => v.outcome_code === 'MATCH');
+
+    if (isMatch) {
+      await prisma.user.update({
+        where: { id: userId },
+        data: { bvn: dto.bvn.trim() },
+      });
+    }
+
+    return {
+      requestSuccessful: isMatch,
+      responseMessage: isMatch ? 'BVN verified successfully' : 'BVN information mismatch',
+      responseBody: {
+        bvnInformationMatch: isMatch,
+        ...result,
+      },
+      ...result,
+    };
+  }
+
+  /**
+   * Validates NIN via Didit Standalone v3 Database Validation
+   */
+  async verifyNinWithDidit(userId: number, dto: VerifyNinDto) {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, firstName: true, lastName: true },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const firstName = dto.firstName || user.firstName || '';
+    const lastName = dto.lastName || user.lastName || '';
+
+    const result = await this.diditService.validateNin(
+      userId,
+      firstName,
+      lastName,
+      dto.nin,
+    );
+
+    const isMatch =
+      result.status === 'Approved' ||
+      result.match_type === 'full_match' ||
+      result.validations?.some((v) => v.outcome_code === 'MATCH');
+
+    if (isMatch) {
+      await prisma.user.update({
+        where: { id: userId },
+        data: { nin: dto.nin.trim() },
+      });
+    }
+
+    return {
+      requestSuccessful: isMatch,
+      responseMessage: isMatch ? 'NIN verified successfully' : 'NIN information mismatch',
+      responseBody: {
+        ninInformationMatch: isMatch,
+        ...result,
+      },
+      ...result,
+    };
+  }
+
+  /**
+   * Verifies ID Document via Didit Standalone v3 ID Verification
+   * and saves copies of front/back ID images to Cloudinary (site_assets/profile/kyc/id_card/front & back)
+   */
+  async verifyIdWithDidit(
+    userId: number,
+    frontImage: FileUploadInput,
+    backImage?: FileUploadInput,
+  ) {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    // 1. Upload ID card images to Cloudinary
+    let frontImageUrl: string | undefined;
+    let backImageUrl: string | undefined;
+
+    if (frontImage) {
+      try {
+        frontImageUrl = await this.imageService.uploadFileInput(
+          frontImage,
+          'site_assets/profile/kyc/id_card/front',
+        );
+      } catch (uploadErr: any) {
+        this.logger.warn(
+          `Failed to upload KYC front ID card to Cloudinary: ${uploadErr?.message || uploadErr}`,
+        );
+      }
+    }
+
+    if (backImage) {
+      try {
+        backImageUrl = await this.imageService.uploadFileInput(
+          backImage,
+          'site_assets/profile/kyc/id_card/back',
+        );
+      } catch (uploadErr: any) {
+        this.logger.warn(
+          `Failed to upload KYC back ID card to Cloudinary: ${uploadErr?.message || uploadErr}`,
+        );
+      }
+    }
+
+    // 2. Perform Didit ID verification with base64 / blob
+    const result = await this.diditService.verifyIdDocument(userId, frontImage, backImage);
+
+    const isApproved =
+      result.id_verification?.status === 'Approved' ||
+      result.id_verification?.status === 'verified';
+
+    if (isApproved) {
+      const doc = result.id_verification;
+      await prisma.user.update({
+        where: { id: userId },
+        data: {
+          kyc_status: 'VERIFIED',
+          kyc_tier: 'TIER_1',
+          didit_verification_id: result.request_id,
+          kyc_verified_at: new Date(),
+          kyc_rejection_reason: null,
+          ...(doc.date_of_birth && { dob: new Date(doc.date_of_birth) }),
+          ...(doc.first_name && !user.firstName && { firstName: doc.first_name }),
+          ...(doc.last_name && !user.lastName && { lastName: doc.last_name }),
+        },
+      });
+
+      this.eventEmitter.emit('user.kyc.verified', { userId, tier: 'TIER_1' });
+      this.eventEmitter.emit('user.wallet.updated', { userId });
+    }
+
+    return {
+      requestSuccessful: isApproved,
+      message: isApproved ? 'ID document verified successfully' : 'ID document verification pending or declined',
+      data: result,
+      frontImageUrl,
+      backImageUrl,
+    };
+  }
+
+  /**
+   * Initiates a hosted Didit KYC verification session
+   * POST /v3/session/
+   */
+  async initiateDiditHostedSession(
+    userId: number,
+    dto?: { callbackUrl?: string; workflowId?: string },
+  ) {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const session = await this.diditService.createSession({
+      userId,
+      workflowId: dto?.workflowId,
+      callbackUrl: dto?.callbackUrl,
+      vendorData: `user-${userId}`,
+    });
+
+    await prisma.user.update({
+      where: { id: userId },
+      data: {
+        didit_session_id: session.session_id,
+        ...(user.kyc_status !== 'VERIFIED' && { kyc_status: 'PENDING' }),
+      },
+    });
+
+    return {
+      message: 'Didit verification session initiated successfully',
+      data: {
+        session_id: session.session_id,
+        sessionId: session.session_id,
+        url: session.url,
+        session_token: session.session_token,
+        status: session.status,
+      },
+    };
+  }
+
+  /**
+   * Alias for initiateDiditHostedSession
+   */
+  async initiateDiditKyc(
+    userId: number,
+    dto?: { callbackUrl?: string; workflowId?: string },
+  ) {
+    return this.initiateDiditHostedSession(userId, dto);
+  }
+
+  /**
+   * Retrieves decision from Didit v3 session and updates user verification status
+   * GET /v3/session/{session_id}/decision/
+   */
+  async syncDiditSessionDecision(userId: number, sessionId?: string) {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const targetSessionId = sessionId || user.didit_session_id;
+
+    if (!targetSessionId) {
+      throw new BadRequestException('No Didit session ID found for user');
+    }
+
+    const decisionResp = await this.diditService.getSessionDecision(targetSessionId);
+    const rawStatus = decisionResp.status || decisionResp.decision?.status || '';
+    const status = String(rawStatus).toLowerCase();
+
+    const isApproved =
+      status === 'approved' ||
+      status === 'verified' ||
+      decisionResp.decision?.status === 'Approved' ||
+      decisionResp.decision?.status === 'verified';
+
+    const isDeclined =
+      status === 'declined' ||
+      status === 'rejected' ||
+      decisionResp.decision?.status === 'Declined' ||
+      decisionResp.decision?.status === 'Rejected';
+
+    if (isApproved) {
+      const verificationId =
+        decisionResp.decision?.verification_id ||
+        decisionResp.verification_id ||
+        targetSessionId;
+
+      const doc = decisionResp.decision?.id_verification;
+
+      await prisma.user.update({
+        where: { id: userId },
+        data: {
+          kyc_status: 'VERIFIED',
+          kyc_tier: 'TIER_1',
+          didit_verification_id: verificationId,
+          kyc_verified_at: new Date(),
+          kyc_rejection_reason: null,
+          ...(doc?.date_of_birth && { dob: new Date(doc.date_of_birth) }),
+          ...(doc?.first_name && !user.firstName && { firstName: doc.first_name }),
+          ...(doc?.last_name && !user.lastName && { lastName: doc.last_name }),
+        },
+      });
+
+      this.eventEmitter.emit('user.kyc.verified', { userId, tier: 'TIER_1' });
+      this.eventEmitter.emit('user.wallet.updated', { userId });
+
+      await this.notificationService.createNotification(
+        userId,
+        'KYC Verification Successful',
+        'Your identity has been verified successfully! Your account limit has been upgraded.',
+        'kyc_approved',
+      );
+    } else if (isDeclined) {
+      const rejectionReasons =
+        decisionResp.decision?.rejection_reasons ||
+        decisionResp.rejection_reasons ||
+        (decisionResp.decision?.reason
+          ? [decisionResp.decision.reason]
+          : ['Identity verification was not approved. Please try again.']);
+      const reasonStr = Array.isArray(rejectionReasons)
+        ? rejectionReasons.join(', ')
+        : String(rejectionReasons);
+
+      await prisma.user.update({
+        where: { id: userId },
+        data: {
+          kyc_status: 'REJECTED',
+          kyc_tier: 'TIER_0',
+          kyc_rejection_reason: reasonStr,
+        },
+      });
+
+      this.eventEmitter.emit('user.kyc.rejected', { userId, reason: reasonStr });
+
+      await this.notificationService.createNotification(
+        userId,
+        'KYC Verification Failed',
+        `Identity verification was unsuccessful: ${reasonStr}. You can retry verification at any time.`,
+        'kyc_failed',
+      );
+    }
+
+    return {
+      message: 'Didit session decision synchronized successfully',
+      data: {
+        sessionId: targetSessionId,
+        status: decisionResp.status,
+        decision: decisionResp.decision,
+        isApproved,
+        isDeclined,
+      },
+    };
+  }
+
+  /**
+   * Retrieves real-time KYC status, tier, and transaction limits for a user (SCRUM-350)
+   */
+  async checkKycStatus(userId: number): Promise<{
+    isComplete: boolean;
+    isSubmitted: boolean;
+    status: string;
+    tier: string;
+    reason?: string;
+    limits?: any;
+    kycData?: any;
+  }> {
+    let user = await prisma.user.findUnique({
+      where: { id: userId },
       select: {
+        id: true,
         dob: true,
         firstName: true,
         lastName: true,
         country: true,
         address: true,
         bvn: true,
+        nin: true,
         state: true,
         verify_photo: true,
         postal_code: true,
-        busha_customer_id: true,
+        kyc_status: true,
+        kyc_tier: true,
+        didit_session_id: true,
+        didit_verification_id: true,
+        kyc_rejection_reason: true,
+        kyc_verified_at: true,
       },
     });
 
@@ -1554,50 +1741,66 @@ let validate_bitnob_adddress = await this.bitnobService.validateAddress({
       throw new NotFoundException('User not found');
     }
 
-    // 1. Check local KYC fields
-    const requiredFields = [
-      user.dob,
-      user.firstName,
-      user.lastName,
-      user.country,
-      user.address,
-      user.bvn,
-      user.state,
-      user.verify_photo,
-      user.postal_code,
-    ];
+    // If status is PENDING and there is a didit_session_id, try a sync in case webhook was delayed
+    if (user.kyc_status === 'PENDING' && user.didit_session_id) {
+      try {
+        await this.syncDiditSessionDecision(userId, user.didit_session_id);
+        const refreshedUser = await prisma.user.findUnique({
+          where: { id: userId },
+          select: {
+            id: true,
+            dob: true,
+            firstName: true,
+            lastName: true,
+            country: true,
+            address: true,
+            bvn: true,
+            nin: true,
+            state: true,
+            verify_photo: true,
+            postal_code: true,
+            kyc_status: true,
+            kyc_tier: true,
+            didit_session_id: true,
+            didit_verification_id: true,
+            kyc_rejection_reason: true,
+            kyc_verified_at: true,
+          },
+        });
+        if (refreshedUser) {
+          user = refreshedUser;
+        }
+      } catch (err: any) {
+        // Non-blocking sync error
+      }
+    }
 
-    // 2. Call Busha
-    const customer = await this.bushaService.getCustomerById(
-      user.busha_customer_id,
-    );
-
-    const status = customer?.data?.status;
-    const kycStatus = customer?.data?.kyc_status;
-
-    // 3. Final decision
-    const isApproved = status === 'active' && kycStatus === 'verified';
+    const isVerified = user.kyc_status === 'VERIFIED';
+    const isSubmitted = user.kyc_status === 'PENDING' || isVerified;
+    const limitStatus = await this.walletService.getTransactionLimitStatus(userId);
 
     return {
-      isComplete: isApproved,
-      reason: isApproved ? undefined : { bushaStatus: status, kycStatus },
+      isComplete: isVerified,
+      isSubmitted,
+      status: user.kyc_status,
+      tier: user.kyc_tier,
+      reason: user.kyc_rejection_reason || (isVerified ? undefined : 'Identity verification incomplete'),
+      limits: limitStatus,
+      kycData: {
+        firstName: user.firstName || '',
+        lastName: user.lastName || '',
+        fullName: [user.firstName, user.lastName].filter(Boolean).join(' '),
+        dob: user.dob ? user.dob.toISOString() : '',
+        country: user.country || '',
+        state: user.state || '',
+        address: user.address || '',
+        bvn: user.bvn || '',
+        nin: user.nin || '',
+        verify_photo: user.verify_photo || '',
+        postal_code: user.postal_code || '',
+      },
     };
   }
-
-  // async onKycApproved(userId: number) {
-  //   const rewards = await prisma.reward.findMany({
-  //     where: { userId, status: 'PENDING' },
-  //   });
-
-  //   for (const reward of rewards) {
-  //     await this.walletService.creditWallet(userId, reward.amount, reward.type);
-
-  //     await prisma.reward.update({
-  //       where: { id: reward.id },
-  //       data: { status: 'PAID_OUT' },
-  //     });
-  //   }
-  // }
 
   async forgotPassword(email: string): Promise<{ message: string }> {
     const user = await prisma.user.findUnique({
@@ -1682,14 +1885,14 @@ let validate_bitnob_adddress = await this.bitnobService.validateAddress({
 
     try {
       // ✅ Create subaccount
-      const subAccountCode = await this.monnifyService.createSubAccount({
-        customerCurrency: dto.customerCurrency,
-        customerAccountNumber: dto.accountNumber,
-        customerAccountBankCode: dto.bankCode,
-        customerEmailAddress: user.email,
-        defaultSplitPercentage: dto.defaultSplitPercentage,
-        // customerAccountName: `${user.firstName} ${user.lastName}`,
-      });
+      // const subAccountCode = await this.monnifyService.createSubAccount({
+      //   customerCurrency: dto.customerCurrency,
+      //   customerAccountNumber: dto.accountNumber,
+      //   customerAccountBankCode: dto.bankCode,
+      //   customerEmailAddress: user.email,
+      //   defaultSplitPercentage: dto.defaultSplitPercentage,
+      // });
+      const subAccountCode = 'mocked_sub_account_code';
 
       if (!subAccountCode) {
         throw new BadRequestException('Failed to create sub account');
@@ -1751,31 +1954,45 @@ let validate_bitnob_adddress = await this.bitnobService.validateAddress({
       hashedPassword = await argon.hash(dto.new_password);
     }
 
+    const patch: Record<string, unknown> = {};
+
+    const assign = <K extends keyof UpdateUserDto>(key: K) => {
+      if (dto[key] !== undefined) {
+        patch[key as string] = dto[key];
+      }
+    };
+
+    assign('firstName');
+    assign('lastName');
+    assign('email');
+    assign('phone');
+    assign('state');
+    assign('address');
+    assign('username');
+    assign('testLevel');
+    assign('ip_address');
+    assign('location');
+    assign('dob');
+    assign('languagePreference');
+    assign('subjectPreference');
+    assign('bvn');
+    assign('nin');
+    assign('roleName');
+    assign('country');
+    assign('subscriptionPlan');
+    assign('profilePicture');
+
+    if (dto.address !== undefined) {
+      patch.lastSeen = dto.address;
+    }
+
+    if (hashedPassword) {
+      patch.password = hashedPassword;
+    }
+
     const updatedUser = await prisma.user.update({
       where: { id: userId },
-      data: {
-        firstName: dto.firstName,
-        lastName: dto.lastName,
-        email: dto.email,
-        phone: dto.phone,
-        state: dto.state,
-        address: dto.address,
-        username: dto.username,
-        testLevel: dto.testLevel,
-        ip_address: dto.ip_address,
-        lastSeen: dto.address,
-        location: dto.location,
-        dob: dto.dob,
-        languagePreference: dto.languagePreference,
-        subjectPreference: dto.subjectPreference,
-        bvn: dto.bvn,
-        nin: dto.nin,
-        roleName: dto.roleName,
-        country: dto.country,
-        subscriptionPlan: dto.subscriptionPlan,
-        profilePicture: dto.profilePicture,
-        ...(hashedPassword && { password: hashedPassword }),
-      },
+      data: patch,
     });
 
     return {
@@ -1784,8 +2001,30 @@ let validate_bitnob_adddress = await this.bitnobService.validateAddress({
     };
   }
 
-  async createSubscription(userId: number, dto: PaymentDto): Promise<any> {
-    // 1️⃣ Ensure user exists
+  private getSubscriptionEndDate(
+    now: Date,
+    durationDays: number,
+    nextPlan: string,
+    existingSubscription?: { subscriptionPlan: string; endDate: Date } | null,
+  ): Date {
+    const newEndDate = new Date(now.getTime() + durationDays * 24 * 60 * 60 * 1000);
+    if (!existingSubscription || existingSubscription.endDate <= now) {
+      return newEndDate;
+    }
+
+    const planRank: Record<string, number> = {
+      FREE: 0,
+      PREMIUM_PRO: 1,
+      PREMIUM_PRO_MAX: 2,
+    };
+    const currentRank = planRank[String(existingSubscription.subscriptionPlan).toUpperCase()] ?? 0;
+    const nextRank = planRank[String(nextPlan).toUpperCase()] ?? 0;
+    if (nextRank <= currentRank) return newEndDate;
+
+    return new Date(newEndDate.getTime() + (existingSubscription.endDate.getTime() - now.getTime()));
+  }
+
+  async createSubscription(userId: number, dto: any): Promise<any> {
     const user = await prisma.user.findUnique({
       where: { id: userId },
     });
@@ -1794,64 +2033,157 @@ let validate_bitnob_adddress = await this.bitnobService.validateAddress({
       throw new NotFoundException('User not found');
     }
 
-    // 2️⃣ Check if user already has a subscription
-    const existingSubscription = await prisma.subscription.findFirst({
-      where: { userId: user.id },
-    });
-
-    if (existingSubscription) {
-      throw new BadRequestException(
-        'User already has an existing subscription',
-      );
-    }
-
-    // 3️⃣ 🚫 Block superadmin & subadmin
     if (['superadmin', 'subadmin'].includes(user.roleName)) {
       throw new ForbiddenException(
         'Admins are not allowed to create subscriptions',
       );
     }
 
-    // 4️⃣ Call Monnify mandate
-    const mandate = await this.monnifyService.createMandate(dto);
+    const subscriptionPlan = dto.subscriptionPlan || 'PREMIUM_PRO';
+    const amount = Number(dto.mandateAmount || dto.debitAmount || dto.amount || 6000);
+    const isWalletPayment =
+      dto.paymentMethod === 'wallet' ||
+      dto.paymentMethod === 'WALLET' ||
+      !dto.paymentMethod;
+    const subWallet = (dto.subWallet || 'personal').toLowerCase();
 
-    if (!mandate || !mandate.responseBody) {
-      throw new InternalServerErrorException('Failed to create mandate');
+    if (isWalletPayment) {
+      let wallet = await prisma.wallet.findUnique({ where: { userId } });
+      if (!wallet) {
+        wallet = await prisma.wallet.create({
+          data: { userId, balance: 0, personalBalance: 0, goldBalance: 0 },
+        });
+      }
+
+      const isGold = subWallet === 'gold';
+      let availableBalance = isGold
+        ? Number(wallet.goldBalance) || 0
+        : Number(wallet.personalBalance) || 0;
+
+      if (!isGold) {
+        const held = await prisma.walletTransaction.aggregate({
+          _sum: { amount: true },
+          where: {
+            userId,
+            account_type: 'Personal',
+            holdUntil: { gt: new Date() },
+          },
+        });
+        availableBalance = Math.max(0, availableBalance - Number(held._sum.amount || 0));
+      }
+
+      if (availableBalance < amount) {
+        throw new BadRequestException(
+          `Insufficient ${isGold ? 'Gold' : 'Personal'} wallet balance. Required: ₦${amount.toFixed(2)}, Available: ₦${availableBalance.toFixed(2)}`,
+        );
+      }
+
+      // Deduct from wallet
+      if (isGold) {
+        await prisma.wallet.update({
+          where: { userId },
+          data: {
+            goldBalance: { decrement: amount },
+            balance: { decrement: amount },
+          },
+        });
+      } else {
+        await prisma.wallet.update({
+          where: { userId },
+          data: {
+            personalBalance: { decrement: amount },
+            balance: { decrement: amount },
+          },
+        });
+      }
+
+      // Record wallet transaction
+      await prisma.walletTransaction.create({
+        data: {
+          userId,
+          amount,
+          type: 'debit',
+          currency: 'NGN',
+          payment_method: 'subscription',
+          account_type: isGold ? 'Gold' : 'Personal',
+          reference: `SUB-${Date.now()}`,
+          status: 'SUCCESS',
+          account_name: `Subscription (${subscriptionPlan})`,
+          description: subscriptionPlan === 'PREMIUM_PRO_MAX'
+            ? 'Pro Max Subscription Payment'
+            : 'Pro Subscription Payment',
+        },
+      });
     }
 
-    const mandateData = mandate.responseBody;
+    // Upsert subscription
+    const existingSubscription = await prisma.subscription.findFirst({
+      where: { userId: user.id },
+    });
 
-    // 5️⃣ Save subscription in DB
-    const subscription = await prisma.subscription.create({
-      data: {
-        userId: user.id,
-        mandateReference: mandateData.mandateReference,
-        mandateCode: mandateData.mandateCode,
-        subscriptionPlan: dto.subscriptionPlan,
-        status: mandateData.mandateStatus,
-        amount: dto.mandateAmount,
-        debitAmount: dto.debitAmount,
-        paymentReference: '',
-        paymentStatus: '',
-        startDate: new Date(dto.mandateStartDate),
-        endDate: new Date(dto.mandateEndDate),
-      },
+    let subscription;
+    const now = new Date();
+    const durationDays = subscriptionPlan === 'PREMIUM_PRO_MAX' ? 365 : 30;
+    const endDate = this.getSubscriptionEndDate(
+      now,
+      durationDays,
+      subscriptionPlan,
+      existingSubscription,
+    );
+
+    if (existingSubscription) {
+      subscription = await prisma.subscription.update({
+        where: { id: existingSubscription.id },
+        data: {
+          subscriptionPlan,
+          status: 'ACTIVE',
+          amount,
+          debitAmount: amount,
+          paymentMethod: isWalletPayment ? 'WALLET' : 'CARD',
+          startDate: now,
+          endDate,
+        },
+      });
+    } else {
+      subscription = await prisma.subscription.create({
+        data: {
+          userId: user.id,
+          mandateReference: `SUB-REF-${Date.now()}`,
+          mandateCode: `SUB-CODE-${Date.now()}`,
+          subscriptionPlan,
+          status: 'ACTIVE',
+          amount,
+          debitAmount: amount,
+          paymentMethod: isWalletPayment ? 'WALLET' : 'CARD',
+          paymentReference: `SUB-${Date.now()}`,
+          paymentStatus: 'PAID',
+          startDate: now,
+          endDate,
+        },
+      });
+    }
+
+    // Update user subscription plan
+    await prisma.user.update({
+      where: { id: userId },
+      data: { subscriptionPlan },
     });
 
     return {
       message: 'Subscription created successfully',
       data: subscription,
-      mandate: mandateData,
+      user: { ...user, subscriptionPlan },
     };
   }
 
   async createSubscriptionWithCard(
     userId: number,
-    dto: SubscriptionCardPaymentDto,
+    dto: any,
   ): Promise<any> {
-    const trx = await this.monnifyService.queryTransaction(
-      dto.transactionReference,
-    );
+    // const trx = await this.monnifyService.queryTransaction(
+    //   dto.transactionReference,
+    // );
+    const trx = { responseBody: { paymentStatus: 'PAID', cardDetails: { cardToken: 'mocked' }, amountPaid: 0, paymentReference: 'mocked', transactionReference: 'mocked' } };
     console.log(trx, 'log trx record');
 
     if (trx.responseBody.paymentStatus !== 'PAID') {
@@ -1861,6 +2193,17 @@ let validate_bitnob_adddress = await this.bitnobService.validateAddress({
     const card = trx.responseBody.cardDetails;
 
     const now = new Date();
+
+    const existingSubscription = await prisma.subscription.findFirst({
+      where: { userId },
+    });
+    const durationDays = dto.subscriptionPlan === 'PREMIUM_PRO_MAX' ? 365 : 30;
+    const endDate = this.getSubscriptionEndDate(
+      now,
+      durationDays,
+      dto.subscriptionPlan,
+      existingSubscription,
+    );
 
     // ✅ create subscription
     const subscription = await prisma.subscription.create({
@@ -1875,7 +2218,7 @@ let validate_bitnob_adddress = await this.bitnobService.validateAddress({
         paymentReference: trx.responseBody.paymentReference,
         paymentStatus: trx.responseBody.paymentStatus,
         startDate: now,
-        endDate: new Date(new Date().setMonth(now.getMonth() + 1)),
+        endDate,
       },
     });
 
@@ -2281,6 +2624,50 @@ async checkSubscriptionStatusbyUserId(userId: number): Promise<{
     }
   }
 
+  async getTopEarners(limit = 10) {
+    try {
+      const topUsers = await prisma.user.findMany({
+        orderBy: { lifetimePoints: 'desc' },
+        take: limit,
+        select: {
+          id: true,
+          username: true,
+          firstName: true,
+          lastName: true,
+          lifetimePoints: true,
+          referral_code: true,
+        },
+      });
+
+      return {
+        message: 'Top earners fetched successfully',
+        data: topUsers,
+      };
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  async findAllUsersWithReferralCodes() {
+    try {
+      const users = await prisma.user.findMany({
+        select: {
+          id: true,
+          username: true,
+          email: true,
+          referral_code: true,
+        },
+        orderBy: { id: 'asc' },
+      });
+      return {
+        total: users.length,
+        data: users,
+      };
+    } catch (error) {
+      throw error;
+    }
+  }
+
   async deleteUser(id: number) {
     try {
       await prisma.user.delete({
@@ -2314,7 +2701,6 @@ async checkSubscriptionStatusbyUserId(userId: number): Promise<{
     await prisma.user.update({
       where: { id: userId },
       data: {
-        hashedRt: null,
         isOnline: false,
         lastSeen: new Date(),
       },
@@ -2327,14 +2713,26 @@ async checkSubscriptionStatusbyUserId(userId: number): Promise<{
   }
 
   async generateMagicLink(user: User) {
-    const tokens = await this.getTokens(user, user.roleName);
+    const clerkUser = await this.clerkService.findByEmail(user.email);
+
+    if (!clerkUser?.id) {
+      throw new BadRequestException(
+        'User is not linked to Clerk. Cannot generate magic link.',
+      );
+    }
+
+    const clerkSignInToken = await this.clerkService.createSignInTicket(
+      clerkUser.id,
+    );
+
+    const frontendUrl =
+      process.env.FRONTEND_URL || 'https://app.superfan.ng';
 
     return {
-      magicLinkURI: `${process.env.FRONTEND_URL}/auth/magic?token=${tokens.accessToken}&userId=${user.id}&email=${encodeURIComponent(
+      magicLinkURI: `${frontendUrl}/auth/magic?token=${clerkSignInToken}&userId=${user.id}&email=${encodeURIComponent(
         user.email,
       )}`,
-      accessToken: tokens.accessToken,
-      refreshToken: tokens.refreshToken,
+      clerkSignInToken,
     };
   }
 
@@ -2393,6 +2791,7 @@ async findUserByEmail(email: string): Promise<any> {
 }
 
   async registerClerkUser(data: {
+    clerkUserId: string;
     email: string;
     firstName: string;
     lastName: string;
@@ -2404,6 +2803,7 @@ async findUserByEmail(email: string): Promise<any> {
     const referralCode = generateReferralCode(data.firstName);
     const user = await prisma.user.create({
       data: {
+        clerkUserId: data.clerkUserId,
         email: data.email,
         firstName: data.firstName,
         lastName: data.lastName,
@@ -2424,85 +2824,126 @@ async findUserByEmail(email: string): Promise<any> {
 
     // Handle referral bonuses
     if (data.referralCode) {
-      const referrer = await prisma.user.findUnique({
-        where: { referral_code: data.referralCode },
-      });
-
-      if (referrer) {
-        await prisma.referral.create({
-          data: {
-            referrerId: referrer.id,
-            refereeId: user.id,
-          },
-        });
-
-        await this.walletService.creditWallet(
-          referrer.id,
-          30,
-          'Referral signup reward',
-          `You earned ₦25 because ${user.username} signed up using your referral link.`,
-        );
-
-        const referrer_pts = 30000;
-        await prisma.point.create({
-          data: {
-            userId: referrer.id,
-            points: referrer_pts,
-            reference: `POINTS_${generateFiveUniqueRandomNumbers()}`,
-            type: 'referral_reward',
-          },
-        });
-
-        await this.walletService.userCreateReward(
-          referrer.id,
-          25,
-          'NGN',
-          'Referral signup reward',
-          EarningStatus.PAID_OUT,
-        );
-
-        await this.notificationService.createNotification(
-          referrer.id,
-          'Referral Reward',
-          `You earned ₦25 because ${user.username} signed up using your referral link.`,
-          'referral_reward'
-        );
-
-        await this.walletService.creditWallet(
-          user.id,
-          10,
-          'Referral welcome bonus',
-          `You earned ₦25 because ${user.username} signed up using your referral link.`,
-        );
-
-        const referreral_pts = 10000;
-        await prisma.point.create({
-          data: {
-            userId: user.id,
-            points: referreral_pts,
-            reference: `POINTS_${generateFiveUniqueRandomNumbers()}`,
-            type: 'referral_reward',
-          },
-        });
-
-        await this.walletService.userCreateReward(
-          user.id,
-          10,
-          'NGN',
-          'Referral welcome bonus',
-          EarningStatus.PAID_OUT,
-        );
-
-        await this.notificationService.createNotification(
-          user.id,
-          'Welcome Bonus',
-          'You received ₦10 for signing up with a referral code.',
-          'welcome_bonus'
-        );
-      }
+      await this.processReferralSignup(user, data.referralCode);
     }
 
     return user;
+  }
+
+  async processReferralSignup(user: User, referralCode?: string) {
+    console.log('[Referral][START] processReferralSignup', {
+      refereeId: user.id,
+      refereeUsername: user.username,
+      referralCode,
+    });
+
+    if (!referralCode) {
+      console.log('[Referral][END] No referralCode provided');
+      return;
+    }
+
+    const referrer = await prisma.user.findUnique({
+      where: { referral_code: referralCode.toUpperCase() },
+    });
+
+    if (!referrer) {
+      console.log('[Referral][END] Referrer not found for code', referralCode);
+      return;
+    }
+
+    console.log('[Referral] Referrer found', {
+      referrerId: referrer.id,
+      referrerUsername: referrer.username,
+    });
+
+    // Block self-referrals (same user ID, email, phone, or IP address)
+    const isSelfReferral =
+      referrer.id === user.id ||
+      (user.email && referrer.email && user.email.toLowerCase() === referrer.email.toLowerCase()) ||
+      (user.phone && referrer.phone && user.phone === referrer.phone) ||
+      (user.ip_address && referrer.ip_address && user.ip_address === referrer.ip_address);
+
+    if (isSelfReferral) {
+      console.warn(
+        `[Referral] Self-referral attempt blocked for user ${user.id} attempting to use referral code ${referralCode}`,
+      );
+      return;
+    }
+
+    const existingReferral = await prisma.referral.findFirst({
+      where: { refereeId: user.id },
+    });
+
+    if (existingReferral) {
+      console.log('[Referral][END] Existing referral found for referee', {
+        refereeId: user.id,
+        existingReferral,
+      });
+      return;
+    }
+
+    // Create referral relationship record
+    const referralRecord = await prisma.referral.create({
+      data: {
+        referrerId: referrer.id,
+        refereeId: user.id,
+        signupRewardGiven: true,
+        testRewardGiven: false,
+        status: 'SIGNED_UP',
+      },
+    });
+    console.log('[Referral] Referral record created', {
+      referralId: referralRecord.id,
+      referrerId: referrer.id,
+      refereeId: user.id,
+    });
+
+    // Referrer — Signup Bonus: 20,000 PTS credited directly to Gold Account
+    const point = await prisma.point.create({
+      data: {
+        userId: referrer.id,
+        points: 20000,
+        reference: `POINTS_${generateFiveUniqueRandomNumbers()}`,
+        type: 'referral_signup',
+        accountType: 'Gold',
+      },
+    });
+
+    await prisma.user.update({
+      where: { id: referrer.id },
+      data: { lifetimePoints: { increment: 20000 } },
+    });
+
+    console.log('[Referral] Point created', {
+      pointId: point.id,
+      userId: referrer.id,
+      points: point.points,
+      type: point.type,
+    });
+
+    // Credit referrer wallet so the balance is visible in the Gold Wallet
+    const nairaAmount = this.pointsConversionUtil.pointsToNaira(20000);
+    await this.walletService.creditWallet(
+      referrer.id,
+      nairaAmount,
+      'Referral Bonus — Signup: NGN 20',
+      `You earned ₦${nairaAmount} because @${user.username} signed up using your referral link.`,
+      'Gold',
+    );
+    console.log('[Referral] Wallet credited for referrer', {
+      referrerId: referrer.id,
+      amount: nairaAmount,
+    });
+
+    // Notification for referrer
+    await this.notificationService.createNotification(
+      referrer.id,
+      'Referral Bonus — Signup: NGN 20',
+      `You earned 20,000 PTS (Gold Account) because @${user.username} signed up using your referral link.`,
+      'referral_reward',
+    );
+
+    console.log('[Referral][END] Completed successfully');
   }
 }
 
