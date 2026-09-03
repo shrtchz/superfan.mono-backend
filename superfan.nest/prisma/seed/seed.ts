@@ -421,94 +421,6 @@ if (!existingRole) {
     console.log("✅ Seeded Live Quiz Attempt & Leaderboard");
   }
 
-  // 5. Seed Products
-  const products = [
-    {
-      id: 1,
-      title: "Selfin Hoodie",
-      price: "NGN37.50",
-      priceAmount: 37.5,
-      images: ["/download (1).jpeg", "/download.jpeg"],
-      colors: ["White", "Light Gray", "Beige"],
-      sizes: ["S", "M", "L", "XL", "2XL", "3XL"],
-      badge: "Promo available",
-      description: "65% ring-spun cotton, 35% polyester. Regular fit, unisex sizing.",
-      stock: 100,
-      isActive: true,
-    },
-    {
-      id: 2,
-      title: "Selfin T-shirt",
-      price: "NGN27.20",
-      priceAmount: 27.2,
-      images: ["/download.jpeg"],
-      colors: ["Light Blue", "Silver", "Gray"],
-      sizes: ["S", "M", "L", "XL"],
-      badge: null,
-      description: "65% ring-spun cotton, 35% polyester. Lightweight and breathable.",
-      stock: 100,
-      isActive: true,
-    },
-    {
-      id: 3,
-      title: "Selfin Hoodie (Black)",
-      price: "NGN57.20",
-      priceAmount: 57.2,
-      images: ["/download (1).jpeg"],
-      colors: ["Black", "Dark Gray", "Charcoal"],
-      sizes: ["S", "M", "L", "XL"],
-      badge: null,
-      description: "Heavyweight fabric (8.5 oz), charcoal fleece lining.",
-      stock: 100,
-      isActive: true,
-    },
-    {
-      id: 4,
-      title: "Selfin sweatshirt",
-      price: "NGN51.74",
-      priceAmount: 51.74,
-      images: ["/download.jpeg"],
-      colors: ["Dark Gray", "Graphite"],
-      sizes: ["S", "M", "L"],
-      badge: null,
-      description: "Side-seamed construction, double-needle stitched bottom hem.",
-      stock: 100,
-      isActive: true,
-    },
-    {
-      id: 5,
-      title: "Selfin oversized t-shirt",
-      price: "NGN37.37",
-      priceAmount: 37.37,
-      images: ["/download (1).jpeg"],
-      colors: ["Navy Blue", "Royal Blue", "Black"],
-      sizes: ["S", "M", "L", "XL", "2XL"],
-      badge: null,
-      description: "Relaxed oversized cut, premium heavyweight cotton.",
-      stock: 100,
-      isActive: true,
-    },
-  ];
-
-  for (const prod of products) {
-    await prisma.product.upsert({
-      where: { id: prod.id },
-      update: {
-        title: prod.title,
-        price: prod.price,
-        priceAmount: prod.priceAmount,
-        images: prod.images,
-        colors: prod.colors,
-        sizes: prod.sizes,
-        badge: prod.badge,
-        description: prod.description,
-        stock: prod.stock,
-        isActive: prod.isActive,
-      },
-      create: prod,
-    });
-  }
-  console.log("✅ Seeded Products");
 }
 
 // ✅ Run when executed directly
@@ -529,4 +441,4 @@ if (typeof require !== 'undefined' && require.main === module) {
     .finally(async () => {
       await prisma.$disconnect();
     });
-}
+}
