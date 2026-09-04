@@ -1,16 +1,20 @@
 #!/bin/sh
 set -e
 
+DATABASE_URL="${DATABASE_URL:-${PROD_DB_URL:-}}"
+export DATABASE_URL
+
+if [ -z "$DATABASE_URL" ]; then
+  echo "DATABASE_URL (or PROD_DB_URL) must be configured before starting the API." >&2
+  exit 1
+fi
+
 echo "Waiting for database to be ready..."
 
 # Wait for PostgreSQL to be available using Node.js connection check
 node -e '
 const net = require("net");
 const url = process.env.DATABASE_URL;
-if (!url) {
-  console.log("No DATABASE_URL found, skipping check.");
-  process.exit(0);
-}
 let host = "localhost", port = 5432;
 try {
   const u = new URL(url);
