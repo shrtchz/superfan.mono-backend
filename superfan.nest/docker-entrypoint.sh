@@ -1,6 +1,12 @@
 #!/bin/sh
 set -e
 
+if [ -f /etc/secrets/.env ]; then
+  set -a
+  . /etc/secrets/.env
+  set +a
+fi
+
 DATABASE_URL="${DATABASE_URL:-${PROD_DB_URL:-}}"
 export DATABASE_URL
 
