@@ -71,6 +71,7 @@ COPY --from=nest-build /app/package.json ./
 COPY --from=nest-build /app/node_modules ./node_modules
 COPY --from=nest-build /app/dist ./dist
 COPY --from=nest-build /app/prisma ./prisma
+COPY --from=nest-build /app/prisma.config.ts ./prisma.config.ts
 COPY --from=nest-build /app/src/mail/templates ./dist/src/mail/templates
 COPY --from=nest-build /app/lables.data.json ./lables.data.json
 COPY --from=nest-build /app/docker-entrypoint.sh /app/docker-entrypoint.sh
