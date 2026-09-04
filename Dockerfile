@@ -60,6 +60,8 @@ ENV NODE_OPTIONS="--max-old-space-size=4096"
 ENV DATABASE_URL="postgresql://placeholder:placeholder@localhost:5432/placeholder"
 RUN pnpm prisma generate
 RUN pnpm build
+COPY superfan.nest/docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN sed -i 's/\r$//' /app/docker-entrypoint.sh && chmod +x /app/docker-entrypoint.sh
  
 # Nest Production stage (Target name: nest-production)
 FROM node:22-slim AS nest-production
@@ -71,4 +73,6 @@ COPY --from=nest-build /app/dist ./dist
 COPY --from=nest-build /app/prisma ./prisma
 COPY --from=nest-build /app/src/mail/templates ./dist/src/mail/templates
 COPY --from=nest-build /app/lables.data.json ./lables.data.json
+COPY --from=nest-build /app/docker-entrypoint.sh /app/docker-entrypoint.sh
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["node", "dist/src/main.js"]
