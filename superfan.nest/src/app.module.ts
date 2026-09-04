@@ -38,6 +38,7 @@ import { ElasticsearchModule } from './elasticsearch/elasticsearch.module';
 import { LoggingMiddleware } from './common/middleware/logging.middleware';
 import { WaitlistModule } from './waitlist/waitlist.module';
 import { ShopModule } from './shop/shop.module';
+import { PodcastModule } from './podcast/podcast.module';
 
 @Module({
   imports: [
@@ -86,6 +87,7 @@ import { ShopModule } from './shop/shop.module';
     ResetModule,
     WaitlistModule,
     ShopModule,
+    PodcastModule,
     BullModule.forRootAsync({
       imports: [ConfigModule],
       useFactory: (configService: ConfigService) => {
