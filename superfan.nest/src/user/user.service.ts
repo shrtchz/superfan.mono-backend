@@ -805,31 +805,9 @@ export class UserService {
         // Create wallet
         await prisma.wallet.create({ data: { userId: user.id } });
 
-        // Optional: handle referral bonus
+        // Handle referral bonuses
         if (dto.referralCode) {
-          const referrer = await prisma.user.findUnique({
-            where: { referral_code: dto.referralCode },
-          });
-          if (referrer) {
-            await prisma.referral.create({
-              data: { referrerId: referrer.id, refereeId: user.id },
-            });
-
-        await this.walletService.creditWallet(
-          referrer.id,
-          25,
-          'Referral Bonus — Signup: NGN 20',
-          `You earned ₦25 because ${user.username} signed up using your referral link.`,
-        );
-
-                await this.walletService.creditWallet(
-          user.id,
-          10,
-          'Referee Bonus (NGN 20)',
-          `You earned ₦25 because ${user.username} signed up using your referral link.`,
-        );
-      
-          }
+          await this.processReferralSignup(user, dto.referralCode);
         }
       }
 
@@ -2926,8 +2904,8 @@ async findUserByEmail(email: string): Promise<any> {
     await this.walletService.creditWallet(
       referrer.id,
       nairaAmount,
-      'Referral Bonus — Signup: NGN 20',
-      `You earned ₦${nairaAmount} because @${user.username} signed up using your referral link.`,
+      'Referral Bonus - Sign up',
+      'Referral Bonus - Sign up',
       'Gold',
     );
     console.log('[Referral] Wallet credited for referrer', {
@@ -2938,7 +2916,7 @@ async findUserByEmail(email: string): Promise<any> {
     // Notification for referrer
     await this.notificationService.createNotification(
       referrer.id,
-      'Referral Bonus — Signup: NGN 20',
+      'Referral Bonus - Sign up',
       `You earned 20,000 PTS (Gold Account) because @${user.username} signed up using your referral link.`,
       'referral_reward',
     );
