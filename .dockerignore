@@ -1,0 +1,15 @@
+.git
+.github
+node_modules
+**/node_modules
+superfan.nest/node_modules
+superfan.nest/dist
+superfan.nest/generated
+superfan.nest/src/generated
+superfan.nest/prisma/generated
+superfan.go/tmp
+*.local
+*.exe
+*.test
+.env
+*.env

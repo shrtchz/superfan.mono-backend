@@ -1,5 +1,6 @@
 import { BullModule } from '@nestjs/bullmq';
-import { Module } from '@nestjs/common';
+import { Module, NestModule, MiddlewareConsumer } from '@nestjs/common';
+import * as path from 'path';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import {
   APP_FILTER,
@@ -11,6 +12,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { ScheduleModule } from '@nestjs/schedule';
 import { FlutterwaveModule } from '@scwar/nestjs-flutterwave';
 import { SentryGlobalFilter, SentryModule } from '@sentry/nestjs/setup';
+import { ClerkModule } from './common/clerk/clerk.module';
 import { AdminModule } from './admin/admin.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { AppController } from './app.controller';
@@ -23,7 +25,6 @@ import { CronJobModule } from './cronjobs/cronjob.module';
 import { HealthModule } from './health/health.module';
 import { ImageModule } from './image/image.module';
 import { NotificationModule } from './notification/notification.module';
-import { PaymentModule } from './payment/payment.module';
 import { PermissionModule } from './permission/permission.module';
 import { QuizModule } from './quiz/quiz.module';
 import { QuotesModule } from './quote/quote.module';
@@ -34,11 +35,21 @@ import { WalletModule } from './wallet/wallet.module';
 import { WebhookModule } from './webhook/webhook.module';
 import { StreamingModule } from './stream/stream.module';
 import { ElasticsearchModule } from './elasticsearch/elasticsearch.module';
+import { LoggingMiddleware } from './common/middleware/logging.middleware';
+import { WaitlistModule } from './waitlist/waitlist.module';
+import { ShopModule } from './shop/shop.module';
+import { PodcastModule } from './podcast/podcast.module';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
+      envFilePath: [
+        '/etc/secrets/.env',
+        path.resolve(__dirname, '../../../.env'),
+        path.resolve(__dirname, '../../.env'),
+        '.env',
+      ],
     }),
     SentryModule.forRoot(),
     JwtModule.registerAsync({
@@ -56,6 +67,7 @@ import { ElasticsearchModule } from './elasticsearch/elasticsearch.module';
     }),
     ScheduleModule.forRoot(),
     EventEmitterModule.forRoot(),
+    ClerkModule,
     ElasticsearchModule,
     DatabaseModule,
     HealthModule,
@@ -70,38 +82,40 @@ import { ElasticsearchModule } from './elasticsearch/elasticsearch.module';
     UserModule,
     NotificationModule,
     QuizModule,
-    PaymentModule,
     StreamingModule,
     WebhookModule,
     ResetModule,
+    WaitlistModule,
+    ShopModule,
+    PodcastModule,
     BullModule.forRootAsync({
       imports: [ConfigModule],
-      useFactory: (configService: ConfigService) => ({
-        ...(configService.get('NODE_ENV') === 'production'
-          ? {
-              connection: {
-                url: configService.get('REDIS_URL'),
-                // tls: {},
-                // maxRetriesPerRequest: null,
-              },
-            }
-          : {
-              connection: {
-                host: configService.get('LOCAL_REDIS_HOST'),
-                port: configService.get('LOCAL_REDIS_PORT', 6379),
+      useFactory: (configService: ConfigService) => {
+        const redisUrl = configService.get<string>('REDIS_URL');
+        return {
+          connection: redisUrl
+            ? {
+                url: redisUrl,
                 maxRetriesPerRequest: null,
+                enableReadyCheck: false,
+              }
+            : {
+                host: configService.get('LOCAL_REDIS_HOST') || '127.0.0.1',
+                port: Number(configService.get('LOCAL_REDIS_PORT', 6379)),
+                maxRetriesPerRequest: null,
+                enableReadyCheck: false,
               },
-            }),
-        defaultJobOptions: {
-          attempts: 3,
-          backoff: {
-            type: 'exponential',
-            delay: 5000,
+          defaultJobOptions: {
+            attempts: 3,
+            backoff: {
+              type: 'exponential',
+              delay: 5000,
+            },
+            removeOnComplete: true,
+            removeOnFail: true,
           },
-          removeOnComplete: true,
-          removeOnFail: true,
-        },
-      }),
+        };
+      },
       inject: [ConfigService],
     }),
   ],
@@ -125,4 +139,8 @@ import { ElasticsearchModule } from './elasticsearch/elasticsearch.module';
     AppService,
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer.apply(LoggingMiddleware).forRoutes('*');
+  }
+}

@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { createHmac } from 'crypto';
 import { generateFiveUniqueRandomNumbers } from '../common/utils/utils';
 import { NotificationService } from '../notification/notification.service';
+import { WalletService } from '../wallet/wallet.service';
 import { prisma } from '../prisma/prisma';
 import { DisbursementEventDataDto, MonnifyWebhookDto } from './webhook.dto';
 
@@ -14,6 +15,7 @@ export class MonnifyWebhookService {
   constructor(
     private readonly configService: ConfigService,
     private readonly notificationService: NotificationService,
+    private readonly walletService: WalletService,
   ) {
     this.merchantClientSecret = process.env.MONNIFY_SECRET_KEY;
   }
@@ -281,8 +283,8 @@ if (bankTransfer) {
       data: {
         userId: bankTransfer.userId,
         type: 'credit',
-        title: 'Bank Transfer Funding',
-        description: 'Money funded via bank transfer',
+        title: 'Deposit - Bank Transfer',
+        description: 'Deposit - Bank Transfer',
         amount: amount,
         currency: currency,
         reference: eventData.paymentReference,
@@ -431,53 +433,61 @@ if (bankTransfer) {
     `Processing wallet funding | User: ${user.id} | AccountType: ${accountType} | Amount: ${amount}`,
   );
 
-  await prisma.$transaction([
-    // 💰 Update Wallet Balance (⚠️ still single wallet per user)
-    prisma.wallet.update({
-      where: { userId: user.id },
-      data: {
-        balance: { increment: amount },
-      },
-    }),
+    let notificationTitle = "Deposit - Bank Transfer";
+    if (String(paymentMethod).toUpperCase().includes("CARD")) {
+      notificationTitle = "Deposit - Debit Card";
+    } else if (String(paymentMethod).toUpperCase().includes("CRYPTO") || String(paymentMethod).toUpperCase().includes("STABLE")) {
+      notificationTitle = "Deposit - Stablecoin";
+    }
 
-    // 🧾 Wallet Transaction
-    prisma.walletTransaction.create({
-      data: {
-        userId: user.id,
-        amount,
-        type: 'credit',
-        transactionType: 'FUNDING',
-        status: 'SUCCESS',
-        reference,
-        payment_method: paymentMethod,
-        account_name: accountName,
-        bank_name: bankName,
-        account_no: accountNumber,
-        account_type: accountType,
-        description: `Money added to wallet`,
-        trx_ref: `${generateFiveUniqueRandomNumbers()}`
-      },
-    }),
-
-    // 📊 Activity Wallet
-    prisma.activityWallet.create({
-      data: {
-        userId: user.id,
-        type: 'credit',
-        title: 'Money Added',
-        description: `Money added to wallet`,
-        amount,
-        currency: eventData.currency,
-        reference,
-        status: 'SUCCESS',
-        metadata: {
-          paymentMethod,
-          bankName,
-          accountType,
+    await prisma.$transaction([
+      // 💰 Update Wallet Balance (⚠️ still single wallet per user)
+      prisma.wallet.update({
+        where: { userId: user.id },
+        data: {
+          balance: { increment: amount },
         },
-      },
-    }),
-  ]);
+      }),
+
+      // 🧾 Wallet Transaction
+      prisma.walletTransaction.create({
+        data: {
+          userId: user.id,
+          amount,
+          type: 'credit',
+          transactionType: 'FUNDING',
+          status: 'SUCCESS',
+          reference,
+          payment_method: paymentMethod,
+          account_name: accountName,
+          bank_name: bankName,
+          account_no: accountNumber,
+          account_type: accountType,
+          description: notificationTitle,
+          holdUntil: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000),
+          trx_ref: `${generateFiveUniqueRandomNumbers()}`
+        },
+      }),
+
+      // 📊 Activity Wallet
+      prisma.activityWallet.create({
+        data: {
+          userId: user.id,
+          type: 'credit',
+          title: notificationTitle,
+          description: notificationTitle,
+          amount,
+          currency: eventData.currency,
+          reference,
+          status: 'SUCCESS',
+          metadata: {
+            paymentMethod,
+            bankName,
+            accountType,
+          },
+        },
+      }),
+    ]);
 
   await this.notificationService.createNotification(
     user.id,
@@ -863,7 +873,7 @@ if (bankTransfer) {
 
           description:
             eventData.transactionDescription ||
-            'Wallet funded via bank transfer',
+            'Deposit - Bank Transfer',
 
           payment_date: new Date(),
         },
@@ -878,9 +888,9 @@ if (bankTransfer) {
 
           type: 'credit',
 
-          title: 'Wallet Funded',
+          title: 'Deposit - Bank Transfer',
 
-          description: `₦${eventData.amount} credited via ${eventData.destinationBankName}`,
+          description: 'Deposit - Bank Transfer',
 
           amount: Number(eventData.amount),
 
