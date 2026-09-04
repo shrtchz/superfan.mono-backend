@@ -805,31 +805,9 @@ export class UserService {
         // Create wallet
         await prisma.wallet.create({ data: { userId: user.id } });
 
-        // Optional: handle referral bonus
+        // Handle referral bonuses
         if (dto.referralCode) {
-          const referrer = await prisma.user.findUnique({
-            where: { referral_code: dto.referralCode },
-          });
-          if (referrer) {
-            await prisma.referral.create({
-              data: { referrerId: referrer.id, refereeId: user.id },
-            });
-
-        await this.walletService.creditWallet(
-          referrer.id,
-          25,
-          'Referral Bonus — Signup: NGN 20',
-          `You earned ₦25 because ${user.username} signed up using your referral link.`,
-        );
-
-                await this.walletService.creditWallet(
-          user.id,
-          10,
-          'Referee Bonus (NGN 20)',
-          `You earned ₦25 because ${user.username} signed up using your referral link.`,
-        );
-      
-          }
+          await this.processReferralSignup(user, dto.referralCode);
         }
       }
 
@@ -941,11 +919,29 @@ export class UserService {
       throw new BadRequestException('Invalid card number');
     }
 
-    const first_6digits = cardNumber.slice(0, 6);
     const last_4digits = cardNumber.slice(-4);
-    const maskedPan = `${first_6digits}******${last_4digits}`;
+    // Mask all digits except the last 4
+    const maskedPan = `**** **** **** ${last_4digits}`;
 
-    // const maskedPan = `${payload.first_6digits}******${payload.last_4digits}`;
+    // Extract and normalize expiry
+    let expiry = String(
+      payload.expiry ||
+      payload.expiryDate ||
+      payload.cardExpiry ||
+      payload.card_expiry ||
+      payload.expiration ||
+      ''
+    ).trim();
+
+    if (!expiry && (payload.expiryMonth || payload.month) && (payload.expiryYear || payload.year)) {
+      const month = String(payload.expiryMonth || payload.month).padStart(2, '0');
+      const rawYear = String(payload.expiryYear || payload.year);
+      const year = rawYear.length === 4 ? rawYear.slice(2) : rawYear;
+      expiry = `${month}/${year}`;
+    } else if (expiry && !expiry.includes('/') && expiry.replace(/\D/g, '').length === 4) {
+      const digits = expiry.replace(/\D/g, '');
+      expiry = `${digits.slice(0, 2)}/${digits.slice(2, 4)}`;
+    }
 
     // check if card already exists
     const existingCard = await prisma.userCard.findFirst({
@@ -956,6 +952,18 @@ export class UserService {
     });
 
     if (existingCard) {
+      // If existing card is missing expiry, update it
+      if (expiry && !existingCard.expiry) {
+        const updated = await prisma.userCard.update({
+          where: { id: existingCard.id },
+          data: { expiry },
+        });
+        return {
+          success: true,
+          message: 'Card already exists',
+          data: updated,
+        };
+      }
       return {
         success: true,
         message: 'Card already exists',
@@ -971,13 +979,13 @@ export class UserService {
     const card = await prisma.userCard.create({
       data: {
         userId,
-        cardToken: payload.token,
+        cardToken: payload.token || payload.cardToken || payload.card_token || null,
         cardNumber: payload.cardNumber,
         maskedPan,
-        cardType: payload.type,
-        expiry: payload.expiry,
-        issuer: payload.issuer,
-        country: payload.country,
+        cardType: payload.type || payload.cardType || payload.brand || 'Card',
+        expiry: expiry || null,
+        issuer: payload.issuer || null,
+        country: payload.country || null,
         isDefault: totalCards === 0,
       },
     });
@@ -2896,8 +2904,8 @@ async findUserByEmail(email: string): Promise<any> {
     await this.walletService.creditWallet(
       referrer.id,
       nairaAmount,
-      'Referral Bonus — Signup: NGN 20',
-      `You earned ₦${nairaAmount} because @${user.username} signed up using your referral link.`,
+      'Referral Bonus - Sign up',
+      'Referral Bonus - Sign up',
       'Gold',
     );
     console.log('[Referral] Wallet credited for referrer', {
@@ -2908,7 +2916,7 @@ async findUserByEmail(email: string): Promise<any> {
     // Notification for referrer
     await this.notificationService.createNotification(
       referrer.id,
-      'Referral Bonus — Signup: NGN 20',
+      'Referral Bonus - Sign up',
       `You earned 20,000 PTS (Gold Account) because @${user.username} signed up using your referral link.`,
       'referral_reward',
     );

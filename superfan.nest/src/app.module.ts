@@ -38,6 +38,7 @@ import { ElasticsearchModule } from './elasticsearch/elasticsearch.module';
 import { LoggingMiddleware } from './common/middleware/logging.middleware';
 import { WaitlistModule } from './waitlist/waitlist.module';
 import { ShopModule } from './shop/shop.module';
+import { PodcastModule } from './podcast/podcast.module';
 
 @Module({
   imports: [
@@ -86,34 +87,35 @@ import { ShopModule } from './shop/shop.module';
     ResetModule,
     WaitlistModule,
     ShopModule,
+    PodcastModule,
     BullModule.forRootAsync({
       imports: [ConfigModule],
-      useFactory: (configService: ConfigService) => ({
-        ...(configService.get('REDIS_URL')
-          ? {
-              connection: {
-                url: configService.get('REDIS_URL'),
-                // tls: {},
-                // maxRetriesPerRequest: null,
-              },
-            }
-          : {
-              connection: {
-                host: configService.get('LOCAL_REDIS_HOST') || '127.0.0.1',
-                port: configService.get('LOCAL_REDIS_PORT', 6379),
+      useFactory: (configService: ConfigService) => {
+        const redisUrl = configService.get<string>('REDIS_URL');
+        return {
+          connection: redisUrl
+            ? {
+                url: redisUrl,
                 maxRetriesPerRequest: null,
+                enableReadyCheck: false,
+              }
+            : {
+                host: configService.get('LOCAL_REDIS_HOST') || '127.0.0.1',
+                port: Number(configService.get('LOCAL_REDIS_PORT', 6379)),
+                maxRetriesPerRequest: null,
+                enableReadyCheck: false,
               },
-            }),
-        defaultJobOptions: {
-          attempts: 3,
-          backoff: {
-            type: 'exponential',
-            delay: 5000,
+          defaultJobOptions: {
+            attempts: 3,
+            backoff: {
+              type: 'exponential',
+              delay: 5000,
+            },
+            removeOnComplete: true,
+            removeOnFail: true,
           },
-          removeOnComplete: true,
-          removeOnFail: true,
-        },
-      }),
+        };
+      },
       inject: [ConfigService],
     }),
   ],

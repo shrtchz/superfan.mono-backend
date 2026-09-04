@@ -227,13 +227,15 @@ export class WalletService {
         amount,
       });
 
-      // Send notification for manual wallet credit
-      await this.notificationService.createNotification(
-        userId,
-        'Deposit - Bank Transfer',
-        `Your wallet has been credited with ₦${amount}`,
-        'wallet_credit_manual'
-      );
+      // Send notification for manual/deposit wallet credit
+      if (title.startsWith('Deposit') || title === 'Manual Credit') {
+        await this.notificationService.createNotification(
+          userId,
+          title,
+          `Your wallet has been credited with ₦${amount}`,
+          'wallet_credit_manual',
+        );
+      }
     });
 
     console.log('[Wallet][creditWallet][END] Completed successfully');

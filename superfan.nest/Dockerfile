@@ -33,11 +33,13 @@ RUN pnpm build
 
 # Copy migration and startup scripts
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
-RUN chmod +x /app/docker-entrypoint.sh
+RUN sed -i 's/\r$//' /app/docker-entrypoint.sh && chmod +x /app/docker-entrypoint.sh
 
 # Production
 FROM node:22-slim AS production
 WORKDIR /app
+
+RUN apt-get update -y && apt-get install -y openssl ca-certificates && rm -rf /var/lib/apt/lists/*
 
 ENV NODE_ENV=production
 
@@ -48,7 +50,7 @@ COPY --from=build /app/prisma ./prisma
 COPY --from=build /app/src/mail/templates ./dist/src/mail/templates
 COPY --from=build /app/lables.data.json ./lables.data.json
 COPY --from=build /app/docker-entrypoint.sh /app/docker-entrypoint.sh
-RUN chmod +x /app/docker-entrypoint.sh
+RUN sed -i 's/\r$//' /app/docker-entrypoint.sh && chmod +x /app/docker-entrypoint.sh
 
 # Use entrypoint script to run migrations before starting the app
 ENTRYPOINT ["/app/docker-entrypoint.sh"]

@@ -519,6 +519,7 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				wallet = models.Wallet{
 					UserID:      req.UserID,
+					Balance:     rewardNaira,
 					GoldBalance: rewardNaira,
 				}
 				if err := tx.Create(&wallet).Error; err != nil {
@@ -528,9 +529,13 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 				return err
 			}
 		} else {
-			if err := tx.Model(&wallet).UpdateColumn("goldBalance", gorm.Expr(`"goldBalance" + ?`, rewardNaira)).Error; err != nil {
+			if err := tx.Model(&wallet).Updates(map[string]interface{}{
+				"balance":     gorm.Expr(`"balance" + ?`, rewardNaira),
+				"goldBalance": gorm.Expr(`"goldBalance" + ?`, rewardNaira),
+			}).Error; err != nil {
 				return err
 			}
+			wallet.Balance += rewardNaira
 			wallet.GoldBalance += rewardNaira
 		}
 
@@ -547,7 +552,7 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 		status := "Completed"
 		wTx := models.WalletTransaction{
 			UserID:          req.UserID,
-			Amount:          rewardPoints,
+			Amount:          rewardNaira,
 			Type:            &txType,
 			Currency:        currency,
 			Status:          &status,
@@ -562,6 +567,19 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 		if err := tx.Create(&wTx).Error; err != nil {
 			return err
 		}
+
+		actTx := models.ActivityWallet{
+			UserID:      req.UserID,
+			Type:        "credit",
+			Title:       description,
+			Description: description,
+			Amount:      rewardNaira,
+			Currency:    currency,
+			Reference:   &txRef,
+			Status:      "SUCCESS",
+			CreatedAt:   time.Now(),
+		}
+		_ = tx.Create(&actTx).Error
 
 		var campaignIDPtr *int
 		if req.CampaignID != nil && *req.CampaignID > 0 {

@@ -141,5 +141,9 @@
     "moduleNameMapper": {
       "^src/(.*)$": "<rootDir>/$1"
     }
+  },
+  "prisma": {
+    "schema": "prisma/schema/schema.prisma",
+    "seed": "tsx prisma/seed/seed.ts"
   }
 }

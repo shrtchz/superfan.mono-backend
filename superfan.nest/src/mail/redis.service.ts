@@ -20,7 +20,12 @@ export class RedisService implements OnModuleDestroy {
     }
 
     this.redis.on('error', (err) => {
-      console.error('Redis error occurred:', err);
+      const now = Date.now();
+      if (now - this.lastSoftFailLogAt > 30000) {
+        this.lastSoftFailLogAt = now;
+        const msg = err instanceof Error ? err.message : String(err);
+        this.logger.warn(`Redis connection notice: ${msg}`);
+      }
     });
   }
 

@@ -12,7 +12,8 @@ export enum SubscriptionPlan {
 
 
 
-async function seedAll() {
+export async function seedAll(client: any = prisma) {
+  const db = client;
   const users = [
         {
       firstName: "ridwan",
@@ -510,12 +511,22 @@ if (!existingRole) {
   console.log("✅ Seeded Products");
 }
 
-// ✅ Run everything
-seedAll()
-  .catch((e) => {
-    console.error(e);
-    process.exit(1);
-  })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });
+// ✅ Run when executed directly
+if (typeof require !== 'undefined' && require.main === module) {
+  seedAll()
+    .catch((e) => {
+      console.error(e);
+      process.exit(1);
+    })
+    .finally(async () => {
+      await prisma.$disconnect();
+    });
+} else if (!process.env.NEST_APP_INIT) {
+  seedAll()
+    .catch((e) => {
+      console.error(e);
+    })
+    .finally(async () => {
+      await prisma.$disconnect();
+    });
+}

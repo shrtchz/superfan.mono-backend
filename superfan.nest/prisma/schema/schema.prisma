@@ -89,6 +89,7 @@ model User {
   ongoingQuizs           OngoingQuiz[]
   orders                 Order[]             @relation("UserToOrders")
   returns                OrderReturn[]       @relation("UserToReturns")
+  podcasts               Podcast[]
 }
 
 model Reward {
@@ -762,6 +763,29 @@ model Stream {
   streamComments    StreamComment[]
   streamUserBans    StreamUserBan[]
   chatLockLogs      StreamChatLockLog[]
+}
+
+model Podcast {
+  id             Int      @id @default(autoincrement())
+  title          String
+  description    String?
+  episode        Int
+  host           String
+  guest          String?
+  youtubeVideoId String   @unique
+  youtubeUrl     String
+  thumbnailUrl   String?
+  duration       String?
+  privacyStatus  String   @default("private")
+  uploadStatus   String   @default("PROCESSING")
+  publishedAt    DateTime?
+  createdById    Int
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  createdBy      User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
+
+  @@index([publishedAt])
+  @@index([createdById])
 }
 
 model StreamChatLockLog {

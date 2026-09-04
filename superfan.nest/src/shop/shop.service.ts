@@ -5,7 +5,11 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { prisma } from '../prisma/prisma';
-import { GetProductsQueryDto } from './dto/product.dto';
+import {
+  GetProductsQueryDto,
+  CreateProductDto,
+  UpdateProductDto,
+} from './dto/product.dto';
 import { CreateOrderDto, CreateReturnDto } from './dto/order.dto';
 
 function generateOrderNumber(): string {
@@ -47,8 +51,48 @@ export class ShopService {
       prisma.product.count({ where }),
     ]);
 
+    const productIds = products.map((p) => p.id);
+    let orderCountsByProduct: Record<number, { orders: number; fulfilledOrders: number }> = {};
+
+    if (productIds.length > 0) {
+      const orderItems = await prisma.orderItem.findMany({
+        where: {
+          productId: { in: productIds },
+        },
+        select: {
+          productId: true,
+          order: {
+            select: {
+              status: true,
+            },
+          },
+        },
+      });
+
+      orderCountsByProduct = productIds.reduce((acc, id) => {
+        acc[id] = { orders: 0, fulfilledOrders: 0 };
+        return acc;
+      }, {} as Record<number, { orders: number; fulfilledOrders: number }>);
+
+      for (const item of orderItems) {
+        if (!item.productId || !(item.productId in orderCountsByProduct)) continue;
+        const status = item.order?.status;
+        if (status === 'DELIVERED') {
+          orderCountsByProduct[item.productId].fulfilledOrders += 1;
+        } else if (status && status !== 'CANCELLED') {
+          orderCountsByProduct[item.productId].orders += 1;
+        }
+      }
+    }
+
+    const productsWithCounts = products.map((p) => ({
+      ...p,
+      orders: orderCountsByProduct[p.id]?.orders || 0,
+      fulfilledOrders: orderCountsByProduct[p.id]?.fulfilledOrders || 0,
+    }));
+
     return {
-      products,
+      products: productsWithCounts,
       total,
       page,
       limit,
@@ -66,6 +110,110 @@ export class ShopService {
     }
 
     return product;
+  }
+
+  async createProduct(dto: CreateProductDto) {
+    const rawPrice = String(dto.price || '');
+    const priceAmount =
+      dto.priceAmount !== undefined && !isNaN(dto.priceAmount)
+        ? Number(dto.priceAmount)
+        : parseFloat(rawPrice.replace(/[^0-9.]/g, '')) || 0;
+
+    const data = {
+      title: dto.title,
+      price: dto.price,
+      priceAmount,
+      images: dto.images || [],
+      colors: dto.colors || [],
+      sizes: dto.sizes || [],
+      badge: dto.badge || null,
+      description: dto.description || null,
+      stock: dto.stock ?? 100,
+      isActive: dto.isActive ?? true,
+    };
+
+    try {
+      return await prisma.product.create({ data });
+    } catch (err: any) {
+      const isPkeyError =
+        err?.code === 'P2002' ||
+        String(err?.message || '').includes('Product_pkey') ||
+        String(err?.cause?.originalMessage || '').includes('Product_pkey');
+
+      if (isPkeyError) {
+        try {
+          await prisma.$executeRawUnsafe(`
+            SELECT setval(
+              pg_get_serial_sequence('"Product"', 'id'),
+              COALESCE((SELECT MAX(id) FROM "Product"), 0) + 1,
+              false
+            );
+          `);
+          return await prisma.product.create({ data });
+        } catch (retryErr) {
+          const maxProduct = await prisma.product.findFirst({
+            orderBy: { id: 'desc' },
+            select: { id: true },
+          });
+          const nextId = (maxProduct?.id ?? 0) + 1;
+          return await prisma.product.create({
+            data: {
+              ...data,
+              id: nextId,
+            },
+          });
+        }
+      }
+
+      throw err;
+    }
+  }
+
+  async updateProduct(id: number, dto: UpdateProductDto) {
+    const existing = await prisma.product.findUnique({
+      where: { id },
+    });
+
+    if (!existing) {
+      throw new NotFoundException(`Product with ID ${id} not found`);
+    }
+
+    const data: any = { ...dto };
+    if (dto.price && dto.priceAmount === undefined) {
+      data.priceAmount = parseFloat(String(dto.price).replace(/[^0-9.]/g, '')) || 0;
+    }
+
+    return prisma.product.update({
+      where: { id },
+      data,
+    });
+  }
+
+  async deleteProduct(id: number) {
+    const existing = await prisma.product.findUnique({
+      where: { id },
+    });
+
+    if (!existing) {
+      throw new NotFoundException(`Product with ID ${id} not found`);
+    }
+
+    // Detach from any orderItems or returns so orders are preserved
+    await prisma.orderItem.updateMany({
+      where: { productId: id },
+      data: { productId: null },
+    });
+
+    await prisma.orderReturn.updateMany({
+      where: { productId: id },
+      data: { productId: null },
+    });
+
+    const deleted = await prisma.product.delete({
+      where: { id },
+    });
+
+    return { message: 'Product deleted successfully', product: deleted };
   }
 
   async createOrder(userId: number, dto: CreateOrderDto) {
@@ -339,5 +487,187 @@ export class ShopService {
     });
 
     return { returns };
+  }
+
+  async getAdminOrders(query?: {
+    page?: number;
+    limit?: number;
+    status?: string;
+    productId?: number;
+    search?: string;
+  }) {
+    const where: any = {};
+
+    if (query?.productId) {
+      where.items = {
+        some: {
+          productId: Number(query.productId),
+        },
+      };
+    }
+
+    if (query?.status) {
+      const rawStatus = String(query.status).trim().toUpperCase();
+      if (rawStatus === 'NEW') {
+        where.status = {
+          in: ['ORDERED', 'PROCESSING', 'SHIPPED', 'OUT_FOR_DELIVERY'],
+        };
+      } else if (rawStatus === 'FULFILLED') {
+        where.status = 'DELIVERED';
+      } else if (
+        ['ORDERED', 'PROCESSING', 'SHIPPED', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED'].includes(
+          rawStatus,
+        )
+      ) {
+        where.status = rawStatus;
+      }
+    }
+
+    if (query?.search) {
+      const s = String(query.search).trim();
+      where.OR = [
+        { orderNumber: { contains: s, mode: 'insensitive' } },
+        { fullName: { contains: s, mode: 'insensitive' } },
+        { address: { contains: s, mode: 'insensitive' } },
+        { phoneNumber: { contains: s, mode: 'insensitive' } },
+        { user: { username: { contains: s, mode: 'insensitive' } } },
+        { user: { firstName: { contains: s, mode: 'insensitive' } } },
+        { user: { lastName: { contains: s, mode: 'insensitive' } } },
+        { items: { some: { productName: { contains: s, mode: 'insensitive' } } } },
+      ];
+    }
+
+    const page = query?.page && query.page > 0 ? Number(query.page) : 1;
+    const limit = query?.limit && query.limit > 0 ? Number(query.limit) : 50;
+    const skip = (page - 1) * limit;
+
+    const baseWhereForCounts: any = {};
+    if (query?.productId) {
+      baseWhereForCounts.items = {
+        some: {
+          productId: Number(query.productId),
+        },
+      };
+    }
+
+    const [orders, total, newOrdersCount, fulfilledOrdersCount] = await Promise.all([
+      prisma.order.findMany({
+        where,
+        include: {
+          user: {
+            select: {
+              id: true,
+              username: true,
+              firstName: true,
+              lastName: true,
+              profilePicture: true,
+              email: true,
+              phone: true,
+            },
+          },
+          items: {
+            include: {
+              product: true,
+            },
+          },
+          returns: true,
+        },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      prisma.order.count({ where }),
+      prisma.order.count({
+        where: {
+          ...baseWhereForCounts,
+          status: { in: ['ORDERED', 'PROCESSING', 'SHIPPED', 'OUT_FOR_DELIVERY'] },
+        },
+      }),
+      prisma.order.count({
+        where: {
+          ...baseWhereForCounts,
+          status: 'DELIVERED',
+        },
+      }),
+    ]);
+
+    return {
+      orders,
+      total,
+      newOrdersCount,
+      fulfilledOrdersCount,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+    };
+  }
+
+  async updateOrderStatus(orderId: number, status: string) {
+    const existing = await prisma.order.findUnique({
+      where: { id: orderId },
+      include: {
+        user: {
+          select: {
+            id: true,
+            username: true,
+            firstName: true,
+            lastName: true,
+          },
+        },
+        items: true,
+      },
+    });
+
+    if (!existing) {
+      throw new NotFoundException(`Order with ID ${orderId} not found`);
+    }
+
+    // Normalize status string
+    const normalized = status.trim().toUpperCase().replace(/\s+/g, '_');
+    const validStatuses = [
+      'ORDERED',
+      'PROCESSING',
+      'SHIPPED',
+      'OUT_FOR_DELIVERY',
+      'DELIVERED',
+      'CANCELLED',
+    ];
+
+    if (!validStatuses.includes(normalized)) {
+      throw new BadRequestException(
+        `Invalid status: ${status}. Valid options are: ${validStatuses.join(', ')}`,
+      );
+    }
+
+    const updatedOrder = await prisma.order.update({
+      where: { id: orderId },
+      data: {
+        status: normalized as any,
+        updatedAt: new Date(),
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            username: true,
+            firstName: true,
+            lastName: true,
+            profilePicture: true,
+            email: true,
+          },
+        },
+        items: {
+          include: {
+            product: true,
+          },
+        },
+        returns: true,
+      },
+    });
+
+    return {
+      message: `Order status updated to ${normalized}`,
+      order: updatedOrder,
+    };
   }
 }
