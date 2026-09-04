@@ -1,11 +1,14 @@
 #!/bin/sh
 set -e
 
-if [ -f /etc/secrets/.env ]; then
-  set -a
-  . /etc/secrets/.env
-  set +a
-fi
+for env_file in /etc/secrets/.env /etc/secrets/env /app/.env /app/env; do
+  if [ -f "$env_file" ]; then
+    set -a
+    . "$env_file"
+    set +a
+    break
+  fi
+done
 
 DATABASE_URL="${DATABASE_URL:-${PROD_DB_URL:-}}"
 export DATABASE_URL
