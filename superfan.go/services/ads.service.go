@@ -17,6 +17,7 @@ import (
 type AdsService interface {
 	CreateCampaign(ctx context.Context, req *CreateCampaignRequest) (*models.AdCampaign, error)
 	GetCampaigns(ctx context.Context, query *CampaignListQuery) (*CampaignListResponse, error)
+	GetMyInsights(ctx context.Context, query *AdInsightsQuery) (*AdInsightsResponse, error)
 	GetInventoryStats(ctx context.Context) (*InventoryStatsResponse, error)
 	UpdateCampaignStatus(ctx context.Context, id int, status models.AdStatus) (*models.AdCampaign, error)
 	LogAdEvent(ctx context.Context, req *LogAdEventRequest) error
@@ -156,6 +157,7 @@ type CampaignListQuery struct {
 	Search  string `form:"search"`
 	SortBy  string `form:"sortBy,default=createdAt"`
 	SortDir string `form:"sortDir,default=desc"`
+	UserID  *int   `form:"-"`
 }
 
 type CampaignListResponse struct {
@@ -164,6 +166,28 @@ type CampaignListResponse struct {
 	Page       int                 `json:"page"`
 	Limit      int                 `json:"limit"`
 	TotalPages int                 `json:"totalPages"`
+}
+
+type AdInsightsQuery struct {
+	UserID    int
+	StartDate *time.Time
+	EndDate   *time.Time
+}
+
+type AdInsightsMetric struct {
+	Count                int64   `json:"count"`
+	Percentage           float64 `json:"percentage"`
+	RegisteredUsers      int64   `json:"registeredUsers"`
+	RegisteredPercentage float64 `json:"registeredPercentage"`
+}
+
+type AdInsightsResponse struct {
+	StartDate        time.Time        `json:"startDate"`
+	EndDate          time.Time        `json:"endDate"`
+	Views            AdInsightsMetric `json:"views"`
+	TotalImpressions AdInsightsMetric `json:"totalImpressions"`
+	CompletionRate   AdInsightsMetric `json:"completionRate"`
+	ClickThrough     AdInsightsMetric `json:"clickThrough"`
 }
 
 type InventoryStatsResponse struct {
@@ -814,6 +838,9 @@ func (s *adsServiceImpl) GetCampaigns(ctx context.Context, q *CampaignListQuery)
 	if q.Status != "" && q.Status != "all" {
 		db = db.Where("LOWER(status) = ?", strings.ToLower(q.Status))
 	}
+	if q.UserID != nil {
+		db = db.Where(`"userId" = ?`, *q.UserID)
+	}
 
 	if q.Search != "" {
 		searchPattern := "%" + strings.ToLower(q.Search) + "%"
@@ -882,6 +909,73 @@ func (s *adsServiceImpl) GetCampaigns(ctx context.Context, q *CampaignListQuery)
 		Page:       q.Page,
 		Limit:      q.Limit,
 		TotalPages: totalPages,
+	}, nil
+}
+
+func (s *adsServiceImpl) GetMyInsights(ctx context.Context, q *AdInsightsQuery) (*AdInsightsResponse, error) {
+	if q == nil || q.UserID <= 0 {
+		return nil, fmt.Errorf("a valid user ID is required")
+	}
+
+	startDate := time.Now().UTC().Truncate(24 * time.Hour)
+	endDate := time.Now().UTC()
+	if q.StartDate != nil {
+		startDate = q.StartDate.UTC()
+	}
+	if q.EndDate != nil {
+		endDate = q.EndDate.UTC()
+	}
+	if endDate.Before(startDate) {
+		return nil, fmt.Errorf("end date must be on or after start date")
+	}
+
+	type eventAggregate struct {
+		EventType       string `gorm:"column:event_type"`
+		Count           int64  `gorm:"column:event_count"`
+		RegisteredUsers int64  `gorm:"column:registered_count"`
+	}
+	var aggregates []eventAggregate
+	campaignIDs := s.db.WithContext(ctx).Model(&models.AdCampaign{}).
+		Select("id").Where(`"userId" = ?`, q.UserID)
+
+	if err := s.db.WithContext(ctx).Model(&models.AdEvent{}).
+		Select(`"eventType" AS event_type, COUNT(*) AS event_count, COUNT(DISTINCT "userId") AS registered_count`).
+		Where(`"campaignId" IN (?)`, campaignIDs).
+		Where(`"createdAt" >= ? AND "createdAt" <= ?`, startDate, endDate).
+		Where(`"eventType" IN (?, ?, ?)`, models.AdEventTypeViewStart, models.AdEventTypeCompletion, models.AdEventTypeClick).
+		Group(`"eventType"`).Scan(&aggregates).Error; err != nil {
+		return nil, err
+	}
+
+	counts := map[string]eventAggregate{}
+	for _, aggregate := range aggregates {
+		counts[aggregate.EventType] = aggregate
+	}
+
+	viewStarts := counts[string(models.AdEventTypeViewStart)]
+	completions := counts[string(models.AdEventTypeCompletion)]
+	clicks := counts[string(models.AdEventTypeClick)]
+	metric := func(aggregate eventAggregate, denominator int64) AdInsightsMetric {
+		percentage := 0.0
+		registeredPercentage := 0.0
+		if denominator > 0 {
+			percentage = math.Round(float64(aggregate.Count)/float64(denominator)*10000) / 100
+		}
+		if aggregate.Count > 0 {
+			registeredPercentage = math.Round(float64(aggregate.RegisteredUsers)/float64(aggregate.Count)*10000) / 100
+		}
+		return AdInsightsMetric{
+			Count: aggregate.Count, Percentage: percentage,
+			RegisteredUsers: aggregate.RegisteredUsers, RegisteredPercentage: registeredPercentage,
+		}
+	}
+
+	return &AdInsightsResponse{
+		StartDate: startDate, EndDate: endDate,
+		Views:            metric(viewStarts, viewStarts.Count),
+		TotalImpressions: metric(viewStarts, viewStarts.Count),
+		CompletionRate:   metric(completions, viewStarts.Count),
+		ClickThrough:     metric(clicks, viewStarts.Count),
 	}, nil
 }
 
