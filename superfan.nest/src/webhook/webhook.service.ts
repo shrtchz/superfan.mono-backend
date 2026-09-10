@@ -505,7 +505,21 @@ if (bankTransfer) {
     eventData: MonnifyWebhookDto['eventData'],
   ): Promise<void> {
     this.logger.warn(`Failed transaction: ${eventData.transactionReference}`);
-    // TODO: notify customer, log failure reason, etc.
+    // ⚠️ Payment Failed. Tap to retry. — resolve payer from payment reference
+    try {
+      const reference = eventData?.paymentReference || eventData?.transactionReference;
+      if (reference) {
+        const existingTx = await prisma.walletTransaction.findFirst({
+          where: { reference },
+          select: { userId: true },
+        });
+        if (existingTx?.userId) {
+          await this.notificationService.paymentFailed(existingTx.userId);
+        }
+      }
+    } catch {
+      // notifications must never break webhook processing
+    }
 
     console.log(eventData, 'handle failed transaction');
   }
@@ -532,7 +546,21 @@ if (bankTransfer) {
     eventData: MonnifyWebhookDto['eventData'],
   ): Promise<void> {
     this.logger.warn(`Failed transaction: ${eventData.transactionReference}`);
-    // TODO: notify customer, log failure reason, etc.
+    // ⚠️ Payment Failed. Tap to retry.
+    try {
+      const reference = eventData?.paymentReference || eventData?.transactionReference;
+      if (reference) {
+        const existingTx = await prisma.walletTransaction.findFirst({
+          where: { reference },
+          select: { userId: true },
+        });
+        if (existingTx?.userId) {
+          await this.notificationService.paymentFailed(existingTx.userId);
+        }
+      }
+    } catch {
+      // notifications must never break webhook processing
+    }
 
     console.log(eventData, 'handle rejected payment');
   }

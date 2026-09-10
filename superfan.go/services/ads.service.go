@@ -1,10 +1,13 @@
 package services
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"strings"
 	"time"
 
@@ -12,6 +15,7 @@ import (
 	"gorm.io/gorm"
 	"quiz.superfan.com/apis/labels"
 	"quiz.superfan.com/apis/models"
+	"quiz.superfan.com/apis/utils"
 )
 
 type AdsService interface {
@@ -29,11 +33,85 @@ type AdsService interface {
 }
 
 type adsServiceImpl struct {
-	db *gorm.DB
+	db           *gorm.DB
+	nestBaseURL  string
+	httpClient   *http.Client
 }
 
 func NewAdsService(db *gorm.DB) AdsService {
-	return &adsServiceImpl{db: db}
+	return &adsServiceImpl{
+		db:          db,
+		nestBaseURL: utils.GetEnvWithKey("NEST_BASE_URL"),
+		httpClient:  &http.Client{Timeout: 10 * time.Second},
+	}
+}
+
+// notifyNest fans an ad event out to the NestJS notification triggers so it
+// lands on the user's notifications page. Failures are never fatal for ads.
+func (s *adsServiceImpl) notifyNest(path string, payload map[string]interface{}) {
+	if s.nestBaseURL == "" {
+		return
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	url := fmt.Sprintf("%s/api/v1/notification/triggers/%s", strings.TrimRight(s.nestBaseURL, "/"), path)
+	resp, err := s.httpClient.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+}
+
+func (s *adsServiceImpl) notifyAdApprovedLive(ownerID *int, headline string) {
+	if ownerID == nil {
+		return
+	}
+	s.notifyNest("ad-approved-live", map[string]interface{}{
+		"userId": *ownerID, "campaignTitle": headline,
+	})
+}
+
+func (s *adsServiceImpl) notifyAdEnded(ownerID *int, headline string) {
+	if ownerID == nil {
+		return
+	}
+	s.notifyNest("ad-ended", map[string]interface{}{
+		"userId": *ownerID, "campaignTitle": headline,
+	})
+}
+
+func (s *adsServiceImpl) notifyAdMilestone(ownerID *int, headline string, impressions int) {
+	if ownerID == nil {
+		return
+	}
+	s.notifyNest("ad-performance-milestone", map[string]interface{}{
+		"userId": *ownerID, "campaignTitle": headline, "impressions": impressions,
+	})
+}
+
+func (s *adsServiceImpl) notifyAdLimitReached(userID int) {
+	// Resets at the next midnight in Africa/Lagos.
+	loc, err := time.LoadLocation("Africa/Lagos")
+	now := time.Now()
+	if err == nil {
+		now = now.In(loc)
+	} else {
+		now = now.UTC()
+	}
+	midnight := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location())
+	duration := midnight.Sub(now)
+	if duration <= 0 {
+		duration = 24 * time.Hour
+	}
+	hours := int(duration.Hours())
+	minutes := int(duration.Minutes()) % 60
+	resetsIn := fmt.Sprintf("%dh %dm", hours, minutes)
+
+	s.notifyNest("ad-limit-reached", map[string]interface{}{
+		"userId": userID, "resetsIn": resetsIn,
+	})
 }
 
 type PlacementFormatRule struct {
@@ -523,6 +601,16 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 			QuizID:     req.QuizID,
 			EventType:  models.AdEventTypeRewardSuppressed,
 		})
+
+		// 📺 "Today's ad limit reached, resets in ..." — once per day.
+		var suppressedToday int64
+		s.db.WithContext(ctx).Model(&models.AdEvent{}).
+			Where(`"userId" = ? AND "eventType" = ? AND "createdAt" >= ?`, req.UserID, models.AdEventTypeRewardSuppressed, startOfDay).
+			Count(&suppressedToday)
+		if suppressedToday <= 1 {
+			s.notifyAdLimitReached(req.UserID)
+		}
+
 		return &AwardAdRewardResponse{
 			Awarded:           false,
 			PointsAwarded:     0,
@@ -1056,6 +1144,8 @@ func (s *adsServiceImpl) UpdateCampaignStatus(ctx context.Context, id int, statu
 		return nil, fmt.Errorf("campaign not found: %w", err)
 	}
 
+	previous := campaign.Status
+
 	if err := s.db.WithContext(ctx).Model(&models.AdCampaign{}).
 		Where("id = ?", id).
 		Updates(map[string]interface{}{
@@ -1067,6 +1157,13 @@ func (s *adsServiceImpl) UpdateCampaignStatus(ctx context.Context, id int, statu
 
 	if err := s.db.WithContext(ctx).First(&campaign, id).Error; err != nil {
 		return nil, fmt.Errorf("failed to reload campaign after status update: %w", err)
+	}
+
+	// 📢 "Your Ad Is Live!" when a campaign goes active; "Ad Campaign Ended." when completed.
+	if status == models.AdStatusActive && previous != models.AdStatusActive {
+		s.notifyAdApprovedLive(campaign.UserID, campaign.Headline)
+	} else if status == models.AdStatusCompleted && previous != models.AdStatusCompleted {
+		s.notifyAdEnded(campaign.UserID, campaign.Headline)
 	}
 
 	return &campaign, nil
@@ -1113,6 +1210,13 @@ func (s *adsServiceImpl) LogAdEvent(ctx context.Context, req *LogAdEventRequest)
 		switch req.EventType {
 		case models.AdEventTypeViewStart, models.AdEventTypeCompletion, models.AdEventTypeRewardAwarded:
 			_ = s.db.WithContext(ctx).Model(&models.AdCampaign{}).Where("id = ?", *campaignIDPtr).UpdateColumn("views", gorm.Expr("views + 1")).Error
+
+			// 🚀 Performance milestone every 5,000 impressions.
+			var campaign models.AdCampaign
+			if err := s.db.WithContext(ctx).Select("id, \"userId\", headline, views").First(&campaign, *campaignIDPtr).Error; err == nil &&
+				campaign.Views > 0 && campaign.Views%5000 == 0 {
+				s.notifyAdMilestone(campaign.UserID, campaign.Headline, campaign.Views)
+			}
 		case models.AdEventTypeClick:
 			_ = s.db.WithContext(ctx).Model(&models.AdCampaign{}).Where("id = ?", *campaignIDPtr).UpdateColumn("clicks", gorm.Expr("clicks + 1")).Error
 		}

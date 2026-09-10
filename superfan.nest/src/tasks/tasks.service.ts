@@ -429,11 +429,14 @@ export class TaskService {
       data: { lifetimePoints: { increment: 10000 } },
     });
 
-    await this.notificationService.createNotification(
+    const referee = await prisma.user.findUnique({
+      where: { id: referral.refereeId },
+      select: { username: true },
+    });
+
+    await this.notificationService.referralFirstTestBonus(
       referral.referrerId,
-      'Referral Bonus — First Test: NGN 10',
-      'You earned 10,000 PTS (Gold Account) because your referee completed their first test.',
-      'referral_reward',
+      referee?.username ?? 'Your referee',
     );
 
     // Referee Bonus: 20,000 PTS into Gold Account

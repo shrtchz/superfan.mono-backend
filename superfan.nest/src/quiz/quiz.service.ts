@@ -12,6 +12,7 @@ import { getAccuracyBonus, getSpeedBonus, getStreakBonus, formatSecondsToMMSS } 
 import { prisma } from '../prisma/prisma';
 import { UserService } from '../user/user.service';
 import { WalletService } from '../wallet/wallet.service';
+import { NotificationService } from '../notification/notification.service';
 import { TaskService } from '../tasks/tasks.service';
 import { ExchangeRateService } from '../common/services/exchange-rate.service';
 
@@ -127,6 +128,7 @@ export class QuizService {
     private readonly userService: UserService,
     @Inject(forwardRef(() => TaskService))
     private readonly taskService: TaskService,
+    private readonly notificationService: NotificationService,
   ) {}
 
   /** Service JWT for server-to-server calls to the Go quiz API (AuthRequired routes). */
@@ -526,6 +528,15 @@ async submitQuiz(
   const speedGain = Math.round(baseScore * (speed_bonus / 100));
   const adBonusPoints = Number(ad_bonuses ?? 0);
 
+  // +200 PTS mid-quiz ad points notification (₦2-per-ad spec).
+  if (adBonusPoints > 0) {
+    try {
+      await this.notificationService.midQuizAdPoints(Number(userId), adBonusPoints);
+    } catch {
+      // notifications must never break quiz submission
+    }
+  }
+
   const totalPoints = baseScore + accuracyGain + speedGain + adBonusPoints + streakBonus;
   const pointsToNairaRate = parseInt(this.configService.get<string>('POINTS_TO_NAIRA_RATE'), 10);
   const amountInNaira = totalPoints / pointsToNairaRate;
@@ -629,6 +640,7 @@ async submitQuiz(
 }
 
   // 8. Create wallet reward - pass points, convert to NGN internally
+  //    (this sends the 🎉 test-quiz reward notification via wallet.service.ts)
   await this.walletService.createQuizReward(
     Number(userId),
     totalPoints,
@@ -1699,6 +1711,16 @@ async hasSubmittedLiveQuizForStream(
           },
         },
       });
+
+      // 🎯 "2 Test(s) Left Today" — warn when the FREE daily test pool runs low.
+      const testsRemaining = 5 - completedToday;
+      if (testsRemaining >= 1 && testsRemaining <= 2) {
+        try {
+          await this.notificationService.testsRemainingLow(Number(userId), testsRemaining);
+        } catch {
+          // notifications must never break quiz start
+        }
+      }
 
       if (completedToday >= 5) {
         // Return the NEW quiz questions but mark as limit reached

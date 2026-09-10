@@ -4,6 +4,7 @@ import {
   BadRequestException,
   UnauthorizedException,
 } from '@nestjs/common';
+import { NotificationService } from '../notification/notification.service';
 import { prisma } from '../prisma/prisma';
 import {
   GetProductsQueryDto,
@@ -21,6 +22,7 @@ function generateOrderNumber(): string {
 
 @Injectable()
 export class ShopService {
+  constructor(private readonly notificationService: NotificationService) {}
   async getProducts(query?: GetProductsQueryDto) {
     const where: any = {};
 
@@ -363,6 +365,17 @@ export class ShopService {
       });
     });
 
+    // ✅ Order Confirmed for <first product(s)>. — client notification page trigger
+    try {
+      const productLabel =
+        itemsData.length > 1
+          ? `${itemsData[0].productName} +${itemsData.length - 1} more`
+          : itemsData[0].productName;
+      await this.notificationService.orderConfirmed(userId, productLabel);
+    } catch {
+      // notifications must never break order placement
+    }
+
     return {
       message: 'Order placed successfully',
       order,
@@ -664,6 +677,17 @@ export class ShopService {
         returns: true,
       },
     });
+
+    // 📦 Order Shipped! #<orderNumber> is on its way. — generic status updates too
+    try {
+      await this.notificationService.orderStatusUpdate(
+        updatedOrder.userId,
+        updatedOrder.orderNumber,
+        normalized,
+      );
+    } catch {
+      // notifications must never break status updates
+    }
 
     return {
       message: `Order status updated to ${normalized}`,
