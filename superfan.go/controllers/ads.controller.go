@@ -1,10 +1,13 @@
 package controllers
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"quiz.superfan.com/apis/middleware"
 	"quiz.superfan.com/apis/models"
 	"quiz.superfan.com/apis/services"
 	"quiz.superfan.com/apis/utils"
@@ -52,6 +55,79 @@ func (ac *AdsController) GetCampaigns(c *gin.Context) {
 	}
 
 	utils.Success(c, http.StatusOK, "Campaigns retrieved successfully", res)
+}
+
+// GetMyCampaigns handles GET /v2/ads/campaigns/mine.
+func (ac *AdsController) GetMyCampaigns(c *gin.Context) {
+	userIDValue, ok := c.Get(middleware.ContextUserIDKey)
+	userID, ok := userIDValue.(int)
+	if !ok || userID <= 0 {
+		utils.SendError(c, http.StatusUnauthorized, "UNAUTHORIZED", "authenticated user not found")
+		return
+	}
+
+	var query services.CampaignListQuery
+	if err := c.ShouldBindQuery(&query); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "invalid query parameters")
+		return
+	}
+	query.UserID = &userID
+
+	res, err := ac.adsService.GetCampaigns(c.Request.Context(), &query)
+	if err != nil {
+		utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
+		return
+	}
+
+	utils.Success(c, http.StatusOK, "User campaigns retrieved successfully", res)
+}
+
+// GetMyInsights handles GET /v2/ads/campaigns/mine/insights.
+func (ac *AdsController) GetMyInsights(c *gin.Context) {
+	userIDValue, ok := c.Get(middleware.ContextUserIDKey)
+	userID, ok := userIDValue.(int)
+	if !ok || userID <= 0 {
+		utils.SendError(c, http.StatusUnauthorized, "UNAUTHORIZED", "authenticated user not found")
+		return
+	}
+
+	query := &services.AdInsightsQuery{UserID: userID}
+	for name, target := range map[string]**time.Time{
+		"startDate": &query.StartDate,
+		"endDate":   &query.EndDate,
+	} {
+		value := c.Query(name)
+		if value == "" {
+			continue
+		}
+		parsed, err := parseAdDate(value, name == "endDate")
+		if err != nil {
+			utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", fmt.Sprintf("invalid %s; use YYYY-MM-DD or RFC3339", name))
+			return
+		}
+		*target = &parsed
+	}
+
+	res, err := ac.adsService.GetMyInsights(c.Request.Context(), query)
+	if err != nil {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+	utils.Success(c, http.StatusOK, "Ad insights retrieved successfully", res)
+}
+
+func parseAdDate(value string, endOfDay bool) (time.Time, error) {
+	if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+		return parsed, nil
+	}
+	parsed, err := time.Parse("2006-01-02", value)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if endOfDay {
+		return parsed.Add(24*time.Hour - time.Nanosecond), nil
+	}
+	return parsed, nil
 }
 
 // GetInventoryStats handles GET /v2/ads/inventory/stats
@@ -237,6 +313,9 @@ func RegisterAdsRoutes(rg *gin.RouterGroup, ac *AdsController) {
 		adsGroup.POST("/reward", ac.AwardMidQuizReward)
 		adsGroup.POST("/campaigns", ac.CreateCampaign)
 		adsGroup.GET("/campaigns", ac.GetCampaigns)
+		authenticatedAdsGroup := rg.Group("/ads", middleware.AuthRequired())
+		authenticatedAdsGroup.GET("/campaigns/mine", ac.GetMyCampaigns)
+		authenticatedAdsGroup.GET("/campaigns/mine/insights", ac.GetMyInsights)
 		adsGroup.GET("/inventory/stats", ac.GetInventoryStats)
 		adsGroup.PATCH("/campaigns/:id/status", ac.UpdateCampaignStatus)
 		adsGroup.POST("/campaigns/:id/approve", ac.ApproveCampaign)

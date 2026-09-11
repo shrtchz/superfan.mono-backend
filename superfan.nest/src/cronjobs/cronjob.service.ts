@@ -34,18 +34,129 @@ export class CronJobService {
 
         await Promise.all(
             clientUsers.map((user) =>
-                this.notificationService.createNotification(
-                    user.id,
-                    "Don't miss today's quiz 🍊",
-                    'Complete at least one test to earn rewards',
-                ),
+                this.notificationService.quizReminder(user.id),
             ),
         );
 
         this.logger.log(`Daily quiz notifications sent to ${clientUsers.length} users.`);
     }
 
-@Cron(CronExpression.EVERY_DAY_AT_11AM)
+    @Cron(CronExpression.EVERY_5_MINUTES)
+    async sendLiveQuizStartingSoonNotifications() {
+        this.logger.log('Checking for live quizzes starting soon...');
+        try {
+            const response: any = await this.quizService.getAllLiveQuiz();
+            const payload = response?.data?.data ?? response?.data ?? response ?? {};
+            const quizzes = Array.isArray(payload) ? payload : [];
+            if (!quizzes.length) return;
+
+            const now = new Date();
+            const soonWindowMs = 10 * 60 * 1000;
+
+            const upcoming = quizzes
+                .map((quiz: any) => {
+                    const raw = quiz?.quizScheduleDate ?? quiz?.scheduleDate ?? quiz?.startDate;
+                    const schedule = raw ? new Date(String(raw)) : null;
+                    if (!schedule || Number.isNaN(schedule.getTime())) return null;
+                    const diffMs = schedule.getTime() - now.getTime();
+                    if (diffMs <= 0 || diffMs > soonWindowMs) return null;
+                    return { minutes: Math.max(1, Math.round(diffMs / 60000)) };
+                })
+                .filter((entry: any) => entry !== null);
+
+            if (!upcoming.length) return;
+
+            const result = await this.userService.findAllUsers();
+            const clientUsers = (result.data ?? []).filter((user: any) => user.roleName === 'client');
+            const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+            const targetUsers: number[] = [];
+            for (const user of clientUsers) {
+                const recent = await prisma.notification.count({
+                    where: {
+                        userId: user.id,
+                        type: 'live_quiz_starting_soon',
+                        createdAt: { gte: cutoff },
+                    },
+                });
+                if (recent === 0) targetUsers.push(user.id);
+            }
+
+            if (!targetUsers.length) return;
+
+            const minutes = Math.min(...upcoming.map((entry: any) => entry.minutes));
+            await this.notificationService.liveQuizStartingSoon(targetUsers, minutes);
+            this.logger.log(`Live-quiz-starting-soon notifications sent to ${targetUsers.length} users.`);
+        } catch (error) {
+            this.logger.error(
+                'Live quiz starting soon cron failed',
+                (error as any)?.stack,
+            );
+        }
+    }
+
+    @Cron(CronExpression.EVERY_5_MINUTES)
+    async sendStreamEndingSoonNotifications() {
+        this.logger.log('Checking for live streams ending soon...');
+        try {
+            const now = new Date();
+            const soonWindowMs = 10 * 60 * 1000;
+
+            const streams = await prisma.stream.findMany({
+                where: { status: 'live' },
+                select: {
+                    id: true,
+                    title: true,
+                    scheduledDate: true,
+                    createdAt: true,
+                    duration: true,
+                },
+            });
+
+            const endingSoon: Array<{ title: string; minutes: number }> = [];
+            for (const stream of streams) {
+                const durationSec = Number(stream.duration);
+                if (!durationSec || Number.isNaN(durationSec) || durationSec <= 0) continue;
+                const start = stream.scheduledDate ?? stream.createdAt;
+                const end = new Date(start.getTime() + durationSec * 1000);
+                const diffMs = end.getTime() - now.getTime();
+                if (diffMs <= 0 || diffMs > soonWindowMs) continue;
+                endingSoon.push({
+                    title: stream.title || 'Livestream',
+                    minutes: Math.max(1, Math.round(diffMs / 60000)),
+                });
+            }
+
+            if (!endingSoon.length) return;
+
+            const minutes = Math.min(...endingSoon.map((entry) => entry.minutes));
+            const result = await this.userService.findAllUsers();
+            const clientUsers = (result.data ?? []).filter((user: any) => user.roleName === 'client');
+            const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+            const targetUsers: number[] = [];
+            for (const user of clientUsers) {
+                const recent = await prisma.notification.count({
+                    where: {
+                        userId: user.id,
+                        type: 'stream_ending_soon',
+                        createdAt: { gte: cutoff },
+                    },
+                });
+                if (recent === 0) targetUsers.push(user.id);
+            }
+
+            if (!targetUsers.length) return;
+
+            await this.notificationService.streamEndingSoon(targetUsers, endingSoon[0].title, minutes);
+            this.logger.log(`Stream-ending-soon notifications sent to ${targetUsers.length} users.`);
+        } catch (error) {
+            this.logger.error(
+                'Stream ending soon cron failed',
+                (error as any)?.stack,
+            );
+        }
+    }
 async handleDeleteInactiveSubscription() {
   console.log('Running delete inactive subscription job at', new Date().toISOString());
   const fiveMinutesAgo = subMinutes(new Date(), 5);

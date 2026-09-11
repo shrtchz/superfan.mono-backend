@@ -205,6 +205,7 @@ export class UserService {
 
       try {
         await this.mail.verifyEmail(dto.email, verificationCode, dto.firstName);
+        await this.notificationService.otpCodeSent(user.id, verificationCode).catch(() => null);
       } catch (mailError) {
         console.warn('Verification email failed to queue during signup (non-fatal):', mailError);
       }
@@ -428,6 +429,12 @@ export class UserService {
         console.warn('user.logged_in event failed during sync (non-fatal):', eventError);
       }
 
+      try {
+        await this.notificationService.newLoginDevice(user.id);
+      } catch {
+        // notifications must never break login flow
+      }
+
       return this.formatSyncUser(user);
     } catch (error) {
       console.error('Sync from Clerk error:', error);
@@ -560,6 +567,10 @@ export class UserService {
         where: { id: user.id },
         data: { email: newEmail },
       });
+
+      this.notificationService
+        .contactInfoUpdated(user.id, 'email')
+        .catch(() => undefined);
 
       emailToUse = newEmail;
     }
@@ -990,6 +1001,10 @@ export class UserService {
       },
     });
 
+    this.notificationService
+      .paymentMethodAdded(userId, card.issuer || card.cardType || card.maskedPan)
+      .catch(() => undefined);
+
     return {
       success: true,
       message: 'Card saved successfully',
@@ -1057,6 +1072,10 @@ async getCard(userId: number): Promise<any> {
         },
       });
 
+      this.notificationService
+        .defaultPaymentMethodChanged(userId, card.issuer || card.cardType || card.maskedPan)
+        .catch(() => undefined);
+
       return {
         success: true,
         message: 'Default card updated successfully',
@@ -1099,6 +1118,10 @@ async getCard(userId: number): Promise<any> {
           });
         }
       }
+
+      this.notificationService
+        .paymentMethodRemoved(userId, card.issuer || card.cardType || card.maskedPan)
+        .catch(() => undefined);
 
       return {
         success: true,
@@ -1845,6 +1868,10 @@ async getCard(userId: number): Promise<any> {
       },
     });
 
+    this.notificationService
+      .passwordChanged(user.id)
+      .catch(() => undefined);
+
     return { message: 'Password has been reset successfully' };
   }
 
@@ -2147,6 +2174,10 @@ async getCard(userId: number): Promise<any> {
       data: { subscriptionPlan },
     });
 
+    this.notificationService
+      .planUpgraded(userId, subscriptionPlan)
+      .catch(() => undefined);
+
     return {
       message: 'Subscription created successfully',
       data: subscription,
@@ -2219,6 +2250,10 @@ async getCard(userId: number): Promise<any> {
       where: { id: userId },
       data: { subscriptionPlan: dto.subscriptionPlan },
     });
+
+    this.notificationService
+      .planUpgraded(userId, dto.subscriptionPlan)
+      .catch(() => undefined);
 
     return subscription;
   }
@@ -2424,6 +2459,10 @@ async checkSubscriptionStatusbyUserId(userId: number): Promise<{
         },
       });
 
+      this.notificationService
+        .accountBanned(id, banReason)
+        .catch(() => undefined);
+
       // 4. Create history (you can also include creator name if needed)
       await this.taskService.createClientHistory({
         userId: id,
@@ -2523,6 +2562,10 @@ async checkSubscriptionStatusbyUserId(userId: number): Promise<{
           username: true,
         },
       });
+
+      this.notificationService
+        .accountUnbanned(id)
+        .catch(() => undefined);
 
       // 4. Create history
       await this.taskService.createClientHistory({
@@ -2876,6 +2919,42 @@ async findUserByEmail(email: string): Promise<any> {
       refereeId: user.id,
     });
 
+    // Referee — Signup Bonus: 20,000 PTS credited directly to Gold Account
+    // (₦20 referee sign-up bonus; note says cross-reference SCRUM-192/193 wallet credits)
+    const refereePoint = await prisma.point.create({
+      data: {
+        userId: user.id,
+        points: 20000,
+        reference: `POINTS_${generateFiveUniqueRandomNumbers()}`,
+        type: 'referee_signup',
+        accountType: 'Gold',
+      },
+    });
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { lifetimePoints: { increment: 20000 } },
+    });
+
+    console.log('[Referral] Referee point created', {
+      pointId: refereePoint.id,
+      userId: user.id,
+      points: refereePoint.points,
+      type: refereePoint.type,
+    });
+
+    const refereeNaira = this.pointsConversionUtil.pointsToNaira(20000);
+    await this.walletService.creditWallet(
+      user.id,
+      refereeNaira,
+      'Welcome Bonus',
+      'Welcome Bonus',
+      'Gold',
+    );
+
+    // Referee copy-paste ready trigger — "Welcome Bonus! You earned ₦20 for joining with a referral code."
+    await this.notificationService.refereeSignupBonus(user.id);
+
     // Referrer — Signup Bonus: 20,000 PTS credited directly to Gold Account
     const point = await prisma.point.create({
       data: {
@@ -2913,13 +2992,8 @@ async findUserByEmail(email: string): Promise<any> {
       amount: nairaAmount,
     });
 
-    // Notification for referrer
-    await this.notificationService.createNotification(
-      referrer.id,
-      'Referral Bonus - Sign up',
-      `You earned 20,000 PTS (Gold Account) because @${user.username} signed up using your referral link.`,
-      'referral_reward',
-    );
+    // Notification for referrer — copy-paste ready trigger
+    await this.notificationService.referralSignupBonus(referrer.id, user.username);
 
     console.log('[Referral][END] Completed successfully');
   }

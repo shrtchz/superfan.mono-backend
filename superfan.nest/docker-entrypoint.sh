@@ -4,7 +4,20 @@ set -e
 for env_file in /etc/secrets/.env /etc/secrets/env /app/.env /app/env; do
   if [ -f "$env_file" ]; then
     set -a
-    . "$env_file"
+    eval "$(node - "$env_file" <<'NODE'
+const fs = require('fs');
+const dotenv = require('dotenv');
+
+const envFile = process.argv[2];
+const values = dotenv.parse(fs.readFileSync(envFile));
+
+for (const [key, value] of Object.entries(values)) {
+  if (process.env[key] !== undefined) continue;
+  const shellValue = "'" + value.replace(/'/g, "'\\\\''") + "'";
+  process.stdout.write(`export ${key}=${shellValue}\n`);
+}
+NODE
+    )"
     set +a
     break
   fi

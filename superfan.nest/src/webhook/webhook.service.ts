@@ -505,7 +505,21 @@ if (bankTransfer) {
     eventData: MonnifyWebhookDto['eventData'],
   ): Promise<void> {
     this.logger.warn(`Failed transaction: ${eventData.transactionReference}`);
-    // TODO: notify customer, log failure reason, etc.
+    // ⚠️ Payment Failed. Tap to retry. — resolve payer from payment reference
+    try {
+      const reference = eventData?.paymentReference || eventData?.transactionReference;
+      if (reference) {
+        const existingTx = await prisma.walletTransaction.findFirst({
+          where: { reference },
+          select: { userId: true },
+        });
+        if (existingTx?.userId) {
+          await this.notificationService.paymentFailed(existingTx.userId);
+        }
+      }
+    } catch {
+      // notifications must never break webhook processing
+    }
 
     console.log(eventData, 'handle failed transaction');
   }
@@ -532,7 +546,21 @@ if (bankTransfer) {
     eventData: MonnifyWebhookDto['eventData'],
   ): Promise<void> {
     this.logger.warn(`Failed transaction: ${eventData.transactionReference}`);
-    // TODO: notify customer, log failure reason, etc.
+    // ⚠️ Payment Failed. Tap to retry.
+    try {
+      const reference = eventData?.paymentReference || eventData?.transactionReference;
+      if (reference) {
+        const existingTx = await prisma.walletTransaction.findFirst({
+          where: { reference },
+          select: { userId: true },
+        });
+        if (existingTx?.userId) {
+          await this.notificationService.paymentFailed(existingTx.userId);
+        }
+      }
+    } catch {
+      // notifications must never break webhook processing
+    }
 
     console.log(eventData, 'handle rejected payment');
   }
@@ -669,7 +697,25 @@ if (bankTransfer) {
       `failed disbursement transaction: ${eventData.transactionReference}`,
     );
     console.log(eventData, 'reversed transaction data');
-    // TODO: reverse any credits applied, notify customer, etc.
+    try {
+      const payout = await prisma.payout.findFirst({
+        where: {
+          OR: [
+            { reference: eventData.reference },
+            { reference: eventData.transactionReference },
+            { providerRef: eventData.reference },
+            { providerRef: eventData.transactionReference },
+          ],
+        },
+      });
+      if (payout) {
+        await this.notificationService
+          .withdrawalFailed(payout.userId)
+          .catch(() => undefined);
+      }
+    } catch (error) {
+      this.logger.error('Failed disbursement notification error', error);
+    }
   }
 
   private async handleMandate(

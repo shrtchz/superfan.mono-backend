@@ -128,6 +128,9 @@ export class WalletService {
 
     // 1. Enforce minimum withdrawal of ₦9,999 on all withdrawal requests regardless of method
     if (type === 'WITHDRAWAL' && amount < this.MIN_WITHDRAWAL_NGN) {
+      this.notificationService
+        .minimumWithdrawalNotMet(userId, this.MIN_WITHDRAWAL_NGN)
+        .catch(() => undefined);
       throw new BadRequestException(
         `Minimum withdrawal amount is ₦${this.MIN_WITHDRAWAL_NGN.toLocaleString()}. Your request was ₦${amount.toLocaleString()}.`,
       );
@@ -156,7 +159,7 @@ export class WalletService {
 
     return status;
   }
-  async creditWallet(userId: number, amount: number, title: string, description: string, accountType?: string, currency: string = 'NGN') {
+  async creditWallet(userId: number, amount: number, title: string, description: string, accountType?: string, currency: string = 'NGN', streamTitle?: string) {
     console.log('[Wallet][creditWallet][START]', {
       userId,
       amount,
@@ -227,8 +230,14 @@ export class WalletService {
         amount,
       });
 
-      // Send notification for manual/deposit wallet credit
-      if (title.startsWith('Deposit') || title === 'Manual Credit') {
+      // Send notification — 💰 ₦2 added from a recent live quiz.
+      if (title === 'Manual Credit') {
+        if (streamTitle) {
+          await this.notificationService.streamManualCredit(userId, amount, streamTitle);
+        } else {
+          await this.notificationService.manualCreditApplied(userId, amount);
+        }
+      } else if (title.startsWith('Deposit')) {
         await this.notificationService.createNotification(
           userId,
           title,
@@ -280,12 +289,16 @@ export class WalletService {
     const rewardLabel = type.toLowerCase().includes('ad') ? 'Ads Reward' : 'Test Quiz Earning';
     await this.creditWallet(userId, amount, rewardLabel, rewardLabel, 'Gold', currency);
 
-    // Send notification
-    await this.notificationService.createNotification(
-      userId,
-      rewardLabel,
-      `You have earned ${amount} ${currency} from ${type}`,
-    );
+    // Send notification — ad rewards carry the ₦2-per-ad copy
+    if (type.toLowerCase().includes('ad')) {
+      await this.notificationService.adRewardCredited(userId, amount);
+    } else {
+      await this.notificationService.createNotification(
+        userId,
+        rewardLabel,
+        `You have earned ${amount} ${currency} from ${type}`,
+      );
+    }
 
     // Fire socket events for live update
     this.eventEmitter.emit('user.wallet.updated', { userId });
@@ -342,15 +355,10 @@ export class WalletService {
       data: { lifetimePoints: { increment: points } },
     });
 
-    // Send notification
-    await this.notificationService.createNotification(
-      userId,
-      'Test Quiz Earning',
-      `You earned ₦${amount} from ${subject} Quiz`,
-      'quiz_reward'
-    );
+    // Send notification — 🎉 You earned 20 pts (₦2).
+    await this.notificationService.testQuizReward(userId, points, amount);
 
-        await this.notificationService.createNotification(
+    await this.notificationService.createNotification(
       userId,
       `you earned ${points}PTS🎮`,
       `from ${subject} Quiz`,
@@ -394,12 +402,13 @@ export class WalletService {
       data: { lifetimePoints: { increment: points } },
     });
 
-    await this.notificationService.createNotification(
-      userId,
-      'Test Quiz Earning',
-      `You earned ₦${amount} from Live Quiz`,
-      'live_quiz_reward'
-    );
+    // Send notification — 🏆 You earned ₦2,000 from today's live quiz.
+    await this.notificationService.liveQuizReward(userId, amount);
+
+    // 💥 Jackpot! ₦5,000 credited to your Gold Account. — jackpot = ≥ ₦5,000 live quiz payout
+    if (amount >= 5000) {
+      await this.notificationService.streamLiveQuizJackpot(userId, amount);
+    }
   }
 
 
@@ -568,6 +577,10 @@ async getUserWalletTransactions(filters: WalletTransactionFilterDto) {
     this.eventEmitter.emit('user.wallet.updated', { userId });
     this.eventEmitter.emit('user.payment.history', { userId });
 
+    this.notificationService
+      .walletCredited(userId, amount)
+      .catch(() => undefined);
+
     return { message: 'Wallet funded successfully', amount };
   }
 
@@ -685,12 +698,9 @@ const trf_reference = `TRANSFER_${Date.now()}`;
     ]);
 
     // Send notification
-    await this.notificationService.createNotification(
-      userId,
-      'Transfer Successful',
-      `You have transferred ${amount} NGN from ${fromAccountType} to ${destinationAccountType} account`,
-      'money_transfer'
-    );
+    await this.notificationService
+      .goldPersonalTransfer(userId, amount, fromAccountType, destinationAccountType)
+      .catch(() => undefined);
 
     // Fire socket events for live update
     this.eventEmitter.emit('user.wallet.updated', { userId });

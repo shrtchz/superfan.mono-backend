@@ -229,12 +229,9 @@ private async handleBitnobTransferSuccess(payload: any) {
     });
 
     // Notification
-    await this.notificationService.createNotification(
-      transaction.userId,
-      'token withdrawal',
-      `Successfully withdrew ${amount} ${currency}`,
-      'TOKEN_WITHDRAWAL',
-    );
+    await this.notificationService
+      .withdrawalCompleted(transaction.userId, amount)
+      .catch(() => undefined);
 
     console.log(
       '[BITNOB TRANSFER SUCCESS] ✅ Transfer completed successfully',
