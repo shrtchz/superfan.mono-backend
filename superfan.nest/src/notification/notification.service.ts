@@ -37,6 +37,27 @@ export const NotificationTriggers = {
   PLAN_UPGRADED: 'plan_upgraded',
   PASSWORD_CHANGED: 'password_changed',
   CONTACT_INFO_UPDATED: 'contact_info_updated',
+  WALLET_CREDITED: 'wallet_credited',
+  WITHDRAWAL_REQUESTED: 'withdrawal_requested',
+  WITHDRAWAL_COMPLETED: 'withdrawal_completed',
+  WITHDRAWAL_FAILED: 'withdrawal_failed',
+  PAYMENT_METHOD_ADDED: 'payment_method_added',
+  PAYMENT_METHOD_REMOVED: 'payment_method_removed',
+  DEFAULT_PAYMENT_METHOD_CHANGED: 'default_payment_method_changed',
+  MINIMUM_WITHDRAWAL_NOT_MET: 'minimum_withdrawal_not_met',
+  GOLD_PERSONAL_TRANSFER: 'gold_personal_transfer',
+  STREAM_COMMENT_LIKED: 'stream_comment_liked',
+  STREAM_COMMENT_LIKED_MODERATOR: 'stream_comment_liked_moderator',
+  STREAM_COMMENT_REPORTED: 'stream_comment_reported',
+  STREAM_ADMIN_REPLY: 'stream_admin_reply',
+  STREAM_GOING_LIVE: 'stream_going_live',
+  STREAM_ENDING_SOON: 'stream_ending_soon',
+  STREAM_WINNER_TAGGED: 'stream_winner_tagged',
+  STREAM_COMMENT_REMOVED: 'stream_comment_removed',
+  STREAM_CHAT_BANNED: 'stream_chat_banned',
+  STREAM_CHAT_LOCK_TOGGLE: 'stream_chat_lock_toggle',
+  STREAM_MANUAL_CREDIT: 'stream_manual_credit',
+  STREAM_LIVE_QUIZ_JACKPOT: 'stream_live_quiz_jackpot',
 } as const;
 
 export type NotificationTrigger =
@@ -298,6 +319,173 @@ export class NotificationService {
   async contactInfoUpdated(userId: number, field = 'email') {
     const msg = `Your ${field} was updated.`;
     return this.notify(userId, NotificationTriggers.CONTACT_INFO_UPDATED, msg, msg);
+  }
+
+  async walletCredited(userId: number, amountNaira = 2) {
+    const msg = `💵 ₦${amountNaira.toLocaleString()} was added to your wallet.`;
+    return this.notify(userId, NotificationTriggers.WALLET_CREDITED, msg, msg);
+  }
+
+  async withdrawalRequested(userId: number, amountNaira = 2) {
+    const msg = `📤 Payout of ₦${amountNaira.toLocaleString()} is processing.`;
+    return this.notify(userId, NotificationTriggers.WITHDRAWAL_REQUESTED, msg, msg);
+  }
+
+  async withdrawalCompleted(userId: number, amountNaira = 2, destination?: string) {
+    const msg = `✅ ₦${amountNaira.toLocaleString()} sent to your ${destination || 'bank'} account.`;
+    return this.notify(userId, NotificationTriggers.WITHDRAWAL_COMPLETED, msg, msg);
+  }
+
+  async withdrawalFailed(userId: number) {
+    const msg = '⚠️ Payout failed. Tap to retry.';
+    return this.notify(userId, NotificationTriggers.WITHDRAWAL_FAILED, msg, msg);
+  }
+
+  async paymentMethodAdded(userId: number, label?: string) {
+    const msg = `💳 Your ${label || 'bank account'} was added.`;
+    return this.notify(userId, NotificationTriggers.PAYMENT_METHOD_ADDED, msg, msg);
+  }
+
+  async paymentMethodRemoved(userId: number, label?: string) {
+    const msg = `Your ${label || 'bank account'} was deleted.`;
+    return this.notify(userId, NotificationTriggers.PAYMENT_METHOD_REMOVED, msg, msg);
+  }
+
+  async defaultPaymentMethodChanged(userId: number, label?: string) {
+    const msg = `Default payout method is now ${label || 'Flutterwave'}.`;
+    return this.notify(userId, NotificationTriggers.DEFAULT_PAYMENT_METHOD_CHANGED, msg, msg);
+  }
+
+  async minimumWithdrawalNotMet(userId: number, minimum = 1000) {
+    const msg = `Need ₦${minimum.toLocaleString()} to withdraw. Keep earning!`;
+    return this.notify(userId, NotificationTriggers.MINIMUM_WITHDRAWAL_NOT_MET, msg, msg);
+  }
+
+  async goldPersonalTransfer(userId: number, amountNaira: number, from: string, to: string) {
+    const msg = `🔄 ₦${amountNaira.toLocaleString()} moved from ${from} to ${to} account.`;
+    return this.notify(userId, NotificationTriggers.GOLD_PERSONAL_TRANSFER, msg, msg);
+  }
+
+  async streamCommentLiked(ownerUserId: number, likerName: string, commentPreview: string) {
+    const preview =
+      commentPreview.length > 60 ? `${commentPreview.slice(0, 60).trim()}…` : commentPreview;
+    const msg = `❤️ ${likerName} liked your comment: "${preview}"`;
+    return this.notify(ownerUserId, NotificationTriggers.STREAM_COMMENT_LIKED, msg, msg);
+  }
+
+  async streamCommentLikedModerator(
+    moderatorUserIds: number[],
+    likerName: string,
+    streamTitle: string,
+  ) {
+    if (!moderatorUserIds.length) return { sent: 0 };
+    const msg = `❤️ ${likerName} liked a comment in ${streamTitle}.`;
+    await Promise.all(
+      moderatorUserIds.map((id) =>
+        this.notify(id, NotificationTriggers.STREAM_COMMENT_LIKED_MODERATOR, msg, msg).catch(
+          () => null,
+        ),
+      ),
+    );
+    return { sent: moderatorUserIds.length };
+  }
+
+  async streamCommentReported(moderatorUserIds: number[], streamTitle: string) {
+    if (!moderatorUserIds.length) return { sent: 0 };
+    const msg = `🚩 New Report. A comment in ${streamTitle} was reported — tap to review.`;
+    await Promise.all(
+      moderatorUserIds.map((id) =>
+        this.notify(id, NotificationTriggers.STREAM_COMMENT_REPORTED, msg, msg).catch(
+          () => null,
+        ),
+      ),
+    );
+    return { sent: moderatorUserIds.length };
+  }
+
+  async streamAdminReply(
+    otherModeratorUserIds: number[],
+    adminName: string,
+    streamTitle: string,
+  ) {
+    if (!otherModeratorUserIds.length) return { sent: 0 };
+    const msg = `💬 Admin Replied. ${adminName} replied to a comment in ${streamTitle}.`;
+    await Promise.all(
+      otherModeratorUserIds.map((id) =>
+        this.notify(id, NotificationTriggers.STREAM_ADMIN_REPLY, msg, msg).catch(
+          () => null,
+        ),
+      ),
+    );
+    return { sent: otherModeratorUserIds.length };
+  }
+
+  async streamGoingLive(userIds: number[], streamTitle: string) {
+    if (!userIds.length) return { sent: 0 };
+    const msg = `🔴 We're Live! ${streamTitle} just started.`;
+    await Promise.all(
+      userIds.map((id) =>
+        this.notify(id, NotificationTriggers.STREAM_GOING_LIVE, msg, msg).catch(
+          () => null,
+        ),
+      ),
+    );
+    return { sent: userIds.length };
+  }
+
+  async streamEndingSoon(userIds: number[], streamTitle: string, minutes = 10) {
+    if (!userIds.length) return { sent: 0 };
+    const msg = `⏰ ${streamTitle} wraps up in ${minutes} minutes.`;
+    await Promise.all(
+      userIds.map((id) =>
+        this.notify(id, NotificationTriggers.STREAM_ENDING_SOON, msg, msg).catch(
+          () => null,
+        ),
+      ),
+    );
+    return { sent: userIds.length };
+  }
+
+  async streamWinnerTagged(userId: number) {
+    const msg = '🏆 You Won! Check your wallet.';
+    return this.notify(userId, NotificationTriggers.STREAM_WINNER_TAGGED, msg, msg);
+  }
+
+  async streamCommentRemoved(userId: number) {
+    const msg = 'Your comment was removed for violating guidelines.';
+    return this.notify(userId, NotificationTriggers.STREAM_COMMENT_REMOVED, msg, msg);
+  }
+
+  async streamChatBanned(userId: number, streamTitle: string) {
+    const msg = `You've been muted from chat on ${streamTitle}.`;
+    return this.notify(userId, NotificationTriggers.STREAM_CHAT_BANNED, msg, msg);
+  }
+
+  async streamChatLockToggle(userIds: number[], streamTitle: string, locked: boolean) {
+    if (!userIds.length) return { sent: 0 };
+    const msg = locked
+      ? `🔒 Chat is locked on ${streamTitle}.`
+      : `🔓 Chat is open again on ${streamTitle}.`;
+    await Promise.all(
+      userIds.map((id) =>
+        this.notify(id, NotificationTriggers.STREAM_CHAT_LOCK_TOGGLE, msg, msg).catch(
+          () => null,
+        ),
+      ),
+    );
+    return { sent: userIds.length };
+  }
+
+  async streamManualCredit(userId: number, amountNaira = 2, streamTitle?: string) {
+    const msg = streamTitle
+      ? `💰 ₦${amountNaira.toLocaleString()} added during ${streamTitle}.`
+      : `💰 ₦${amountNaira.toLocaleString()} added during a live stream.`;
+    return this.notify(userId, NotificationTriggers.STREAM_MANUAL_CREDIT, msg, msg);
+  }
+
+  async streamLiveQuizJackpot(userId: number, amountNaira: number) {
+    const msg = `💥 You won ₦${amountNaira.toLocaleString()} in the live quiz.`;
+    return this.notify(userId, NotificationTriggers.STREAM_LIVE_QUIZ_JACKPOT, msg, msg);
   }
 
   findNotificationByUserId(userId: number) {

@@ -1089,6 +1089,20 @@ export class StreamingService {
     },
   });
 
+  if (status === 'live') {
+    prisma.user
+      .findMany({ where: { active: true }, select: { id: true } })
+      .then(async (users) => {
+        await this.notificationService
+          .streamGoingLive(
+            users.map((u) => u.id),
+            title,
+          )
+          .catch(() => undefined);
+      })
+      .catch(() => undefined);
+  }
+
   return createStream;
 }
 
@@ -1420,9 +1434,9 @@ async editStream(
     userId: number,
     options?: { bypassChatLock?: boolean },
   ) {
-    const stream = await prisma.stream.findUnique({
+const stream = await prisma.stream.findUnique({
       where: { id: streamId },
-      select: { lockChat: true },
+      select: { id: true, lockChat: true },
     });
 
     if (!stream) {
@@ -1474,7 +1488,7 @@ async editStream(
   ) {
     const stream = await prisma.stream.findUnique({
       where: { id: streamId },
-      select: { id: true },
+      select: { id: true, title: true },
     });
 
     if (!stream) {
@@ -1506,6 +1520,10 @@ async editStream(
         banReason: banReason || 'Banned from stream',
       },
     });
+
+    this.notificationService
+      .streamChatBanned(userId, stream?.title || 'Livestream')
+      .catch(() => undefined);
 
     return {
       streamId,
@@ -1644,6 +1662,12 @@ async editStream(
         subtreeIds.map((id) => this.elasticSearch.deleteComment(id)),
       );
 
+      if (targetComment.userId) {
+        this.notificationService
+          .streamCommentRemoved(targetComment.userId)
+          .catch(() => undefined);
+      }
+
       return {
         commentId: targetComment.id,
         streamId: targetComment.streamId,
@@ -1779,6 +1803,39 @@ async editStream(
         );
       }
 
+      try {
+        if (await this.isStreamModerator(userId)) {
+          const replier = await prisma.user.findUnique({
+            where: { id: userId },
+            select: { username: true },
+          });
+          const stream = await prisma.stream.findUnique({
+            where: { id: parentComment.streamId },
+            select: { title: true },
+          });
+          const otherModerators = await prisma.user.findMany({
+            where: {
+              roleName: { in: [Role.superadmin, Role.subadmin, Role.moderator] },
+              id: { not: userId },
+            },
+            select: { id: true },
+          });
+          if (otherModerators.length) {
+            await this.notificationService
+              .streamAdminReply(
+                otherModerators.map((m) => m.id),
+                replier?.username || 'Admin',
+                stream?.title || 'Livestream',
+              )
+              .catch(() => undefined);
+          }
+        }
+      } catch (adminNotifError: any) {
+        this.logger.error(
+          `Failed to send admin reply notification: ${adminNotifError.message}`,
+        );
+      }
+
       const author = await this.getUserPublicProfile(userId);
       return this.toCommentBroadcastPayload(reply_comment, author);
 
@@ -1839,14 +1896,32 @@ async editStream(
           where: { id: userId },
           select: { username: true },
         });
+        const likerName = likingUser?.username || 'Someone';
         if (like_comment.userId && like_comment.userId !== userId) {
-          await this.notificationService.createNotification(
-            like_comment.userId,
-            'Comment liked',
-            `${likingUser?.username || 'Someone'} liked your ${
-              reference.type === 'reply' ? 'reply' : 'comment'
-            }.`,
-          );
+          await this.notificationService
+            .streamCommentLiked(like_comment.userId, likerName, like_comment.message || '')
+            .catch(() => undefined);
+        }
+
+        const stream = await prisma.stream.findUnique({
+          where: { id: reference.streamId },
+          select: { title: true },
+        });
+        const moderators = await prisma.user.findMany({
+          where: {
+            roleName: { in: [Role.superadmin, Role.subadmin, Role.moderator] },
+            id: { not: userId },
+          },
+          select: { id: true },
+        });
+        if (moderators.length) {
+          await this.notificationService
+            .streamCommentLikedModerator(
+              moderators.map((m) => m.id),
+              likerName,
+              stream?.title || 'Livestream',
+            )
+            .catch(() => undefined);
         }
       } catch (notifError: any) {
         this.logger.error(`Failed to send like notification: ${notifError.message}`);
@@ -1950,6 +2025,29 @@ async editStream(
           submittedBy: 'USER',
         },
       });
+
+      try {
+        const stream = await prisma.stream.findUnique({
+          where: { id: updatedComment.streamId },
+          select: { title: true },
+        });
+        const moderators = await prisma.user.findMany({
+          where: {
+            roleName: { in: [Role.superadmin, Role.subadmin, Role.moderator] },
+          },
+          select: { id: true },
+        });
+        if (moderators.length) {
+          await this.notificationService
+            .streamCommentReported(
+              moderators.map((m) => m.id),
+              stream?.title || 'Livestream',
+            )
+            .catch(() => undefined);
+        }
+      } catch (notifError: any) {
+        this.logger.error(`Failed to send report notification: ${notifError.message}`);
+      }
 
       return {
         ...report_comment,
@@ -2123,7 +2221,7 @@ async setStreamChatLock(streamId: number, locked: boolean, adminId: number) {
   try {
     const stream = await prisma.stream.findUnique({
       where: { id: streamId },
-      select: { id: true },
+      select: { id: true, title: true },
     });
 
     if (!stream) {
@@ -2152,6 +2250,24 @@ async setStreamChatLock(streamId: number, locked: boolean, adminId: number) {
     this.logger.log(
       `Stream chat ${locked ? 'locked' : 'unlocked'} by admin ${adminId} for stream ${streamId} at ${timestamp}`,
     );
+
+    try {
+      const users = await prisma.user.findMany({
+        where: { active: true },
+        select: { id: true },
+      });
+      if (users.length) {
+        await this.notificationService
+          .streamChatLockToggle(
+            users.map((u) => u.id),
+            stream?.title || 'Livestream',
+            locked,
+          )
+          .catch(() => undefined);
+      }
+    } catch (notifError: any) {
+      this.logger.error(`Failed to send chat lock notification: ${notifError.message}`);
+    }
 
     return {
       streamId: updated.id,
@@ -2391,6 +2507,11 @@ async isWinner(commentId: number, winAmount: number) {
         winAmount: winAmount
       },
     });
+
+    this.notificationService
+      .streamWinnerTagged(pin_comment.userId)
+      .catch(() => undefined);
+
     return pin_comment;
   } catch (error) {
     throw new InternalServerErrorException(

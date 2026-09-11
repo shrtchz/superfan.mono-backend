@@ -697,7 +697,25 @@ if (bankTransfer) {
       `failed disbursement transaction: ${eventData.transactionReference}`,
     );
     console.log(eventData, 'reversed transaction data');
-    // TODO: reverse any credits applied, notify customer, etc.
+    try {
+      const payout = await prisma.payout.findFirst({
+        where: {
+          OR: [
+            { reference: eventData.reference },
+            { reference: eventData.transactionReference },
+            { providerRef: eventData.reference },
+            { providerRef: eventData.transactionReference },
+          ],
+        },
+      });
+      if (payout) {
+        await this.notificationService
+          .withdrawalFailed(payout.userId)
+          .catch(() => undefined);
+      }
+    } catch (error) {
+      this.logger.error('Failed disbursement notification error', error);
+    }
   }
 
   private async handleMandate(

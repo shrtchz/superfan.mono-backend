@@ -770,6 +770,10 @@ async createClientHistory(payload: CreateClientHistoryDto) {
       }
   })
 
+  this.notificationService
+    .withdrawalRequested(dto.userId, Number(dto.amount || 0))
+    .catch(() => undefined);
+
   return payout;
 
   }

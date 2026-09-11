@@ -147,6 +147,157 @@ export class NotificationController {
     return this.notificationService.contactInfoUpdated(body.userId, body.field);
   }
 
+  @Public()
+  @Post('/triggers/wallet-credited')
+  @HttpCode(HttpStatus.OK)
+  triggerWalletCredited(@Body() body: { userId: number; amountNaira?: number }) {
+    return this.notificationService.walletCredited(body.userId, body.amountNaira ?? 2);
+  }
+
+  @Public()
+  @Post('/triggers/withdrawal-requested')
+  @HttpCode(HttpStatus.OK)
+  triggerWithdrawalRequested(@Body() body: { userId: number; amountNaira?: number }) {
+    return this.notificationService.withdrawalRequested(body.userId, body.amountNaira ?? 2);
+  }
+
+  @Public()
+  @Post('/triggers/withdrawal-completed')
+  @HttpCode(HttpStatus.OK)
+  triggerWithdrawalCompleted(@Body() body: { userId: number; amountNaira?: number; destination?: string }) {
+    return this.notificationService.withdrawalCompleted(body.userId, body.amountNaira ?? 2, body.destination);
+  }
+
+  @Public()
+  @Post('/triggers/withdrawal-failed')
+  @HttpCode(HttpStatus.OK)
+  triggerWithdrawalFailed(@Body() body: { userId: number }) {
+    return this.notificationService.withdrawalFailed(body.userId);
+  }
+
+  @Public()
+  @Post('/triggers/payment-method-added')
+  @HttpCode(HttpStatus.OK)
+  triggerPaymentMethodAdded(@Body() body: { userId: number; label?: string }) {
+    return this.notificationService.paymentMethodAdded(body.userId, body.label);
+  }
+
+  @Public()
+  @Post('/triggers/payment-method-removed')
+  @HttpCode(HttpStatus.OK)
+  triggerPaymentMethodRemoved(@Body() body: { userId: number; label?: string }) {
+    return this.notificationService.paymentMethodRemoved(body.userId, body.label);
+  }
+
+  @Public()
+  @Post('/triggers/default-payment-method-changed')
+  @HttpCode(HttpStatus.OK)
+  triggerDefaultPaymentMethod(@Body() body: { userId: number; label?: string }) {
+    return this.notificationService.defaultPaymentMethodChanged(body.userId, body.label);
+  }
+
+  @Public()
+  @Post('/triggers/minimum-withdrawal-not-met')
+  @HttpCode(HttpStatus.OK)
+  triggerMinimumWithdrawal(@Body() body: { userId: number; minimum?: number }) {
+    return this.notificationService.minimumWithdrawalNotMet(body.userId, body.minimum ?? 1000);
+  }
+
+  @Public()
+  @Post('/triggers/gold-personal-transfer')
+  @HttpCode(HttpStatus.OK)
+  triggerGoldPersonalTransfer(@Body() body: { userId: number; amountNaira: number; from: string; to: string }) {
+    return this.notificationService.goldPersonalTransfer(body.userId, body.amountNaira, body.from, body.to);
+  }
+
+  @Public()
+  @Post('/triggers/stream-comment-liked')
+  @HttpCode(HttpStatus.OK)
+  triggerStreamCommentLiked(@Body() body: { userId: number; likerName: string; commentPreview: string }) {
+    return this.notificationService.streamCommentLiked(body.userId, body.likerName, body.commentPreview);
+  }
+
+  @Public()
+  @Post('/triggers/stream-comment-liked-moderator')
+  @HttpCode(HttpStatus.OK)
+  triggerStreamCommentLikedModerator(@Body() body: { userIds: number[]; likerName: string; streamTitle: string }) {
+    return this.notificationService.streamCommentLikedModerator(
+      body.userIds ?? [],
+      body.likerName,
+      body.streamTitle,
+    );
+  }
+
+  @Public()
+  @Post('/triggers/stream-comment-reported')
+  @HttpCode(HttpStatus.OK)
+  triggerStreamCommentReported(@Body() body: { userIds: number[]; streamTitle: string }) {
+    return this.notificationService.streamCommentReported(body.userIds ?? [], body.streamTitle);
+  }
+
+  @Public()
+  @Post('/triggers/stream-admin-reply')
+  @HttpCode(HttpStatus.OK)
+  triggerStreamAdminReply(@Body() body: { userIds: number[]; adminName: string; streamTitle: string }) {
+    return this.notificationService.streamAdminReply(body.userIds ?? [], body.adminName, body.streamTitle);
+  }
+
+  @Public()
+  @Post('/triggers/stream-going-live')
+  @HttpCode(HttpStatus.OK)
+  triggerStreamGoingLive(@Body() body: { userIds: number[]; streamTitle: string }) {
+    return this.notificationService.streamGoingLive(body.userIds ?? [], body.streamTitle);
+  }
+
+  @Public()
+  @Post('/triggers/stream-ending-soon')
+  @HttpCode(HttpStatus.OK)
+  triggerStreamEndingSoon(@Body() body: { userIds: number[]; streamTitle: string; minutes?: number }) {
+    return this.notificationService.streamEndingSoon(body.userIds ?? [], body.streamTitle, body.minutes ?? 10);
+  }
+
+  @Public()
+  @Post('/triggers/stream-winner-tagged')
+  @HttpCode(HttpStatus.OK)
+  triggerStreamWinnerTagged(@Body() body: { userId: number }) {
+    return this.notificationService.streamWinnerTagged(body.userId);
+  }
+
+  @Public()
+  @Post('/triggers/stream-comment-removed')
+  @HttpCode(HttpStatus.OK)
+  triggerStreamCommentRemoved(@Body() body: { userId: number }) {
+    return this.notificationService.streamCommentRemoved(body.userId);
+  }
+
+  @Public()
+  @Post('/triggers/stream-chat-banned')
+  @HttpCode(HttpStatus.OK)
+  triggerStreamChatBanned(@Body() body: { userId: number; streamTitle: string }) {
+    return this.notificationService.streamChatBanned(body.userId, body.streamTitle);
+  }
+
+  @Public()
+  @Post('/triggers/stream-chat-lock-toggle')
+  @HttpCode(HttpStatus.OK)
+  triggerStreamChatLockToggle(@Body() body: { userIds: number[]; streamTitle: string; locked: boolean }) {
+    return this.notificationService.streamChatLockToggle(body.userIds ?? [], body.streamTitle, body.locked);
+  }
+
+  @Public()
+  @Post('/triggers/stream-manual-credit')
+  @HttpCode(HttpStatus.OK)
+  triggerStreamManualCredit(@Body() body: { userId: number; amountNaira?: number; streamTitle?: string }) {
+    return this.notificationService.streamManualCredit(body.userId, body.amountNaira ?? 2, body.streamTitle);
+  }
+
+  @Public()
+  @Post('/triggers/stream-live-quiz-jackpot')
+  @HttpCode(HttpStatus.OK)
+  triggerStreamLiveQuizJackpot(@Body() body: { userId: number; amountNaira: number }) {
+    return this.notificationService.streamLiveQuizJackpot(body.userId, body.amountNaira);
+  }
+
 @Get('/:userId')
 getUserNotifications(@Param('userId') userId: number) {
   // const userId = req.user.id; // from auth (JWT / Clerk / Passport)

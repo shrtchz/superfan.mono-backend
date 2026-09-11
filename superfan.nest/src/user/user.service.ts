@@ -568,6 +568,10 @@ export class UserService {
         data: { email: newEmail },
       });
 
+      this.notificationService
+        .contactInfoUpdated(user.id, 'email')
+        .catch(() => undefined);
+
       emailToUse = newEmail;
     }
 
@@ -997,6 +1001,10 @@ export class UserService {
       },
     });
 
+    this.notificationService
+      .paymentMethodAdded(userId, card.issuer || card.cardType || card.maskedPan)
+      .catch(() => undefined);
+
     return {
       success: true,
       message: 'Card saved successfully',
@@ -1064,6 +1072,10 @@ async getCard(userId: number): Promise<any> {
         },
       });
 
+      this.notificationService
+        .defaultPaymentMethodChanged(userId, card.issuer || card.cardType || card.maskedPan)
+        .catch(() => undefined);
+
       return {
         success: true,
         message: 'Default card updated successfully',
@@ -1106,6 +1118,10 @@ async getCard(userId: number): Promise<any> {
           });
         }
       }
+
+      this.notificationService
+        .paymentMethodRemoved(userId, card.issuer || card.cardType || card.maskedPan)
+        .catch(() => undefined);
 
       return {
         success: true,
@@ -1852,6 +1868,10 @@ async getCard(userId: number): Promise<any> {
       },
     });
 
+    this.notificationService
+      .passwordChanged(user.id)
+      .catch(() => undefined);
+
     return { message: 'Password has been reset successfully' };
   }
 
@@ -2154,6 +2174,10 @@ async getCard(userId: number): Promise<any> {
       data: { subscriptionPlan },
     });
 
+    this.notificationService
+      .planUpgraded(userId, subscriptionPlan)
+      .catch(() => undefined);
+
     return {
       message: 'Subscription created successfully',
       data: subscription,
@@ -2226,6 +2250,10 @@ async getCard(userId: number): Promise<any> {
       where: { id: userId },
       data: { subscriptionPlan: dto.subscriptionPlan },
     });
+
+    this.notificationService
+      .planUpgraded(userId, dto.subscriptionPlan)
+      .catch(() => undefined);
 
     return subscription;
   }
@@ -2534,6 +2562,10 @@ async checkSubscriptionStatusbyUserId(userId: number): Promise<{
           username: true,
         },
       });
+
+      this.notificationService
+        .accountUnbanned(id)
+        .catch(() => undefined);
 
       // 4. Create history
       await this.taskService.createClientHistory({
