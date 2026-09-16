@@ -58,6 +58,9 @@ export const NotificationTriggers = {
   STREAM_CHAT_LOCK_TOGGLE: 'stream_chat_lock_toggle',
   STREAM_MANUAL_CREDIT: 'stream_manual_credit',
   STREAM_LIVE_QUIZ_JACKPOT: 'stream_live_quiz_jackpot',
+  CHALLENGE_INVITE_SENT: 'challenge_invite_sent',
+  CHALLENGE_INVITE_ACCEPTED: 'challenge_invite_accepted',
+  CHALLENGE_INVITE_DECLINED: 'challenge_invite_declined',
 } as const;
 
 export type NotificationTrigger =
@@ -119,6 +122,33 @@ export class NotificationService {
       NotificationTriggers.REFEREE_SIGNUP_BONUS,
       'Welcome Bonus!',
       'You earned ₦20 for joining with a referral code.',
+    );
+  }
+
+  async challengeInviteSent(receiverId: number, senderUsername: string) {
+    return this.notify(
+      receiverId,
+      NotificationTriggers.CHALLENGE_INVITE_SENT,
+      '🤝 Friend Request',
+      `${senderUsername} sent you a challenge/friend request.`,
+    );
+  }
+
+  async challengeInviteAccepted(senderId: number, receiverUsername: string) {
+    return this.notify(
+      senderId,
+      NotificationTriggers.CHALLENGE_INVITE_ACCEPTED,
+      '✅ Request Accepted',
+      `${receiverUsername} accepted your friend/companion request.`,
+    );
+  }
+
+  async challengeInviteDeclined(senderId: number, receiverUsername: string) {
+    return this.notify(
+      senderId,
+      NotificationTriggers.CHALLENGE_INVITE_DECLINED,
+      '❌ Request Declined',
+      `${receiverUsername} declined your friend/companion request.`,
     );
   }
 

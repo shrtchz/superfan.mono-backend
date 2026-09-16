@@ -39,6 +39,7 @@ import { LoggingMiddleware } from './common/middleware/logging.middleware';
 import { WaitlistModule } from './waitlist/waitlist.module';
 import { ShopModule } from './shop/shop.module';
 import { PodcastModule } from './podcast/podcast.module';
+import { FriendInviteModule } from './friend-invite/friend-invite.module';
 
 @Module({
   imports: [
@@ -86,8 +87,9 @@ import { PodcastModule } from './podcast/podcast.module';
     WebhookModule,
     ResetModule,
     WaitlistModule,
-    ShopModule,
+ShopModule,
     PodcastModule,
+    FriendInviteModule,
     BullModule.forRootAsync({
       imports: [ConfigModule],
       useFactory: (configService: ConfigService) => {
