@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	_ "github.com/joho/godotenv/autoload"
@@ -16,7 +17,13 @@ import (
 	"quiz.superfan.com/apis/utils"
 
 	"quiz.superfan.com/apis/controllers"
+	"quiz.superfan.com/apis/middleware"
+	"quiz.superfan.com/apis/models"
 	"quiz.superfan.com/apis/services"
+
+	paymentControllers "quiz.superfan.com/apis/controllers"
+	"quiz.superfan.com/apis/services/payment"
+	"quiz.superfan.com/apis/services/payment/providers"
 )
 
 var (
@@ -26,7 +33,19 @@ var (
 	qc          *controllers.QuizController
 	ctx         context.Context
 	mongoclient *mongo.Client
-	err         error
+	// err         error
+
+	// Payment
+	paymentSvc  *payment.PaymentService
+	paymentCtrl *paymentControllers.PaymentController
+
+	// Ads
+	adsSvc  services.AdsService
+	adsCtrl *controllers.AdsController
+
+	// Ledger
+	ledgerSvc  services.LedgerService
+	ledgerCtrl *controllers.LedgerController
 )
 
 type AppError struct {
@@ -78,15 +97,9 @@ func ErrorHandler() gin.HandlerFunc {
 		err := c.Errors.Last().Err
 		var appErr *AppError
 		if errors.As(err, &appErr) {
-			c.JSON(appErr.Status, gin.H{
-				"success": false,
-				"error":   gin.H{"code": appErr.Code, "message": appErr.Message},
-			})
+			utils.SendError(c, appErr.Status, appErr.Code, appErr.Message)
 		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"success": false,
-				"error":   gin.H{"code": "INTERNAL", "message": "an unexpected error occurred"},
-			})
+			utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "an unexpected error occurred")
 		}
 	}
 }
@@ -100,18 +113,43 @@ func init() {
 		log.Fatal("MONGO_URI environment variable is required")
 	}
 
+	pgURI := get("DATABASE_URL")
+	if pgURI != "" {
+		utils.ConnectPostgres(pgURI)
+		if utils.DB != nil {
+			if err := utils.DB.AutoMigrate(&models.AdCampaign{}, &models.AdPlacement{}, &models.AdEvent{}); err != nil {
+				log.Fatalf("failed to migrate ads tables: %v", err)
+			}
+			if err := utils.DB.Exec(`ALTER TABLE "AdCampaign" ADD COLUMN IF NOT EXISTS "placementType" TEXT`).Error; err != nil {
+				log.Fatalf("failed to migrate AdCampaign.placementType: %v", err)
+			}
+		}
+	} else {
+		log.Println("DATABASE_URL environment variable is not set; skipping PostgreSQL connection")
+	}
+
 	ctx = context.Background()
 
 	clientOptions := options.Client().ApplyURI(mongoURI)
 
-	mongoclient, err = mongo.Connect(clientOptions)
-	if err != nil {
-		log.Fatal("error while connecting with mongo:", err)
+	var mongoclient *mongo.Client
+	var err error
+	maxRetries := 10
+
+	for i := 0; i < maxRetries; i++ {
+		mongoclient, err = mongo.Connect(clientOptions)
+		if err == nil {
+			err = mongoclient.Ping(ctx, readpref.Primary())
+			if err == nil {
+				break
+			}
+		}
+		log.Printf("Failed to connect to MongoDB, retrying in 2 seconds... (%d/%d)", i+1, maxRetries)
+		time.Sleep(2 * time.Second)
 	}
 
-	err = mongoclient.Ping(ctx, readpref.Primary())
 	if err != nil {
-		log.Fatal("error while trying to ping mongo", err)
+		log.Fatal("error  while trying to ping/connect mongo after retries: ", err)
 	}
 
 	fmt.Println("mongo connection established")
@@ -135,7 +173,56 @@ func init() {
 	qsc = controllers.NewQuizSubmissionController(qsImpl)
 	qc = controllers.NewQuizController(qs)
 
-	server = gin.Default()
+	// Wire Payment
+	monnify := providers.NewMonnifyProvider(get("PROD_MONNIFY_API_KEY"), get("PROD_MONNIFY_SECRET_KEY"), get("MONNIFY_URI"), get("MONNIFY_CONTRACT_CODE"))
+	bitnobURL := get("BITNOB_URL")
+	if bitnobURL == "" {
+		bitnobURL = "https://api.bitnob.co"
+	}
+	bitnob := providers.NewBitnobProvider(get("BITNOB_SECRET_KEY"), bitnobURL)
+	paymentSvc = payment.NewPaymentService(utils.DB, monnify, bitnob)
+	paymentCtrl = paymentControllers.NewPaymentController(paymentSvc)
+
+	// Wire Ads
+	adsSvc = services.NewAdsService(utils.DB)
+	adsCtrl = controllers.NewAdsController(adsSvc)
+
+	// Wire Ledger
+	ledgerSvc = services.NewLedgerService(utils.DB)
+	ledgerCtrl = controllers.NewLedgerController(ledgerSvc)
+
+	// Launch Airtable sync in the background
+	go services.SyncFromAirtable(qs)
+
+	// Launch live quiz finaliser (one-shot timers based on quizFinishDate)
+	finaliser := services.NewLiveQuizFinaliser(liveQuizc)
+	services.LiveQuizFinaliserInstance = finaliser
+	finaliser.Start()
+
+	// Launch background Ledger event listener
+	go func() {
+		for wTx := range utils.LedgerEvents {
+			controllers.BroadcastLedgerUpdate(wTx)
+		}
+	}()
+
+	server = gin.New()
+	server.Use(gin.Logger())
+	server.Use(middleware.CORSMiddleware())
+	server.Use(gin.CustomRecovery(func(c *gin.Context, recovered interface{}) {
+		msg := "an unexpected error occurred"
+		if err, ok := recovered.(string); ok && err != "" {
+			msg = err
+		} else if err, ok := recovered.(error); ok && err != nil {
+			msg = err.Error()
+		}
+		log.Printf("panic recovered: %v", recovered)
+		// Avoid double-write: only send JSON error body.
+		if !c.Writer.Written() {
+			utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", msg)
+		}
+		c.Abort()
+	}))
 
 	server.Use(ErrorHandler())
 }
@@ -148,6 +235,10 @@ func main() {
 
 	defer mongoclient.Disconnect(ctx)
 
+	server.GET("/health", func(c *gin.Context) {
+		utils.Success(c, http.StatusOK, "UP", nil)
+	})
+
 	basepath := server.Group("/v1")
 
 	controllers.RegisterQuizRoutes(
@@ -155,6 +246,35 @@ func main() {
 		qc,
 		qsc,
 	)
+
+	v2path := server.Group("/v2")
+	controllers.RegisterQuizSessionV2Routes(v2path, qs)
+	controllers.RegisterLiveQuizV2Routes(v2path, qc)
+
+	// Register REST routes for the streaming proxy (auth required — same tokens as Nest)
+	controllers.RegisterStreamRoutes(basepath)
+
+	// Payment Routes
+	paymentControllers.RegisterPaymentRoutes(basepath, paymentCtrl)
+	apibasepath := server.Group("/api/v1")
+	paymentControllers.RegisterPaymentRoutes(apibasepath, paymentCtrl)
+	rootbasepath := server.Group("")
+	paymentControllers.RegisterPaymentRoutes(rootbasepath, paymentCtrl)
+
+	// Ledger Routes
+	controllers.RegisterLedgerRoutes(basepath, ledgerCtrl)
+	controllers.RegisterLedgerRoutes(apibasepath, ledgerCtrl)
+
+	// Ads Routes (v2 primary)
+	controllers.RegisterAdsRoutes(v2path, adsCtrl)
+	apiv2path := server.Group("/api/v2")
+	controllers.RegisterAdsRoutes(apiv2path, adsCtrl)
+	controllers.RegisterAdsRoutes(basepath, adsCtrl)
+	controllers.RegisterAdsRoutes(apibasepath, adsCtrl)
+	controllers.RegisterAdsRoutes(rootbasepath, adsCtrl)
+
+	// WebSocket Streaming Route (token via Authorization header or ?token=)
+	basepath.GET("/streams/ws", middleware.AuthRequired(), controllers.StreamWebSocket)
 
 	port := os.Getenv("PORT")
 	if port == "" {
