@@ -250,6 +250,16 @@ export class NotificationService {
   }
 
   async newLoginDevice(userId: number) {
+    const recent = await prisma.notification.findFirst({
+      where: {
+        userId,
+        type: NotificationTriggers.NEW_LOGIN_DEVICE,
+        createdAt: { gte: new Date(Date.now() - 10 * 60 * 1000) },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (recent) return recent; // already alerted for this login burst
+
     return this.notify(
       userId,
       NotificationTriggers.NEW_LOGIN_DEVICE,
