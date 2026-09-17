@@ -101,6 +101,7 @@ export class UserController {
     const user = await this.userService.syncFromClerkToken(
       req.headers.authorization,
       dto,
+      req.headers['user-agent'] as string | undefined,
     );
     return successResponse('User synced successfully', user);
   }

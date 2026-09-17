@@ -45,6 +45,7 @@ type SyncUserMetadata = {
   referralCode?: string;
   ip_address?: string;
   location?: string;
+  userAgent?: string;
 };
 
 @Injectable()
@@ -321,6 +322,7 @@ export class UserService {
   async syncFromClerkToken(
     authorizationHeader: string | undefined,
     metadata: SyncUserMetadata = {},
+    userAgent?: string,
   ) {
     try {
       const token = (authorizationHeader || '')
@@ -343,7 +345,7 @@ export class UserService {
       });
 
       const clerkUser = await this.clerkService.getClient().users.getUser(payload.sub);
-      return this.syncFromClerk(clerkUser, metadata);
+      return this.syncFromClerk(clerkUser, metadata, userAgent);
     } catch (error) {
       console.error('Sync from Clerk token error:', error);
       throw new ForbiddenException(
@@ -352,7 +354,7 @@ export class UserService {
     }
   }
 
-  async syncFromClerk(clerkUser: any, metadata: SyncUserMetadata = {}) {
+  async syncFromClerk(clerkUser: any, metadata: SyncUserMetadata = {}, userAgent?: string) {
     try {
       const clerkUserId = clerkUser.id as string;
       const email = clerkUser.emailAddresses?.[0]?.emailAddress as
@@ -430,7 +432,7 @@ export class UserService {
       }
 
       try {
-        await this.notificationService.newLoginDevice(user.id);
+        await this.flagNewLoginDevice(user, userAgent);
       } catch {
         // notifications must never break login flow
       }
@@ -442,6 +444,44 @@ export class UserService {
         error instanceof Error ? error.message : 'Failed to sync with Clerk'
       );
     }
+  }
+
+  private async flagNewLoginDevice(user: User, userAgent?: string) {
+    if (!userAgent || typeof userAgent !== 'string') return false;
+
+    const fingerprint = this.deviceFingerprint(userAgent);
+
+    const existing = await prisma.userDevice.findUnique({
+      where: { userId_fingerprint: { userId: user.id, fingerprint } },
+    });
+
+    if (existing) {
+      await prisma.userDevice.update({
+        where: { id: existing.id },
+        data: { lastSeenAt: new Date() },
+      });
+      return false;
+    }
+
+    await prisma.userDevice.create({
+      data: {
+        userId: user.id,
+        fingerprint,
+        userAgent: userAgent.slice(0, 500),
+      },
+    });
+
+    await this.notificationService.newLoginDevice(user.id);
+    return true;
+  }
+
+  private deviceFingerprint(userAgent: string): string {
+    let hash = 5381;
+    const normalized = userAgent.trim().replace(/\s+/g, ' ').toLowerCase();
+    for (let i = 0; i < normalized.length; i++) {
+      hash = (hash * 33) ^ normalized.charCodeAt(i);
+    }
+    return `djb2_${(hash >>> 0).toString(16)}_${normalized.length}`;
   }
 
   async updateOnboarding(
