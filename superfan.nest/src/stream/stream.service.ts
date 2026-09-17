@@ -2049,6 +2049,16 @@ const stream = await prisma.stream.findUnique({
         this.logger.error(`Failed to send report notification: ${notifError.message}`);
       }
 
+      try {
+        await this.notificationService
+          .streamCommentReportConfirmation(userId)
+          .catch(() => undefined);
+      } catch (confirmError: any) {
+        this.logger.error(
+          `Failed to send report confirmation notification: ${confirmError.message}`,
+        );
+      }
+
       return {
         ...report_comment,
         reportsCount: updatedComment.reportsCount,

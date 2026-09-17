@@ -49,6 +49,7 @@ export const NotificationTriggers = {
   STREAM_COMMENT_LIKED: 'stream_comment_liked',
   STREAM_COMMENT_LIKED_MODERATOR: 'stream_comment_liked_moderator',
   STREAM_COMMENT_REPORTED: 'stream_comment_reported',
+  STREAM_COMMENT_REPORT_CONFIRMATION: 'stream_comment_report_confirmation',
   STREAM_ADMIN_REPLY: 'stream_admin_reply',
   STREAM_GOING_LIVE: 'stream_going_live',
   STREAM_ENDING_SOON: 'stream_ending_soon',
@@ -401,6 +402,16 @@ export class NotificationService {
       ),
     );
     return { sent: moderatorUserIds.length };
+  }
+
+  async streamCommentReportConfirmation(reporterUserId: number) {
+    const msg = "🚩 Report Received. Thanks — we'll review this comment.";
+    return this.notify(
+      reporterUserId,
+      NotificationTriggers.STREAM_COMMENT_REPORT_CONFIRMATION,
+      msg,
+      msg,
+    );
   }
 
   async streamAdminReply(
