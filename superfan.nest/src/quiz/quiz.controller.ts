@@ -251,6 +251,7 @@ export class QuizController {
     }
   }
 
+      @Public()
       @Get('gq-leaderboard')
   async getGeneralQuizLeaderboard(
       @Query('filter')
