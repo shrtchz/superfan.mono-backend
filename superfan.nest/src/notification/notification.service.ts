@@ -46,6 +46,19 @@ export const NotificationTriggers = {
   DEFAULT_PAYMENT_METHOD_CHANGED: 'default_payment_method_changed',
   MINIMUM_WITHDRAWAL_NOT_MET: 'minimum_withdrawal_not_met',
   GOLD_PERSONAL_TRANSFER: 'gold_personal_transfer',
+  KYC_SUBMITTED: 'kyc_in_progress',
+  KYC_APPROVED: 'kyc_approved',
+  KYC_REJECTED: 'kyc_failed',
+  KYC_WITHDRAWAL_LIMIT_REACHED: 'minimum_withdrawal_not_met',
+  ADMIN_ACCOUNT_CREATED: 'admin_account_created',
+  ADMIN_INVITED: 'admin_invited',
+  ADMIN_INVITE_RESENT: 'admin_invite_resent',
+  ADMIN_ROLE_CHANGED: 'admin_role_changed',
+  ADMIN_TASK_ASSIGNED: 'admin_task_assigned',
+  ADMIN_MESSAGE_RECEIVED: 'admin_message_received',
+  ADMIN_LOGIN_DETECTED: 'admin_login_detected',
+  ADMIN_PASSWORD_CHANGED: 'admin_password_changed',
+  ADMIN_CONTACT_INFO_UPDATED: 'admin_contact_info_updated',
   STREAM_COMMENT_LIKED: 'stream_comment_liked',
   STREAM_COMMENT_LIKED_MODERATOR: 'stream_comment_liked_moderator',
   STREAM_COMMENT_REPORTED: 'stream_comment_reported',
@@ -71,18 +84,56 @@ export type NotificationTrigger =
 export class NotificationService {
   constructor(private gateway: NotificationGateway) {}
 
+  private sanitizeText(value: string) {
+    return String(value ?? '')
+      .replace(/[\p{Extended_Pictographic}\uFE0F]/gu, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private async findRecentDuplicate(
+    userId: number,
+    type: string | undefined,
+    title: string,
+    message: string,
+  ) {
+    const since = new Date(Date.now() - 10 * 60 * 1000);
+    const normalizedTitle = this.sanitizeText(title);
+    const normalizedMessage = this.sanitizeText(message);
+
+    return prisma.notification.findFirst({
+      where: {
+        userId,
+        ...(type ? { type } : {}),
+        ...(type ? { message: normalizedMessage } : { title: normalizedTitle, message: normalizedMessage }),
+        createdAt: { gte: since },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
   async createNotification(userId: number, title: string, message: string, type?: string) {
+    const sanitizedTitle = this.sanitizeText(title);
+    const sanitizedMessage = this.sanitizeText(message);
+
+    if (!sanitizedTitle && !sanitizedMessage) return null;
+
+    const duplicate = await this.findRecentDuplicate(userId, type, sanitizedTitle, sanitizedMessage);
+    if (duplicate) {
+      return duplicate;
+    }
+
     const notification = await prisma.notification.create({
       data: {
         userId,
-        title,
-        message,
+        title: sanitizedTitle,
+        message: sanitizedMessage,
         type
       },
     });
 
     // realtime websocket
-    let check_notif = await this.gateway.sendNotificationToUser(
+    await this.gateway.sendNotificationToUser(
       userId,
       notification,
     );
@@ -278,22 +329,22 @@ export class NotificationService {
   }
 
   async testQuizReward(userId: number, points: number, amountNaira: number) {
-    const msg = `🎉 You earned ${Number(points).toLocaleString()} pts (₦${amountNaira}).`;
+    const msg = `You earned ${Number(points).toLocaleString()} pts (₦${amountNaira}).`;
     return this.notify(userId, NotificationTriggers.TEST_QUIZ_REWARD, msg, msg);
   }
 
   async liveQuizReward(userId: number, amountNaira: number) {
-    const msg = `🏆 You earned ₦${Number(amountNaira).toLocaleString()} from today's live quiz.`;
+    const msg = `You earned ₦${Number(amountNaira).toLocaleString()} from today's live quiz.`;
     return this.notify(userId, NotificationTriggers.LIVE_QUIZ_REWARD, msg, msg);
   }
 
   async liveQuizJackpot(userId: number, amountNaira: number) {
-    const msg = `💥 Jackpot! ₦${Number(amountNaira).toLocaleString()} credited to your Gold Account.`;
+    const msg = `Jackpot! ₦${Number(amountNaira).toLocaleString()} credited to your Gold Account.`;
     return this.notify(userId, NotificationTriggers.LIVE_QUIZ_JACKPOT, msg, msg);
   }
 
   async newQuizAvailable(userIds: number[], quizLabel = 'A fresh quiz just dropped.') {
-    const msg = `📝 ${quizLabel}`;
+    const msg = quizLabel;
     await Promise.all(
       userIds.map((id) =>
         this.notify(id, NotificationTriggers.NEW_QUIZ_AVAILABLE, msg, msg).catch(() => null),
@@ -303,17 +354,17 @@ export class NotificationService {
   }
 
   async quizReminder(userId: number) {
-    const msg = "⏳ Don't forget your quiz today.";
+    const msg = "Don't forget your quiz today.";
     return this.notify(userId, NotificationTriggers.QUIZ_REMINDER, msg, msg);
   }
 
   async testsRemainingLow(userId: number, remaining: number) {
-    const msg = `🎯 ${remaining} Test(s) Left Today.`;
+    const msg = `${remaining} Test(s) Left Today.`;
     return this.notify(userId, NotificationTriggers.TESTS_REMAINING_LOW, msg, msg);
   }
 
   async liveQuizStartingSoon(userIds: number[], minutes = 5) {
-    const msg = `🔴 Kicks off in ${minutes} minutes.`;
+    const msg = `Kicks off in ${minutes} minutes.`;
     await Promise.all(
       userIds.map((id) =>
         this.notify(id, NotificationTriggers.LIVE_QUIZ_STARTING_SOON, msg, msg).catch(() => null),
@@ -323,7 +374,7 @@ export class NotificationService {
   }
 
   async manualCreditApplied(userId: number, amountNaira = 2) {
-    const msg = `💰 ₦${amountNaira} added from a recent live quiz.`;
+    const msg = `₦${amountNaira} added from a recent live quiz.`;
     return this.notify(userId, NotificationTriggers.MANUAL_CREDIT_APPLIED, msg, msg);
   }
 
@@ -360,6 +411,73 @@ export class NotificationService {
   async contactInfoUpdated(userId: number, field = 'email') {
     const msg = `Your ${field} was updated.`;
     return this.notify(userId, NotificationTriggers.CONTACT_INFO_UPDATED, msg, msg);
+  }
+
+  async kycSubmitted(userId: number) {
+    const msg = "📋 We're reviewing your documents.";
+    return this.notify(userId, NotificationTriggers.KYC_SUBMITTED, msg, msg);
+  }
+
+  async kycApproved(userId: number) {
+    const msg = '✅ KYC Verified! Enjoy higher limits.';
+    return this.notify(userId, NotificationTriggers.KYC_APPROVED, msg, msg);
+  }
+
+  async kycRejected(userId: number) {
+    const msg = '❌ Verification failed. Tap to resubmit.';
+    return this.notify(userId, NotificationTriggers.KYC_REJECTED, msg, msg);
+  }
+
+  async kycWithdrawalLimitReached(userId: number) {
+    const msg = '⚠️ Complete your KYC to unlock higher withdrawal limits.';
+    return this.notify(userId, NotificationTriggers.KYC_WITHDRAWAL_LIMIT_REACHED, msg, msg);
+  }
+
+  async adminAccountCreated(userId: number, adminName: string) {
+    const msg = `🎉 ${adminName} was added as an admin.`;
+    return this.notify(userId, NotificationTriggers.ADMIN_ACCOUNT_CREATED, msg, msg);
+  }
+
+  async adminInviteSent(userId: number, inviterName?: string) {
+    const msg = inviterName
+      ? `📩 ${inviterName} invited you to join Superfan as an Admin.`
+      : '📩 You have been invited to join Superfan as an Admin.';
+    return this.notify(userId, NotificationTriggers.ADMIN_INVITED, msg, msg);
+  }
+
+  async adminInviteResent(userId: number) {
+    const msg = 'Your admin invitation was resent.';
+    return this.notify(userId, NotificationTriggers.ADMIN_INVITE_RESENT, msg, msg);
+  }
+
+  async adminRoleChanged(userId: number, roleName = 'Sub-Admin') {
+    const msg = `Your role was updated to ${roleName}.`;
+    return this.notify(userId, NotificationTriggers.ADMIN_ROLE_CHANGED, msg, msg);
+  }
+
+  async adminTaskAssigned(userId: number, assignedBy: string, taskTitle: string) {
+    const msg = `📋 ${assignedBy} assigned you: "${taskTitle}"`;
+    return this.notify(userId, NotificationTriggers.ADMIN_TASK_ASSIGNED, msg, msg);
+  }
+
+  async adminMessageReceived(userId: number, senderName: string, message: string) {
+    const msg = `💬 ${senderName}: "${message}"`;
+    return this.notify(userId, NotificationTriggers.ADMIN_MESSAGE_RECEIVED, msg, msg);
+  }
+
+  async adminLoginDetected(userId: number, location = 'Lagos, Nigeria', ip = '197.210.54.12') {
+    const msg = `New login from ${location}, IP ${ip}.`;
+    return this.notify(userId, NotificationTriggers.ADMIN_LOGIN_DETECTED, msg, msg);
+  }
+
+  async adminPasswordChanged(userId: number) {
+    const msg = '🔒 Your password was just updated.';
+    return this.notify(userId, NotificationTriggers.ADMIN_PASSWORD_CHANGED, msg, msg);
+  }
+
+  async adminContactInfoUpdated(userId: number, field = 'email') {
+    const msg = `Your ${field} was updated.`;
+    return this.notify(userId, NotificationTriggers.ADMIN_CONTACT_INFO_UPDATED, msg, msg);
   }
 
   async walletCredited(userId: number, amountNaira = 2) {
