@@ -154,7 +154,7 @@ export class NotificationService {
     return this.notify(
       referrerId,
       NotificationTriggers.REFERRAL_SIGNUP_BONUS,
-      '🎉 ₦20 Earned!',
+      '₦20 Earned!',
       `${refereeUsername} signed up with your referral code.`,
     );
   }
@@ -163,7 +163,7 @@ export class NotificationService {
     return this.notify(
       referrerId,
       NotificationTriggers.REFERRAL_FIRST_TEST_BONUS,
-      '💰 ₦10 More!',
+      '₦10 More!',
       `${refereeUsername} completed their first test.`,
     );
   }
@@ -181,7 +181,7 @@ export class NotificationService {
     return this.notify(
       receiverId,
       NotificationTriggers.CHALLENGE_INVITE_SENT,
-      '🤝 Friend Request',
+      'Friend Request',
       `${senderUsername} sent you a challenge/friend request.`,
     );
   }
@@ -190,7 +190,7 @@ export class NotificationService {
     return this.notify(
       senderId,
       NotificationTriggers.CHALLENGE_INVITE_ACCEPTED,
-      '✅ Request Accepted',
+      'Request Accepted',
       `${receiverUsername} accepted your friend/companion request.`,
     );
   }
@@ -199,7 +199,7 @@ export class NotificationService {
     return this.notify(
       senderId,
       NotificationTriggers.CHALLENGE_INVITE_DECLINED,
-      '❌ Request Declined',
+      'Request Declined',
       `${receiverUsername} declined your friend/companion request.`,
     );
   }
@@ -208,7 +208,7 @@ export class NotificationService {
     return this.notify(
       userId,
       NotificationTriggers.ORDER_CONFIRMED,
-      '✅ Order Confirmed',
+      'Order Confirmed',
       `Order Confirmed for ${productLabel}.`,
     );
   }
@@ -216,7 +216,7 @@ export class NotificationService {
   async orderStatusUpdate(userId: number, orderNumber: string, status: string) {
     const normalized = String(status || '').toUpperCase();
     const title =
-      normalized === 'SHIPPED' ? '📦 Order Shipped!' : `📦 Order Update: ${status}`;
+      normalized === 'SHIPPED' ? 'Order Shipped!' : `Order Update: ${status}`;
     return this.notify(
       userId,
       NotificationTriggers.ORDER_STATUS_UPDATE,
@@ -231,7 +231,7 @@ export class NotificationService {
     return this.notify(
       userId,
       NotificationTriggers.PAYMENT_FAILED,
-      '⚠️ Payment Failed.',
+      'Payment Failed.',
       orderNumber ? `Payment for #${orderNumber} failed. Tap to retry.` : 'Tap to retry.',
     );
   }
@@ -240,7 +240,7 @@ export class NotificationService {
     return this.notify(
       userId,
       NotificationTriggers.AD_APPROVED_LIVE,
-      '📢 Your Ad Is Live!',
+      'Your Ad Is Live!',
       `"${campaignTitle}" is now running.`,
     );
   }
@@ -258,7 +258,7 @@ export class NotificationService {
     return this.notify(
       userId,
       NotificationTriggers.AD_PERFORMANCE_MILESTONE,
-      `🚀 "${campaignTitle}" just hit ${Number(impressions).toLocaleString()} impressions!`,
+      `"${campaignTitle}" just hit ${Number(impressions).toLocaleString()} impressions!`,
       `"${campaignTitle}" just hit ${Number(impressions).toLocaleString()} impressions!`,
     );
   }
@@ -267,8 +267,8 @@ export class NotificationService {
     return this.notify(
       userId,
       NotificationTriggers.AD_REWARD_CREDITED,
-      `🎬 You earned ₦${amountNaira} for watching an ad.`,
-      `🎬 You earned ₦${amountNaira} for watching an ad.`,
+      `You earned ₦${amountNaira} for watching an ad.`,
+      `You earned ₦${amountNaira} for watching an ad.`,
     );
   }
 
@@ -276,13 +276,13 @@ export class NotificationService {
     return this.notify(
       userId,
       NotificationTriggers.AD_LIMIT_REACHED,
-      "📺 Today's ad limit reached, resets in " + resetsIn + '.',
-      "📺 Today's ad limit reached, resets in " + resetsIn + '.',
+      "Today's ad limit reached, resets in " + resetsIn + '.',
+      "Today's ad limit reached, resets in " + resetsIn + '.',
     );
   }
 
   async podcastNewEpisode(userIds: number[], episodeTitle: string) {
-    const title = `🎧 "${episodeTitle}" just dropped.`;
+    const title = `"${episodeTitle}" just dropped.`;
     await Promise.all(
       userIds.map((id) =>
         this.notify(id, NotificationTriggers.PODCAST_NEW_EPISODE, title, title).catch(() => null),
@@ -295,8 +295,8 @@ export class NotificationService {
     return this.notify(
       userId,
       NotificationTriggers.TWO_FA_ENABLED,
-      '🔒 Two-factor authentication is now active.',
-      '🔒 Two-factor authentication is now active.',
+      'Two-factor authentication is now active.',
+      'Two-factor authentication is now active.',
     );
   }
 
@@ -385,13 +385,13 @@ export class NotificationService {
 
   async accountBanned(userId: number, reason?: string) {
     const msg = reason
-      ? `⛔ Account Suspended: ${reason}`
-      : '⛔ Account Suspended: Violation of community guidelines.';
+      ? `Account Suspended: ${reason}`
+      : 'Account Suspended: Violation of community guidelines.';
     return this.notify(userId, NotificationTriggers.ACCOUNT_BANNED, msg, msg);
   }
 
   async accountUnbanned(userId: number) {
-    const msg = '✅ Account Restored.';
+    const msg = 'Account Restored.';
     return this.notify(userId, NotificationTriggers.ACCOUNT_UNBANNED, msg, msg);
   }
 
@@ -399,12 +399,12 @@ export class NotificationService {
     const normalized = String(plan || '').toUpperCase();
     const label =
       normalized === 'PREMIUM_PRO_MAX' ? 'Pro Max' : normalized === 'PREMIUM_PRO' ? 'Pro' : normalized || 'Pro';
-    const msg = `🌟 Welcome to ${label}!`;
+    const msg = `Welcome to ${label}!`;
     return this.notify(userId, NotificationTriggers.PLAN_UPGRADED, msg, msg);
   }
 
   async passwordChanged(userId: number) {
-    const msg = '🔒 Your password was just updated.';
+    const msg = 'Your password was just updated.';
     return this.notify(userId, NotificationTriggers.PASSWORD_CHANGED, msg, msg);
   }
 
@@ -414,34 +414,34 @@ export class NotificationService {
   }
 
   async kycSubmitted(userId: number) {
-    const msg = "📋 We're reviewing your documents.";
+    const msg = "We're reviewing your documents.";
     return this.notify(userId, NotificationTriggers.KYC_SUBMITTED, msg, msg);
   }
 
   async kycApproved(userId: number) {
-    const msg = '✅ KYC Verified! Enjoy higher limits.';
+    const msg = 'KYC Verified! Enjoy higher limits.';
     return this.notify(userId, NotificationTriggers.KYC_APPROVED, msg, msg);
   }
 
   async kycRejected(userId: number) {
-    const msg = '❌ Verification failed. Tap to resubmit.';
+    const msg = 'Verification failed. Tap to resubmit.';
     return this.notify(userId, NotificationTriggers.KYC_REJECTED, msg, msg);
   }
 
   async kycWithdrawalLimitReached(userId: number) {
-    const msg = '⚠️ Complete your KYC to unlock higher withdrawal limits.';
+    const msg = 'Complete your KYC to unlock higher withdrawal limits.';
     return this.notify(userId, NotificationTriggers.KYC_WITHDRAWAL_LIMIT_REACHED, msg, msg);
   }
 
   async adminAccountCreated(userId: number, adminName: string) {
-    const msg = `🎉 ${adminName} was added as an admin.`;
+    const msg = `${adminName} was added as an admin.`;
     return this.notify(userId, NotificationTriggers.ADMIN_ACCOUNT_CREATED, msg, msg);
   }
 
   async adminInviteSent(userId: number, inviterName?: string) {
     const msg = inviterName
-      ? `📩 ${inviterName} invited you to join Superfan as an Admin.`
-      : '📩 You have been invited to join Superfan as an Admin.';
+      ? `${inviterName} invited you to join Superfan as an Admin.`
+      : 'You have been invited to join Superfan as an Admin.';
     return this.notify(userId, NotificationTriggers.ADMIN_INVITED, msg, msg);
   }
 
@@ -456,12 +456,12 @@ export class NotificationService {
   }
 
   async adminTaskAssigned(userId: number, assignedBy: string, taskTitle: string) {
-    const msg = `📋 ${assignedBy} assigned you: "${taskTitle}"`;
+    const msg = `${assignedBy} assigned you: "${taskTitle}"`;
     return this.notify(userId, NotificationTriggers.ADMIN_TASK_ASSIGNED, msg, msg);
   }
 
   async adminMessageReceived(userId: number, senderName: string, message: string) {
-    const msg = `💬 ${senderName}: "${message}"`;
+    const msg = `${senderName}: "${message}"`;
     return this.notify(userId, NotificationTriggers.ADMIN_MESSAGE_RECEIVED, msg, msg);
   }
 
@@ -471,7 +471,7 @@ export class NotificationService {
   }
 
   async adminPasswordChanged(userId: number) {
-    const msg = '🔒 Your password was just updated.';
+    const msg = 'Your password was just updated.';
     return this.notify(userId, NotificationTriggers.ADMIN_PASSWORD_CHANGED, msg, msg);
   }
 
@@ -481,27 +481,27 @@ export class NotificationService {
   }
 
   async walletCredited(userId: number, amountNaira = 2) {
-    const msg = `💵 ₦${amountNaira.toLocaleString()} was added to your wallet.`;
+    const msg = `₦${amountNaira.toLocaleString()} was added to your wallet.`;
     return this.notify(userId, NotificationTriggers.WALLET_CREDITED, msg, msg);
   }
 
   async withdrawalRequested(userId: number, amountNaira = 2) {
-    const msg = `📤 Payout of ₦${amountNaira.toLocaleString()} is processing.`;
+    const msg = `Payout of ₦${amountNaira.toLocaleString()} is processing.`;
     return this.notify(userId, NotificationTriggers.WITHDRAWAL_REQUESTED, msg, msg);
   }
 
   async withdrawalCompleted(userId: number, amountNaira = 2, destination?: string) {
-    const msg = `✅ ₦${amountNaira.toLocaleString()} sent to your ${destination || 'bank'} account.`;
+    const msg = `₦${amountNaira.toLocaleString()} sent to your ${destination || 'bank'} account.`;
     return this.notify(userId, NotificationTriggers.WITHDRAWAL_COMPLETED, msg, msg);
   }
 
   async withdrawalFailed(userId: number) {
-    const msg = '⚠️ Payout failed. Tap to retry.';
+    const msg = 'Payout failed. Tap to retry.';
     return this.notify(userId, NotificationTriggers.WITHDRAWAL_FAILED, msg, msg);
   }
 
   async paymentMethodAdded(userId: number, label?: string) {
-    const msg = `💳 Your ${label || 'bank account'} was added.`;
+    const msg = `Your ${label || 'bank account'} was added.`;
     return this.notify(userId, NotificationTriggers.PAYMENT_METHOD_ADDED, msg, msg);
   }
 
@@ -528,7 +528,7 @@ export class NotificationService {
   async streamCommentLiked(ownerUserId: number, likerName: string, commentPreview: string) {
     const preview =
       commentPreview.length > 60 ? `${commentPreview.slice(0, 60).trim()}…` : commentPreview;
-    const msg = `❤️ ${likerName} liked your comment: "${preview}"`;
+    const msg = `${likerName} liked your comment: "${preview}"`;
     return this.notify(ownerUserId, NotificationTriggers.STREAM_COMMENT_LIKED, msg, msg);
   }
 
@@ -538,7 +538,7 @@ export class NotificationService {
     streamTitle: string,
   ) {
     if (!moderatorUserIds.length) return { sent: 0 };
-    const msg = `❤️ ${likerName} liked a comment in ${streamTitle}.`;
+    const msg = `${likerName} liked a comment in ${streamTitle}.`;
     await Promise.all(
       moderatorUserIds.map((id) =>
         this.notify(id, NotificationTriggers.STREAM_COMMENT_LIKED_MODERATOR, msg, msg).catch(
@@ -551,7 +551,7 @@ export class NotificationService {
 
   async streamCommentReported(moderatorUserIds: number[], streamTitle: string) {
     if (!moderatorUserIds.length) return { sent: 0 };
-    const msg = `🚩 New Report. A comment in ${streamTitle} was reported — tap to review.`;
+    const msg = `New Report. A comment in ${streamTitle} was reported — tap to review.`;
     await Promise.all(
       moderatorUserIds.map((id) =>
         this.notify(id, NotificationTriggers.STREAM_COMMENT_REPORTED, msg, msg).catch(
@@ -563,7 +563,7 @@ export class NotificationService {
   }
 
   async streamCommentReportConfirmation(reporterUserId: number) {
-    const msg = "🚩 Report Received. Thanks — we'll review this comment.";
+    const msg = "Report Received. Thanks — we'll review this comment.";
     return this.notify(
       reporterUserId,
       NotificationTriggers.STREAM_COMMENT_REPORT_CONFIRMATION,
@@ -578,7 +578,7 @@ export class NotificationService {
     streamTitle: string,
   ) {
     if (!otherModeratorUserIds.length) return { sent: 0 };
-    const msg = `💬 Admin Replied. ${adminName} replied to a comment in ${streamTitle}.`;
+    const msg = `Admin Replied. ${adminName} replied to a comment in ${streamTitle}.`;
     await Promise.all(
       otherModeratorUserIds.map((id) =>
         this.notify(id, NotificationTriggers.STREAM_ADMIN_REPLY, msg, msg).catch(
@@ -591,7 +591,7 @@ export class NotificationService {
 
   async streamGoingLive(userIds: number[], streamTitle: string) {
     if (!userIds.length) return { sent: 0 };
-    const msg = `🔴 We're Live! ${streamTitle} just started.`;
+    const msg = `We're Live! ${streamTitle} just started.`;
     await Promise.all(
       userIds.map((id) =>
         this.notify(id, NotificationTriggers.STREAM_GOING_LIVE, msg, msg).catch(
@@ -604,7 +604,7 @@ export class NotificationService {
 
   async streamEndingSoon(userIds: number[], streamTitle: string, minutes = 10) {
     if (!userIds.length) return { sent: 0 };
-    const msg = `⏰ ${streamTitle} wraps up in ${minutes} minutes.`;
+    const msg = `${streamTitle} wraps up in ${minutes} minutes.`;
     await Promise.all(
       userIds.map((id) =>
         this.notify(id, NotificationTriggers.STREAM_ENDING_SOON, msg, msg).catch(
@@ -616,7 +616,7 @@ export class NotificationService {
   }
 
   async streamWinnerTagged(userId: number) {
-    const msg = '🏆 You Won! Check your wallet.';
+    const msg = 'You Won! Check your wallet.';
     return this.notify(userId, NotificationTriggers.STREAM_WINNER_TAGGED, msg, msg);
   }
 
