@@ -148,6 +148,97 @@ export class NotificationController {
   }
 
   @Public()
+  @Post('/triggers/kyc-submitted')
+  @HttpCode(HttpStatus.OK)
+  triggerKycSubmitted(@Body() body: { userId: number }) {
+    return this.notificationService.kycSubmitted(body.userId);
+  }
+
+  @Public()
+  @Post('/triggers/kyc-approved')
+  @HttpCode(HttpStatus.OK)
+  triggerKycApproved(@Body() body: { userId: number }) {
+    return this.notificationService.kycApproved(body.userId);
+  }
+
+  @Public()
+  @Post('/triggers/kyc-rejected')
+  @HttpCode(HttpStatus.OK)
+  triggerKycRejected(@Body() body: { userId: number }) {
+    return this.notificationService.kycRejected(body.userId);
+  }
+
+  @Public()
+  @Post('/triggers/kyc-withdrawal-limit-reached')
+  @HttpCode(HttpStatus.OK)
+  triggerKycWithdrawalLimitReached(@Body() body: { userId: number }) {
+    return this.notificationService.kycWithdrawalLimitReached(body.userId);
+  }
+
+  @Public()
+  @Post('/triggers/admin-account-created')
+  @HttpCode(HttpStatus.OK)
+  triggerAdminAccountCreated(@Body() body: { userId: number; adminName: string }) {
+    return this.notificationService.adminAccountCreated(body.userId, body.adminName);
+  }
+
+  @Public()
+  @Post('/triggers/admin-invite-sent')
+  @HttpCode(HttpStatus.OK)
+  triggerAdminInviteSent(@Body() body: { userId: number; inviterName?: string }) {
+    return this.notificationService.adminInviteSent(body.userId, body.inviterName);
+  }
+
+  @Public()
+  @Post('/triggers/admin-invite-resent')
+  @HttpCode(HttpStatus.OK)
+  triggerAdminInviteResent(@Body() body: { userId: number }) {
+    return this.notificationService.adminInviteResent(body.userId);
+  }
+
+  @Public()
+  @Post('/triggers/admin-role-changed')
+  @HttpCode(HttpStatus.OK)
+  triggerAdminRoleChanged(@Body() body: { userId: number; roleName?: string }) {
+    return this.notificationService.adminRoleChanged(body.userId, body.roleName);
+  }
+
+  @Public()
+  @Post('/triggers/admin-task-assigned')
+  @HttpCode(HttpStatus.OK)
+  triggerAdminTaskAssigned(@Body() body: { userId: number; assignedBy: string; taskTitle: string }) {
+    return this.notificationService.adminTaskAssigned(body.userId, body.assignedBy, body.taskTitle);
+  }
+
+  @Public()
+  @Post('/triggers/admin-message-received')
+  @HttpCode(HttpStatus.OK)
+  triggerAdminMessageReceived(@Body() body: { userId: number; senderName: string; message: string }) {
+    return this.notificationService.adminMessageReceived(body.userId, body.senderName, body.message);
+  }
+
+  @Public()
+  @Post('/triggers/admin-login-detected')
+  @HttpCode(HttpStatus.OK)
+  triggerAdminLoginDetected(@Body() body: { userId: number; location?: string; ip?: string }) {
+    return this.notificationService.adminLoginDetected(body.userId, body.location, body.ip);
+  }
+
+  @Public()
+  @Post('/triggers/admin-password-changed')
+  @HttpCode(HttpStatus.OK)
+  triggerAdminPasswordChanged(@Body() body: { userId: number }) {
+    return this.notificationService.adminPasswordChanged(body.userId);
+  }
+
+  @Public()
+  @Post('/triggers/admin-contact-info-updated')
+  @HttpCode(HttpStatus.OK)
+  triggerAdminContactInfoUpdated(@Body() body: { userId: number; field?: string }) {
+    return this.notificationService.adminContactInfoUpdated(body.userId, body.field);
+  }
+
+  @Public()
   @Post('/triggers/wallet-credited')
   @HttpCode(HttpStatus.OK)
   triggerWalletCredited(@Body() body: { userId: number; amountNaira?: number }) {
