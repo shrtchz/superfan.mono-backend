@@ -396,7 +396,13 @@ export class StreamingService {
     };
   }
 
-  private readonly SCOPES = [];
+  private readonly SCOPES = [
+    'https://www.googleapis.com/auth/youtube',
+    'https://www.googleapis.com/auth/youtube.force-ssl',
+    'https://www.googleapis.com/auth/youtube.readonly',
+    'https://www.googleapis.com/auth/youtube.upload',
+    'openid',
+  ];
 
   private oauth2Client: OAuth2Client;
   private youtube: youtube_v3.Youtube;
@@ -2705,5 +2711,9 @@ async isWinner(commentId: number, winAmount: number) {
     }
 
     return `https://${trimmed}`;
+  }
+
+  getFrontendBaseUrl(): string {
+    return this.resolveClientAppOrigin();
   }
 }
