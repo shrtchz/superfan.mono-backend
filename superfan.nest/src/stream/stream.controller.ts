@@ -58,8 +58,8 @@ export class StreamingController {
   @Public()
   async oauthCallback(
     @Query('code') code: string,
-    @Query('error') error?: string,
     @Res() res,
+    @Query('error') error?: string,
   ) {
     if (error) {
       return res.redirect(
