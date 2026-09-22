@@ -2323,24 +2323,24 @@ async getQuizleaderboard(filter: 'all' | 'today' | 'weekly' | 'monthly' = 'all')
       if (current.quizTimeSeconds === null) current.quizTimeSeconds = row.quizTimeSeconds ?? null;
       if (current.quizTime === null) current.quizTime = row.quizTime ?? null;
 
-      if (current.accuracy === null) {
-        const correctAnswers = current.rows.filter(
-          (answer) =>
-            answer.selectedAnswer === answer.correctAnswer,
-        ).length + (row.selectedAnswer === row.correctAnswer ? 1 : 0);
-        const attemptedAnswers = current.rows.length + 1;
-        current.accuracy = current.totalQuestions
-          ? Math.round((correctAnswers / current.totalQuestions) * 100)
-          : null;
-        current.correctAnswers = correctAnswers;
-        current.attemptedAnswers = attemptedAnswers;
-      }
-
       current.rows.push(row);
     }
 
     // Convert to array
     const leaderboard = Array.from(grouped.values());
+
+    leaderboard.forEach((entry) => {
+      if (entry.accuracy === null) {
+        const correctAnswers = entry.rows.filter(
+          (answer) => answer.selectedAnswer === answer.correctAnswer,
+        ).length;
+        entry.correctAnswers = correctAnswers;
+        entry.attemptedAnswers = entry.rows.length;
+        entry.accuracy = entry.totalQuestions
+          ? Math.round((correctAnswers / entry.totalQuestions) * 100)
+          : null;
+      }
+    });
 
     // Sort leaderboard
     leaderboard.sort((a, b) => {
