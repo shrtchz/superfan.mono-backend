@@ -547,6 +547,7 @@ async submitQuiz(
 
   // 6. Save leaderboard rows (only earning > 0)
   const formattedQuizTime = formatSecondsToMMSS(quizTimeSeconds);
+  const accuracyPercent = totalQuestions > 0 ? Math.round((correctAnswers / totalQuestions) * 100) : 0;
 
   const leaderboardRows = (submissionResponses || [])
     .map((item: any) => ({
@@ -597,6 +598,9 @@ async submitQuiz(
     totalEarninginUSDT: amountInUSDT,
     quizTime: formattedQuizTime,
     baseScore,
+    accuracyPercent,
+    correctAnswers,
+    attemptedAnswers,
     accuracyBonus: accuracyGain,
     speedBonus: speedGain,
     streakMultiplier: streakBonus,
@@ -657,7 +661,6 @@ async submitQuiz(
   }
 
   const scoreText = `${correctAnswers}/${totalQuestions}`;
-  const accuracyPercent = totalQuestions > 0 ? Math.round((correctAnswers / totalQuestions) * 100) : 0;
 
   // 9. Return enriched response
   return {
@@ -2262,6 +2265,27 @@ async getQuizleaderboard(filter: 'all' | 'today' | 'weekly' | 'monthly' = 'all')
       },
     });
 
+    const userIds = [...new Set(quizBoard.map((row) => row.userId))];
+    const completedQuizzes = await prisma.ongoingQuiz.findMany({
+      where: {
+        userId: { in: userIds.map((userId) => Number(userId)).filter(Number.isFinite) },
+        isCompleted: true,
+      },
+      select: {
+        userId: true,
+        totalQuestions: true,
+        accuracyPercent: true,
+        correctAnswers: true,
+        attemptedAnswers: true,
+        baseScore: true,
+        totalEarning: true,
+        quizTime: true,
+        testLevel: true,
+        createdAt: true,
+        completedAt: true,
+      },
+    });
+
     // Group user submissions
     const grouped = new Map();
 
@@ -2270,21 +2294,32 @@ async getQuizleaderboard(filter: 'all' | 'today' | 'weekly' | 'monthly' = 'all')
       const key = `${row.userId}_${new Date(row.submittedAt).toISOString()}`;
 
       if (!grouped.has(key)) {
+        const matchingQuiz = completedQuizzes
+          .filter((quiz) => String(quiz.userId) === String(row.userId) && quiz.completedAt)
+          .sort(
+            (left, right) =>
+              Math.abs(left.completedAt!.getTime() - row.submittedAt.getTime()) -
+              Math.abs(right.completedAt!.getTime() - row.submittedAt.getTime()),
+          )[0];
+
         grouped.set(key, {
           userId: row.userId,
           submittedAt: row.submittedAt,
-          totalScore: 0,
-          totalEarning: 0,
-          totalQuestions: 0,
+          totalScore: matchingQuiz?.baseScore ?? null,
+          totalEarning: matchingQuiz?.totalEarning ?? null,
+          totalQuestions: matchingQuiz?.totalQuestions ?? null,
+          accuracy: matchingQuiz?.accuracyPercent ?? null,
+          correctAnswers: matchingQuiz?.correctAnswers ?? null,
+          attemptedAnswers: matchingQuiz?.attemptedAnswers ?? null,
+          quizTime: matchingQuiz?.quizTime ?? null,
+          testLevel: matchingQuiz?.testLevel ?? null,
+          createdAt: matchingQuiz?.createdAt ?? null,
           rows: [],
         });
       }
 
       const current = grouped.get(key);
 
-      current.totalScore += Number(row.score || 0);
-      current.totalEarning += Number(row.earning || 0);
-      current.totalQuestions += 1;
       current.rows.push(row);
     }
 
@@ -2305,22 +2340,38 @@ async getQuizleaderboard(filter: 'all' | 'today' | 'weekly' | 'monthly' = 'all')
       );
     });
 
-    // Assign positions
-    for (let i = 0; i < leaderboard.length; i++) {
-      leaderboard[i].position = i + 1;
-    }
+    const sessionPositions = new Map<string, number>();
+    leaderboard.forEach((entry, index) => {
+      sessionPositions.set(`${entry.userId}_${entry.submittedAt.toISOString()}`, index + 1);
+    });
 
-    // Update DB
-    for (const user of leaderboard) {
-      await prisma.quizLeaderboard.updateMany({
-        where: {
-          userId: user.userId,
-        },
-        data: {
-          position: user.position,
-        },
-      });
-    }
+    const positionsByUser = new Map<string, number[]>();
+    leaderboard.forEach((entry) => {
+      const key = String(entry.userId);
+      const positions = positionsByUser.get(key) ?? [];
+      positions.push(sessionPositions.get(`${entry.userId}_${entry.submittedAt.toISOString()}`)!);
+      positionsByUser.set(key, positions);
+    });
+
+    const averagePositionByUser = new Map<string, number>();
+    positionsByUser.forEach((positions, userId) => {
+      averagePositionByUser.set(
+        userId,
+        positions.reduce((total, position) => total + position, 0) / positions.length,
+      );
+    });
+
+    leaderboard.sort((left, right) => {
+      const averageDifference =
+        averagePositionByUser.get(String(left.userId))! -
+        averagePositionByUser.get(String(right.userId))!;
+      if (averageDifference !== 0) return averageDifference;
+      return new Date(left.submittedAt).getTime() - new Date(right.submittedAt).getTime();
+    });
+
+    leaderboard.forEach((entry) => {
+      entry.position = averagePositionByUser.get(String(entry.userId));
+    });
 
     return leaderboard;
 

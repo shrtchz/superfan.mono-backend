@@ -444,6 +444,9 @@ model OngoingQuiz {
   totalQuestions      Int // e.g. 5
   totalTime           Int? // total time in seconds
   baseScore           Int? // base score for the quiz
+  accuracyPercent     Int? // exact submission accuracy percentage
+  correctAnswers      Int? // exact number of correct answers
+  attemptedAnswers    Int? // exact number of submitted answers
   isRandom            Boolean @default(false)
   submissionMode     String  @default("interval")
   accuracyBonus       Int? // bonus points for accuracy
