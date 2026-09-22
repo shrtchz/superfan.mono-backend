@@ -2277,9 +2277,6 @@ async getQuizleaderboard(filter: 'all' | 'today' | 'weekly' | 'monthly' = 'all')
         accuracyPercent: true,
         correctAnswers: true,
         attemptedAnswers: true,
-        baseScore: true,
-        totalEarning: true,
-        quizTime: true,
         testLevel: true,
         createdAt: true,
         completedAt: true,
@@ -2305,13 +2302,14 @@ async getQuizleaderboard(filter: 'all' | 'today' | 'weekly' | 'monthly' = 'all')
         grouped.set(key, {
           userId: row.userId,
           submittedAt: row.submittedAt,
-          totalScore: matchingQuiz?.baseScore ?? null,
-          totalEarning: matchingQuiz?.totalEarning ?? null,
+          totalScore: row.score ?? null,
+          totalEarning: 0,
           totalQuestions: matchingQuiz?.totalQuestions ?? null,
           accuracy: matchingQuiz?.accuracyPercent ?? null,
           correctAnswers: matchingQuiz?.correctAnswers ?? null,
           attemptedAnswers: matchingQuiz?.attemptedAnswers ?? null,
-          quizTime: matchingQuiz?.quizTime ?? null,
+          quizTimeSeconds: row.quizTimeSeconds ?? null,
+          quizTime: row.quizTime ?? null,
           testLevel: matchingQuiz?.testLevel ?? null,
           createdAt: matchingQuiz?.createdAt ?? null,
           rows: [],
@@ -2320,11 +2318,29 @@ async getQuizleaderboard(filter: 'all' | 'today' | 'weekly' | 'monthly' = 'all')
 
       const current = grouped.get(key);
 
+      current.totalEarning += Number(row.earning || 0);
+      if (current.totalScore === null) current.totalScore = row.score ?? null;
+      if (current.quizTimeSeconds === null) current.quizTimeSeconds = row.quizTimeSeconds ?? null;
+      if (current.quizTime === null) current.quizTime = row.quizTime ?? null;
+
       current.rows.push(row);
     }
 
     // Convert to array
     const leaderboard = Array.from(grouped.values());
+
+    leaderboard.forEach((entry) => {
+      if (entry.accuracy === null) {
+        const correctAnswers = entry.rows.filter(
+          (answer) => answer.selectedAnswer === answer.correctAnswer,
+        ).length;
+        entry.correctAnswers = correctAnswers;
+        entry.attemptedAnswers = entry.rows.length;
+        entry.accuracy = entry.totalQuestions
+          ? Math.round((correctAnswers / entry.totalQuestions) * 100)
+          : null;
+      }
+    });
 
     // Sort leaderboard
     leaderboard.sort((a, b) => {
@@ -2340,37 +2356,41 @@ async getQuizleaderboard(filter: 'all' | 'today' | 'weekly' | 'monthly' = 'all')
       );
     });
 
-    const sessionPositions = new Map<string, number>();
-    leaderboard.forEach((entry, index) => {
-      sessionPositions.set(`${entry.userId}_${entry.submittedAt.toISOString()}`, index + 1);
-    });
-
-    const positionsByUser = new Map<string, number[]>();
+    const scoresByUser = new Map<string, number[]>();
     leaderboard.forEach((entry) => {
       const key = String(entry.userId);
-      const positions = positionsByUser.get(key) ?? [];
-      positions.push(sessionPositions.get(`${entry.userId}_${entry.submittedAt.toISOString()}`)!);
-      positionsByUser.set(key, positions);
+      const scores = scoresByUser.get(key) ?? [];
+      if (entry.totalScore !== null) scores.push(entry.totalScore);
+      scoresByUser.set(key, scores);
     });
 
-    const averagePositionByUser = new Map<string, number>();
-    positionsByUser.forEach((positions, userId) => {
-      averagePositionByUser.set(
+    const averageScoreByUser = new Map<string, number>();
+    scoresByUser.forEach((scores, userId) => {
+      averageScoreByUser.set(
         userId,
-        positions.reduce((total, position) => total + position, 0) / positions.length,
+        scores.length
+          ? scores.reduce((total, score) => total + score, 0) / scores.length
+          : -Infinity,
       );
     });
 
+    const rankedUsers = [...averageScoreByUser.entries()].sort(
+      ([, leftAverage], [, rightAverage]) => rightAverage - leftAverage,
+    );
+    const positionByUser = new Map(
+      rankedUsers.map(([userId], index) => [userId, index + 1]),
+    );
+
     leaderboard.sort((left, right) => {
-      const averageDifference =
-        averagePositionByUser.get(String(left.userId))! -
-        averagePositionByUser.get(String(right.userId))!;
-      if (averageDifference !== 0) return averageDifference;
+      const positionDifference =
+        positionByUser.get(String(left.userId))! -
+        positionByUser.get(String(right.userId))!;
+      if (positionDifference !== 0) return positionDifference;
       return new Date(left.submittedAt).getTime() - new Date(right.submittedAt).getTime();
     });
 
     leaderboard.forEach((entry) => {
-      entry.position = averagePositionByUser.get(String(entry.userId));
+      entry.position = positionByUser.get(String(entry.userId));
     });
 
     return leaderboard;
