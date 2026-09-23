@@ -178,29 +178,32 @@ export class NotificationService {
   }
 
   async challengeInviteSent(receiverId: number, senderUsername: string) {
+    const msg = `🎯 New Challenge! ${senderUsername} just challenged you to a quiz.`;
     return this.notify(
       receiverId,
       NotificationTriggers.CHALLENGE_INVITE_SENT,
-      'Friend Request',
-      `${senderUsername} sent you a challenge/friend request.`,
+      msg,
+      msg,
     );
   }
 
   async challengeInviteAccepted(senderId: number, receiverUsername: string) {
+    const msg = `Challenge Accepted! ${receiverUsername} accepted your challenge.`;
     return this.notify(
       senderId,
       NotificationTriggers.CHALLENGE_INVITE_ACCEPTED,
-      'Request Accepted',
-      `${receiverUsername} accepted your friend/companion request.`,
+      msg,
+      msg,
     );
   }
 
   async challengeInviteDeclined(senderId: number, receiverUsername: string) {
+    const msg = `${receiverUsername} can't take on your challenge right now.`;
     return this.notify(
       senderId,
       NotificationTriggers.CHALLENGE_INVITE_DECLINED,
-      'Request Declined',
-      `${receiverUsername} declined your friend/companion request.`,
+      msg,
+      msg,
     );
   }
 
