@@ -255,10 +255,17 @@ export class QuizController {
       @Get('gq-leaderboard')
   async getGeneralQuizLeaderboard(
       @Query('filter')
-  filter: 'all' | 'today' | 'weekly' | 'monthly',
+  filter: 'all' | 'today' | 'weekly' | 'monthly' = 'all',
+      @Query('view') view?: string,
+      @Query('timeRange') timeRange?: string,
+      @Query('userId') userId?: string,
   ) {
     try {
-      return await this.quizService.getQuizleaderboard(filter);
+      return await this.quizService.getQuizleaderboard(filter, {
+        view,
+        timeRange,
+        userId,
+      });
     } catch (error) {
       console.log('Error fetching general quiz leaderboard:', error);
       throw failureResponse(
