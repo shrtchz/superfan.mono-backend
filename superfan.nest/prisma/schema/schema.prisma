@@ -72,6 +72,12 @@ model User {
   lastStreakDate         DateTime? // last date a streak was counted
   questionPreference     QuestionPreference?
   timePreference         TimePreference?
+  twoFactorEnabled       Boolean             @default(false)
+  twoFactorMethod        String? // 'authenticator' | 'phone'
+  twoFactorSecret        String? // Base32 TOTP secret
+  twoFactorPhone         String? // Phone number verified for 2FA
+  twoFactorOtp           String? // Hashed pending OTP for phone verification
+  twoFactorOtpExpiry     DateTime? // Expiry timestamp for pending phone OTP
   accountReference       String?
   admin                  Admin?
   notifications          Notification[]

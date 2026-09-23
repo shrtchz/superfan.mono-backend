@@ -28,6 +28,96 @@ import {
 } from './quiz.dto';
 import { QuestionAddedEvent } from './quiz.events';
 
+export type LeaderboardTimeRange = 'today' | 'weekly' | 'monthly' | 'all';
+export type LeaderboardView = 'leaderboard' | 'my-invitees' | 'my-score';
+
+export function normalizeLeaderboardTimeRange(
+  value?: string,
+): LeaderboardTimeRange {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLowerCase();
+
+  if (normalized === 'today') return 'today';
+  if (normalized === 'weekly' || normalized === 'week') return 'weekly';
+  if (normalized === 'monthly' || normalized === 'month') return 'monthly';
+  return 'all';
+}
+
+export function normalizeLeaderboardView(value?: string): LeaderboardView {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_]+/g, '-');
+
+  if (
+    normalized === 'my-invitees' ||
+    normalized === 'invitees' ||
+    normalized === 'my-invites'
+  ) {
+    return 'my-invitees';
+  }
+
+  if (
+    normalized === 'my-score' ||
+    normalized === 'my-scores' ||
+    normalized === 'my-stats' ||
+    normalized === 'myscore' ||
+    normalized === 'my'
+  ) {
+    return 'my-score';
+  }
+
+  return 'leaderboard';
+}
+
+export function getLeaderboardDateFilter(
+  timeRange: LeaderboardTimeRange,
+  now: Date = new Date(),
+): { gte?: Date } {
+  if (timeRange === 'today') {
+    const startOfDay = new Date(now);
+    startOfDay.setHours(0, 0, 0, 0);
+    return { gte: startOfDay };
+  }
+
+  if (timeRange === 'weekly') {
+    const startOfWeek = new Date(now);
+    startOfWeek.setHours(0, 0, 0, 0);
+    startOfWeek.setDate(startOfWeek.getDate() - 7);
+    return { gte: startOfWeek };
+  }
+
+  if (timeRange === 'monthly') {
+    const startOfMonth = new Date(now);
+    startOfMonth.setHours(0, 0, 0, 0);
+    startOfMonth.setDate(startOfMonth.getDate() - 30);
+    return { gte: startOfMonth };
+  }
+
+  return {};
+}
+
+export function calculateLeaderboardAccuracy(
+  rows: Array<{ selectedAnswer?: string | null; correctAnswer?: string | null }>,
+): number | null {
+  const comparableRows = rows.filter(
+    (row) =>
+      typeof row?.selectedAnswer === 'string' &&
+      row.selectedAnswer.trim().length > 0 &&
+      typeof row?.correctAnswer === 'string' &&
+      row.correctAnswer.trim().length > 0,
+  );
+
+  if (!comparableRows.length) return null;
+
+  const correctCount = comparableRows.filter(
+    (row) => row.selectedAnswer === row.correctAnswer,
+  ).length;
+
+  return Math.round((correctCount / comparableRows.length) * 100);
+}
+
 export function buildLiveQuizLeaderboardRows(
   leaderboardEntries: any[],
   ongoingQuizzes: any[],
@@ -2202,68 +2292,42 @@ async recordAnswer(userId: number, dto: RecordAnswerDto) {
   }
 }
 
-async getQuizleaderboard(filter: 'all' | 'today' | 'weekly' | 'monthly' = 'all') {
+async getQuizleaderboard(
+  filter: 'all' | 'today' | 'weekly' | 'monthly' = 'all',
+  options: { view?: string; timeRange?: string; userId?: string } = {},
+) {
   try {
-    // const now = new Date();
-            const now = new Date(
-    new Date().toLocaleString("en-US", {
-      timeZone: "Africa/Lagos",
-    })
-  );
+    const timeRange = normalizeLeaderboardTimeRange(options.timeRange ?? filter);
+    const view = normalizeLeaderboardView(options.view);
 
-    let dateFilter = {};
+    const now = new Date(
+      new Date().toLocaleString('en-US', {
+        timeZone: 'Africa/Lagos',
+      }),
+    );
 
-    // Filter logic
-    switch (filter) {
-      case 'today': {
-        const startOfDay = new Date();
-        startOfDay.setHours(0, 0, 0, 0);
-
-        dateFilter = {
-          gte: startOfDay,
-        };
-        break;
-      }
-
-      case 'weekly': {
-        const sevenDaysAgo = new Date();
-        sevenDaysAgo.setDate(now.getDate() - 7);
-
-        dateFilter = {
-          gte: sevenDaysAgo,
-        };
-        break;
-      }
-
-      case 'monthly': {
-        const thirtyDaysAgo = new Date();
-        thirtyDaysAgo.setDate(now.getDate() - 30);
-
-        dateFilter = {
-          gte: thirtyDaysAgo,
-        };
-        break;
-      }
-
-      default:
-        break;
-    }
+    const dateFilter = getLeaderboardDateFilter(timeRange, now);
 
     // Fetch leaderboard rows
     const quizBoard = await prisma.quizLeaderboard.findMany({
-      where:
-        filter === 'all'
-          ? {}
-          : {
-              submittedAt: dateFilter,
-            },
+      where: timeRange === 'all' ? {} : { submittedAt: dateFilter },
       orderBy: {
         submittedAt: 'asc',
       },
     });
 
     // Group user submissions
-    const grouped = new Map();
+    const grouped = new Map<
+      string,
+      {
+        userId: string;
+        submittedAt: Date;
+        totalScore: number;
+        totalEarning: number;
+        totalQuestions: number;
+        rows: typeof quizBoard;
+      }
+    >();
 
     for (const row of quizBoard) {
       // Groups same quiz session together
@@ -2280,7 +2344,7 @@ async getQuizleaderboard(filter: 'all' | 'today' | 'weekly' | 'monthly' = 'all')
         });
       }
 
-      const current = grouped.get(key);
+      const current = grouped.get(key)!;
 
       current.totalScore += Number(row.score || 0);
       current.totalEarning += Number(row.earning || 0);
@@ -2289,7 +2353,36 @@ async getQuizleaderboard(filter: 'all' | 'today' | 'weekly' | 'monthly' = 'all')
     }
 
     // Convert to array
-    const leaderboard = Array.from(grouped.values());
+    const leaderboard: Array<Record<string, any>> = Array.from(
+      grouped.values(),
+    );
+
+    // Resolve usernames in a single query
+    const numericUserIds = Array.from(
+      new Set(leaderboard.map((entry) => Number(entry.userId))),
+    ).filter((id) => Number.isFinite(id));
+
+    const users = numericUserIds.length
+      ? await prisma.user.findMany({
+          where: { id: { in: numericUserIds } },
+          select: { id: true, username: true },
+        })
+      : [];
+
+    const usernameById = new Map(
+      users.map((user) => [String(user.id), user.username]),
+    );
+
+    for (const entry of leaderboard) {
+      const firstRow = entry.rows[0] ?? {};
+
+      entry.username = usernameById.get(String(entry.userId)) ?? null;
+      entry.score = entry.totalScore;
+      entry.accuracy = calculateLeaderboardAccuracy(entry.rows);
+      entry.time = firstRow.quizTime ?? null;
+      entry.testLevel = firstRow.testLevel ?? null;
+      entry.reward = entry.totalEarning;
+    }
 
     // Sort leaderboard
     leaderboard.sort((a, b) => {
@@ -2300,8 +2393,7 @@ async getQuizleaderboard(filter: 'all' | 'today' | 'weekly' | 'monthly' = 'all')
 
       // Earlier submission wins tie
       return (
-        new Date(a.submittedAt).getTime() -
-        new Date(b.submittedAt).getTime()
+        new Date(a.submittedAt).getTime() - new Date(b.submittedAt).getTime()
       );
     });
 
@@ -2322,11 +2414,42 @@ async getQuizleaderboard(filter: 'all' | 'today' | 'weekly' | 'monthly' = 'all')
       });
     }
 
-    return leaderboard;
+    if (view === 'leaderboard' || !options.userId) {
+      return leaderboard;
+    }
 
+    const requestedUserId = String(options.userId);
+
+    if (view === 'my-score') {
+      return leaderboard.filter(
+        (entry) => String(entry.userId) === requestedUserId,
+      );
+    }
+
+    // view === 'my-invitees'
+    const numericUserId = Number(options.userId);
+    if (!Number.isFinite(numericUserId)) return [];
+
+    const [referrals, challengeInvites] = await Promise.all([
+      prisma.referral.findMany({
+        where: { referrerId: numericUserId },
+        select: { refereeId: true },
+      }),
+      prisma.challengeInvite.findMany({
+        where: { senderId: numericUserId },
+        select: { receiverId: true },
+      }),
+    ]);
+
+    const inviteeIds = new Set<string>([
+      ...referrals.map((referral) => String(referral.refereeId)),
+      ...challengeInvites.map((invite) => String(invite.receiverId)),
+    ]);
+
+    return leaderboard.filter((entry) => inviteeIds.has(String(entry.userId)));
   } catch (error) {
     throw new HttpException(
-      error?.message || 'Failed to fetch live quiz leaderboard',
+      error?.message || 'Failed to fetch leaderboard',
       HttpStatus.INTERNAL_SERVER_ERROR,
     );
   }

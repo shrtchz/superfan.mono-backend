@@ -13,6 +13,9 @@ import { UserController } from "./user.controller";
 import { UserService } from "./user.service";
 import { UserListener } from "./user.listener";
 import { DiditService } from "./didit.service";
+import { TwoFactorController } from "./two-factor/two-factor.controller";
+import { TwoFactorService } from "./two-factor/two-factor.service";
+import { TalkingDrumService } from "./two-factor/talking-drum.service";
 import { ImageModule } from "../image/image.module";
 
 @Global()
@@ -28,14 +31,16 @@ import { ImageModule } from "../image/image.module";
         NotificationModule,
         ImageModule,
     ],
-    controllers: [UserController],
+    controllers: [UserController, TwoFactorController],
     providers: [
         UserService, 
         PresenceGateway, 
         UserListener, 
         AccessControlService,
         DiditService,
+        TwoFactorService,
+        TalkingDrumService,
     ],
-    exports: [UserService, PresenceGateway, DiditService],
+    exports: [UserService, PresenceGateway, DiditService, TwoFactorService, TalkingDrumService],
 })
 export class UserModule {}
