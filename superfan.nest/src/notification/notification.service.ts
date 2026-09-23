@@ -178,29 +178,32 @@ export class NotificationService {
   }
 
   async challengeInviteSent(receiverId: number, senderUsername: string) {
+    const msg = `🎯 New Challenge! ${senderUsername} just challenged you to a quiz.`;
     return this.notify(
       receiverId,
       NotificationTriggers.CHALLENGE_INVITE_SENT,
-      'Friend Request',
-      `${senderUsername} sent you a challenge/friend request.`,
+      msg,
+      msg,
     );
   }
 
   async challengeInviteAccepted(senderId: number, receiverUsername: string) {
+    const msg = `Challenge Accepted! ${receiverUsername} accepted your challenge.`;
     return this.notify(
       senderId,
       NotificationTriggers.CHALLENGE_INVITE_ACCEPTED,
-      'Request Accepted',
-      `${receiverUsername} accepted your friend/companion request.`,
+      msg,
+      msg,
     );
   }
 
   async challengeInviteDeclined(senderId: number, receiverUsername: string) {
+    const msg = `${receiverUsername} can't take on your challenge right now.`;
     return this.notify(
       senderId,
       NotificationTriggers.CHALLENGE_INVITE_DECLINED,
-      'Request Declined',
-      `${receiverUsername} declined your friend/companion request.`,
+      msg,
+      msg,
     );
   }
 
@@ -647,13 +650,13 @@ export class NotificationService {
 
   async streamManualCredit(userId: number, amountNaira = 2, streamTitle?: string) {
     const msg = streamTitle
-      ? `💰 ₦${amountNaira.toLocaleString()} added during ${streamTitle}.`
-      : `💰 ₦${amountNaira.toLocaleString()} added during a live stream.`;
+      ? ` ₦${amountNaira.toLocaleString()} added during ${streamTitle}.`
+      : ` ₦${amountNaira.toLocaleString()} added during a live stream.`;
     return this.notify(userId, NotificationTriggers.STREAM_MANUAL_CREDIT, msg, msg);
   }
 
   async streamLiveQuizJackpot(userId: number, amountNaira: number) {
-    const msg = `💥 You won ₦${amountNaira.toLocaleString()} in the live quiz.`;
+    const msg = ` You won ₦${amountNaira.toLocaleString()} in the live quiz.`;
     return this.notify(userId, NotificationTriggers.STREAM_LIVE_QUIZ_JACKPOT, msg, msg);
   }
 
