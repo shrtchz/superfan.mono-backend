@@ -1,11 +1,393 @@
-import { Controller, Get, Param, Patch, Delete } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Param, Patch, Post, Delete } from '@nestjs/common';
 import { ApiRoutes } from '../common/enums/routes.enum';
+import { Public } from '../common/decorators';
 import { NotificationService } from './notification.service';
 
 @Controller(ApiRoutes.NOTIFICATION)
 export class NotificationController {
   constructor(private notificationService: NotificationService) {}
 
+  @Post('/create')
+  async createNotification(
+    @Body() body: { userId: number; title: string; message: string; type?: string; data?: any },
+  ) {
+    return this.notificationService.createNotification(
+      body.userId,
+      body.title,
+      body.message,
+      body.type || 'live_quiz_reward',
+    );
+  }
+
+  // ── Copy-paste ready trigger fan-outs (backend-only integrations).
+  // These mutate NO domain state; they land on the existing notification page.
+  @Public()
+  @Post('/triggers/ad-approved-live')
+  @HttpCode(HttpStatus.OK)
+  triggerAdApprovedLive(@Body() body: { userId: number; campaignTitle: string }) {
+    return this.notificationService.adApprovedLive(body.userId, body.campaignTitle);
+  }
+
+  @Public()
+  @Post('/triggers/ad-ended')
+  @HttpCode(HttpStatus.OK)
+  triggerAdEnded(@Body() body: { userId: number; campaignTitle: string }) {
+    return this.notificationService.adEnded(body.userId, body.campaignTitle);
+  }
+
+  @Public()
+  @Post('/triggers/ad-performance-milestone')
+  @HttpCode(HttpStatus.OK)
+  triggerAdMilestone(@Body() body: { userId: number; campaignTitle: string; impressions: number }) {
+    return this.notificationService.adPerformanceMilestone(body.userId, body.campaignTitle, body.impressions);
+  }
+
+  @Public()
+  @Post('/triggers/ad-reward-credited')
+  @HttpCode(HttpStatus.OK)
+  triggerAdReward(@Body() body: { userId: number; amountNaira?: number }) {
+    return this.notificationService.adRewardCredited(body.userId, body.amountNaira ?? 2);
+  }
+
+  @Public()
+  @Post('/triggers/ad-limit-reached')
+  @HttpCode(HttpStatus.OK)
+  triggerAdLimit(@Body() body: { userId: number; resetsIn: string }) {
+    return this.notificationService.adLimitReached(body.userId, body.resetsIn);
+  }
+
+  @Public()
+  @Post('/triggers/podcast-new-episode')
+  @HttpCode(HttpStatus.OK)
+  triggerPodcast(@Body() body: { userIds: number[]; episodeTitle: string }) {
+    return this.notificationService.podcastNewEpisode(body.userIds ?? [], body.episodeTitle);
+  }
+
+  @Public()
+  @Post('/triggers/2fa-enabled')
+  @HttpCode(HttpStatus.OK)
+  trigger2faEnabled(@Body() body: { userId: number }) {
+    return this.notificationService.twoFaEnabled(body.userId);
+  }
+
+  @Public()
+  @Post('/triggers/new-login-device')
+  @HttpCode(HttpStatus.OK)
+  triggerNewLogin(@Body() body: { userId: number }) {
+    return this.notificationService.newLoginDevice(body.userId);
+  }
+
+  @Public()
+  @Post('/triggers/otp-sent')
+  @HttpCode(HttpStatus.OK)
+  triggerOtpSent(@Body() body: { userId: number; code: string }) {
+    return this.notificationService.otpCodeSent(body.userId, body.code);
+  }
+
+  @Public()
+  @Post('/triggers/live-quiz-starting-soon')
+  @HttpCode(HttpStatus.OK)
+  triggerLiveSoon(@Body() body: { userIds: number[]; minutes?: number }) {
+    return this.notificationService.liveQuizStartingSoon(body.userIds ?? [], body.minutes ?? 5);
+  }
+
+  @Public()
+  @Post('/triggers/tests-remaining-low')
+  @HttpCode(HttpStatus.OK)
+  triggerTestsLow(@Body() body: { userId: number; remaining: number }) {
+    return this.notificationService.testsRemainingLow(body.userId, body.remaining);
+  }
+
+  @Public()
+  @Post('/triggers/new-quiz-available')
+  @HttpCode(HttpStatus.OK)
+  triggerNewQuiz(@Body() body: { userIds: number[]; quizLabel?: string }) {
+    return this.notificationService.newQuizAvailable(body.userIds ?? [], body.quizLabel);
+  }
+
+  @Public()
+  @Post('/triggers/mid-quiz-ad-points')
+  @HttpCode(HttpStatus.OK)
+  triggerMidQuizAd(@Body() body: { userId: number; points?: number }) {
+    return this.notificationService.midQuizAdPoints(body.userId, body.points ?? 200);
+  }
+
+  @Public()
+  @Post('/triggers/account-banned')
+  @HttpCode(HttpStatus.OK)
+  triggerAccountBanned(@Body() body: { userId: number; reason?: string }) {
+    return this.notificationService.accountBanned(body.userId, body.reason);
+  }
+
+  @Public()
+  @Post('/triggers/account-unbanned')
+  @HttpCode(HttpStatus.OK)
+  triggerAccountUnbanned(@Body() body: { userId: number }) {
+    return this.notificationService.accountUnbanned(body.userId);
+  }
+
+  @Public()
+  @Post('/triggers/plan-upgraded')
+  @HttpCode(HttpStatus.OK)
+  triggerPlanUpgraded(@Body() body: { userId: number; plan?: string }) {
+    return this.notificationService.planUpgraded(body.userId, body.plan);
+  }
+
+  @Public()
+  @Post('/triggers/password-changed')
+  @HttpCode(HttpStatus.OK)
+  triggerPasswordChanged(@Body() body: { userId: number }) {
+    return this.notificationService.passwordChanged(body.userId);
+  }
+
+  @Public()
+  @Post('/triggers/contact-info-updated')
+  @HttpCode(HttpStatus.OK)
+  triggerContactInfoUpdated(@Body() body: { userId: number; field?: string }) {
+    return this.notificationService.contactInfoUpdated(body.userId, body.field);
+  }
+
+  @Public()
+  @Post('/triggers/kyc-submitted')
+  @HttpCode(HttpStatus.OK)
+  triggerKycSubmitted(@Body() body: { userId: number }) {
+    return this.notificationService.kycSubmitted(body.userId);
+  }
+
+  @Public()
+  @Post('/triggers/kyc-approved')
+  @HttpCode(HttpStatus.OK)
+  triggerKycApproved(@Body() body: { userId: number }) {
+    return this.notificationService.kycApproved(body.userId);
+  }
+
+  @Public()
+  @Post('/triggers/kyc-rejected')
+  @HttpCode(HttpStatus.OK)
+  triggerKycRejected(@Body() body: { userId: number }) {
+    return this.notificationService.kycRejected(body.userId);
+  }
+
+  @Public()
+  @Post('/triggers/kyc-withdrawal-limit-reached')
+  @HttpCode(HttpStatus.OK)
+  triggerKycWithdrawalLimitReached(@Body() body: { userId: number }) {
+    return this.notificationService.kycWithdrawalLimitReached(body.userId);
+  }
+
+  @Public()
+  @Post('/triggers/admin-account-created')
+  @HttpCode(HttpStatus.OK)
+  triggerAdminAccountCreated(@Body() body: { userId: number; adminName: string }) {
+    return this.notificationService.adminAccountCreated(body.userId, body.adminName);
+  }
+
+  @Public()
+  @Post('/triggers/admin-invite-sent')
+  @HttpCode(HttpStatus.OK)
+  triggerAdminInviteSent(@Body() body: { userId: number; inviterName?: string }) {
+    return this.notificationService.adminInviteSent(body.userId, body.inviterName);
+  }
+
+  @Public()
+  @Post('/triggers/admin-invite-resent')
+  @HttpCode(HttpStatus.OK)
+  triggerAdminInviteResent(@Body() body: { userId: number }) {
+    return this.notificationService.adminInviteResent(body.userId);
+  }
+
+  @Public()
+  @Post('/triggers/admin-role-changed')
+  @HttpCode(HttpStatus.OK)
+  triggerAdminRoleChanged(@Body() body: { userId: number; roleName?: string }) {
+    return this.notificationService.adminRoleChanged(body.userId, body.roleName);
+  }
+
+  @Public()
+  @Post('/triggers/admin-task-assigned')
+  @HttpCode(HttpStatus.OK)
+  triggerAdminTaskAssigned(@Body() body: { userId: number; assignedBy: string; taskTitle: string }) {
+    return this.notificationService.adminTaskAssigned(body.userId, body.assignedBy, body.taskTitle);
+  }
+
+  @Public()
+  @Post('/triggers/admin-message-received')
+  @HttpCode(HttpStatus.OK)
+  triggerAdminMessageReceived(@Body() body: { userId: number; senderName: string; message: string }) {
+    return this.notificationService.adminMessageReceived(body.userId, body.senderName, body.message);
+  }
+
+  @Public()
+  @Post('/triggers/admin-login-detected')
+  @HttpCode(HttpStatus.OK)
+  triggerAdminLoginDetected(@Body() body: { userId: number; location?: string; ip?: string }) {
+    return this.notificationService.adminLoginDetected(body.userId, body.location, body.ip);
+  }
+
+  @Public()
+  @Post('/triggers/admin-password-changed')
+  @HttpCode(HttpStatus.OK)
+  triggerAdminPasswordChanged(@Body() body: { userId: number }) {
+    return this.notificationService.adminPasswordChanged(body.userId);
+  }
+
+  @Public()
+  @Post('/triggers/admin-contact-info-updated')
+  @HttpCode(HttpStatus.OK)
+  triggerAdminContactInfoUpdated(@Body() body: { userId: number; field?: string }) {
+    return this.notificationService.adminContactInfoUpdated(body.userId, body.field);
+  }
+
+  @Public()
+  @Post('/triggers/wallet-credited')
+  @HttpCode(HttpStatus.OK)
+  triggerWalletCredited(@Body() body: { userId: number; amountNaira?: number }) {
+    return this.notificationService.walletCredited(body.userId, body.amountNaira ?? 2);
+  }
+
+  @Public()
+  @Post('/triggers/withdrawal-requested')
+  @HttpCode(HttpStatus.OK)
+  triggerWithdrawalRequested(@Body() body: { userId: number; amountNaira?: number }) {
+    return this.notificationService.withdrawalRequested(body.userId, body.amountNaira ?? 2);
+  }
+
+  @Public()
+  @Post('/triggers/withdrawal-completed')
+  @HttpCode(HttpStatus.OK)
+  triggerWithdrawalCompleted(@Body() body: { userId: number; amountNaira?: number; destination?: string }) {
+    return this.notificationService.withdrawalCompleted(body.userId, body.amountNaira ?? 2, body.destination);
+  }
+
+  @Public()
+  @Post('/triggers/withdrawal-failed')
+  @HttpCode(HttpStatus.OK)
+  triggerWithdrawalFailed(@Body() body: { userId: number }) {
+    return this.notificationService.withdrawalFailed(body.userId);
+  }
+
+  @Public()
+  @Post('/triggers/payment-method-added')
+  @HttpCode(HttpStatus.OK)
+  triggerPaymentMethodAdded(@Body() body: { userId: number; label?: string }) {
+    return this.notificationService.paymentMethodAdded(body.userId, body.label);
+  }
+
+  @Public()
+  @Post('/triggers/payment-method-removed')
+  @HttpCode(HttpStatus.OK)
+  triggerPaymentMethodRemoved(@Body() body: { userId: number; label?: string }) {
+    return this.notificationService.paymentMethodRemoved(body.userId, body.label);
+  }
+
+  @Public()
+  @Post('/triggers/default-payment-method-changed')
+  @HttpCode(HttpStatus.OK)
+  triggerDefaultPaymentMethod(@Body() body: { userId: number; label?: string }) {
+    return this.notificationService.defaultPaymentMethodChanged(body.userId, body.label);
+  }
+
+  @Public()
+  @Post('/triggers/minimum-withdrawal-not-met')
+  @HttpCode(HttpStatus.OK)
+  triggerMinimumWithdrawal(@Body() body: { userId: number; minimum?: number }) {
+    return this.notificationService.minimumWithdrawalNotMet(body.userId, body.minimum ?? 1000);
+  }
+
+  @Public()
+  @Post('/triggers/gold-personal-transfer')
+  @HttpCode(HttpStatus.OK)
+  triggerGoldPersonalTransfer(@Body() body: { userId: number; amountNaira: number; from: string; to: string }) {
+    return this.notificationService.goldPersonalTransfer(body.userId, body.amountNaira, body.from, body.to);
+  }
+
+  @Public()
+  @Post('/triggers/stream-comment-liked')
+  @HttpCode(HttpStatus.OK)
+  triggerStreamCommentLiked(@Body() body: { userId: number; likerName: string; commentPreview: string }) {
+    return this.notificationService.streamCommentLiked(body.userId, body.likerName, body.commentPreview);
+  }
+
+  @Public()
+  @Post('/triggers/stream-comment-liked-moderator')
+  @HttpCode(HttpStatus.OK)
+  triggerStreamCommentLikedModerator(@Body() body: { userIds: number[]; likerName: string; streamTitle: string }) {
+    return this.notificationService.streamCommentLikedModerator(
+      body.userIds ?? [],
+      body.likerName,
+      body.streamTitle,
+    );
+  }
+
+  @Public()
+  @Post('/triggers/stream-comment-reported')
+  @HttpCode(HttpStatus.OK)
+  triggerStreamCommentReported(@Body() body: { userIds: number[]; streamTitle: string }) {
+    return this.notificationService.streamCommentReported(body.userIds ?? [], body.streamTitle);
+  }
+
+  @Public()
+  @Post('/triggers/stream-admin-reply')
+  @HttpCode(HttpStatus.OK)
+  triggerStreamAdminReply(@Body() body: { userIds: number[]; adminName: string; streamTitle: string }) {
+    return this.notificationService.streamAdminReply(body.userIds ?? [], body.adminName, body.streamTitle);
+  }
+
+  @Public()
+  @Post('/triggers/stream-going-live')
+  @HttpCode(HttpStatus.OK)
+  triggerStreamGoingLive(@Body() body: { userIds: number[]; streamTitle: string }) {
+    return this.notificationService.streamGoingLive(body.userIds ?? [], body.streamTitle);
+  }
+
+  @Public()
+  @Post('/triggers/stream-ending-soon')
+  @HttpCode(HttpStatus.OK)
+  triggerStreamEndingSoon(@Body() body: { userIds: number[]; streamTitle: string; minutes?: number }) {
+    return this.notificationService.streamEndingSoon(body.userIds ?? [], body.streamTitle, body.minutes ?? 10);
+  }
+
+  @Public()
+  @Post('/triggers/stream-winner-tagged')
+  @HttpCode(HttpStatus.OK)
+  triggerStreamWinnerTagged(@Body() body: { userId: number }) {
+    return this.notificationService.streamWinnerTagged(body.userId);
+  }
+
+  @Public()
+  @Post('/triggers/stream-comment-removed')
+  @HttpCode(HttpStatus.OK)
+  triggerStreamCommentRemoved(@Body() body: { userId: number }) {
+    return this.notificationService.streamCommentRemoved(body.userId);
+  }
+
+  @Public()
+  @Post('/triggers/stream-chat-banned')
+  @HttpCode(HttpStatus.OK)
+  triggerStreamChatBanned(@Body() body: { userId: number; streamTitle: string }) {
+    return this.notificationService.streamChatBanned(body.userId, body.streamTitle);
+  }
+
+  @Public()
+  @Post('/triggers/stream-chat-lock-toggle')
+  @HttpCode(HttpStatus.OK)
+  triggerStreamChatLockToggle(@Body() body: { userIds: number[]; streamTitle: string; locked: boolean }) {
+    return this.notificationService.streamChatLockToggle(body.userIds ?? [], body.streamTitle, body.locked);
+  }
+
+  @Public()
+  @Post('/triggers/stream-manual-credit')
+  @HttpCode(HttpStatus.OK)
+  triggerStreamManualCredit(@Body() body: { userId: number; amountNaira?: number; streamTitle?: string }) {
+    return this.notificationService.streamManualCredit(body.userId, body.amountNaira ?? 2, body.streamTitle);
+  }
+
+  @Public()
+  @Post('/triggers/stream-live-quiz-jackpot')
+  @HttpCode(HttpStatus.OK)
+  triggerStreamLiveQuizJackpot(@Body() body: { userId: number; amountNaira: number }) {
+    return this.notificationService.streamLiveQuizJackpot(body.userId, body.amountNaira);
+  }
 
 @Get('/:userId')
 getUserNotifications(@Param('userId') userId: number) {

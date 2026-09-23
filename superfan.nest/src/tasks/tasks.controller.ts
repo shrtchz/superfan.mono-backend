@@ -107,6 +107,12 @@ export class TaskController {
     return this.taskService.findAllTasks();
   }
 
+  @Get('/referrals/:userId')
+  @HttpCode(HttpStatus.OK)
+  getMyReferralSummary(@Param('userId', ParseIntPipe) userId: number) {
+    return this.taskService.getMyReferralSummary(userId);
+  }
+
     @Post('/create-client-history')
   async createClientHistory(
     @Body()

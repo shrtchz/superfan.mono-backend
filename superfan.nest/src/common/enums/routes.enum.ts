@@ -12,5 +12,10 @@ export enum ApiRoutes {
     NOTIFICATION = 'api/v1/notification',
     WIPE = 'api/v1/reset/',
     STREAMING = 'api/v1/streams/',
-    WEBHOOK = 'webhooks/'
+    STREAM_USER = 'api/v1/stream',
+    WEBHOOK = 'webhooks/',
+    WAITLIST = 'api/v1/waitlist',
+SHOP = 'api/v1/shop',
+    PODCAST = 'api/v1/podcasts',
+    FRIEND_INVITE = 'api/v1/challenge-invite'
 }
