@@ -650,13 +650,13 @@ export class NotificationService {
 
   async streamManualCredit(userId: number, amountNaira = 2, streamTitle?: string) {
     const msg = streamTitle
-      ? `💰 ₦${amountNaira.toLocaleString()} added during ${streamTitle}.`
-      : `💰 ₦${amountNaira.toLocaleString()} added during a live stream.`;
+      ? ` ₦${amountNaira.toLocaleString()} added during ${streamTitle}.`
+      : ` ₦${amountNaira.toLocaleString()} added during a live stream.`;
     return this.notify(userId, NotificationTriggers.STREAM_MANUAL_CREDIT, msg, msg);
   }
 
   async streamLiveQuizJackpot(userId: number, amountNaira: number) {
-    const msg = `💥 You won ₦${amountNaira.toLocaleString()} in the live quiz.`;
+    const msg = ` You won ₦${amountNaira.toLocaleString()} in the live quiz.`;
     return this.notify(userId, NotificationTriggers.STREAM_LIVE_QUIZ_JACKPOT, msg, msg);
   }
 
