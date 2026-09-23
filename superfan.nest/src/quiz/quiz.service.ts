@@ -2343,9 +2343,16 @@ async getQuizleaderboard(
       {
         userId: string;
         submittedAt: Date;
-        totalScore: number;
+        totalScore: number | null;
         totalEarning: number;
-        totalQuestions: number;
+        totalQuestions: number | null;
+        accuracy: number | null;
+        correctAnswers: number | null;
+        attemptedAnswers: number | null;
+        quizTimeSeconds: number | null;
+        quizTime: string | null;
+        testLevel: string | null;
+        createdAt: Date | null;
         rows: typeof quizBoard;
       }
     >();
