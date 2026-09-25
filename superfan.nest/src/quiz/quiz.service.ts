@@ -2524,7 +2524,80 @@ async getQuizleaderboard(
       ...challengeInvites.map((invite) => String(invite.receiverId)),
     ]);
 
-    return leaderboard.filter((entry) => inviteeIds.has(String(entry.userId)));
+    if (!inviteeIds.size) {
+      return [];
+    }
+
+    const activeInvitees = leaderboard.filter((entry) =>
+      inviteeIds.has(String(entry.userId)),
+    );
+
+    // Invitees with zero quiz activity should still appear (SC-xxx): find which
+    // invitees have never submitted a quiz, regardless of time range.
+    const inviteeNumericIds = [...inviteeIds]
+      .map((id) => Number(id))
+      .filter((id) => Number.isFinite(id));
+
+    const inviteeQuizRows = inviteeNumericIds.length
+      ? await prisma.quizLeaderboard.findMany({
+          where: { userId: { in: [...inviteeIds] } },
+          select: { userId: true },
+          distinct: ['userId'],
+        })
+      : [];
+
+    const inviteeUsersWithData = new Set(
+      inviteeQuizRows.map((row) => String(row.userId)),
+    );
+
+    const inactiveInviteeIds = [...inviteeIds].filter(
+      (id) => !inviteeUsersWithData.has(id),
+    );
+
+    if (inactiveInviteeIds.length) {
+      const inactiveNumericIds = inactiveInviteeIds
+        .map((id) => Number(id))
+        .filter((id) => Number.isFinite(id));
+
+      const inactiveUsers = inactiveNumericIds.length
+        ? await prisma.user.findMany({
+            where: { id: { in: inactiveNumericIds } },
+            select: { id: true, username: true },
+          })
+        : [];
+
+      const inactiveUsernameById = new Map(
+        inactiveUsers.map((user) => [String(user.id), user.username]),
+      );
+
+      for (const inviteeId of inactiveInviteeIds) {
+        const numericId = Number(inviteeId);
+        if (!Number.isFinite(numericId)) continue;
+
+        activeInvitees.push({
+          userId: inviteeId,
+          username: inactiveUsernameById.get(inviteeId) ?? null,
+          submittedAt: null,
+          totalScore: null,
+          totalEarning: 0,
+          totalQuestions: null,
+          accuracy: null,
+          correctAnswers: null,
+          attemptedAnswers: null,
+          quizTimeSeconds: null,
+          quizTime: null,
+          testLevel: null,
+          createdAt: null,
+          position: null,
+          score: null,
+          time: null,
+          reward: 0,
+          rows: [],
+        });
+      }
+    }
+
+    return activeInvitees;
   } catch (error) {
     throw new HttpException(
       error?.message || 'Failed to fetch leaderboard',

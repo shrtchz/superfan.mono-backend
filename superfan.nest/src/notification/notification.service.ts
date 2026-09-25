@@ -354,7 +354,8 @@ export class NotificationService {
   }
 
   async quizReminder(userId: number) {
-    const msg = "Don't forget your quiz today.";
+    const msg =
+      "Don't miss today's quiz! Complete your 5 quizzes to make your daily Savings Deposit.";
     return this.notify(userId, NotificationTriggers.QUIZ_REMINDER, msg, msg);
   }
 

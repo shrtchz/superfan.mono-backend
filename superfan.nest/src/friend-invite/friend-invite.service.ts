@@ -157,6 +157,36 @@ export class FriendInviteService {
     };
   }
 
+  async sent(userId: number) {
+    const invites = await prisma.challengeInvite.findMany({
+      where: { senderId: userId, status: 'pending' },
+      include: {
+        receiver: {
+          select: { id: true, username: true, firstName: true, profilePicture: true },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const count = invites.length;
+
+    return {
+      success: true,
+      data: invites.map((invite) => ({
+        id: invite.id,
+        userId: invite.receiver.id,
+        name:
+          invite.receiver.username ||
+          invite.receiver.firstName ||
+          `user_${invite.receiver.id}`,
+        username: invite.receiver.username,
+        avatar: invite.receiver.profilePicture,
+        createdAt: invite.createdAt,
+      })),
+      count,
+    };
+  }
+
   async friends(userId: number) {
     const rows = await prisma.friend.findMany({
       where: { userId },
