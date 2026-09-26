@@ -4,11 +4,12 @@ import {
   IsEnum,
   IsInt,
   IsNumber,
+  IsObject,
   IsOptional,
   IsString,
 } from 'class-validator';
 import { TaskPriority, TaskStatus } from '../../common/enums/task.enum';
-import { PayoutMethod } from '@prisma/client';
+import { PayoutMethod, Prisma } from '@prisma/client';
 // import { PayoutMethod } from '../../generated/prisma/enums';
 
 export class TaskDto {
@@ -120,4 +121,12 @@ export class CreatePayoutDto {
 
   @IsString()
   provider: string; // e.g., 'Monnify', 'Busha', etc.
+
+  @IsOptional()
+  @IsString()
+  providerRef?: string;
+
+  @IsOptional()
+  @IsObject()
+  metadata?: Prisma.InputJsonObject;
 }
