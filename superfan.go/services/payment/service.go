@@ -1,11 +1,15 @@
 package payment
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"math"
+	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,6 +17,7 @@ import (
 	"quiz.superfan.com/apis/labels"
 	"quiz.superfan.com/apis/models"
 	"quiz.superfan.com/apis/services/payment/providers"
+	"quiz.superfan.com/apis/utils"
 )
 
 type PaymentService struct {
@@ -32,6 +37,7 @@ type savedCardMetadata struct {
 
 const minimumDepositAmount = 1000.0
 const minimumWithdrawalAmount = 1000.0
+const withdrawalAccountUnlockThreshold = 10000.0
 const personalDepositHold = 5 * 24 * time.Hour
 
 func stringValuePtr(value string) *string {
@@ -65,6 +71,63 @@ func normalizeCardExpiry(value string) string {
 		return trimmed
 	}
 	return digits[:2] + "/" + digits[2:]
+}
+
+func formatNaira(amount float64) string {
+	whole := int64(math.Round(amount))
+	digits := strconv.FormatInt(whole, 10)
+	if len(digits) <= 3 {
+		return digits
+	}
+	var buf strings.Builder
+	for i, r := range digits {
+		if i > 0 && (len(digits)-i)%3 == 0 {
+			buf.WriteByte(',')
+		}
+		buf.WriteRune(r)
+	}
+	return buf.String()
+}
+
+func withdrawalThresholdMessage(accountType string, balance float64) string {
+	thresholdLabel := formatNaira(withdrawalAccountUnlockThreshold)
+	if strings.EqualFold(accountType, "savings") {
+		percent := int(math.Round(balance / withdrawalAccountUnlockThreshold * 100))
+		return fmt.Sprintf(
+			"Keep building! Your Savings Account unlocks at ₦%s. You're currently at ₦%s (%d%%). Complete today's quizzes to get closer!",
+			thresholdLabel, formatNaira(balance), percent,
+		)
+	}
+	return fmt.Sprintf(
+		"Minimum withdrawal threshold is ₦%s. Your Checking Account currently has ₦%s. You can use this balance to buy extra quiz runs, upgrade to Premium, or top up to reach the withdrawal target.",
+		thresholdLabel, formatNaira(balance),
+	)
+}
+
+func notifyBelowWithdrawalThreshold(userID int, accountType string, balance float64) {
+	nestBaseURL := utils.GetEnvWithKey("NEST_BASE_URL")
+	if nestBaseURL == "" {
+		return
+	}
+	payload := map[string]interface{}{
+		"userId":  userID,
+		"title":   "Withdrawal unavailable",
+		"message": withdrawalThresholdMessage(accountType, balance),
+		"type":    "minimum_withdrawal_not_met",
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("[PaymentService] Failed to marshal minimum-withdrawal notification: %v", err)
+		return
+	}
+	go func() {
+		resp, err := http.Post(fmt.Sprintf("%s/api/v1/notifications/create", nestBaseURL), "application/json", bytes.NewReader(body))
+		if err != nil {
+			log.Printf("[PaymentService] Failed to send minimum-withdrawal notification: %v", err)
+			return
+		}
+		resp.Body.Close()
+	}()
 }
 
 func buildMaskedPan(first6, last4 string) string {
@@ -1583,6 +1646,39 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 	// Enforce the minimum withdrawal and KYC transaction limits (SCRUM-350).
 	if err := s.ValidateTransactionLimits(ctx, userID, amount, "WITHDRAWAL"); err != nil {
 		return nil, err
+	}
+
+	// Savings (Gold) / Checking (Personal) accounts unlock withdrawals at ₦10,000.
+	sourceAccountType := strings.ToLower(strings.TrimSpace(func() string {
+		v, _ := payload["accountType"].(string)
+		return v
+	}()))
+	if sourceAccountType == "" {
+		sourceAccountType = "personal"
+	}
+	isSavings := sourceAccountType == "gold" || sourceAccountType == "savings"
+	var wallet models.Wallet
+	if err := s.db.WithContext(ctx).Where("\"userId\" = ?", userID).First(&wallet).Error; err != nil {
+		return nil, fmt.Errorf("wallet not found for user: %w", err)
+	}
+	accountBalance := wallet.PersonalBalance
+	if isSavings {
+		accountBalance = wallet.GoldBalance
+	} else {
+		if availablePersonal, err := s.availablePersonalBalance(ctx, userID, wallet.PersonalBalance); err == nil {
+			accountBalance = availablePersonal
+		}
+	}
+	if accountBalance < withdrawalAccountUnlockThreshold {
+		acctLabel := "checking"
+		if isSavings {
+			acctLabel = "savings"
+		}
+		notifyBelowWithdrawalThreshold(userID, acctLabel, accountBalance)
+		return nil, fmt.Errorf(
+			"minimum withdrawal threshold is ₦%s on your %s account. Keep earning to unlock withdrawals (current balance: ₦%s)",
+			formatNaira(withdrawalAccountUnlockThreshold), acctLabel, formatNaira(accountBalance),
+		)
 	}
 
 	txRef, _ := payload["reference"].(string)

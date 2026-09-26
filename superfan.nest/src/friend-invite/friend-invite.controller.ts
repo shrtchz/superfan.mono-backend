@@ -32,6 +32,11 @@ export class FriendInviteController {
     return this.friendInviteService.pending(req.user.id);
   }
 
+  @Get('/sent')
+  sent(@Req() req: any) {
+    return this.friendInviteService.sent(req.user.id);
+  }
+
   @Get('/friends')
   friends(@Req() req: any, @Query() query: any) {
     return this.friendInviteService.friends(req.user.id);
