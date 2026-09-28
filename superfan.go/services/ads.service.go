@@ -861,10 +861,18 @@ func (s *adsServiceImpl) CreateCampaign(ctx context.Context, req *CreateCampaign
 
 	placementTypeStr := string(rule.PlacementType)
 	pricingModelStr := rule.PricingModel
+	campaignUsername := req.Username
+	if s.db != nil && req.UserID != nil && *req.UserID > 0 {
+		var owner models.User
+		if err := s.db.WithContext(ctx).Select(`id, username`).First(&owner, *req.UserID).Error; err == nil && strings.TrimSpace(owner.Username) != "" {
+			username := strings.TrimSpace(owner.Username)
+			campaignUsername = &username
+		}
+	}
 
 	campaign := models.AdCampaign{
 		UserID:          req.UserID,
-		Username:        req.Username,
+		Username:        campaignUsername,
 		Headline:        req.Headline,
 		Description:     req.Description,
 		ButtonLabel:     req.ButtonLabel,
@@ -1086,7 +1094,7 @@ func (s *adsServiceImpl) enrichCampaignUser(ctx context.Context, campaign *model
 		if fullName != "" {
 			campaign.FullName = &fullName
 		}
-		if (campaign.Username == nil || strings.TrimSpace(*campaign.Username) == "") && strings.TrimSpace(owner.Username) != "" {
+		if strings.TrimSpace(owner.Username) != "" {
 			u := strings.TrimSpace(owner.Username)
 			campaign.Username = &u
 		}

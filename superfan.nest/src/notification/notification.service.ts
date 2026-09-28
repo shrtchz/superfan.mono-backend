@@ -243,7 +243,7 @@ export class NotificationService {
       NotificationTriggers.ORDER_STATUS_UPDATE,
       title,
       normalized === 'SHIPPED'
-        ? `#${orderNumber} is on its way.`
+        ? `Order Shipped! #${orderNumber} is on its way.`
         : `#${orderNumber} status: ${status}.`,
     );
   }
@@ -253,7 +253,9 @@ export class NotificationService {
       userId,
       NotificationTriggers.PAYMENT_FAILED,
       'Payment Failed.',
-      orderNumber ? `Payment for #${orderNumber} failed. Tap to retry.` : 'Tap to retry.',
+      orderNumber
+        ? `Payment Failed for #${orderNumber}. Tap to retry.`
+        : 'Payment Failed. Tap to retry.',
     );
   }
 
