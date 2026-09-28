@@ -235,27 +235,25 @@ export class NotificationService {
   }
 
   async orderStatusUpdate(userId: number, orderNumber: string, status: string) {
-    const normalized = String(status || '').toUpperCase();
-    const title =
-      normalized === 'SHIPPED' ? 'Order Shipped!' : `Order Update: ${status}`;
+    const normalized = String(status || '').trim().toUpperCase();
+    if (normalized !== 'SHIPPED') return null;
+
+    const message = `Order Shipped! #${orderNumber} is on its way.`;
     return this.notify(
       userId,
       NotificationTriggers.ORDER_STATUS_UPDATE,
-      title,
-      normalized === 'SHIPPED'
-        ? `Order Shipped! #${orderNumber} is on its way.`
-        : `#${orderNumber} status: ${status}.`,
+      message,
+      message,
     );
   }
 
-  async paymentFailed(userId: number, orderNumber?: string) {
+  async paymentFailed(userId: number, _orderNumber?: string) {
+    const message = 'Payment Failed. Tap to retry.';
     return this.notify(
       userId,
       NotificationTriggers.PAYMENT_FAILED,
-      'Payment Failed.',
-      orderNumber
-        ? `Payment Failed for #${orderNumber}. Tap to retry.`
-        : 'Payment Failed. Tap to retry.',
+      message,
+      message,
     );
   }
 
