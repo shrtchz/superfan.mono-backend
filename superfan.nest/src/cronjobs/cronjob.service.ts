@@ -41,6 +41,53 @@ export class CronJobService {
         this.logger.log(`Daily quiz notifications sent to ${clientUsers.length} users.`);
     }
 
+      @Cron('0 21 * * *', { timeZone: 'Africa/Lagos' })
+      async sendStreakEndingSoonNotifications() {
+        try {
+          const dateParts = new Intl.DateTimeFormat('en-CA', {
+            timeZone: 'Africa/Lagos',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+          }).formatToParts(new Date());
+          const datePart = (type: string) => dateParts.find((part) => part.type === type)?.value;
+          const year = Number(datePart('year'));
+          const month = Number(datePart('month'));
+          const day = Number(datePart('day'));
+          const todayStart = new Date(Date.UTC(year, month - 1, day) - 60 * 60 * 1000);
+          const yesterdayStart = new Date(todayStart.getTime() - 24 * 60 * 60 * 1000);
+
+          const users = await prisma.user.findMany({
+            where: {
+              roleName: 'client',
+              dailyStreak: { gt: 0 },
+              lastStreakDate: { gte: yesterdayStart, lt: todayStart },
+            },
+            select: { id: true, dailyStreak: true },
+          });
+
+          let sent = 0;
+          for (const user of users) {
+            const alreadySent = await prisma.notification.findFirst({
+              where: {
+                userId: user.id,
+                type: 'streak_ending_soon',
+                createdAt: { gte: todayStart },
+              },
+              select: { id: true },
+            });
+            if (alreadySent) continue;
+
+            await this.notificationService.streakEndingSoon(user.id, user.dailyStreak);
+            sent += 1;
+          }
+
+          this.logger.log(`Streak-ending-soon notifications sent to ${sent} users.`);
+        } catch (error) {
+          this.logger.error('Streak-ending-soon notification cron failed', error?.stack);
+        }
+      }
+
     @Cron(CronExpression.EVERY_5_MINUTES)
     async sendLiveQuizStartingSoonNotifications() {
         this.logger.log('Checking for live quizzes starting soon...');

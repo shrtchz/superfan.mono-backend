@@ -2817,6 +2817,7 @@ async updateDailyStreak(userId: number): Promise<{ streak: number; milestoneReac
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
   let newStreak = 1;
+  let streakWasReset = false;
 
   if (user?.lastStreakDate) {
     const last = new Date(user.lastStreakDate);
@@ -2831,6 +2832,7 @@ async updateDailyStreak(userId: number): Promise<{ streak: number; milestoneReac
       newStreak = user.dailyStreak + 1;
     } else {
       newStreak = 1;
+        streakWasReset = user.dailyStreak > 0;
     }
   }
 
@@ -2838,6 +2840,16 @@ async updateDailyStreak(userId: number): Promise<{ streak: number; milestoneReac
     where: { id: userId },
     data: { dailyStreak: newStreak, lastStreakDate: now },
   });
+
+  try {
+    if (streakWasReset) {
+      await this.notificationService.streakReset(userId);
+    } else if (newStreak === 5) {
+      await this.notificationService.streakMilestone(userId, newStreak);
+    }
+  } catch (error) {
+    this.logger.warn(`Failed to send streak notification for user ${userId}: ${error}`);
+  }
 
   return {
     streak: newStreak,

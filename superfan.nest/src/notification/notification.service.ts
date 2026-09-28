@@ -28,6 +28,9 @@ export const NotificationTriggers = {
   LIVE_QUIZ_JACKPOT: 'live_quiz_jackpot',
   NEW_QUIZ_AVAILABLE: 'new_quiz_available',
   QUIZ_REMINDER: 'quiz_reminder',
+  DAILY_STREAK: 'daily_streak',
+  STREAK_ENDING_SOON: 'streak_ending_soon',
+  STREAK_RESET: 'streak_reset',
   TESTS_REMAINING_LOW: 'tests_remaining_low',
   LIVE_QUIZ_STARTING_SOON: 'live_quiz_starting_soon',
   MANUAL_CREDIT_APPLIED: 'wallet_credit_manual',
@@ -178,7 +181,7 @@ export class NotificationService {
   }
 
   async challengeInviteSent(receiverId: number, senderUsername: string) {
-    const msg = `🎯 New Challenge! ${senderUsername} just challenged you to a quiz.`;
+    const msg = `New Challenge! ${senderUsername} just challenged you to a quiz.`;
     return this.notify(
       receiverId,
       NotificationTriggers.CHALLENGE_INVITE_SENT,
@@ -205,6 +208,21 @@ export class NotificationService {
       msg,
       msg,
     );
+  }
+
+  async streakMilestone(userId: number, days: number) {
+    const msg = `${days}-Day Streak! Keep the fire burning.`;
+    return this.notify(userId, NotificationTriggers.DAILY_STREAK, msg, msg);
+  }
+
+  async streakEndingSoon(userId: number, days: number) {
+    const msg = `Streak Ending Soon. Take a quiz to save your ${days}-day streak.`;
+    return this.notify(userId, NotificationTriggers.STREAK_ENDING_SOON, msg, msg);
+  }
+
+  async streakReset(userId: number) {
+    const msg = 'Streak Reset. Start a fresh one today.';
+    return this.notify(userId, NotificationTriggers.STREAK_RESET, msg, msg);
   }
 
   async orderConfirmed(userId: number, productLabel: string) {
@@ -240,20 +258,22 @@ export class NotificationService {
   }
 
   async adApprovedLive(userId: number, campaignTitle: string) {
+    const msg = `Your Ad Is Live! "${campaignTitle}" is now running.`;
     return this.notify(
       userId,
       NotificationTriggers.AD_APPROVED_LIVE,
-      'Your Ad Is Live!',
-      `"${campaignTitle}" is now running.`,
+      msg,
+      msg,
     );
   }
 
   async adEnded(userId: number, campaignTitle: string) {
+    const msg = `Ad Campaign Ended. "${campaignTitle}" has wrapped.`;
     return this.notify(
       userId,
       NotificationTriggers.AD_ENDED,
-      'Ad Campaign Ended.',
-      `"${campaignTitle}" has wrapped.`,
+      msg,
+      msg,
     );
   }
 
@@ -525,7 +545,7 @@ export class NotificationService {
   }
 
   async goldPersonalTransfer(userId: number, amountNaira: number, from: string, to: string) {
-    const msg = `🔄 ₦${amountNaira.toLocaleString()} moved from ${from} to ${to} account.`;
+    const msg = `₦${amountNaira.toLocaleString()} moved from ${from} to ${to} account.`;
     return this.notify(userId, NotificationTriggers.GOLD_PERSONAL_TRANSFER, msg, msg);
   }
 
@@ -637,8 +657,8 @@ export class NotificationService {
   async streamChatLockToggle(userIds: number[], streamTitle: string, locked: boolean) {
     if (!userIds.length) return { sent: 0 };
     const msg = locked
-      ? `🔒 Chat is locked on ${streamTitle}.`
-      : `🔓 Chat is open again on ${streamTitle}.`;
+      ? `Chat is locked on ${streamTitle}.`
+      : `Chat is open again on ${streamTitle}.`;
     await Promise.all(
       userIds.map((id) =>
         this.notify(id, NotificationTriggers.STREAM_CHAT_LOCK_TOGGLE, msg, msg).catch(
