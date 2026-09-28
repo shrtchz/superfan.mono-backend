@@ -33,9 +33,9 @@ type AdsService interface {
 }
 
 type adsServiceImpl struct {
-	db           *gorm.DB
-	nestBaseURL  string
-	httpClient   *http.Client
+	db          *gorm.DB
+	nestBaseURL string
+	httpClient  *http.Client
 }
 
 func NewAdsService(db *gorm.DB) AdsService {
@@ -719,6 +719,10 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 	if err != nil {
 		return nil, fmt.Errorf("failed to award reward points: %w", err)
 	}
+
+	s.notifyNest("ad-reward-credited", map[string]interface{}{
+		"userId": req.UserID, "amountNaira": rewardNaira,
+	})
 
 	return &AwardAdRewardResponse{
 		Awarded:           true,
