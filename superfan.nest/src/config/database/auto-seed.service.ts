@@ -26,6 +26,7 @@ export class AutoSeedService implements OnApplicationBootstrap {
 
       await this.ensureAdCampaignColumns();
       await this.ensureAdEventTypes();
+      await this.ensureAdEventColumns();
 
       // 3. Seed base data only if Role table is empty
       const roleCount = await this.prisma.role.count().catch(() => 0);
@@ -63,6 +64,12 @@ export class AutoSeedService implements OnApplicationBootstrap {
     for (const statement of statements) {
       await this.prisma.$executeRawUnsafe(statement);
     }
+  }
+
+  private async ensureAdEventColumns() {
+    await this.prisma.$executeRawUnsafe(
+      `ALTER TABLE "AdEvent" ADD COLUMN IF NOT EXISTS "pointsGiven" INTEGER NOT NULL DEFAULT 0`,
+    );
   }
 
   private async createAllTables() {
@@ -939,6 +946,7 @@ export class AutoSeedService implements OnApplicationBootstrap {
         "placementId" INTEGER REFERENCES "AdPlacement"("id") ON DELETE SET NULL,
         "quizId" TEXT,
         "eventType" "AdEventType" NOT NULL DEFAULT 'VIEW_START',
+        "pointsGiven" INTEGER NOT NULL DEFAULT 0,
         "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
       )`,
 
