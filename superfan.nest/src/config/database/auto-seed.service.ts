@@ -24,6 +24,8 @@ export class AutoSeedService implements OnApplicationBootstrap {
         this.logger.log('✅ All database tables created successfully!');
       }
 
+      await this.ensureAdCampaignColumns();
+
       // 3. Seed base data only if Role table is empty
       const roleCount = await this.prisma.role.count().catch(() => 0);
       if (roleCount === 0) {
@@ -36,6 +38,18 @@ export class AutoSeedService implements OnApplicationBootstrap {
       }
     } catch (error: any) {
       this.logger.warn(`Auto-seed/schema init error: ${error?.message || error}`);
+    }
+  }
+
+  private async ensureAdCampaignColumns() {
+    const statements = [
+      `ALTER TABLE "AdCampaign" ADD COLUMN IF NOT EXISTS "placementType" TEXT`,
+      `ALTER TABLE "AdCampaign" ADD COLUMN IF NOT EXISTS "pricingModel" TEXT`,
+      `ALTER TABLE "AdCampaign" ADD COLUMN IF NOT EXISTS "questionBlocks" INTEGER NOT NULL DEFAULT 0`,
+    ];
+
+    for (const statement of statements) {
+      await this.prisma.$executeRawUnsafe(statement);
     }
   }
 
@@ -884,6 +898,9 @@ export class AutoSeedService implements OnApplicationBootstrap {
         "endDate" TIMESTAMP(3),
         "runContinuously" BOOLEAN NOT NULL DEFAULT true,
         "ageRange" TEXT,
+        "placementType" TEXT,
+        "pricingModel" TEXT,
+        "questionBlocks" INTEGER NOT NULL DEFAULT 0,
         "status" "AdStatus" NOT NULL DEFAULT 'PENDING',
         "views" INTEGER NOT NULL DEFAULT 0,
         "clicks" INTEGER NOT NULL DEFAULT 0,
