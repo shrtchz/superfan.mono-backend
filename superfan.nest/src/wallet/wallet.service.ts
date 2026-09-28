@@ -169,7 +169,7 @@ export class WalletService {
       currency,
     });
 
-    const isGold = accountType === 'Gold';
+    const isGold = accountType === 'Savings' || accountType === 'Gold';
     const balanceField = isGold ? 'goldBalance' : 'personalBalance';
 
     // Use transaction to ensure atomicity - all or nothing
@@ -287,7 +287,7 @@ export class WalletService {
 
     // Credit the wallet - system rewards always go to Gold Account
     const rewardLabel = type.toLowerCase().includes('ad') ? 'Ads Reward' : 'Test Quiz Earning';
-    await this.creditWallet(userId, amount, rewardLabel, rewardLabel, 'Gold', currency);
+    await this.creditWallet(userId, amount, rewardLabel, rewardLabel, 'Savings', currency);
 
     // Send notification — ad rewards carry the ₦2-per-ad copy
     if (type.toLowerCase().includes('ad')) {
@@ -339,7 +339,7 @@ export class WalletService {
     });
 
     // Credit the wallet - quiz rewards go to Gold Account
-    await this.creditWallet(userId, amount, 'Test Quiz Earning', 'Test Quiz Earning', 'Gold', 'NGN');
+    await this.creditWallet(userId, amount, 'Test Quiz Earning', 'Test Quiz Earning', 'Savings', 'NGN');
 
     await this.prisma.point.create({
       data: {
@@ -395,7 +395,7 @@ export class WalletService {
     });
 
     // Credit the wallet - live quiz rewards go to Gold Account
-    await this.creditWallet(userId, amount, 'Test Quiz Earning', 'Test Quiz Earning', 'Gold', 'NGN');
+    await this.creditWallet(userId, amount, 'Test Quiz Earning', 'Test Quiz Earning', 'Savings', 'NGN');
 
     await this.prisma.user.update({
       where: { id: userId },
@@ -510,7 +510,7 @@ async getUserWalletTransactions(filters: WalletTransactionFilterDto) {
     const accountType = matchedAccount?.accountType || 'Personal';
 
     // ✅ Reject deposits into Gold Account
-    if (accountType === 'Gold') {
+    if (accountType === 'Savings' || accountType === 'Gold') {
       throw new Error('Deposits into Gold Account are not allowed');
     }
 
@@ -520,7 +520,7 @@ async getUserWalletTransactions(filters: WalletTransactionFilterDto) {
     }
 
     // Determine which balance to increment
-    const balanceField = accountType === 'Gold' ? 'goldBalance' : 'personalBalance';
+    const balanceField = accountType === 'Savings' ? 'goldBalance' : 'personalBalance';
 
     await this.prisma.$transaction([
       // Update wallet balances
@@ -584,7 +584,7 @@ async getUserWalletTransactions(filters: WalletTransactionFilterDto) {
     return { message: 'Wallet funded successfully', amount };
   }
 
-  async transferbtwPersonalandGoldAccount(userId: number, amount: number, fromAccountType: 'Personal' | 'Gold') {
+  async transferbtwPersonalandGoldAccount(userId: number, amount: number, fromAccountType: 'Checking' | 'Savings') {
     // Validate amount
     if (amount <= 0) {
       throw new Error('Amount must be greater than 0');
@@ -616,17 +616,17 @@ async getUserWalletTransactions(filters: WalletTransactionFilterDto) {
 
     // Get accounts
     const accounts = (user.accounts as any[]) || [];
-    const personalAccount = accounts.find((acc: any) => acc.accountType === 'Personal');
-    const goldAccount = accounts.find((acc: any) => acc.accountType === 'Gold');
+    const personalAccount = accounts.find((acc: any) => acc.accountType === 'Checking');
+    const goldAccount = accounts.find((acc: any) => acc.accountType === 'Savings');
 
     if (!personalAccount || !goldAccount) {
-      throw new Error('Personal or Gold account not found');
+      throw new Error('Checking or Savings account not found');
     }
 
     // Determine source and destination based on fromAccountType
-    const sourceAccount = fromAccountType === 'Personal' ? personalAccount : goldAccount;
-    const destinationAccount = fromAccountType === 'Personal' ? goldAccount : personalAccount;
-    const destinationAccountType = fromAccountType === 'Personal' ? 'Gold' : 'Personal';
+    const sourceAccount = fromAccountType === 'Checking' ? personalAccount : goldAccount;
+    const destinationAccount = fromAccountType === 'Checking' ? goldAccount : personalAccount;
+    const destinationAccountType = fromAccountType === 'Checking' ? 'Savings' : 'Checking';
 const trf_reference = `TRANSFER_${Date.now()}`;
     // Perform transfer in a transaction
     await this.prisma.$transaction([
