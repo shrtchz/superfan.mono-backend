@@ -25,6 +25,7 @@ export class AutoSeedService implements OnApplicationBootstrap {
       }
 
       await this.ensureAdCampaignColumns();
+      await this.ensureAdEventTypes();
 
       // 3. Seed base data only if Role table is empty
       const roleCount = await this.prisma.role.count().catch(() => 0);
@@ -46,6 +47,17 @@ export class AutoSeedService implements OnApplicationBootstrap {
       `ALTER TABLE "AdCampaign" ADD COLUMN IF NOT EXISTS "placementType" TEXT`,
       `ALTER TABLE "AdCampaign" ADD COLUMN IF NOT EXISTS "pricingModel" TEXT`,
       `ALTER TABLE "AdCampaign" ADD COLUMN IF NOT EXISTS "questionBlocks" INTEGER NOT NULL DEFAULT 0`,
+    ];
+
+    for (const statement of statements) {
+      await this.prisma.$executeRawUnsafe(statement);
+    }
+  }
+
+  private async ensureAdEventTypes() {
+    const statements = [
+      `ALTER TYPE "AdEventType" ADD VALUE IF NOT EXISTS 'REWARD_AWARDED'`,
+      `ALTER TYPE "AdEventType" ADD VALUE IF NOT EXISTS 'REWARD_SUPPRESSED'`,
     ];
 
     for (const statement of statements) {
@@ -91,7 +103,7 @@ export class AutoSeedService implements OnApplicationBootstrap {
       `DO $$ BEGIN CREATE TYPE "OrderStatus" AS ENUM ('ORDERED','PROCESSING','SHIPPED','OUT_FOR_DELIVERY','DELIVERED','CANCELLED'); EXCEPTION WHEN duplicate_object THEN null; END $$`,
       `DO $$ BEGIN CREATE TYPE "ReturnStatus" AS ENUM ('PENDING','APPROVED','REJECTED','COMPLETED'); EXCEPTION WHEN duplicate_object THEN null; END $$`,
       `DO $$ BEGIN CREATE TYPE "AdStatus" AS ENUM ('PENDING','ACTIVE','PAUSED','COMPLETED'); EXCEPTION WHEN duplicate_object THEN null; END $$`,
-      `DO $$ BEGIN CREATE TYPE "AdEventType" AS ENUM ('VIEW_START','COMPLETION','CLICK'); EXCEPTION WHEN duplicate_object THEN null; END $$`,
+      `DO $$ BEGIN CREATE TYPE "AdEventType" AS ENUM ('VIEW_START','COMPLETION','CLICK','REWARD_AWARDED','REWARD_SUPPRESSED'); EXCEPTION WHEN duplicate_object THEN null; END $$`,
 
       // ─── ROLE / PERMISSION ─────────────────────────────────────────────────
       `CREATE TABLE IF NOT EXISTS "Role" (
