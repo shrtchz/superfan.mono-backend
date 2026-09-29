@@ -1,7 +1,6 @@
 import {
   buildLiveQuizLeaderboardRows,
   calculateLeaderboardAccuracy,
-  getUsersWithoutLeaderboardActivity,
   getLeaderboardDateFilter,
   normalizeLeaderboardTimeRange,
   normalizeLeaderboardView,
@@ -62,17 +61,6 @@ describe('normalizeLeaderboardView', () => {
   it('falls back to leaderboard for unknown values', () => {
     expect(normalizeLeaderboardView(undefined)).toBe('leaderboard');
     expect(normalizeLeaderboardView('weekly')).toBe('leaderboard');
-  });
-});
-
-describe('getUsersWithoutLeaderboardActivity', () => {
-  it('returns users with no activity in the selected range', () => {
-    expect(
-      getUsersWithoutLeaderboardActivity(
-        ['active-user', 'inactive-user'],
-        new Set(['active-user']),
-      ),
-    ).toEqual(['inactive-user']);
   });
 });
 
