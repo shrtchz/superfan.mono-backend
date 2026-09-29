@@ -404,6 +404,19 @@ export class TaskService {
 
     if (!referral) return;
 
+    const claimedReferral = await prisma.referral.updateMany({
+      where: {
+        id: referral.id,
+        testRewardGiven: false,
+      },
+      data: {
+        status: 'FIRST_TEST_COMPLETED',
+        testRewardGiven: true,
+      },
+    });
+
+    if (claimedReferral.count === 0) return;
+
     // Referrer Bonus: 10,000 PTS into Gold Account
     const referrerPoints = 10000;
     const referrerNaira = this.pointsConversionUtil.pointsToNaira(referrerPoints);
@@ -419,8 +432,8 @@ export class TaskService {
     await this.walletService.creditWallet(
       referral.referrerId,
       referrerNaira,
-      'Referral Bonus — First Test: NGN 10',
-      `You earned ₦${referrerNaira} because your referee completed their first test.`,
+      'Referral Bonus - First Test',
+      'Referral Bonus - First Test',
       'Gold'
     );
 
@@ -471,13 +484,6 @@ export class TaskService {
       'welcome_bonus',
     );
 
-    await prisma.referral.update({
-      where: { id: referral.id },
-      data: {
-        status: 'FIRST_TEST_COMPLETED',
-        testRewardGiven: true,
-      },
-    });
   }
 
   async getMyReferrals(userId: number) {
@@ -495,11 +501,11 @@ export class TaskService {
    * - status FIRST_TEST_COMPLETED → "completed"
    *
    * Bonus amounts per referral (referrer perspective):
-   *   sign-up bonus: signupRewardGiven ? ₦10 : 0
+  *   sign-up bonus: signupRewardGiven ? ₦20 : 0
    *   first-test bonus: testRewardGiven ? ₦10 : 0  (pending if not yet given)
    */
   async getMyReferralSummary(userId: number) {
-    const REFERRER_SIGNUP_BONUS = 10;   // ₦ credited on referee sign-up
+    const REFERRER_SIGNUP_BONUS = 20;   // ₦ credited on referee sign-up
     const REFERRER_TEST_BONUS   = 10;   // ₦ credited when referee completes first test
 
     const referrals = await prisma.referral.findMany({

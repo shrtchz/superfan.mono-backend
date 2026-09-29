@@ -653,8 +653,7 @@ async submitQuiz(
       quizTimeSeconds,
       quizTime: formattedQuizTime,
       submittedAt: submittedAt ? new Date(submittedAt) : new Date(),
-    }))
-    .filter((row) => row.earning > 0);
+    }));
 
   if (leaderboardRows.length) {
     await prisma.quizLeaderboard.createMany({ data: leaderboardRows });
