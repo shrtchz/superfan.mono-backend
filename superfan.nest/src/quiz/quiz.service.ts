@@ -2422,22 +2422,36 @@ async getQuizleaderboard(
 
       entry.username = usernameById.get(String(entry.userId)) ?? null;
       entry.score = entry.totalScore;
-      entry.accuracy = calculateLeaderboardAccuracy(entry.rows);
+      if (entry.accuracy === null || entry.accuracy === undefined) {
+        entry.accuracy = calculateLeaderboardAccuracy(entry.rows);
+      }
       entry.time = firstRow.quizTime ?? null;
       entry.testLevel = firstRow.testLevel ?? null;
       entry.reward = entry.totalEarning;
     }
 
     leaderboard.forEach((entry) => {
-      if (entry.accuracy === null) {
-        const correctAnswers = entry.rows.filter(
+      if (entry.accuracy === null || entry.accuracy === undefined) {
+        const comparableRows = entry.rows.filter(
+          (answer) =>
+            typeof answer.selectedAnswer === 'string' &&
+            answer.selectedAnswer.trim().length > 0 &&
+            typeof answer.correctAnswer === 'string' &&
+            answer.correctAnswer.trim().length > 0,
+        );
+        const correctAnswers = comparableRows.filter(
           (answer) => answer.selectedAnswer === answer.correctAnswer,
         ).length;
-        entry.correctAnswers = correctAnswers;
+        if (entry.correctAnswers === null || entry.correctAnswers === undefined) {
+          entry.correctAnswers = comparableRows.length ? correctAnswers : null;
+        }
         entry.attemptedAnswers = entry.rows.length;
-        entry.accuracy = entry.totalQuestions
-          ? Math.round((correctAnswers / entry.totalQuestions) * 100)
-          : null;
+        entry.accuracy =
+          comparableRows.length > 0
+            ? Math.round((correctAnswers / comparableRows.length) * 100)
+            : entry.totalQuestions && typeof entry.correctAnswers === 'number'
+              ? Math.round((entry.correctAnswers / entry.totalQuestions) * 100)
+              : null;
       }
     });
 
