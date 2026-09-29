@@ -75,11 +75,25 @@ export class FriendInviteService {
         where: { id: inviteId },
         data: { status: 'accepted' },
       }),
-      prisma.friend.create({
-        data: { userId: invite.senderId, friendId: invite.receiverId },
+      prisma.friend.upsert({
+        where: {
+          userId_friendId: {
+            userId: invite.senderId,
+            friendId: invite.receiverId,
+          },
+        },
+        create: { userId: invite.senderId, friendId: invite.receiverId },
+        update: {},
       }),
-      prisma.friend.create({
-        data: { userId: invite.receiverId, friendId: invite.senderId },
+      prisma.friend.upsert({
+        where: {
+          userId_friendId: {
+            userId: invite.receiverId,
+            friendId: invite.senderId,
+          },
+        },
+        create: { userId: invite.receiverId, friendId: invite.senderId },
+        update: {},
       }),
     ]);
 
@@ -88,10 +102,14 @@ export class FriendInviteService {
       select: { username: true, firstName: true },
     });
 
-    await this.notificationService.challengeInviteAccepted(
-      invite.senderId,
-      receiver?.username || receiver?.firstName || 'a user',
-    );
+    try {
+      await this.notificationService.challengeInviteAccepted(
+        invite.senderId,
+        receiver?.username || receiver?.firstName || 'a user',
+      );
+    } catch (notificationError) {
+      console.warn('Failed to send challenge invite acceptance notification:', notificationError);
+    }
 
     return { success: true };
   }
