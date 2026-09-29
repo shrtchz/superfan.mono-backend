@@ -25,19 +25,6 @@ export class FriendInviteService {
     }
 
     const invite = await prisma.$transaction(async (tx) => {
-      const existingFriend = await tx.friend.findFirst({
-        where: {
-          OR: [
-            { userId: senderId, friendId: receiverId },
-            { userId: receiverId, friendId: senderId },
-          ],
-        },
-      });
-
-      if (existingFriend) {
-        throw new BadRequestException('User is already your friend');
-      }
-
       const existing = await tx.challengeInvite.findUnique({
         where: {
           senderId_receiverId: { senderId, receiverId },
@@ -45,11 +32,7 @@ export class FriendInviteService {
       });
 
       if (existing?.status === 'pending') {
-        throw new BadRequestException('Invite already sent');
-      }
-
-      if (existing?.status === 'accepted') {
-        throw new BadRequestException('Invite already accepted');
+        throw new BadRequestException('Challenge already sent');
       }
 
       if (existing) {

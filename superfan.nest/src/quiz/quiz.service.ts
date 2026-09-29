@@ -71,36 +71,6 @@ export function normalizeLeaderboardView(value?: string): LeaderboardView {
   return 'leaderboard';
 }
 
-export function getUsersWithoutLeaderboardActivity(
-  userIds: string[],
-  usersWithActivity: Set<string>,
-): string[] {
-  return userIds.filter((id) => !usersWithActivity.has(id));
-}
-
-function createInactiveLeaderboardEntry(userId: string, username: string | null) {
-  return {
-    userId,
-    username,
-    submittedAt: null,
-    totalScore: null,
-    totalEarning: 0,
-    totalQuestions: null,
-    accuracy: null,
-    correctAnswers: null,
-    attemptedAnswers: null,
-    quizTimeSeconds: null,
-    quizTime: null,
-    testLevel: null,
-    createdAt: null,
-    position: null,
-    score: null,
-    time: null,
-    reward: 0,
-    rows: [],
-  };
-}
-
 export function getLeaderboardDateFilter(
   timeRange: LeaderboardTimeRange,
   now: Date = new Date(),
@@ -2452,22 +2422,36 @@ async getQuizleaderboard(
 
       entry.username = usernameById.get(String(entry.userId)) ?? null;
       entry.score = entry.totalScore;
-      entry.accuracy = calculateLeaderboardAccuracy(entry.rows);
+      if (entry.accuracy === null || entry.accuracy === undefined) {
+        entry.accuracy = calculateLeaderboardAccuracy(entry.rows);
+      }
       entry.time = firstRow.quizTime ?? null;
       entry.testLevel = firstRow.testLevel ?? null;
       entry.reward = entry.totalEarning;
     }
 
     leaderboard.forEach((entry) => {
-      if (entry.accuracy === null) {
-        const correctAnswers = entry.rows.filter(
+      if (entry.accuracy === null || entry.accuracy === undefined) {
+        const comparableRows = entry.rows.filter(
+          (answer) =>
+            typeof answer.selectedAnswer === 'string' &&
+            answer.selectedAnswer.trim().length > 0 &&
+            typeof answer.correctAnswer === 'string' &&
+            answer.correctAnswer.trim().length > 0,
+        );
+        const correctAnswers = comparableRows.filter(
           (answer) => answer.selectedAnswer === answer.correctAnswer,
         ).length;
-        entry.correctAnswers = correctAnswers;
+        if (entry.correctAnswers === null || entry.correctAnswers === undefined) {
+          entry.correctAnswers = comparableRows.length ? correctAnswers : null;
+        }
         entry.attemptedAnswers = entry.rows.length;
-        entry.accuracy = entry.totalQuestions
-          ? Math.round((correctAnswers / entry.totalQuestions) * 100)
-          : null;
+        entry.accuracy =
+          comparableRows.length > 0
+            ? Math.round((correctAnswers / comparableRows.length) * 100)
+            : entry.totalQuestions && typeof entry.correctAnswers === 'number'
+              ? Math.round((entry.correctAnswers / entry.totalQuestions) * 100)
+              : null;
       }
     });
 
@@ -2521,49 +2505,16 @@ async getQuizleaderboard(
       entry.position = positionByUser.get(String(entry.userId));
     });
 
-    if (view === 'leaderboard') {
-      const users = await prisma.user.findMany({
-        select: { id: true, username: true },
-        orderBy: { id: 'asc' },
-      });
-      const activeUserIds = new Set(
-        leaderboard.map((entry) => String(entry.userId)),
-      );
-      const inactiveUsers = getUsersWithoutLeaderboardActivity(
-        users.map((user) => String(user.id)),
-        activeUserIds,
-      );
-      const usernameById = new Map(
-        users.map((user) => [String(user.id), user.username]),
-      );
-
-      return [
-        ...leaderboard,
-        ...inactiveUsers.map((userId) =>
-          createInactiveLeaderboardEntry(userId, usernameById.get(userId) ?? null),
-        ),
-      ];
-    }
+    if (view === 'leaderboard') return leaderboard;
 
     if (!options.userId) return [];
 
     const requestedUserId = String(options.userId);
 
     if (view === 'my-score') {
-      const activeRows = leaderboard.filter(
+      return leaderboard.filter(
         (entry) => String(entry.userId) === requestedUserId,
       );
-      if (activeRows.length) return activeRows;
-
-      const numericUserId = Number(requestedUserId);
-      if (!Number.isFinite(numericUserId)) return [];
-      const user = await prisma.user.findUnique({
-        where: { id: numericUserId },
-        select: { id: true, username: true },
-      });
-      return user
-        ? [createInactiveLeaderboardEntry(String(user.id), user.username)]
-        : [];
     }
 
     // view === 'my-invitees'
@@ -2593,41 +2544,6 @@ async getQuizleaderboard(
     const activeInvitees = leaderboard.filter((entry) =>
       inviteeIds.has(String(entry.userId)),
     );
-    const activeInviteeIds = new Set(
-      activeInvitees.map((entry) => String(entry.userId)),
-    );
-    const inactiveInviteeIds = getUsersWithoutLeaderboardActivity(
-      [...inviteeIds],
-      activeInviteeIds,
-    );
-
-    if (inactiveInviteeIds.length) {
-      const inactiveNumericIds = inactiveInviteeIds
-        .map((id) => Number(id))
-        .filter((id) => Number.isFinite(id));
-
-      const inactiveUsers = inactiveNumericIds.length
-        ? await prisma.user.findMany({
-            where: { id: { in: inactiveNumericIds } },
-            select: { id: true, username: true },
-          })
-        : [];
-
-      const inactiveUsernameById = new Map(
-        inactiveUsers.map((user) => [String(user.id), user.username]),
-      );
-
-      activeInvitees.push(
-        ...inactiveInviteeIds
-          .filter((id) => Number.isFinite(Number(id)))
-          .map((inviteeId) =>
-            createInactiveLeaderboardEntry(
-              inviteeId,
-              inactiveUsernameById.get(inviteeId) ?? null,
-            ),
-          ),
-      );
-    }
 
     return activeInvitees;
   } catch (error) {
