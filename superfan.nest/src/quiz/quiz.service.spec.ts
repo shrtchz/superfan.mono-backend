@@ -1,6 +1,7 @@
 import {
   buildLiveQuizLeaderboardRows,
   calculateLeaderboardAccuracy,
+  getInactiveInviteeIds,
   getLeaderboardDateFilter,
   normalizeLeaderboardTimeRange,
   normalizeLeaderboardView,
@@ -61,6 +62,20 @@ describe('normalizeLeaderboardView', () => {
   it('falls back to leaderboard for unknown values', () => {
     expect(normalizeLeaderboardView(undefined)).toBe('leaderboard');
     expect(normalizeLeaderboardView('weekly')).toBe('leaderboard');
+  });
+});
+
+describe('getInactiveInviteeIds', () => {
+  it('includes invitees without any quiz activity only for the all-time range', () => {
+    const inviteeIds = ['active-user', 'inactive-user'];
+    const usersWithQuizActivity = new Set(['active-user']);
+
+    expect(
+      getInactiveInviteeIds(inviteeIds, usersWithQuizActivity, 'all'),
+    ).toEqual(['inactive-user']);
+    expect(
+      getInactiveInviteeIds(inviteeIds, usersWithQuizActivity, 'today'),
+    ).toEqual([]);
   });
 });
 

@@ -71,6 +71,15 @@ export function normalizeLeaderboardView(value?: string): LeaderboardView {
   return 'leaderboard';
 }
 
+export function getInactiveInviteeIds(
+  inviteeIds: string[],
+  usersWithQuizActivity: Set<string>,
+  timeRange: LeaderboardTimeRange,
+): string[] {
+  if (timeRange !== 'all') return [];
+  return inviteeIds.filter((id) => !usersWithQuizActivity.has(id));
+}
+
 export function getLeaderboardDateFilter(
   timeRange: LeaderboardTimeRange,
   now: Date = new Date(),
@@ -2537,7 +2546,7 @@ async getQuizleaderboard(
       .map((id) => Number(id))
       .filter((id) => Number.isFinite(id));
 
-    const inviteeQuizRows = inviteeNumericIds.length
+    const inviteeQuizRows = timeRange === 'all' && inviteeNumericIds.length
       ? await prisma.quizLeaderboard.findMany({
           where: { userId: { in: [...inviteeIds] } },
           select: { userId: true },
@@ -2549,8 +2558,10 @@ async getQuizleaderboard(
       inviteeQuizRows.map((row) => String(row.userId)),
     );
 
-    const inactiveInviteeIds = [...inviteeIds].filter(
-      (id) => !inviteeUsersWithData.has(id),
+    const inactiveInviteeIds = getInactiveInviteeIds(
+      [...inviteeIds],
+      inviteeUsersWithData,
+      timeRange,
     );
 
     if (inactiveInviteeIds.length) {
