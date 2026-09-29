@@ -71,13 +71,34 @@ export function normalizeLeaderboardView(value?: string): LeaderboardView {
   return 'leaderboard';
 }
 
-export function getInactiveInviteeIds(
-  inviteeIds: string[],
-  usersWithQuizActivity: Set<string>,
-  timeRange: LeaderboardTimeRange,
+export function getUsersWithoutLeaderboardActivity(
+  userIds: string[],
+  usersWithActivity: Set<string>,
 ): string[] {
-  if (timeRange !== 'all') return [];
-  return inviteeIds.filter((id) => !usersWithQuizActivity.has(id));
+  return userIds.filter((id) => !usersWithActivity.has(id));
+}
+
+function createInactiveLeaderboardEntry(userId: string, username: string | null) {
+  return {
+    userId,
+    username,
+    submittedAt: null,
+    totalScore: null,
+    totalEarning: 0,
+    totalQuestions: null,
+    accuracy: null,
+    correctAnswers: null,
+    attemptedAnswers: null,
+    quizTimeSeconds: null,
+    quizTime: null,
+    testLevel: null,
+    createdAt: null,
+    position: null,
+    score: null,
+    time: null,
+    reward: 0,
+    rows: [],
+  };
 }
 
 export function getLeaderboardDateFilter(
@@ -2500,16 +2521,49 @@ async getQuizleaderboard(
       entry.position = positionByUser.get(String(entry.userId));
     });
 
-    if (view === 'leaderboard' || !options.userId) {
-      return leaderboard;
+    if (view === 'leaderboard') {
+      const users = await prisma.user.findMany({
+        select: { id: true, username: true },
+        orderBy: { id: 'asc' },
+      });
+      const activeUserIds = new Set(
+        leaderboard.map((entry) => String(entry.userId)),
+      );
+      const inactiveUsers = getUsersWithoutLeaderboardActivity(
+        users.map((user) => String(user.id)),
+        activeUserIds,
+      );
+      const usernameById = new Map(
+        users.map((user) => [String(user.id), user.username]),
+      );
+
+      return [
+        ...leaderboard,
+        ...inactiveUsers.map((userId) =>
+          createInactiveLeaderboardEntry(userId, usernameById.get(userId) ?? null),
+        ),
+      ];
     }
+
+    if (!options.userId) return [];
 
     const requestedUserId = String(options.userId);
 
     if (view === 'my-score') {
-      return leaderboard.filter(
+      const activeRows = leaderboard.filter(
         (entry) => String(entry.userId) === requestedUserId,
       );
+      if (activeRows.length) return activeRows;
+
+      const numericUserId = Number(requestedUserId);
+      if (!Number.isFinite(numericUserId)) return [];
+      const user = await prisma.user.findUnique({
+        where: { id: numericUserId },
+        select: { id: true, username: true },
+      });
+      return user
+        ? [createInactiveLeaderboardEntry(String(user.id), user.username)]
+        : [];
     }
 
     // view === 'my-invitees'
@@ -2539,29 +2593,12 @@ async getQuizleaderboard(
     const activeInvitees = leaderboard.filter((entry) =>
       inviteeIds.has(String(entry.userId)),
     );
-
-    // Invitees with zero quiz activity should still appear (SC-xxx): find which
-    // invitees have never submitted a quiz, regardless of time range.
-    const inviteeNumericIds = [...inviteeIds]
-      .map((id) => Number(id))
-      .filter((id) => Number.isFinite(id));
-
-    const inviteeQuizRows = timeRange === 'all' && inviteeNumericIds.length
-      ? await prisma.quizLeaderboard.findMany({
-          where: { userId: { in: [...inviteeIds] } },
-          select: { userId: true },
-          distinct: ['userId'],
-        })
-      : [];
-
-    const inviteeUsersWithData = new Set(
-      inviteeQuizRows.map((row) => String(row.userId)),
+    const activeInviteeIds = new Set(
+      activeInvitees.map((entry) => String(entry.userId)),
     );
-
-    const inactiveInviteeIds = getInactiveInviteeIds(
+    const inactiveInviteeIds = getUsersWithoutLeaderboardActivity(
       [...inviteeIds],
-      inviteeUsersWithData,
-      timeRange,
+      activeInviteeIds,
     );
 
     if (inactiveInviteeIds.length) {
@@ -2580,31 +2617,16 @@ async getQuizleaderboard(
         inactiveUsers.map((user) => [String(user.id), user.username]),
       );
 
-      for (const inviteeId of inactiveInviteeIds) {
-        const numericId = Number(inviteeId);
-        if (!Number.isFinite(numericId)) continue;
-
-        activeInvitees.push({
-          userId: inviteeId,
-          username: inactiveUsernameById.get(inviteeId) ?? null,
-          submittedAt: null,
-          totalScore: null,
-          totalEarning: 0,
-          totalQuestions: null,
-          accuracy: null,
-          correctAnswers: null,
-          attemptedAnswers: null,
-          quizTimeSeconds: null,
-          quizTime: null,
-          testLevel: null,
-          createdAt: null,
-          position: null,
-          score: null,
-          time: null,
-          reward: 0,
-          rows: [],
-        });
-      }
+      activeInvitees.push(
+        ...inactiveInviteeIds
+          .filter((id) => Number.isFinite(Number(id)))
+          .map((inviteeId) =>
+            createInactiveLeaderboardEntry(
+              inviteeId,
+              inactiveUsernameById.get(inviteeId) ?? null,
+            ),
+          ),
+      );
     }
 
     return activeInvitees;
