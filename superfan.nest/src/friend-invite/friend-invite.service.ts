@@ -24,29 +24,44 @@ export class FriendInviteService {
       throw new NotFoundException('User not found');
     }
 
-    const existing = await prisma.challengeInvite.findUnique({
-      where: {
-        senderId_receiverId: { senderId, receiverId },
-      },
-    });
+    const invite = await prisma.$transaction(async (tx) => {
+      const existingFriend = await tx.friend.findFirst({
+        where: {
+          OR: [
+            { userId: senderId, friendId: receiverId },
+            { userId: receiverId, friendId: senderId },
+          ],
+        },
+      });
 
-    if (existing) {
-      if (existing.status === 'pending') {
+      if (existingFriend) {
+        throw new BadRequestException('User is already your friend');
+      }
+
+      const existing = await tx.challengeInvite.findUnique({
+        where: {
+          senderId_receiverId: { senderId, receiverId },
+        },
+      });
+
+      if (existing?.status === 'pending') {
         throw new BadRequestException('Invite already sent');
       }
-      const updated = await prisma.challengeInvite.update({
-        where: { id: existing.id },
-        data: { status: 'pending' },
-      });
-      await this.notificationService.challengeInviteSent(
-        receiverId,
-        (await this.getSenderUsername(senderId)) || 'A user',
-      );
-      return { success: true, invite: updated };
-    }
 
-    const invite = await prisma.challengeInvite.create({
-      data: { senderId, receiverId },
+      if (existing?.status === 'accepted') {
+        throw new BadRequestException('Invite already accepted');
+      }
+
+      if (existing) {
+        return tx.challengeInvite.update({
+          where: { id: existing.id },
+          data: { status: 'pending' },
+        });
+      }
+
+      return tx.challengeInvite.create({
+        data: { senderId, receiverId },
+      });
     });
 
     await this.notificationService.challengeInviteSent(
@@ -58,44 +73,74 @@ export class FriendInviteService {
   }
 
   async accept(inviteId: number) {
-    const invite = await prisma.challengeInvite.findUnique({
-      where: { id: inviteId },
+    const { invite, alreadyFriends } = await prisma.$transaction(async (tx) => {
+      const invite = await tx.challengeInvite.findUnique({
+        where: { id: inviteId },
+      });
+
+      if (!invite) {
+        throw new NotFoundException('Invite not found');
+      }
+
+      if (invite.status !== 'pending') {
+        throw new BadRequestException(
+          invite.status === 'accepted'
+            ? 'Invite already accepted'
+            : 'Invite is no longer pending',
+        );
+      }
+
+      const existingFriend = await tx.friend.findFirst({
+        where: {
+          OR: [
+            { userId: invite.senderId, friendId: invite.receiverId },
+            { userId: invite.receiverId, friendId: invite.senderId },
+          ],
+        },
+      });
+
+      const claimed = await tx.challengeInvite.updateMany({
+        where: { id: inviteId, status: 'pending' },
+        data: { status: 'accepted' },
+      });
+
+      if (claimed.count !== 1) {
+        throw new BadRequestException('Invite is no longer pending');
+      }
+
+      if (existingFriend) {
+        return { invite, alreadyFriends: true };
+      }
+
+      await Promise.all([
+        tx.friend.upsert({
+          where: {
+            userId_friendId: {
+              userId: invite.senderId,
+              friendId: invite.receiverId,
+            },
+          },
+          create: { userId: invite.senderId, friendId: invite.receiverId },
+          update: {},
+        }),
+        tx.friend.upsert({
+          where: {
+            userId_friendId: {
+              userId: invite.receiverId,
+              friendId: invite.senderId,
+            },
+          },
+          create: { userId: invite.receiverId, friendId: invite.senderId },
+          update: {},
+        }),
+      ]);
+
+      return { invite, alreadyFriends: false };
     });
 
-    if (!invite) {
-      throw new NotFoundException('Invite not found');
+    if (alreadyFriends) {
+      return { success: true };
     }
-
-    if (invite.status === 'accepted') {
-      throw new BadRequestException('Invite already accepted');
-    }
-
-    await prisma.$transaction([
-      prisma.challengeInvite.update({
-        where: { id: inviteId },
-        data: { status: 'accepted' },
-      }),
-      prisma.friend.upsert({
-        where: {
-          userId_friendId: {
-            userId: invite.senderId,
-            friendId: invite.receiverId,
-          },
-        },
-        create: { userId: invite.senderId, friendId: invite.receiverId },
-        update: {},
-      }),
-      prisma.friend.upsert({
-        where: {
-          userId_friendId: {
-            userId: invite.receiverId,
-            friendId: invite.senderId,
-          },
-        },
-        create: { userId: invite.receiverId, friendId: invite.senderId },
-        update: {},
-      }),
-    ]);
 
     const receiver = await prisma.user.findUnique({
       where: { id: invite.receiverId },
