@@ -92,6 +92,18 @@ export class NotificationController {
   }
 
   @Public()
+  @Post('/triggers/referral-first-test')
+  @HttpCode(HttpStatus.OK)
+  triggerReferralFirstTest(
+    @Body() body: { referrerId: number; refereeUsername: string },
+  ) {
+    return this.notificationService.referralFirstTestBonus(
+      body.referrerId,
+      body.refereeUsername,
+    );
+  }
+
+  @Public()
   @Post('/triggers/tests-remaining-low')
   @HttpCode(HttpStatus.OK)
   triggerTestsLow(@Body() body: { userId: number; remaining: number }) {
