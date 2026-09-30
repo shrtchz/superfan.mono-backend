@@ -89,7 +89,6 @@ export class NotificationService {
 
   private sanitizeText(value: string) {
     return String(value ?? '')
-      .replace(/[\p{Extended_Pictographic}\uFE0F]/gu, '')
       .replace(/\s+/g, ' ')
       .trim();
   }
@@ -157,8 +156,8 @@ export class NotificationService {
     return this.notify(
       referrerId,
       NotificationTriggers.REFERRAL_SIGNUP_BONUS,
-      '₦20 Earned!',
-      `${refereeUsername} signed up with your referral code.`,
+      'Referral Bonus - Sign up',
+      `₦20 Earned! ${refereeUsername} signed up with your referral code.`,
     );
   }
 
@@ -166,8 +165,8 @@ export class NotificationService {
     return this.notify(
       referrerId,
       NotificationTriggers.REFERRAL_FIRST_TEST_BONUS,
-      '₦10 More!',
-      `${refereeUsername} completed their first test.`,
+      'Referral Bonus - First Test',
+      `₦10 More! ${refereeUsername} completed their first test.`,
     );
   }
 

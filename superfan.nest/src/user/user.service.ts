@@ -2978,6 +2978,7 @@ async findUserByEmail(email: string): Promise<any> {
     });
 
     const signupReference = `REFERRAL_SIGNUP_${referralRecord.id}`;
+    const refereeSignupReference = `REFERRAL_SIGNUP_REFEREE_${referralRecord.id}`;
     const nairaAmount = this.pointsConversionUtil.pointsToNaira(20000);
 
     if (referralRecord.signupRewardGiven) {
@@ -2995,19 +2996,33 @@ async findUserByEmail(email: string): Promise<any> {
         select: { id: true },
       });
 
-      if (legacyCredit) return;
-
-      const walletCredited = await prisma.$transaction((tx) =>
-        this.creditReferralSignupWallet(
+      const recoveredRewards = await prisma.$transaction(async (tx) => {
+        const referrerWalletCredited = legacyCredit
+          ? false
+          : await this.creditReferralSignupWallet(
+              tx,
+              referrer.id,
+              nairaAmount,
+              signupReference,
+              'Referral Bonus - Sign up',
+            );
+        const refereeRewardGranted = await this.grantRefereeSignupBonus(
           tx,
-          referrer.id,
+          user.id,
+          referralRecord.id,
           nairaAmount,
-          signupReference,
-        ),
-      );
-      if (walletCredited) {
+        );
+
+        return { referrerWalletCredited, refereeRewardGranted };
+      });
+
+      if (recoveredRewards.referrerWalletCredited) {
         this.emitReferralWalletUpdated(referrer.id);
         await this.notificationService.referralSignupBonus(referrer.id, user.username);
+      }
+      if (recoveredRewards.refereeRewardGranted) {
+        this.emitReferralWalletUpdated(user.id);
+        await this.notificationService.refereeSignupBonus(user.id);
       }
       return;
     }
@@ -3018,19 +3033,29 @@ async findUserByEmail(email: string): Promise<any> {
       refereeId: user.id,
     });
 
-    const rewardGranted = await prisma.$transaction(async (tx) => {
+    const rewardsGranted = await prisma.$transaction(async (tx) => {
       const claim = await tx.referral.updateMany({
         where: { id: referralRecord.id, signupRewardGiven: false },
         data: { signupRewardGiven: true },
       });
-      if (claim.count !== 1) return false;
+      if (claim.count !== 1) return null;
 
       const point = await tx.point.create({
         data: {
           userId: referrer.id,
           points: 20000,
-          reference: `POINTS_${generateFiveUniqueRandomNumbers()}`,
+          reference: `POINTS_REFERRAL_SIGNUP_${referralRecord.id}`,
           type: 'referral_signup',
+          accountType: 'Gold',
+        },
+      });
+
+      const refereePoint = await tx.point.create({
+        data: {
+          userId: user.id,
+          points: 20000,
+          reference: `POINTS_REFERRAL_SIGNUP_REFEREE_${referralRecord.id}`,
+          type: 'referee_signup_bonus',
           accountType: 'Gold',
         },
       });
@@ -3039,12 +3064,24 @@ async findUserByEmail(email: string): Promise<any> {
         where: { id: referrer.id },
         data: { lifetimePoints: { increment: 20000 } },
       });
+      await tx.user.update({
+        where: { id: user.id },
+        data: { lifetimePoints: { increment: 20000 } },
+      });
 
-      const walletCredited = await this.creditReferralSignupWallet(
+      const referrerWalletCredited = await this.creditReferralSignupWallet(
         tx,
         referrer.id,
         nairaAmount,
         signupReference,
+        'Referral Bonus - Sign up',
+      );
+      const refereeWalletCredited = await this.creditReferralSignupWallet(
+        tx,
+        user.id,
+        nairaAmount,
+        refereeSignupReference,
+        'Referral Welcome Bonus - Sign up',
       );
 
       console.log('[Referral] Point created', {
@@ -3053,21 +3090,31 @@ async findUserByEmail(email: string): Promise<any> {
         points: point.points,
         type: point.type,
       });
+      console.log('[Referral] Referee point created', {
+        pointId: refereePoint.id,
+        userId: user.id,
+        points: refereePoint.points,
+        type: refereePoint.type,
+      });
 
-      return walletCredited;
+      return { referrerWalletCredited, refereeWalletCredited };
     });
 
-    if (!rewardGranted) return;
+    if (!rewardsGranted) return;
 
     console.log('[Referral] Wallet credited for referrer', {
       referrerId: referrer.id,
       amount: nairaAmount,
     });
 
-    this.emitReferralWalletUpdated(referrer.id);
-
-    // Notification for referrer — copy-paste ready trigger
-    await this.notificationService.referralSignupBonus(referrer.id, user.username);
+    if (rewardsGranted.referrerWalletCredited) {
+      this.emitReferralWalletUpdated(referrer.id);
+      await this.notificationService.referralSignupBonus(referrer.id, user.username);
+    }
+    if (rewardsGranted.refereeWalletCredited) {
+      this.emitReferralWalletUpdated(user.id);
+      await this.notificationService.refereeSignupBonus(user.id);
+    }
 
     console.log('[Referral][END] Completed successfully');
   }
@@ -3077,6 +3124,7 @@ async findUserByEmail(email: string): Promise<any> {
     referrerId: number,
     amount: number,
     reference: string,
+    description: string,
   ): Promise<boolean> {
     const existingCredit = await tx.walletTransaction.findFirst({
       where: { reference },
@@ -3104,7 +3152,7 @@ async findUserByEmail(email: string): Promise<any> {
         type: 'credit',
         currency: 'NGN',
         status: 'SUCCESS',
-        description: 'Referral Bonus - Sign up',
+        description,
         account_type: 'Gold',
         transactionType: 'Reward',
         reference,
@@ -3116,8 +3164,8 @@ async findUserByEmail(email: string): Promise<any> {
       data: {
         userId: referrerId,
         type: 'credit',
-        title: 'Referral Bonus - Sign up',
-        description: 'Referral Bonus - Sign up',
+        title: description,
+        description,
         amount,
         currency: 'NGN',
         status: 'SUCCESS',
@@ -3125,6 +3173,44 @@ async findUserByEmail(email: string): Promise<any> {
     });
 
     return true;
+  }
+
+  private async grantRefereeSignupBonus(
+    tx: Prisma.TransactionClient,
+    refereeId: number,
+    referralId: number,
+    amount: number,
+  ): Promise<boolean> {
+    const pointReference = `POINTS_REFERRAL_SIGNUP_REFEREE_${referralId}`;
+    const walletReference = `REFERRAL_SIGNUP_REFEREE_${referralId}`;
+    const existingPoint = await tx.point.findFirst({
+      where: { reference: pointReference },
+      select: { id: true },
+    });
+
+    if (!existingPoint) {
+      await tx.point.create({
+        data: {
+          userId: refereeId,
+          points: 20000,
+          reference: pointReference,
+          type: 'referee_signup_bonus',
+          accountType: 'Gold',
+        },
+      });
+      await tx.user.update({
+        where: { id: refereeId },
+        data: { lifetimePoints: { increment: 20000 } },
+      });
+    }
+
+    return this.creditReferralSignupWallet(
+      tx,
+      refereeId,
+      amount,
+      walletReference,
+      'Referral Welcome Bonus - Sign up',
+    );
   }
 
   private emitReferralWalletUpdated(userId: number): void {
