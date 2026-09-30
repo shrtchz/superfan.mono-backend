@@ -474,7 +474,7 @@ func awardReferralFirstTestReward(tx *gorm.DB, refereeID int, now time.Time) err
 		return err
 	}
 
-	return creditReferralTestBonus(tx, referral.RefereeID, 20000, "referral_first_test_referee", "Referee Bonus (NGN 20)", now)
+	return nil
 }
 
 func creditReferralTestBonus(tx *gorm.DB, userID, points int, pointType, title string, now time.Time) error {
