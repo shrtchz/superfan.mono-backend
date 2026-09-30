@@ -160,17 +160,9 @@ export function addLeaderboardInviteeFlags(
   }));
 }
 
-export function buildLeaderboardEntryFromCompletedQuiz(quiz: {
-  userId: number;
-  totalQuestions: number;
-  accuracyPercent: number | null;
-  correctAnswers: number | null;
-  attemptedAnswers: number | null;
-  testLevel: string;
-  quizTime: string | null;
-  createdAt: Date;
-  completedAt: Date | null;
-}): Record<string, any> {
+export function buildLeaderboardEntryFromCompletedQuiz(
+  quiz: Record<string, any>,
+): Record<string, any> {
   return {
     userId: String(quiz.userId),
     submittedAt: quiz.completedAt ?? quiz.createdAt,
