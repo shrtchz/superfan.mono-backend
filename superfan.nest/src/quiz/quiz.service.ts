@@ -160,6 +160,34 @@ export function addLeaderboardInviteeFlags(
   }));
 }
 
+export function buildLeaderboardEntryFromCompletedQuiz(quiz: {
+  userId: number;
+  totalQuestions: number;
+  accuracyPercent: number | null;
+  correctAnswers: number | null;
+  attemptedAnswers: number | null;
+  testLevel: string;
+  quizTime: string | null;
+  createdAt: Date;
+  completedAt: Date | null;
+}): Record<string, any> {
+  return {
+    userId: String(quiz.userId),
+    submittedAt: quiz.completedAt ?? quiz.createdAt,
+    totalScore: quiz.correctAnswers,
+    totalEarning: 0,
+    totalQuestions: quiz.totalQuestions,
+    accuracy: quiz.accuracyPercent,
+    correctAnswers: quiz.correctAnswers,
+    attemptedAnswers: quiz.attemptedAnswers,
+    quizTimeSeconds: null,
+    quizTime: quiz.quizTime,
+    testLevel: quiz.testLevel,
+    createdAt: quiz.createdAt,
+    rows: [],
+  };
+}
+
 export function buildLiveQuizLeaderboardRows(
   leaderboardEntries: any[],
   ongoingQuizzes: any[],
@@ -2360,19 +2388,20 @@ async getQuizleaderboard(
       },
     });
 
-    const userIds = [...new Set(quizBoard.map((row) => row.userId))];
     const completedQuizzes = await prisma.ongoingQuiz.findMany({
       where: {
-        userId: { in: userIds.map((userId) => Number(userId)).filter(Number.isFinite) },
         isCompleted: true,
+        ...(timeRange === 'all' ? {} : { completedAt: dateFilter }),
       },
       select: {
+        id: true,
         userId: true,
         totalQuestions: true,
         accuracyPercent: true,
         correctAnswers: true,
         attemptedAnswers: true,
         testLevel: true,
+        quizTime: true,
         createdAt: true,
         completedAt: true,
       },
@@ -2398,6 +2427,8 @@ async getQuizleaderboard(
       }
     >();
 
+    const matchedCompletedQuizIds = new Set<string>();
+
     for (const row of quizBoard) {
       // Groups same quiz session together
       const key = `${row.userId}_${new Date(row.submittedAt).toISOString()}`;
@@ -2410,6 +2441,10 @@ async getQuizleaderboard(
               Math.abs(left.completedAt!.getTime() - row.submittedAt.getTime()) -
               Math.abs(right.completedAt!.getTime() - row.submittedAt.getTime()),
           )[0];
+
+        if (matchingQuiz) {
+          matchedCompletedQuizIds.add(String(matchingQuiz.id));
+        }
 
         grouped.set(key, {
           userId: row.userId,
@@ -2436,6 +2471,15 @@ async getQuizleaderboard(
       if (current.quizTime === null) current.quizTime = row.quizTime ?? null;
 
       current.rows.push(row);
+    }
+
+    for (const quiz of completedQuizzes) {
+      if (matchedCompletedQuizIds.has(String(quiz.id))) continue;
+
+      grouped.set(
+        `${quiz.userId}_${quiz.id}`,
+        buildLeaderboardEntryFromCompletedQuiz(quiz),
+      );
     }
 
     // Convert to array
@@ -2467,8 +2511,8 @@ async getQuizleaderboard(
       if (entry.accuracy === null || entry.accuracy === undefined) {
         entry.accuracy = calculateLeaderboardAccuracy(entry.rows);
       }
-      entry.time = firstRow.quizTime ?? null;
-      entry.testLevel = firstRow.testLevel ?? null;
+      entry.time = firstRow.quizTime ?? entry.quizTime ?? null;
+      entry.testLevel = firstRow.testLevel ?? entry.testLevel ?? null;
       entry.reward = entry.totalEarning;
     }
 

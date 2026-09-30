@@ -41,6 +41,14 @@ func convertTotalEarningToRewardAmounts(totalEarning int) (amountInNaira float64
 	return amountInNaira, finalNairaAmount, finalUSDCAmount, finalUSDTAmount
 }
 
+func calculateSessionAccuracyPercent(correctAnswers, totalQuestions int) int {
+	if totalQuestions <= 0 {
+		return 0
+	}
+
+	return int(math.Round(float64(correctAnswers) / float64(totalQuestions) * 100.0))
+}
+
 // SubmitSession grades saved answers, applies rewards, and completes the session.
 func (s *QuizSessionV2Service) SubmitSession(sessionID string, req models.FinalizeSessionV2Request) (*models.FinalizeSessionV2Result, error) {
 	return s.finalizeSession(sessionID, req, false)
@@ -107,10 +115,7 @@ func (s *QuizSessionV2Service) finalizeSession(
 	correctAnswers := countCorrectResponses(submission)
 	baseScore := submission.TotalEarning
 	accuracyBonusPercent := getAccuracyBonusPercent(correctAnswers, totalQuestions)
-	accuracyPercent := 0
-	if totalQuestions > 0 {
-		accuracyPercent = int(math.Round(float64(correctAnswers) / float64(totalQuestions) * 100.0))
-	}
+	accuracyPercent := calculateSessionAccuracyPercent(correctAnswers, totalQuestions)
 	speedBonusPercent := getSpeedBonusPercent(req.QuizTimeSeconds)
 	dailyStreak, err := updateDailyStreak(req.UserID, now)
 	if err != nil {
@@ -142,6 +147,9 @@ func (s *QuizSessionV2Service) finalizeSession(
 				"totalEarninginUSDT":  finalUSDTAmount,
 				"quizTime":            strconv.Itoa(req.QuizTimeSeconds),
 				"baseScore":           baseScore,
+				"accuracyPercent":     accuracyPercent,
+				"correctAnswers":      correctAnswers,
+				"attemptedAnswers":    len(submission.Responses),
 				"accuracyBonus":       accuracyGain,
 				"speedBonus":          speedGain,
 				"streakMultiplier":    streakBonus,
@@ -167,9 +175,6 @@ func (s *QuizSessionV2Service) finalizeSession(
 		}
 
 		for _, item := range submission.Responses {
-			if item.Earning <= 0 {
-				continue
-			}
 			accuracyLabel := fmt.Sprintf("%d%%", accuracyBonusPercent)
 			quizTime := strconv.Itoa(req.QuizTimeSeconds)
 			row := models.QuizLeaderboard{
@@ -281,6 +286,9 @@ func (s *QuizSessionV2Service) completeSessionWithZeroAnswers(
 				"totalEarninginUSDT":  finalUSDTAmount,
 				"quizTime":            strconv.Itoa(req.QuizTimeSeconds),
 				"baseScore":           0,
+				"accuracyPercent":     0,
+				"correctAnswers":      0,
+				"attemptedAnswers":    0,
 				"accuracyBonus":       0,
 				"speedBonus":          0,
 				"streakMultiplier":    streakBonus,
@@ -321,6 +329,7 @@ func (s *QuizSessionV2Service) completeSessionWithZeroAnswers(
 		"totalQuestions":   totalQuestions,
 		"correctAnswers":   0,
 		"attemptedAnswers": 0,
+		"accuracyPercent":  0,
 		"baseEarning":      0,
 		"totalPoints":      totalPoints,
 		"amountInNaira":    amountInNaira,

@@ -19,6 +19,9 @@ type OngoingQuiz struct {
 	TotalQuestions      int             `gorm:"column:totalQuestions" json:"totalQuestions"`
 	TotalTime           *int            `gorm:"column:totalTime" json:"totalTime"`
 	BaseScore           *int            `gorm:"column:baseScore" json:"baseScore"`
+	AccuracyPercent     *int            `gorm:"column:accuracyPercent" json:"accuracyPercent"`
+	CorrectAnswers      *int            `gorm:"column:correctAnswers" json:"correctAnswers"`
+	AttemptedAnswers    *int            `gorm:"column:attemptedAnswers" json:"attemptedAnswers"`
 	IsRandom            bool            `gorm:"column:isRandom" json:"isRandom"`
 	SubmissionMode      string          `gorm:"column:submissionMode;default:interval" json:"submissionMode"`
 	AccuracyBonus       *int            `gorm:"column:accuracyBonus" json:"accuracyBonus"`
