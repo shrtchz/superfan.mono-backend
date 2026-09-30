@@ -2971,43 +2971,8 @@ async findUserByEmail(email: string): Promise<any> {
       refereeId: user.id,
     });
 
-    // Referee — Signup Bonus: 20,000 PTS credited directly to Gold Account
-    // (₦20 referee sign-up bonus; note says cross-reference SCRUM-192/193 wallet credits)
-    const refereePoint = await prisma.point.create({
-      data: {
-        userId: user.id,
-        points: 20000,
-        reference: `POINTS_${generateFiveUniqueRandomNumbers()}`,
-        type: 'referee_signup',
-        accountType: 'Gold',
-      },
-    });
-
-    await prisma.user.update({
-      where: { id: user.id },
-      data: { lifetimePoints: { increment: 20000 } },
-    });
-
-    console.log('[Referral] Referee point created', {
-      pointId: refereePoint.id,
-      userId: user.id,
-      points: refereePoint.points,
-      type: refereePoint.type,
-    });
-
-    const refereeNaira = this.pointsConversionUtil.pointsToNaira(20000);
-    await this.walletService.creditWallet(
-      user.id,
-      refereeNaira,
-      'Welcome Bonus',
-      'Welcome Bonus',
-      'Gold',
-    );
-
-    // Referee copy-paste ready trigger — "Welcome Bonus! You earned ₦20 for joining with a referral code."
-    await this.notificationService.refereeSignupBonus(user.id);
-
-    // Referrer — Signup Bonus: 20,000 PTS credited directly to Gold Account
+    // Referral signup reward belongs to the referrer only.
+    // The referred user does not receive the ₦20 referral credit here.
     const point = await prisma.point.create({
       data: {
         userId: referrer.id,
