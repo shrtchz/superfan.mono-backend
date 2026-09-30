@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"net/http"
 	"os"
@@ -136,6 +137,7 @@ func (s *QuizSessionV2Service) finalizeSession(
 		status = "quit"
 	}
 
+	var referralNotification *referralFirstTestNotification
 	if err := utils.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&models.OngoingQuiz{}).
 			Where(`"id" = ? AND "userId" = ?`, sessionID, req.UserID).
@@ -202,10 +204,12 @@ func (s *QuizSessionV2Service) finalizeSession(
 			return err
 		}
 
-		return awardReferralFirstTestReward(tx, req.UserID, now)
+		referralNotification, err = awardReferralFirstTestReward(tx, req.UserID, now)
+		return err
 	}); err != nil {
 		return nil, utils.NewAppError(http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to finalize quiz session")
 	}
+	notifyReferralFirstTestBonus(referralNotification)
 
 	result := map[string]interface{}{
 		"sessionId":        sessionID,
@@ -279,6 +283,7 @@ func (s *QuizSessionV2Service) completeSessionWithZeroAnswers(
 
 	testSubject := lookup.record.Subject
 
+	var referralNotification *referralFirstTestNotification
 	if err := utils.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&models.OngoingQuiz{}).
 			Where(`"id" = ? AND "userId" = ?`, sessionID, req.UserID).
@@ -322,10 +327,12 @@ func (s *QuizSessionV2Service) completeSessionWithZeroAnswers(
 			return err
 		}
 
-		return awardReferralFirstTestReward(tx, req.UserID, now)
+		referralNotification, err = awardReferralFirstTestReward(tx, req.UserID, now)
+		return err
 	}); err != nil {
 		return nil, utils.NewAppError(http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to finalize quiz session")
 	}
+	notifyReferralFirstTestBonus(referralNotification)
 
 	streakMessage := "Streak saved! You completed a test just in time"
 	if dailyStreak == 3 || dailyStreak == 7 || dailyStreak == 14 || dailyStreak == 30 {
@@ -444,17 +451,22 @@ func updateDailyStreak(userID int, now time.Time) (int, error) {
 	return newStreak, nil
 }
 
-func awardReferralFirstTestReward(tx *gorm.DB, refereeID int, now time.Time) error {
+type referralFirstTestNotification struct {
+	ReferrerID      int
+	RefereeUsername string
+}
+
+func awardReferralFirstTestReward(tx *gorm.DB, refereeID int, now time.Time) (*referralFirstTestNotification, error) {
 	var referral models.Referral
 	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 		Where(`"refereeId" = ? AND "testRewardGiven" = ?`, refereeID, false).
 		Order(`"id" ASC`).
 		First(&referral).Error
 	if err == gorm.ErrRecordNotFound {
-		return nil
+		return nil, nil
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	claimed := tx.Model(&models.Referral{}).
@@ -464,17 +476,64 @@ func awardReferralFirstTestReward(tx *gorm.DB, refereeID int, now time.Time) err
 			"testRewardGiven": true,
 		})
 	if claimed.Error != nil {
-		return claimed.Error
+		return nil, claimed.Error
 	}
 	if claimed.RowsAffected != 1 {
-		return nil
+		return nil, nil
 	}
 
 	if err := creditReferralTestBonus(tx, referral.ReferrerID, 10000, "referral_first_test_referrer", "Referral Bonus - First Test", now); err != nil {
-		return err
+		return nil, err
 	}
 
-	return nil
+	var refereeUsername string
+	if err := tx.Table("User").Select("username").Where("id = ?", referral.RefereeID).Scan(&refereeUsername).Error; err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(refereeUsername) == "" {
+		refereeUsername = "Your referee"
+	}
+
+	return &referralFirstTestNotification{
+		ReferrerID:      referral.ReferrerID,
+		RefereeUsername: refereeUsername,
+	}, nil
+}
+
+func notifyReferralFirstTestBonus(notification *referralFirstTestNotification) {
+	if notification == nil {
+		return
+	}
+
+	nestBaseURL := strings.TrimRight(utils.GetEnvWithKey("NEST_BASE_URL"), "/")
+	if nestBaseURL == "" {
+		log.Printf("[Referral] Cannot send first-test notification: NEST_BASE_URL is not set")
+		return
+	}
+
+	payload, err := json.Marshal(map[string]interface{}{
+		"referrerId":      notification.ReferrerID,
+		"refereeUsername": notification.RefereeUsername,
+	})
+	if err != nil {
+		log.Printf("[Referral] Failed to encode first-test notification: %v", err)
+		return
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Post(
+		fmt.Sprintf("%s/api/v1/notification/triggers/referral-first-test", nestBaseURL),
+		"application/json",
+		bytes.NewReader(payload),
+	)
+	if err != nil {
+		log.Printf("[Referral] Failed to send first-test notification: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		log.Printf("[Referral] First-test notification returned status %s", resp.Status)
+	}
 }
 
 func creditReferralTestBonus(tx *gorm.DB, userID, points int, pointType, title string, now time.Time) error {
