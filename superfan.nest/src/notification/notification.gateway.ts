@@ -34,7 +34,7 @@ export class NotificationGateway
   @WebSocketServer()
   server: Server;
 
-  private clients: Map<number, string> = new Map(); // userId -> socketId
+  private clients: Map<string, string> = new Map(); // userId -> socketId
 
   handleConnection(client: Socket) {
     console.log(`Client connected: ${client.id}`);
@@ -44,12 +44,12 @@ export class NotificationGateway
     console.log(`Client disconnected: ${client.id}`);
   }
 
-  registerUser(userId: number, client: Socket) {
-    this.clients.set(userId, client.id);
+  registerUser(userId: number | string, client: Socket) {
+    this.clients.set(String(userId), client.id);
   }
 
-  sendNotificationToUser(userId: number, notification: any) {
-    const socketId = this.clients.get(userId);
+  sendNotificationToUser(userId: number | string, notification: any) {
+    const socketId = this.clients.get(String(userId));
 
     if (socketId) {
       this.server.to(socketId).emit('notification', notification);
@@ -69,7 +69,7 @@ export class NotificationGateway
 
   @SubscribeMessage('register')
 handleRegister(
-  @MessageBody() userId: number,
+  @MessageBody() userId: number | string,
   @ConnectedSocket() client: Socket,
 ) {
   this.registerUser(userId, client);
