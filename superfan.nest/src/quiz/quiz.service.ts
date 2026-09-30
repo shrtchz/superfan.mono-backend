@@ -2655,7 +2655,7 @@ async getQuizleaderboard(
         positionByUser.get(String(left.userId))! -
         positionByUser.get(String(right.userId))!;
       if (positionDifference !== 0) return positionDifference;
-      return new Date(left.submittedAt).getTime() - new Date(right.submittedAt).getTime();
+      return new Date(right.submittedAt).getTime() - new Date(left.submittedAt).getTime();
     });
 
     leaderboard.forEach((entry) => {
