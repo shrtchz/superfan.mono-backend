@@ -1,6 +1,7 @@
 import {
   addLeaderboardInviteeFlags,
   addLeaderboardUsersWithoutActivity,
+  rankLeaderboardUsers,
   sortLeaderboardByPosition,
   buildLiveQuizLeaderboardRows,
   calculateLeaderboardAccuracy,
@@ -128,6 +129,34 @@ describe('sortLeaderboardByPosition', () => {
     expect(
       sortLeaderboardByPosition([newestLowerRank, noActivity, olderTopRank]),
     ).toEqual([olderTopRank, newestLowerRank, noActivity]);
+  });
+});
+
+describe('rankLeaderboardUsers', () => {
+  it('uses faster average completion time to break average-score ties', () => {
+    expect(
+      rankLeaderboardUsers([
+        { userId: 'slow', averageScore: 900, averageQuizTimeSeconds: 240 },
+        { userId: 'lower-score', averageScore: 850, averageQuizTimeSeconds: 90 },
+        { userId: 'fast', averageScore: 900, averageQuizTimeSeconds: 120 },
+      ]),
+    ).toEqual([
+      { userId: 'fast', position: 1 },
+      { userId: 'slow', position: 2 },
+      { userId: 'lower-score', position: 3 },
+    ]);
+  });
+
+  it('shares a rank when average score and time are both equal', () => {
+    expect(
+      rankLeaderboardUsers([
+        { userId: 'b', averageScore: 900, averageQuizTimeSeconds: 120 },
+        { userId: 'a', averageScore: 900, averageQuizTimeSeconds: 120 },
+      ]),
+    ).toEqual([
+      { userId: 'a', position: 1 },
+      { userId: 'b', position: 1 },
+    ]);
   });
 });
 

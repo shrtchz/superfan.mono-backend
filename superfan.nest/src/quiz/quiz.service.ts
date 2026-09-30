@@ -159,6 +159,58 @@ export function sortLeaderboardByPosition<T extends { position?: number | null }
   });
 }
 
+export function rankLeaderboardUsers(
+  users: Array<{
+    userId: string;
+    averageScore: number;
+    averageQuizTimeSeconds: number | null;
+  }>,
+): Array<{ userId: string; position: number }> {
+  const sortedUsers = [...users].sort((left, right) => {
+    const scoreDifference = right.averageScore - left.averageScore;
+    if (scoreDifference !== 0) return scoreDifference;
+
+    const leftTime = left.averageQuizTimeSeconds ?? Number.POSITIVE_INFINITY;
+    const rightTime = right.averageQuizTimeSeconds ?? Number.POSITIVE_INFINITY;
+    const timeDifference = leftTime - rightTime;
+    if (timeDifference !== 0) return timeDifference;
+
+    return left.userId.localeCompare(right.userId);
+  });
+
+  let position = 0;
+  return sortedUsers.map((user, index) => {
+    const previous = sortedUsers[index - 1];
+    if (
+      !previous ||
+      previous.averageScore !== user.averageScore ||
+      previous.averageQuizTimeSeconds !== user.averageQuizTimeSeconds
+    ) {
+      position = index + 1;
+    }
+    return { userId: user.userId, position };
+  });
+}
+
+function getLeaderboardQuizTimeSeconds(entry: {
+  quizTimeSeconds?: number | null;
+  quizTime?: string | null;
+}): number | null {
+  if (typeof entry.quizTimeSeconds === 'number' && Number.isFinite(entry.quizTimeSeconds)) {
+    return entry.quizTimeSeconds;
+  }
+
+  const value = entry.quizTime?.trim();
+  if (!value) return null;
+  if (/^\d+(?:\.\d+)?$/.test(value)) return Number(value);
+
+  const parts = value.split(':').map(Number);
+  if (parts.some((part) => !Number.isFinite(part) || part < 0)) return null;
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  return null;
+}
+
 export function addLeaderboardInviteeFlags(
   leaderboard: Array<Record<string, any>>,
   inviteeIds: Iterable<number | string>,
@@ -2636,11 +2688,19 @@ async getQuizleaderboard(
     });
 
     const scoresByUser = new Map<string, number[]>();
+    const quizTimesByUser = new Map<string, number[]>();
     leaderboard.forEach((entry) => {
       const key = String(entry.userId);
       const scores = scoresByUser.get(key) ?? [];
       if (entry.totalScore !== null) scores.push(entry.totalScore);
       scoresByUser.set(key, scores);
+
+      const quizTimeSeconds = getLeaderboardQuizTimeSeconds(entry);
+      if (quizTimeSeconds !== null) {
+        const quizTimes = quizTimesByUser.get(key) ?? [];
+        quizTimes.push(quizTimeSeconds);
+        quizTimesByUser.set(key, quizTimes);
+      }
     });
 
     const averageScoreByUser = new Map<string, number>();
@@ -2653,11 +2713,23 @@ async getQuizleaderboard(
       );
     });
 
-    const rankedUsers = [...averageScoreByUser.entries()].sort(
-      ([, leftAverage], [, rightAverage]) => rightAverage - leftAverage,
+    const averageQuizTimeByUser = new Map<string, number | null>();
+    quizTimesByUser.forEach((quizTimes, userId) => {
+      averageQuizTimeByUser.set(
+        userId,
+        quizTimes.reduce((total, quizTime) => total + quizTime, 0) / quizTimes.length,
+      );
+    });
+
+    const rankedUsers = rankLeaderboardUsers(
+      [...averageScoreByUser.entries()].map(([userId, averageScore]) => ({
+        userId,
+        averageScore,
+        averageQuizTimeSeconds: averageQuizTimeByUser.get(userId) ?? null,
+      })),
     );
     const positionByUser = new Map(
-      rankedUsers.map(([userId], index) => [userId, index + 1]),
+      rankedUsers.map(({ userId, position }) => [userId, position]),
     );
 
     leaderboard.sort((left, right) => {
