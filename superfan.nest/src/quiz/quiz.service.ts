@@ -149,6 +149,16 @@ export function addLeaderboardUsersWithoutActivity(
   return [...leaderboard, ...inactiveEntries];
 }
 
+export function sortLeaderboardByPosition<T extends { position?: number | null }>(
+  entries: T[],
+): T[] {
+  return [...entries].sort((left, right) => {
+    const leftPosition = left.position ?? Number.POSITIVE_INFINITY;
+    const rightPosition = right.position ?? Number.POSITIVE_INFINITY;
+    return leftPosition - rightPosition;
+  });
+}
+
 export function addLeaderboardInviteeFlags(
   leaderboard: Array<Record<string, any>>,
   inviteeIds: Iterable<number | string>,
@@ -2670,8 +2680,8 @@ async getQuizleaderboard(
 
     if (view === 'leaderboard') {
       scopedUsers = await prisma.user.findMany({
-        select: { id: true, username: true, createdAt: true },
-        orderBy: { createdAt: 'desc' },
+        select: { id: true, username: true },
+        orderBy: { username: 'asc' },
       });
     } else {
       const numericUserId = Number(options.userId);
@@ -2716,21 +2726,9 @@ async getQuizleaderboard(
       scopedUserIds.has(String(entry.userId)),
     );
 
-    const completeLeaderboard = addLeaderboardUsersWithoutActivity(
-      scopedLeaderboard,
-      scopedUsers,
+    const completeLeaderboard = sortLeaderboardByPosition(
+      addLeaderboardUsersWithoutActivity(scopedLeaderboard, scopedUsers),
     );
-
-    if (view === 'leaderboard') {
-      const createdAtByUserId = new Map(
-        scopedUsers.map((user) => [String(user.id), user.createdAt?.getTime() ?? 0]),
-      );
-      completeLeaderboard.sort(
-        (left, right) =>
-          (createdAtByUserId.get(String(right.userId)) ?? 0) -
-          (createdAtByUserId.get(String(left.userId)) ?? 0),
-      );
-    }
 
     if (view !== 'leaderboard') return completeLeaderboard;
 
