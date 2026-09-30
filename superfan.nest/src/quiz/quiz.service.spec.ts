@@ -3,10 +3,51 @@ import {
   addLeaderboardUsersWithoutActivity,
   buildLiveQuizLeaderboardRows,
   calculateLeaderboardAccuracy,
+  calculateCompletedQuizAccuracy,
   getLeaderboardDateFilter,
   normalizeLeaderboardTimeRange,
   normalizeLeaderboardView,
 } from './quiz.service';
+
+describe('calculateCompletedQuizAccuracy', () => {
+  it('recalculates a stale zero from persisted quiz answers', () => {
+    expect(
+      calculateCompletedQuizAccuracy({
+        accuracyPercent: 0,
+        correctAnswers: 0,
+        totalQuestions: 10,
+        answers: [
+          { selectedAnswer: 'A', isCorrect: true, answeredAt: '2026-09-01T10:00:00Z' },
+          { selectedAnswer: 'B', isCorrect: true, answeredAt: '2026-09-01T10:01:00Z' },
+          { selectedAnswer: 'C', isCorrect: false, answeredAt: '2026-09-01T10:02:00Z' },
+        ],
+      }),
+    ).toBe(20);
+  });
+
+  it('preserves zero accuracy when every stored answer is incorrect', () => {
+    expect(
+      calculateCompletedQuizAccuracy({
+        accuracyPercent: 0,
+        correctAnswers: 0,
+        totalQuestions: 10,
+        answers: [
+          { selectedAnswer: 'B', isCorrect: false, answeredAt: '2026-09-01T10:00:00Z' },
+        ],
+      }),
+    ).toBe(0);
+  });
+
+  it('uses persisted correct-answer counts when answer details are unavailable', () => {
+    expect(
+      calculateCompletedQuizAccuracy({
+        accuracyPercent: 0,
+        correctAnswers: 3,
+        totalQuestions: 10,
+      }),
+    ).toBe(30);
+  });
+});
 
 describe('addLeaderboardUsersWithoutActivity', () => {
   it('adds empty entries for scoped users without changing active entries', () => {

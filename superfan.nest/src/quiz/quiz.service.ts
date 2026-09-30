@@ -169,7 +169,7 @@ export function buildLeaderboardEntryFromCompletedQuiz(
     totalScore: quiz.correctAnswers,
     totalEarning: 0,
     totalQuestions: quiz.totalQuestions,
-    accuracy: quiz.accuracyPercent,
+    accuracy: calculateCompletedQuizAccuracy(quiz),
     correctAnswers: quiz.correctAnswers,
     attemptedAnswers: quiz.attemptedAnswers,
     quizTimeSeconds: null,
@@ -178,6 +178,42 @@ export function buildLeaderboardEntryFromCompletedQuiz(
     createdAt: quiz.createdAt,
     rows: [],
   };
+}
+
+export function calculateCompletedQuizAccuracy(
+  quiz: Record<string, any>,
+): number | null {
+  const answers = Array.isArray(quiz.answers) ? quiz.answers : [];
+  const gradedAnswers = answers.filter(
+    (answer): answer is Record<string, unknown> =>
+      typeof answer === 'object' && answer !== null && !Array.isArray(answer),
+  );
+  const hasStoredGrading = gradedAnswers.some(
+    (answer) =>
+      typeof answer.isCorrect === 'boolean' ||
+      typeof answer.answeredAt === 'string' ||
+      (typeof answer.selectedAnswer === 'string' &&
+        typeof answer.correctAnswer === 'string'),
+  );
+
+  if (hasStoredGrading && quiz.totalQuestions > 0) {
+    const correctAnswers = gradedAnswers.filter((answer) => {
+      if (typeof answer.isCorrect === 'boolean') return answer.isCorrect;
+      return (
+        typeof answer.selectedAnswer === 'string' &&
+        typeof answer.correctAnswer === 'string' &&
+        answer.selectedAnswer === answer.correctAnswer
+      );
+    }).length;
+
+    return Math.round((correctAnswers / quiz.totalQuestions) * 100);
+  }
+
+  if (typeof quiz.correctAnswers === 'number' && quiz.totalQuestions > 0) {
+    return Math.round((quiz.correctAnswers / quiz.totalQuestions) * 100);
+  }
+
+  return typeof quiz.accuracyPercent === 'number' ? quiz.accuracyPercent : null;
 }
 
 export function buildLiveQuizLeaderboardRows(
@@ -2392,6 +2428,7 @@ async getQuizleaderboard(
         accuracyPercent: true,
         correctAnswers: true,
         attemptedAnswers: true,
+        answers: true,
         testLevel: true,
         quizTime: true,
         createdAt: true,
@@ -2444,7 +2481,9 @@ async getQuizleaderboard(
           totalScore: row.score ?? null,
           totalEarning: 0,
           totalQuestions: matchingQuiz?.totalQuestions ?? null,
-          accuracy: matchingQuiz?.accuracyPercent ?? null,
+          accuracy: matchingQuiz
+            ? calculateCompletedQuizAccuracy(matchingQuiz)
+            : null,
           correctAnswers: matchingQuiz?.correctAnswers ?? null,
           attemptedAnswers: matchingQuiz?.attemptedAnswers ?? null,
           quizTimeSeconds: row.quizTimeSeconds ?? null,
