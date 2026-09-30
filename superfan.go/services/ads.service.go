@@ -936,7 +936,7 @@ func (s *adsServiceImpl) GetCampaigns(ctx context.Context, q *CampaignListQuery)
 	db := s.db.WithContext(ctx).Model(&models.AdCampaign{})
 
 	if q.Status != "" && q.Status != "all" {
-		db = db.Where("LOWER(status) = ?", strings.ToLower(q.Status))
+		db = db.Where("LOWER(status::text) = ?", strings.ToLower(q.Status))
 	}
 	if q.UserID != nil {
 		db = db.Where(`"userId" = ?`, *q.UserID)
@@ -1112,10 +1112,10 @@ func (s *adsServiceImpl) GetInventoryStats(ctx context.Context) (*InventoryStats
 	var totalRevenue float64
 
 	_ = s.db.WithContext(ctx).Model(&models.AdCampaign{}).Count(&totalAds).Error
-	_ = s.db.WithContext(ctx).Model(&models.AdCampaign{}).Where("LOWER(status) = ?", "active").Count(&activeAds).Error
-	_ = s.db.WithContext(ctx).Model(&models.AdCampaign{}).Where("LOWER(status) = ?", "paused").Count(&pausedAds).Error
-	_ = s.db.WithContext(ctx).Model(&models.AdCampaign{}).Where("LOWER(status) = ?", "pending").Count(&pendingAds).Error
-	_ = s.db.WithContext(ctx).Model(&models.AdCampaign{}).Where("LOWER(status) = ?", "completed").Count(&completedAds).Error
+	_ = s.db.WithContext(ctx).Model(&models.AdCampaign{}).Where("LOWER(status::text) = ?", "active").Count(&activeAds).Error
+	_ = s.db.WithContext(ctx).Model(&models.AdCampaign{}).Where("LOWER(status::text) = ?", "paused").Count(&pausedAds).Error
+	_ = s.db.WithContext(ctx).Model(&models.AdCampaign{}).Where("LOWER(status::text) = ?", "pending").Count(&pendingAds).Error
+	_ = s.db.WithContext(ctx).Model(&models.AdCampaign{}).Where("LOWER(status::text) = ?", "completed").Count(&completedAds).Error
 
 	type AggStats struct {
 		TotalViews   int64   `gorm:"column:total_views"`
@@ -1266,8 +1266,8 @@ func (s *adsServiceImpl) GetPlacementEligibility(ctx context.Context, userId int
 		Table(`"AdPlacement"`).
 		Select(`"AdPlacement".*`).
 		Joins(`JOIN "AdCampaign" ON "AdCampaign".id = "AdPlacement"."campaignId"`).
-		Where(`(UPPER("AdPlacement".key) IN (?, ?) OR UPPER("AdPlacement"."placementType") IN (?, ?)) AND LOWER("AdCampaign".status) IN ('active', 'approved', 'paid', 'pending')`, placementKeyUpper, ruleTypeUpper, placementKeyUpper, ruleTypeUpper).
-		Order(`CASE WHEN LOWER("AdCampaign".status) = 'active' THEN 1 WHEN LOWER("AdCampaign".status) = 'approved' THEN 2 WHEN LOWER("AdCampaign".status) = 'paid' THEN 3 ELSE 4 END, "AdPlacement".id DESC`).
+		Where(`(UPPER("AdPlacement".key) IN (?, ?) OR UPPER("AdPlacement"."placementType") IN (?, ?)) AND LOWER("AdCampaign".status::text) IN ('active', 'approved', 'paid', 'pending')`, placementKeyUpper, ruleTypeUpper, placementKeyUpper, ruleTypeUpper).
+		Order(`CASE WHEN LOWER("AdCampaign".status::text) = 'active' THEN 1 WHEN LOWER("AdCampaign".status::text) = 'approved' THEN 2 WHEN LOWER("AdCampaign".status::text) = 'paid' THEN 3 ELSE 4 END, "AdPlacement".id DESC`).
 		First(&placement).Error
 
 	if err == nil && placement.CampaignID > 0 {
@@ -1348,8 +1348,8 @@ func (s *adsServiceImpl) GetPlacementEligibility(ctx context.Context, userId int
 	// 3. Secondary Lookup: Try finding an AdCampaign directly matching the placement type
 	var directCampaign models.AdCampaign
 	directErr := s.db.WithContext(ctx).
-		Where(`(UPPER("placementType") = ? OR UPPER("placementType") = ?) AND LOWER(status) IN ('active', 'approved', 'paid', 'pending')`, placementKeyUpper, ruleTypeUpper, placementKeyUpper, ruleTypeUpper).
-		Order(`CASE WHEN LOWER(status) = 'active' THEN 1 WHEN LOWER(status) = 'approved' THEN 2 WHEN LOWER(status) = 'paid' THEN 3 ELSE 4 END, id DESC`).
+		Where(`(UPPER("placementType") = ? OR UPPER("placementType") = ?) AND LOWER(status::text) IN ('active', 'approved', 'paid', 'pending')`, placementKeyUpper, ruleTypeUpper, placementKeyUpper, ruleTypeUpper).
+		Order(`CASE WHEN LOWER(status::text) = 'active' THEN 1 WHEN LOWER(status::text) = 'approved' THEN 2 WHEN LOWER(status::text) = 'paid' THEN 3 ELSE 4 END, id DESC`).
 		First(&directCampaign).Error
 
 	if directErr == nil && directCampaign.ID > 0 {
@@ -1395,8 +1395,8 @@ func (s *adsServiceImpl) GetPlacementEligibility(ctx context.Context, userId int
 	// 4. Tertiary Lookup: Try finding ANY active AdCampaign directly in database
 	var activeCampaign models.AdCampaign
 	campaignErr := s.db.WithContext(ctx).
-		Where(`LOWER(status) IN ('active', 'approved', 'paid', 'pending')`).
-		Order(`CASE WHEN LOWER(status) = 'active' THEN 1 WHEN LOWER(status) = 'approved' THEN 2 WHEN LOWER(status) = 'paid' THEN 3 ELSE 4 END, id DESC`).
+		Where(`LOWER(status::text) IN ('active', 'approved', 'paid', 'pending')`).
+		Order(`CASE WHEN LOWER(status::text) = 'active' THEN 1 WHEN LOWER(status::text) = 'approved' THEN 2 WHEN LOWER(status::text) = 'paid' THEN 3 ELSE 4 END, id DESC`).
 		First(&activeCampaign).Error
 
 	if campaignErr == nil && activeCampaign.ID > 0 {
