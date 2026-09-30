@@ -182,6 +182,11 @@ export function buildLeaderboardEntryFromCompletedQuiz(
 
 export function calculateCompletedQuizAccuracy(
   quiz: Record<string, any>,
+  leaderboardRows: Array<{
+    selectedAnswer?: string | null;
+    correctAnswer?: string | null;
+    earning?: number | null;
+  }> = [],
 ): number | null {
   const answers = Array.isArray(quiz.answers) ? quiz.answers : [];
   const gradedAnswers = answers.filter(
@@ -191,7 +196,6 @@ export function calculateCompletedQuizAccuracy(
   const hasStoredGrading = gradedAnswers.some(
     (answer) =>
       typeof answer.isCorrect === 'boolean' ||
-      typeof answer.answeredAt === 'string' ||
       (typeof answer.selectedAnswer === 'string' &&
         typeof answer.correctAnswer === 'string'),
   );
@@ -205,6 +209,18 @@ export function calculateCompletedQuizAccuracy(
         answer.selectedAnswer === answer.correctAnswer
       );
     }).length;
+
+    return Math.round((correctAnswers / quiz.totalQuestions) * 100);
+  }
+
+  if (leaderboardRows.length > 0 && quiz.totalQuestions > 0) {
+    const correctAnswers = leaderboardRows.filter(
+      (row) =>
+        (typeof row.earning === 'number' && row.earning > 0) ||
+        (typeof row.selectedAnswer === 'string' &&
+          typeof row.correctAnswer === 'string' &&
+          row.selectedAnswer === row.correctAnswer),
+    ).length;
 
     return Math.round((correctAnswers / quiz.totalQuestions) * 100);
   }
@@ -2475,6 +2491,17 @@ async getQuizleaderboard(
           matchedCompletedQuizIds.add(String(matchingQuiz.id));
         }
 
+        const matchingQuizRows = matchingQuiz
+          ? quizBoard.filter(
+              (candidate) =>
+                String(candidate.userId) === String(matchingQuiz.userId) &&
+                Math.abs(
+                  candidate.submittedAt.getTime() -
+                    matchingQuiz.completedAt!.getTime(),
+                ) <= 60_000,
+            )
+          : [];
+
         grouped.set(key, {
           userId: row.userId,
           submittedAt: row.submittedAt,
@@ -2482,7 +2509,7 @@ async getQuizleaderboard(
           totalEarning: 0,
           totalQuestions: matchingQuiz?.totalQuestions ?? null,
           accuracy: matchingQuiz
-            ? calculateCompletedQuizAccuracy(matchingQuiz)
+            ? calculateCompletedQuizAccuracy(matchingQuiz, matchingQuizRows)
             : null,
           correctAnswers: matchingQuiz?.correctAnswers ?? null,
           attemptedAnswers: matchingQuiz?.attemptedAnswers ?? null,
@@ -2507,9 +2534,17 @@ async getQuizleaderboard(
     for (const quiz of completedQuizzes) {
       if (matchedCompletedQuizIds.has(String(quiz.id))) continue;
 
+      const quizRows = quizBoard.filter(
+        (row) =>
+          String(row.userId) === String(quiz.userId) &&
+          quiz.completedAt != null &&
+          Math.abs(row.submittedAt.getTime() - quiz.completedAt.getTime()) <=
+            60_000,
+      );
+
       grouped.set(
         `${quiz.userId}_${quiz.id}`,
-        buildLeaderboardEntryFromCompletedQuiz(quiz),
+        buildLeaderboardEntryFromCompletedQuiz(quiz, quizRows),
       );
     }
 

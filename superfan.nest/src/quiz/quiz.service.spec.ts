@@ -47,6 +47,28 @@ describe('calculateCompletedQuizAccuracy', () => {
       }),
     ).toBe(30);
   });
+
+  it('uses session leaderboard rows when historical answer JSON has timestamps but no grading flags', () => {
+    expect(
+      calculateCompletedQuizAccuracy(
+        {
+          accuracyPercent: 0,
+          correctAnswers: 0,
+          totalQuestions: 10,
+          answers: [
+            { selectedAnswer: 'A', answeredAt: '2026-09-01T10:00:00Z' },
+            { selectedAnswer: 'B', answeredAt: '2026-09-01T10:01:00Z' },
+            { selectedAnswer: 'C', answeredAt: '2026-09-01T10:02:00Z' },
+          ],
+        },
+        [
+          { earning: 400, selectedAnswer: 'A', correctAnswer: 'A' },
+          { earning: 400, selectedAnswer: 'B', correctAnswer: 'B' },
+          { earning: 0, selectedAnswer: 'C', correctAnswer: 'D' },
+        ],
+      ),
+    ).toBe(20);
+  });
 });
 
 describe('addLeaderboardUsersWithoutActivity', () => {
