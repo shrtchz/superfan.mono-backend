@@ -13,67 +13,81 @@ export interface SendOtpResult {
   provider: string;
   to: string;
 }
-
+/**
+ * Sends a numeric OTP to the given phone via Africa's Talking messaging API.
+ * Falls back to logging the code to the console when the API key is missing
+ * or the environment is not production, so development/testing stays fully
+ * functional.
+ */
 @Injectable()
 export class TalkingDrumService {
-  private readonly logger = new Logger(TalkingDrumService.name);
+  private readonly logger = new Logger('AfricasTalkingService');
 
   constructor(private readonly configService: ConfigService) {}
 
-  /**
-   * Sends a numeric OTP to the given phone via Talking Drum (OpSMS-style API).
-   * Falls back to logging the code to the console when the API key is missing
-   * or the environment is not production, so development/testing stays fully
-   * functional.
-   */
   async sendOtp(input: SendOtpInput): Promise<SendOtpResult> {
     const { phone, code, channel = 'text' } = input;
     const message = `Your Superfan authentication code is ${code}. Do not share this code with anyone.`;
 
     if (this.isSimulation()) {
       this.logger.warn(
-        `\x1b[33m[TALKING DRUM · SIMULATED ${channel.toUpperCase()} OTP]\x1b[0m to ${phone} -> code \x1b[1m${code}\x1b[0m`,
+        `\x1b[33m[AFRICA'S TALKING · SIMULATED ${channel.toUpperCase()} OTP]\x1b[0m to ${phone} -> code \x1b[1m${code}\x1b[0m`,
       );
-      return { simulated: true, provider: 'talking-drum-simulation', to: phone };
+      return { simulated: true, provider: 'africas-talking-simulation', to: phone };
     }
 
-    const apiKey = this.configService.get<string>('TALKING_DRUM_API_KEY', '');
+    const apiKey =
+      this.configService.get<string>('AFRICAS_TALKING_API_KEY') ||
+      this.configService.get<string>('TALKING_DRUM_API_KEY', '');
+    const username =
+      this.configService.get<string>('AFRICAS_TALKING_USERNAME', 'sandbox');
     const baseUrl = this.configService
-      .get<string>('TALKING_DRUM_BASE_URL', 'https://api.talkingdrum.africa')
+      .get<string>('AFRICAS_TALKING_BASE_URL', 'https://api.africastalking.com')
       .replace(/\/+$/, '');
     const smsPath = this.configService.get<string>(
-      'TALKING_DRUM_SMS_PATH',
-      '/api/http/sms/send',
+      'AFRICAS_TALKING_SMS_PATH',
+      '/version1/messaging/bulk',
     );
-    const senderId = this.configService.get<string>(
-      'TALKING_DRUM_SENDER_ID',
-      'Superfan',
-    );
+    const senderId =
+      this.configService.get<string>('AFRICAS_TALKING_SENDER_ID') ||
+      this.configService.get<string>('TALKING_DRUM_SENDER_ID');
+    const maskedNumber = this.configService.get<string>('AFRICAS_TALKING_MASKED_NUMBER');
+    const telco = this.configService.get<string>('AFRICAS_TALKING_TELCO');
 
     try {
+      const payload: Record<string, unknown> = {
+        username,
+        message,
+        phoneNumbers: [phone],
+      };
+
+      if (senderId && senderId.trim()) {
+        payload.senderId = senderId.trim();
+      }
+      if (maskedNumber && maskedNumber.trim()) {
+        payload.maskedNumber = maskedNumber.trim();
+      }
+      if (telco && telco.trim()) {
+        payload.telco = telco.trim();
+      }
+
       await axios.post(
         `${baseUrl}${smsPath}`,
-        {
-          api_token: apiKey,
-          recipient: phone,
-          sender_id: senderId,
-          type: channel === 'call' ? 'voice' : 'otp',
-          message,
-        },
+        payload,
         {
           headers: {
             'Content-Type': 'application/json',
             Accept: 'application/json',
-            Authorization: `Bearer ${apiKey}`,
+            apiKey,
           },
           timeout: 15000,
         },
       );
 
-      return { simulated: false, provider: 'talking-drum', to: phone };
+      return { simulated: false, provider: 'africas-talking', to: phone };
     } catch (error) {
       this.logger.error(
-        `Talking Drum ${channel} delivery failed for ${phone}`,
+        `Africa's Talking ${channel} delivery failed for ${phone}`,
         error instanceof Error ? error.message : JSON.stringify(error),
       );
       throw new ServiceUnavailableException(
@@ -84,7 +98,11 @@ export class TalkingDrumService {
 
   private isSimulation(): boolean {
     const nodeEnv = this.configService.get<string>('NODE_ENV', 'development');
-    const apiKey = this.configService.get<string>('TALKING_DRUM_API_KEY', '');
+    const apiKey =
+      this.configService.get<string>('AFRICAS_TALKING_API_KEY') ||
+      this.configService.get<string>('TALKING_DRUM_API_KEY', '');
     return nodeEnv !== 'production' || !apiKey;
   }
 }
+
+export { TalkingDrumService as AfricasTalkingService };
