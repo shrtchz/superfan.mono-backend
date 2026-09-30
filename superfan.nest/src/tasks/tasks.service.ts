@@ -451,39 +451,6 @@ export class TaskService {
       referral.referrerId,
       referee?.username ?? 'Your referee',
     );
-
-    // Referee Bonus: 20,000 PTS into Gold Account
-    const refereePoints = 20000;
-    const refereeNaira = this.pointsConversionUtil.pointsToNaira(refereePoints);
-    await prisma.point.create({
-      data: {
-        userId: referral.refereeId,
-        points: refereePoints,
-        reference: `POINTS_${generateFiveUniqueRandomNumbers()}`,
-        type: 'referral_first_test_referee',
-        accountType: 'Gold',
-      },
-    });
-    await this.walletService.creditWallet(
-      referral.refereeId,
-      refereeNaira,
-      'Referee Bonus (NGN 20)',
-      `You earned ₦${refereeNaira} for completing your first test.`,
-      'Gold'
-    );
-
-    await prisma.user.update({
-      where: { id: referral.refereeId },
-      data: { lifetimePoints: { increment: 20000 } },
-    });
-
-    await this.notificationService.createNotification(
-      referral.refereeId,
-      'Referee Bonus (NGN 20)',
-      'You earned 20,000 PTS (Gold Account) for completing your first test.',
-      'welcome_bonus',
-    );
-
   }
 
   async getMyReferrals(userId: number) {
