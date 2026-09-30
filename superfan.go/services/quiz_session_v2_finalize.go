@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"quiz.superfan.com/apis/labels"
 	"quiz.superfan.com/apis/models"
 	"quiz.superfan.com/apis/utils"
@@ -197,7 +198,11 @@ func (s *QuizSessionV2Service) finalizeSession(
 			}
 		}
 
-		return creditQuizReward(tx, req.UserID, amountInNaira, submission.Subject, submission.Score, totalPoints, now)
+		if err := creditQuizReward(tx, req.UserID, amountInNaira, submission.Subject, submission.Score, totalPoints, now); err != nil {
+			return err
+		}
+
+		return awardReferralFirstTestReward(tx, req.UserID, now)
 	}); err != nil {
 		return nil, utils.NewAppError(http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to finalize quiz session")
 	}
@@ -313,7 +318,11 @@ func (s *QuizSessionV2Service) completeSessionWithZeroAnswers(
 			}
 		}
 
-		return creditQuizReward(tx, req.UserID, amountInNaira, testSubject, 0, totalPoints, now)
+		if err := creditQuizReward(tx, req.UserID, amountInNaira, testSubject, 0, totalPoints, now); err != nil {
+			return err
+		}
+
+		return awardReferralFirstTestReward(tx, req.UserID, now)
 	}); err != nil {
 		return nil, utils.NewAppError(http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to finalize quiz session")
 	}
@@ -433,6 +442,110 @@ func updateDailyStreak(userID int, now time.Time) (int, error) {
 	}
 
 	return newStreak, nil
+}
+
+func awardReferralFirstTestReward(tx *gorm.DB, refereeID int, now time.Time) error {
+	var referral models.Referral
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where(`"refereeId" = ? AND "testRewardGiven" = ?`, refereeID, false).
+		Order(`"id" ASC`).
+		First(&referral).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	claimed := tx.Model(&models.Referral{}).
+		Where(`"id" = ? AND "testRewardGiven" = ?`, referral.ID, false).
+		Updates(map[string]interface{}{
+			"status":          "FIRST_TEST_COMPLETED",
+			"testRewardGiven": true,
+		})
+	if claimed.Error != nil {
+		return claimed.Error
+	}
+	if claimed.RowsAffected != 1 {
+		return nil
+	}
+
+	if err := creditReferralTestBonus(tx, referral.ReferrerID, 10000, "referral_first_test_referrer", "Referral Bonus - First Test", now); err != nil {
+		return err
+	}
+
+	return creditReferralTestBonus(tx, referral.RefereeID, 20000, "referral_first_test_referee", "Referee Bonus (NGN 20)", now)
+}
+
+func creditReferralTestBonus(tx *gorm.DB, userID, points int, pointType, title string, now time.Time) error {
+	amountInNaira := float64(points) / float64(getPointsToNairaRate())
+	updatedWallet := tx.Model(&models.Wallet{}).
+		Where(`"userId" = ?`, userID).
+		Updates(map[string]interface{}{
+			"balance":     gorm.Expr(`"balance" + ?`, amountInNaira),
+			"goldBalance": gorm.Expr(`"goldBalance" + ?`, amountInNaira),
+		})
+	if updatedWallet.Error != nil {
+		return updatedWallet.Error
+	}
+	if updatedWallet.RowsAffected != 1 {
+		return fmt.Errorf("wallet not found for referral reward user %d", userID)
+	}
+
+	pointReference := "POINTS_" + uuid.NewString()
+	if err := tx.Create(&models.Point{
+		ID:          uuid.NewString(),
+		UserID:      userID,
+		Points:      points,
+		Reference:   &pointReference,
+		Type:        pointType,
+		AccountType: "Gold",
+		CreatedAt:   now,
+	}).Error; err != nil {
+		return err
+	}
+
+	updatedUser := tx.Model(&models.User{}).
+		Where("id = ?", userID).
+		Update("lifetime_points", gorm.Expr("lifetime_points + ?", points))
+	if updatedUser.Error != nil {
+		return updatedUser.Error
+	}
+	if updatedUser.RowsAffected != 1 {
+		return fmt.Errorf("user not found for referral reward user %d", userID)
+	}
+
+	transactionType := "credit"
+	accountType := "Gold"
+	transactionStatus := "SUCCESS"
+	entryType := "Reward"
+	description := title
+	transactionReference := "REFERRAL_TEST_" + uuid.NewString()
+	if err := tx.Create(&models.WalletTransaction{
+		UserID:          userID,
+		Amount:          amountInNaira,
+		Type:            &transactionType,
+		Currency:        "NGN",
+		AccountType:     &accountType,
+		Status:          &transactionStatus,
+		TransactionType: &entryType,
+		Description:     &description,
+		TrxRef:          &transactionReference,
+		CreatedAt:       now,
+	}).Error; err != nil {
+		return err
+	}
+
+	return tx.Create(&models.ActivityWallet{
+		UserID:      userID,
+		Type:        "credit",
+		Title:       title,
+		Description: title,
+		Amount:      amountInNaira,
+		Currency:    "NGN",
+		Status:      "SUCCESS",
+		CreatedAt:   now,
+	}).Error
 }
 
 func creditQuizReward(tx *gorm.DB, userID int, amountInNaira float64, subject string, score int, totalPoints int, now time.Time) error {
