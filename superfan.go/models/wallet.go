@@ -95,12 +95,13 @@ func (Reward) TableName() string {
 }
 
 type Point struct {
-	ID        string    `gorm:"column:id;primaryKey" json:"id"`
-	UserID    int       `gorm:"column:userId" json:"userId"`
-	Points    int       `gorm:"column:points" json:"points"`
-	Reference *string   `gorm:"column:reference" json:"reference"`
-	Type      string    `gorm:"column:type" json:"type"`
-	CreatedAt time.Time `gorm:"column:createdAt" json:"createdAt"`
+	ID          string    `gorm:"column:id;primaryKey" json:"id"`
+	UserID      int       `gorm:"column:userId" json:"userId"`
+	Points      int       `gorm:"column:points" json:"points"`
+	Reference   *string   `gorm:"column:reference" json:"reference"`
+	Type        string    `gorm:"column:type" json:"type"`
+	AccountType string    `gorm:"column:accountType" json:"accountType"`
+	CreatedAt   time.Time `gorm:"column:createdAt" json:"createdAt"`
 }
 
 func (Point) TableName() string {

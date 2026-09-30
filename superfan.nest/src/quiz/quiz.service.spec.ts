@@ -1,10 +1,66 @@
 import {
+  addLeaderboardInviteeFlags,
+  addLeaderboardUsersWithoutActivity,
   buildLiveQuizLeaderboardRows,
   calculateLeaderboardAccuracy,
   getLeaderboardDateFilter,
   normalizeLeaderboardTimeRange,
   normalizeLeaderboardView,
 } from './quiz.service';
+
+describe('addLeaderboardUsersWithoutActivity', () => {
+  it('adds empty entries for scoped users without changing active entries', () => {
+    const activeEntry = {
+      userId: '1',
+      username: 'active-user',
+      totalScore: 1200,
+      rows: [{ quizId: 'quiz-1' }],
+    };
+
+    const entries = addLeaderboardUsersWithoutActivity([activeEntry], [
+      { id: 1, username: 'active-user' },
+      { id: 2, username: 'new-user' },
+    ]);
+
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toBe(activeEntry);
+    expect(entries[1]).toEqual(
+      expect.objectContaining({
+        userId: '2',
+        username: 'new-user',
+        totalScore: null,
+        totalEarning: 0,
+        position: null,
+        rows: [],
+      }),
+    );
+  });
+
+  it('returns an empty entry for every scoped user when no activity exists', () => {
+    const entries = addLeaderboardUsersWithoutActivity([], [
+      { id: 3, username: 'first-user' },
+      { id: 4, username: 'second-user' },
+    ]);
+
+    expect(entries.map((entry) => entry.userId)).toEqual(['3', '4']);
+    expect(entries.every((entry) => entry.rows.length === 0)).toBe(true);
+  });
+});
+
+describe('addLeaderboardInviteeFlags', () => {
+  it('marks active and inactive invitees for client-side filtering', () => {
+    const entries = addLeaderboardInviteeFlags(
+      [
+        { userId: '1', rows: [{ quizId: 'quiz-1' }] },
+        { userId: '2', rows: [] },
+      ],
+      [2],
+    );
+
+    expect(entries.map((entry) => entry.isInvitee)).toEqual([false, true]);
+    expect(entries[1].rows).toEqual([]);
+  });
+});
 
 describe('buildLiveQuizLeaderboardRows', () => {
   it('includes quizzes with active participants even when no leaderboard rows exist yet', () => {

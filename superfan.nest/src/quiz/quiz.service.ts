@@ -118,6 +118,76 @@ export function calculateLeaderboardAccuracy(
   return Math.round((correctCount / comparableRows.length) * 100);
 }
 
+export function addLeaderboardUsersWithoutActivity(
+  leaderboard: Array<Record<string, any>>,
+  users: Array<{ id: number; username: string | null }>,
+): Array<Record<string, any>> {
+  const activeUserIds = new Set(leaderboard.map((entry) => String(entry.userId)));
+  const inactiveEntries = users
+    .filter((user) => !activeUserIds.has(String(user.id)))
+    .map((user) => ({
+      userId: String(user.id),
+      username: user.username,
+      submittedAt: null,
+      totalScore: null,
+      totalEarning: 0,
+      totalQuestions: null,
+      accuracy: null,
+      correctAnswers: null,
+      attemptedAnswers: null,
+      quizTimeSeconds: null,
+      quizTime: null,
+      testLevel: null,
+      createdAt: null,
+      rows: [],
+      score: null,
+      time: null,
+      reward: 0,
+      position: null,
+    }));
+
+  return [...leaderboard, ...inactiveEntries];
+}
+
+export function addLeaderboardInviteeFlags(
+  leaderboard: Array<Record<string, any>>,
+  inviteeIds: Iterable<number | string>,
+): Array<Record<string, any>> {
+  const inviteeIdSet = new Set(Array.from(inviteeIds, String));
+  return leaderboard.map((entry) => ({
+    ...entry,
+    isInvitee: inviteeIdSet.has(String(entry.userId)),
+  }));
+}
+
+export function buildLeaderboardEntryFromCompletedQuiz(quiz: {
+  userId: number;
+  totalQuestions: number;
+  accuracyPercent: number | null;
+  correctAnswers: number | null;
+  attemptedAnswers: number | null;
+  testLevel: string;
+  quizTime: string | null;
+  createdAt: Date;
+  completedAt: Date | null;
+}): Record<string, any> {
+  return {
+    userId: String(quiz.userId),
+    submittedAt: quiz.completedAt ?? quiz.createdAt,
+    totalScore: quiz.correctAnswers,
+    totalEarning: 0,
+    totalQuestions: quiz.totalQuestions,
+    accuracy: quiz.accuracyPercent,
+    correctAnswers: quiz.correctAnswers,
+    attemptedAnswers: quiz.attemptedAnswers,
+    quizTimeSeconds: null,
+    quizTime: quiz.quizTime,
+    testLevel: quiz.testLevel,
+    createdAt: quiz.createdAt,
+    rows: [],
+  };
+}
+
 export function buildLiveQuizLeaderboardRows(
   leaderboardEntries: any[],
   ongoingQuizzes: any[],
@@ -2318,19 +2388,20 @@ async getQuizleaderboard(
       },
     });
 
-    const userIds = [...new Set(quizBoard.map((row) => row.userId))];
     const completedQuizzes = await prisma.ongoingQuiz.findMany({
       where: {
-        userId: { in: userIds.map((userId) => Number(userId)).filter(Number.isFinite) },
         isCompleted: true,
+        ...(timeRange === 'all' ? {} : { completedAt: dateFilter }),
       },
       select: {
+        id: true,
         userId: true,
         totalQuestions: true,
         accuracyPercent: true,
         correctAnswers: true,
         attemptedAnswers: true,
         testLevel: true,
+        quizTime: true,
         createdAt: true,
         completedAt: true,
       },
@@ -2356,6 +2427,8 @@ async getQuizleaderboard(
       }
     >();
 
+    const matchedCompletedQuizIds = new Set<string>();
+
     for (const row of quizBoard) {
       // Groups same quiz session together
       const key = `${row.userId}_${new Date(row.submittedAt).toISOString()}`;
@@ -2368,6 +2441,10 @@ async getQuizleaderboard(
               Math.abs(left.completedAt!.getTime() - row.submittedAt.getTime()) -
               Math.abs(right.completedAt!.getTime() - row.submittedAt.getTime()),
           )[0];
+
+        if (matchingQuiz) {
+          matchedCompletedQuizIds.add(String(matchingQuiz.id));
+        }
 
         grouped.set(key, {
           userId: row.userId,
@@ -2394,6 +2471,15 @@ async getQuizleaderboard(
       if (current.quizTime === null) current.quizTime = row.quizTime ?? null;
 
       current.rows.push(row);
+    }
+
+    for (const quiz of completedQuizzes) {
+      if (matchedCompletedQuizIds.has(String(quiz.id))) continue;
+
+      grouped.set(
+        `${quiz.userId}_${quiz.id}`,
+        buildLeaderboardEntryFromCompletedQuiz(quiz),
+      );
     }
 
     // Convert to array
@@ -2425,8 +2511,8 @@ async getQuizleaderboard(
       if (entry.accuracy === null || entry.accuracy === undefined) {
         entry.accuracy = calculateLeaderboardAccuracy(entry.rows);
       }
-      entry.time = firstRow.quizTime ?? null;
-      entry.testLevel = firstRow.testLevel ?? null;
+      entry.time = firstRow.quizTime ?? entry.quizTime ?? null;
+      entry.testLevel = firstRow.testLevel ?? entry.testLevel ?? null;
       entry.reward = entry.totalEarning;
     }
 
@@ -2505,47 +2591,85 @@ async getQuizleaderboard(
       entry.position = positionByUser.get(String(entry.userId));
     });
 
-    if (view === 'leaderboard') return leaderboard;
+    let scopedUsers: Array<{ id: number; username: string | null }>;
 
-    if (!options.userId) return [];
+    if (view === 'leaderboard') {
+      scopedUsers = await prisma.user.findMany({
+        select: { id: true, username: true },
+        orderBy: { username: 'asc' },
+      });
+    } else {
+      const numericUserId = Number(options.userId);
+      if (!options.userId || !Number.isFinite(numericUserId)) return [];
 
-    const requestedUserId = String(options.userId);
+      if (view === 'my-score') {
+        scopedUsers = await prisma.user.findMany({
+          where: { id: numericUserId },
+          select: { id: true, username: true },
+        });
+      } else {
+        const [referrals, challengeInvites] = await Promise.all([
+          prisma.referral.findMany({
+            where: { referrerId: numericUserId },
+            select: { refereeId: true },
+          }),
+          prisma.challengeInvite.findMany({
+            where: { senderId: numericUserId },
+            select: { receiverId: true },
+          }),
+        ]);
 
-    if (view === 'my-score') {
-      return leaderboard.filter(
-        (entry) => String(entry.userId) === requestedUserId,
-      );
+        const inviteeIds = [
+          ...new Set([
+            ...referrals.map((referral) => referral.refereeId),
+            ...challengeInvites.map((invite) => invite.receiverId),
+          ]),
+        ];
+
+        scopedUsers = inviteeIds.length
+          ? await prisma.user.findMany({
+              where: { id: { in: inviteeIds } },
+              select: { id: true, username: true },
+              orderBy: { username: 'asc' },
+            })
+          : [];
+      }
     }
 
-    // view === 'my-invitees'
-    const numericUserId = Number(options.userId);
-    if (!Number.isFinite(numericUserId)) return [];
+    const scopedUserIds = new Set(scopedUsers.map((user) => String(user.id)));
+    const scopedLeaderboard = leaderboard.filter((entry) =>
+      scopedUserIds.has(String(entry.userId)),
+    );
+
+    const completeLeaderboard = addLeaderboardUsersWithoutActivity(
+      scopedLeaderboard,
+      scopedUsers,
+    );
+
+    if (view !== 'leaderboard') return completeLeaderboard;
+
+    const viewerId = Number(options.userId);
+    if (!options.userId || !Number.isFinite(viewerId)) {
+      return addLeaderboardInviteeFlags(completeLeaderboard, []);
+    }
 
     const [referrals, challengeInvites] = await Promise.all([
       prisma.referral.findMany({
-        where: { referrerId: numericUserId },
+        where: { referrerId: viewerId },
         select: { refereeId: true },
       }),
       prisma.challengeInvite.findMany({
-        where: { senderId: numericUserId },
+        where: { senderId: viewerId },
         select: { receiverId: true },
       }),
     ]);
 
-    const inviteeIds = new Set<string>([
-      ...referrals.map((referral) => String(referral.refereeId)),
-      ...challengeInvites.map((invite) => String(invite.receiverId)),
-    ]);
+    const inviteeIds = [
+      ...referrals.map((referral) => referral.refereeId),
+      ...challengeInvites.map((invite) => invite.receiverId),
+    ];
 
-    if (!inviteeIds.size) {
-      return [];
-    }
-
-    const activeInvitees = leaderboard.filter((entry) =>
-      inviteeIds.has(String(entry.userId)),
-    );
-
-    return activeInvitees;
+    return addLeaderboardInviteeFlags(completeLeaderboard, inviteeIds);
   } catch (error) {
     throw new HttpException(
       error?.message || 'Failed to fetch leaderboard',
