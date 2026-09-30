@@ -103,6 +103,7 @@ services:
       - MONGO_URI=${MONGO_URI:-mongodb://mongo:27017/quizdb}
       - PORT=7190
       - GIN_MODE=debug
+      - NEST_BASE_URL=${NEST_BASE_URL:-http://superfan-nest:3000}
     volumes:
       - ./superfan.go:/app
     depends_on:
