@@ -5,14 +5,22 @@ import { ConfigService } from '@nestjs/config';
 export class PointsConversionUtil {
   constructor(private configService: ConfigService) {}
 
+  private getRate(): number {
+    const configuredRate = Number(
+      this.configService.get<string>('POINTS_TO_NAIRA_RATE'),
+    );
+    return Number.isFinite(configuredRate) && configuredRate > 0
+      ? configuredRate
+      : 1000;
+  }
+
   /**
    * Convert points to Naira amount
    * Rate: POINTS_TO_NAIRA_RATE points = 1 Naira
    * Default: 1000 points = 1 Naira
    */
   pointsToNaira(points: number): number {
-    const rate = parseInt(this.configService.get<string>('POINTS_TO_NAIRA_RATE'), 10);
-    return points / rate;
+    return points / this.getRate();
   }
 
   /**
@@ -21,14 +29,13 @@ export class PointsConversionUtil {
    * Default: 1 Naira = 1000 points
    */
   nairaToPoints(naira: number): number {
-    const rate = parseInt(this.configService.get<string>('POINTS_TO_NAIRA_RATE'), 10);
-    return naira * rate;
+    return naira * this.getRate();
   }
 
   /**
    * Get the current points-to-Naira conversion rate
    */
   getConversionRate(): number {
-    return parseInt(this.configService.get<string>('POINTS_TO_NAIRA_RATE'), 10);
+    return this.getRate();
   }
 }

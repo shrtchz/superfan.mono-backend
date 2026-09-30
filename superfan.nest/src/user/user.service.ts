@@ -11,7 +11,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { TestLevel, User } from '@prisma/client';
+import { Prisma, TestLevel, User } from '@prisma/client';
 import * as argon from 'argon2';
 import { PostHog } from 'posthog-node';
 import { ClerkService } from '../common/clerk/clerk.service';
@@ -418,6 +418,17 @@ export class UserService {
             : {}),
         },
       });
+
+      const effectiveReferralCode = user.referredByCode || referralCode || undefined;
+      if (effectiveReferralCode) {
+        if (!user.referredByCode) {
+          user = await prisma.user.update({
+            where: { id: user.id },
+            data: { referredByCode: effectiveReferralCode },
+          });
+        }
+        await this.processReferralSignup(user, effectiveReferralCode);
+      }
 
       try {
         this.presenceGateway.setUserOnline(user.id);
@@ -2947,72 +2958,178 @@ async findUserByEmail(email: string): Promise<any> {
       where: { refereeId: user.id },
     });
 
-    if (existingReferral) {
-      console.log('[Referral][END] Existing referral found for referee', {
+    if (existingReferral && existingReferral.referrerId !== referrer.id) {
+      console.warn('[Referral] Existing referral attribution does not match code', {
         refereeId: user.id,
-        existingReferral,
+        existingReferrerId: existingReferral.referrerId,
+        suppliedReferrerId: referrer.id,
       });
       return;
     }
 
-    // Create referral relationship record
-    const referralRecord = await prisma.referral.create({
+    const referralRecord = existingReferral ?? await prisma.referral.create({
       data: {
         referrerId: referrer.id,
         refereeId: user.id,
-        signupRewardGiven: true,
+        signupRewardGiven: false,
         testRewardGiven: false,
         status: 'SIGNED_UP',
       },
     });
+
+    const signupReference = `REFERRAL_SIGNUP_${referralRecord.id}`;
+    const nairaAmount = this.pointsConversionUtil.pointsToNaira(20000);
+
+    if (referralRecord.signupRewardGiven) {
+      const legacyCredit = await prisma.walletTransaction.findFirst({
+        where: {
+          userId: referrer.id,
+          type: 'credit',
+          account_type: 'Gold',
+          description: 'Referral Bonus - Sign up',
+          createdAt: {
+            gte: referralRecord.createdAt,
+            lte: new Date(referralRecord.createdAt.getTime() + 120_000),
+          },
+        },
+        select: { id: true },
+      });
+
+      if (legacyCredit) return;
+
+      const walletCredited = await prisma.$transaction((tx) =>
+        this.creditReferralSignupWallet(
+          tx,
+          referrer.id,
+          nairaAmount,
+          signupReference,
+        ),
+      );
+      if (walletCredited) {
+        this.emitReferralWalletUpdated(referrer.id);
+        await this.notificationService.referralSignupBonus(referrer.id, user.username);
+      }
+      return;
+    }
+
     console.log('[Referral] Referral record created', {
       referralId: referralRecord.id,
       referrerId: referrer.id,
       refereeId: user.id,
     });
 
-    // Referral signup reward belongs to the referrer only.
-    // The referred user does not receive the ₦20 referral credit here.
-    const point = await prisma.point.create({
-      data: {
+    const rewardGranted = await prisma.$transaction(async (tx) => {
+      const claim = await tx.referral.updateMany({
+        where: { id: referralRecord.id, signupRewardGiven: false },
+        data: { signupRewardGiven: true },
+      });
+      if (claim.count !== 1) return false;
+
+      const point = await tx.point.create({
+        data: {
+          userId: referrer.id,
+          points: 20000,
+          reference: `POINTS_${generateFiveUniqueRandomNumbers()}`,
+          type: 'referral_signup',
+          accountType: 'Gold',
+        },
+      });
+
+      await tx.user.update({
+        where: { id: referrer.id },
+        data: { lifetimePoints: { increment: 20000 } },
+      });
+
+      const walletCredited = await this.creditReferralSignupWallet(
+        tx,
+        referrer.id,
+        nairaAmount,
+        signupReference,
+      );
+
+      console.log('[Referral] Point created', {
+        pointId: point.id,
         userId: referrer.id,
-        points: 20000,
-        reference: `POINTS_${generateFiveUniqueRandomNumbers()}`,
-        type: 'referral_signup',
-        accountType: 'Gold',
-      },
+        points: point.points,
+        type: point.type,
+      });
+
+      return walletCredited;
     });
 
-    await prisma.user.update({
-      where: { id: referrer.id },
-      data: { lifetimePoints: { increment: 20000 } },
-    });
+    if (!rewardGranted) return;
 
-    console.log('[Referral] Point created', {
-      pointId: point.id,
-      userId: referrer.id,
-      points: point.points,
-      type: point.type,
-    });
-
-    // Credit referrer wallet so the balance is visible in the Gold Wallet
-    const nairaAmount = this.pointsConversionUtil.pointsToNaira(20000);
-    await this.walletService.creditWallet(
-      referrer.id,
-      nairaAmount,
-      'Referral Bonus - Sign up',
-      'Referral Bonus - Sign up',
-      'Gold',
-    );
     console.log('[Referral] Wallet credited for referrer', {
       referrerId: referrer.id,
       amount: nairaAmount,
     });
 
+    this.emitReferralWalletUpdated(referrer.id);
+
     // Notification for referrer — copy-paste ready trigger
     await this.notificationService.referralSignupBonus(referrer.id, user.username);
 
     console.log('[Referral][END] Completed successfully');
+  }
+
+  private async creditReferralSignupWallet(
+    tx: Prisma.TransactionClient,
+    referrerId: number,
+    amount: number,
+    reference: string,
+  ): Promise<boolean> {
+    const existingCredit = await tx.walletTransaction.findFirst({
+      where: { reference },
+      select: { id: true },
+    });
+    if (existingCredit) return false;
+
+    await tx.wallet.upsert({
+      where: { userId: referrerId },
+      update: {
+        balance: { increment: amount },
+        goldBalance: { increment: amount },
+      },
+      create: {
+        userId: referrerId,
+        balance: amount,
+        goldBalance: amount,
+      },
+    });
+
+    await tx.walletTransaction.create({
+      data: {
+        userId: referrerId,
+        amount,
+        type: 'credit',
+        currency: 'NGN',
+        status: 'SUCCESS',
+        description: 'Referral Bonus - Sign up',
+        account_type: 'Gold',
+        transactionType: 'Reward',
+        reference,
+        trx_ref: `REFERRAL_${generateFiveUniqueRandomNumbers()}`,
+      },
+    });
+
+    await tx.activityWallet.create({
+      data: {
+        userId: referrerId,
+        type: 'credit',
+        title: 'Referral Bonus - Sign up',
+        description: 'Referral Bonus - Sign up',
+        amount,
+        currency: 'NGN',
+        status: 'SUCCESS',
+      },
+    });
+
+    return true;
+  }
+
+  private emitReferralWalletUpdated(userId: number): void {
+    this.eventEmitter.emit('user.wallet.updated', { userId });
+    this.eventEmitter.emit('user.payment.history', { userId });
   }
 }
 

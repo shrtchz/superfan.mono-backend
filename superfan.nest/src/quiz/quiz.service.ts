@@ -2662,12 +2662,16 @@ async getQuizleaderboard(
       entry.position = positionByUser.get(String(entry.userId));
     });
 
-    let scopedUsers: Array<{ id: number; username: string | null }>;
+    let scopedUsers: Array<{
+      id: number;
+      username: string | null;
+      createdAt?: Date;
+    }>;
 
     if (view === 'leaderboard') {
       scopedUsers = await prisma.user.findMany({
-        select: { id: true, username: true },
-        orderBy: { username: 'asc' },
+        select: { id: true, username: true, createdAt: true },
+        orderBy: { createdAt: 'desc' },
       });
     } else {
       const numericUserId = Number(options.userId);
@@ -2716,6 +2720,17 @@ async getQuizleaderboard(
       scopedLeaderboard,
       scopedUsers,
     );
+
+    if (view === 'leaderboard') {
+      const createdAtByUserId = new Map(
+        scopedUsers.map((user) => [String(user.id), user.createdAt?.getTime() ?? 0]),
+      );
+      completeLeaderboard.sort(
+        (left, right) =>
+          (createdAtByUserId.get(String(right.userId)) ?? 0) -
+          (createdAtByUserId.get(String(left.userId)) ?? 0),
+      );
+    }
 
     if (view !== 'leaderboard') return completeLeaderboard;
 
