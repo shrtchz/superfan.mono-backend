@@ -1,6 +1,7 @@
 import {
   addLeaderboardInviteeFlags,
   addLeaderboardUsersWithoutActivity,
+  sortLeaderboardByPosition,
   buildLiveQuizLeaderboardRows,
   calculateLeaderboardAccuracy,
   calculateCompletedQuizAccuracy,
@@ -107,6 +108,26 @@ describe('addLeaderboardUsersWithoutActivity', () => {
 
     expect(entries.map((entry) => entry.userId)).toEqual(['3', '4']);
     expect(entries.every((entry) => entry.rows.length === 0)).toBe(true);
+  });
+});
+
+describe('sortLeaderboardByPosition', () => {
+  it('orders users by rank and places users without a rank last', () => {
+    const newestLowerRank = {
+      userId: 'newer-user',
+      position: 2,
+      submittedAt: new Date('2026-09-30T12:00:00Z'),
+    };
+    const olderTopRank = {
+      userId: 'top-user',
+      position: 1,
+      submittedAt: new Date('2026-09-01T12:00:00Z'),
+    };
+    const noActivity = { userId: 'inactive-user', position: null };
+
+    expect(
+      sortLeaderboardByPosition([newestLowerRank, noActivity, olderTopRank]),
+    ).toEqual([olderTopRank, newestLowerRank, noActivity]);
   });
 });
 

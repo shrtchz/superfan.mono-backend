@@ -38,6 +38,58 @@ type adsServiceImpl struct {
 	httpClient  *http.Client
 }
 
+func campaignHasEnded(campaign *models.AdCampaign, now time.Time) bool {
+	if campaign == nil || campaign.RunContinuously {
+		return false
+	}
+
+	var expiresAt time.Time
+	if campaign.EndDate != nil && !campaign.EndDate.IsZero() {
+		expiresAt = campaign.EndDate.AddDate(0, 0, 1)
+	} else {
+		if campaign.StartDate.IsZero() {
+			return false
+		}
+		days := campaign.Days
+		if days < 1 {
+			days = 1
+		}
+		expiresAt = campaign.StartDate.AddDate(0, 0, days)
+	}
+
+	return !now.Before(expiresAt)
+}
+
+func (s *adsServiceImpl) completeEndedCampaigns(ctx context.Context, now time.Time) error {
+	if s.db == nil {
+		return nil
+	}
+
+	var campaigns []models.AdCampaign
+	if err := s.db.WithContext(ctx).
+		Where("LOWER(status::text) <> ?", "completed").
+		Find(&campaigns).Error; err != nil {
+		return err
+	}
+
+	endedIDs := make([]int, 0)
+	for _, campaign := range campaigns {
+		if campaignHasEnded(&campaign, now) {
+			endedIDs = append(endedIDs, campaign.ID)
+		}
+	}
+	if len(endedIDs) > 0 {
+		if err := s.db.WithContext(ctx).Model(&models.AdCampaign{}).
+			Where("id IN ?", endedIDs).
+			Update("status", models.AdStatusCompleted).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+const activeCampaignDateCondition = `("AdCampaign"."runContinuously" = TRUE OR (CASE WHEN "AdCampaign"."endDate" IS NOT NULL THEN "AdCampaign"."endDate" + INTERVAL '1 day' ELSE "AdCampaign"."startDate" + GREATEST("AdCampaign"."days", 1) * INTERVAL '1 day' END) > NOW())`
+
 func NewAdsService(db *gorm.DB) AdsService {
 	return &adsServiceImpl{
 		db:          db,
@@ -930,6 +982,10 @@ func (s *adsServiceImpl) CreateCampaign(ctx context.Context, req *CreateCampaign
 }
 
 func (s *adsServiceImpl) GetCampaigns(ctx context.Context, q *CampaignListQuery) (*CampaignListResponse, error) {
+	if err := s.completeEndedCampaigns(ctx, time.Now()); err != nil {
+		return nil, err
+	}
+
 	var campaigns []models.AdCampaign
 	var total int64
 
@@ -1102,6 +1158,10 @@ func (s *adsServiceImpl) enrichCampaignUser(ctx context.Context, campaign *model
 }
 
 func (s *adsServiceImpl) GetInventoryStats(ctx context.Context) (*InventoryStatsResponse, error) {
+	if err := s.completeEndedCampaigns(ctx, time.Now()); err != nil {
+		return nil, err
+	}
+
 	var totalAds int64
 	var activeAds int64
 	var pausedAds int64
@@ -1238,6 +1298,10 @@ func (s *adsServiceImpl) LogAdEvent(ctx context.Context, req *LogAdEventRequest)
 }
 
 func (s *adsServiceImpl) GetPlacementEligibility(ctx context.Context, userId int, placementKey string) (*PlacementEligibilityResponse, error) {
+	if err := s.completeEndedCampaigns(ctx, time.Now()); err != nil {
+		return nil, err
+	}
+
 	rule := ResolvePlacementConfig(placementKey)
 
 	// 1. Check user's subscription
@@ -1266,7 +1330,7 @@ func (s *adsServiceImpl) GetPlacementEligibility(ctx context.Context, userId int
 		Table(`"AdPlacement"`).
 		Select(`"AdPlacement".*`).
 		Joins(`JOIN "AdCampaign" ON "AdCampaign".id = "AdPlacement"."campaignId"`).
-		Where(`(UPPER("AdPlacement".key) IN (?, ?) OR UPPER("AdPlacement"."placementType") IN (?, ?)) AND LOWER("AdCampaign".status::text) IN ('active', 'approved', 'paid', 'pending')`, placementKeyUpper, ruleTypeUpper, placementKeyUpper, ruleTypeUpper).
+		Where(`(UPPER("AdPlacement".key) IN (?, ?) OR UPPER("AdPlacement"."placementType") IN (?, ?)) AND LOWER("AdCampaign".status::text) IN ('active', 'approved', 'paid', 'pending') AND `+activeCampaignDateCondition, placementKeyUpper, ruleTypeUpper, placementKeyUpper, ruleTypeUpper).
 		Order(`CASE WHEN LOWER("AdCampaign".status::text) = 'active' THEN 1 WHEN LOWER("AdCampaign".status::text) = 'approved' THEN 2 WHEN LOWER("AdCampaign".status::text) = 'paid' THEN 3 ELSE 4 END, "AdPlacement".id DESC`).
 		First(&placement).Error
 
@@ -1348,7 +1412,7 @@ func (s *adsServiceImpl) GetPlacementEligibility(ctx context.Context, userId int
 	// 3. Secondary Lookup: Try finding an AdCampaign directly matching the placement type
 	var directCampaign models.AdCampaign
 	directErr := s.db.WithContext(ctx).
-		Where(`(UPPER("placementType") = ? OR UPPER("placementType") = ?) AND LOWER(status::text) IN ('active', 'approved', 'paid', 'pending')`, placementKeyUpper, ruleTypeUpper, placementKeyUpper, ruleTypeUpper).
+		Where(`(UPPER("placementType") = ? OR UPPER("placementType") = ?) AND LOWER(status::text) IN ('active', 'approved', 'paid', 'pending') AND `+activeCampaignDateCondition, placementKeyUpper, ruleTypeUpper, placementKeyUpper, ruleTypeUpper).
 		Order(`CASE WHEN LOWER(status::text) = 'active' THEN 1 WHEN LOWER(status::text) = 'approved' THEN 2 WHEN LOWER(status::text) = 'paid' THEN 3 ELSE 4 END, id DESC`).
 		First(&directCampaign).Error
 
@@ -1395,7 +1459,7 @@ func (s *adsServiceImpl) GetPlacementEligibility(ctx context.Context, userId int
 	// 4. Tertiary Lookup: Try finding ANY active AdCampaign directly in database
 	var activeCampaign models.AdCampaign
 	campaignErr := s.db.WithContext(ctx).
-		Where(`LOWER(status::text) IN ('active', 'approved', 'paid', 'pending')`).
+		Where(`LOWER(status::text) IN ('active', 'approved', 'paid', 'pending') AND ` + activeCampaignDateCondition).
 		Order(`CASE WHEN LOWER(status::text) = 'active' THEN 1 WHEN LOWER(status::text) = 'approved' THEN 2 WHEN LOWER(status::text) = 'paid' THEN 3 ELSE 4 END, id DESC`).
 		First(&activeCampaign).Error
 
