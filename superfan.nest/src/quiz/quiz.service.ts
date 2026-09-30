@@ -162,6 +162,11 @@ export function addLeaderboardInviteeFlags(
 
 export function buildLeaderboardEntryFromCompletedQuiz(
   quiz: Record<string, any>,
+  leaderboardRows: Array<{
+    selectedAnswer?: string | null;
+    correctAnswer?: string | null;
+    earning?: number | null;
+  }> = [],
 ) {
   return {
     userId: String(quiz.userId),
@@ -169,7 +174,7 @@ export function buildLeaderboardEntryFromCompletedQuiz(
     totalScore: quiz.correctAnswers,
     totalEarning: 0,
     totalQuestions: quiz.totalQuestions,
-    accuracy: calculateCompletedQuizAccuracy(quiz),
+    accuracy: calculateCompletedQuizAccuracy(quiz, leaderboardRows),
     correctAnswers: quiz.correctAnswers,
     attemptedAnswers: quiz.attemptedAnswers,
     quizTimeSeconds: null,
