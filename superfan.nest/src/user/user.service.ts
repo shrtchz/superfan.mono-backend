@@ -3081,7 +3081,7 @@ async findUserByEmail(email: string): Promise<any> {
         user.id,
         nairaAmount,
         refereeSignupReference,
-        'Referral Welcome Bonus - Sign up',
+        'Referee Bonus - Sign up',
       );
 
       console.log('[Referral] Point created', {
@@ -3209,7 +3209,7 @@ async findUserByEmail(email: string): Promise<any> {
       refereeId,
       amount,
       walletReference,
-      'Referral Welcome Bonus - Sign up',
+      'Referee Bonus',
     );
   }
 

@@ -209,7 +209,9 @@ func (s *QuizSessionV2Service) finalizeSession(
 	}); err != nil {
 		return nil, utils.NewAppError(http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to finalize quiz session")
 	}
-	notifyReferralFirstTestBonus(referralNotification)
+	if referralNotification != nil {
+		go notifyReferralFirstTestBonus(referralNotification)
+	}
 
 	result := map[string]interface{}{
 		"sessionId":        sessionID,
@@ -332,7 +334,9 @@ func (s *QuizSessionV2Service) completeSessionWithZeroAnswers(
 	}); err != nil {
 		return nil, utils.NewAppError(http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to finalize quiz session")
 	}
-	notifyReferralFirstTestBonus(referralNotification)
+	if referralNotification != nil {
+		go notifyReferralFirstTestBonus(referralNotification)
+	}
 
 	streakMessage := "Streak saved! You completed a test just in time"
 	if dailyStreak == 3 || dailyStreak == 7 || dailyStreak == 14 || dailyStreak == 30 {
@@ -507,8 +511,7 @@ func notifyReferralFirstTestBonus(notification *referralFirstTestNotification) {
 
 	nestBaseURL := strings.TrimRight(utils.GetEnvWithKey("NEST_BASE_URL"), "/")
 	if nestBaseURL == "" {
-		log.Printf("[Referral] Cannot send first-test notification: NEST_BASE_URL is not set")
-		return
+		nestBaseURL = "http://localhost:3000"
 	}
 
 	payload, err := json.Marshal(map[string]interface{}{
