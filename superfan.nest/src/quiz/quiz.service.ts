@@ -235,6 +235,8 @@ export function buildLeaderboardEntryFromCompletedQuiz(
     submittedAt: quiz.completedAt ?? quiz.createdAt,
     totalScore: quiz.correctAnswers,
     totalEarning: 0,
+    totalPoints: calculateCompletedQuizTotalPoints(quiz),
+    amountInNaira: quiz.totalEarninginNaira ?? null,
     totalQuestions: quiz.totalQuestions,
     accuracy: calculateCompletedQuizAccuracy(quiz, leaderboardRows),
     correctAnswers: quiz.correctAnswers,
@@ -245,6 +247,19 @@ export function buildLeaderboardEntryFromCompletedQuiz(
     createdAt: quiz.createdAt,
     rows: [],
   };
+}
+
+function calculateCompletedQuizTotalPoints(quiz: Record<string, any>): number | null {
+  const components = [
+    quiz.baseScore,
+    quiz.accuracyBonus,
+    quiz.speedBonus,
+    quiz.streakMultiplier,
+    quiz.adBonuses,
+  ];
+
+  if (components.some((value) => typeof value !== 'number')) return null;
+  return components.reduce((total, value) => total + value, 0);
 }
 
 export function calculateCompletedQuizAccuracy(
@@ -2508,6 +2523,12 @@ async getQuizleaderboard(
         id: true,
         userId: true,
         totalQuestions: true,
+        totalEarninginNaira: true,
+        baseScore: true,
+        accuracyBonus: true,
+        speedBonus: true,
+        streakMultiplier: true,
+        adBonuses: true,
         accuracyPercent: true,
         correctAnswers: true,
         attemptedAnswers: true,
@@ -2527,6 +2548,8 @@ async getQuizleaderboard(
         submittedAt: Date;
         totalScore: number | null;
         totalEarning: number;
+        totalPoints: number | null;
+        amountInNaira: number | null;
         totalQuestions: number | null;
         accuracy: number | null;
         correctAnswers: number | null;
@@ -2574,6 +2597,10 @@ async getQuizleaderboard(
           submittedAt: row.submittedAt,
           totalScore: row.score ?? null,
           totalEarning: 0,
+          totalPoints: matchingQuiz
+            ? calculateCompletedQuizTotalPoints(matchingQuiz)
+            : null,
+          amountInNaira: matchingQuiz?.totalEarninginNaira ?? null,
           totalQuestions: matchingQuiz?.totalQuestions ?? null,
           accuracy: matchingQuiz
             ? calculateCompletedQuizAccuracy(matchingQuiz, matchingQuizRows)
@@ -2597,6 +2624,10 @@ async getQuizleaderboard(
 
       current.rows.push(row);
     }
+
+    grouped.forEach((entry) => {
+      if (entry.totalPoints === null) entry.totalPoints = entry.totalEarning;
+    });
 
     for (const quiz of completedQuizzes) {
       if (matchedCompletedQuizIds.has(String(quiz.id))) continue;
