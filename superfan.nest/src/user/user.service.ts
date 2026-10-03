@@ -40,6 +40,7 @@ import {
 } from './dto/auth.dto';
 import { PresenceGateway } from './gateway/presence.gateway';
 import { DiditService, FileUploadInput } from './didit.service';
+import { AccountCreationRateLimiterService } from './account-creation-rate-limiter.service';
 
 type SyncUserMetadata = {
   referralCode?: string;
@@ -66,9 +67,13 @@ export class UserService {
     private pointsConversionUtil: PointsConversionUtil,
     private readonly diditService: DiditService,
     private readonly imageService: ImageService,
+    private readonly rateLimiter: AccountCreationRateLimiterService,
   ) {}
 
-  async signupUser(dto: AuthDto): Promise<any> {
+  async signupUser(dto: AuthDto, ip?: string): Promise<any> {
+    const clientIp = this.rateLimiter.normalizeIp(ip || dto.ip_address);
+    const releaseRateLimit = await this.rateLimiter.checkAndReserve(clientIp);
+
     try {
       // ✅ Check if email already exists
       const existingEmail = await prisma.user.findUnique({
@@ -170,6 +175,7 @@ export class UserService {
           verificationCode,
           verificationCodeExpiry: verificationExpiry,
           active: false,
+          ip_address: clientIp || null,
         },
       });
 
@@ -219,6 +225,7 @@ export class UserService {
         suscriptionPlan: user.subscriptionPlan,
       };
     } catch (error) {
+      releaseRateLimit();
       console.error('Signup error:', error);
       if (error instanceof HttpException) {
         throw error;
@@ -323,6 +330,7 @@ export class UserService {
     authorizationHeader: string | undefined,
     metadata: SyncUserMetadata = {},
     userAgent?: string,
+    ip?: string,
   ) {
     try {
       const token = (authorizationHeader || '')
@@ -345,7 +353,7 @@ export class UserService {
       });
 
       const clerkUser = await this.clerkService.getClient().users.getUser(payload.sub);
-      return this.syncFromClerk(clerkUser, metadata, userAgent);
+      return this.syncFromClerk(clerkUser, metadata, userAgent, ip);
     } catch (error) {
       console.error('Sync from Clerk token error:', error);
       throw new ForbiddenException(
@@ -354,7 +362,7 @@ export class UserService {
     }
   }
 
-  async syncFromClerk(clerkUser: any, metadata: SyncUserMetadata = {}, userAgent?: string) {
+  async syncFromClerk(clerkUser: any, metadata: SyncUserMetadata = {}, userAgent?: string, ip?: string) {
     try {
       const clerkUserId = clerkUser.id as string;
       const email = clerkUser.emailAddresses?.[0]?.emailAddress as
@@ -388,19 +396,30 @@ export class UserService {
       }
 
       if (!user) {
-        user = await this.registerClerkUser({
-          clerkUserId,
-          email,
-          firstName: clerkUser.firstName || 'User',
-          lastName: clerkUser.lastName || '',
-          username:
-            clerkUser.username ||
-            clerkUser.firstName?.toLowerCase() ||
-            `user_${clerkUserId.slice(-6)}`,
-          phone,
-          login_method: loginMethod,
-          referralCode,
-        });
+        const clientIp = this.rateLimiter.normalizeIp(
+          ip || metadata.ip_address || (clerkUser.unsafeMetadata?.ip_address as string),
+        );
+        const releaseRateLimit = await this.rateLimiter.checkAndReserve(clientIp);
+
+        try {
+          user = await this.registerClerkUser({
+            clerkUserId,
+            email,
+            firstName: clerkUser.firstName || 'User',
+            lastName: clerkUser.lastName || '',
+            username:
+              clerkUser.username ||
+              clerkUser.firstName?.toLowerCase() ||
+              `user_${clerkUserId.slice(-6)}`,
+            phone,
+            login_method: loginMethod,
+            referralCode,
+            ip_address: clientIp || null,
+          });
+        } catch (err) {
+          releaseRateLimit();
+          throw err;
+        }
       }
 
       const clerkImageUrl =
@@ -2860,6 +2879,7 @@ async findUserByEmail(email: string): Promise<any> {
     phone: string;
     login_method: string;
     referralCode?: string;
+    ip_address?: string | null;
   }): Promise<any> {
     const referralCode = generateReferralCode(data.firstName);
     const user = await prisma.user.create({
@@ -2877,6 +2897,7 @@ async findUserByEmail(email: string): Promise<any> {
         referral_code: referralCode,
         referredByCode: data.referralCode || null,
         active: true,
+        ip_address: data.ip_address || null,
       },
     });
 

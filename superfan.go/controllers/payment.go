@@ -25,7 +25,7 @@ func NewPaymentController(ps *payment.PaymentService) *PaymentController {
 
 func sendDetailedError(c *gin.Context, statusCode int, errCode string, message string, rawErr error) {
 	errMsg := message
-	if rawErr != nil && rawErr.Error() != "" {
+	if rawErr != nil && rawErr.Error() != "" && rawErr.Error() != message {
 		errMsg = fmt.Sprintf("%s: %s", message, rawErr.Error())
 	}
 	log.Printf("[PaymentController] ERROR %s (%d): %s", errCode, statusCode, errMsg)

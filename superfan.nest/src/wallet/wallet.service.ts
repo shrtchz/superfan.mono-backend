@@ -159,6 +159,53 @@ export class WalletService {
 
     return status;
   }
+
+  /**
+   * Enforces that a single bank account number can only be linked to one active payout/cash-out at a time (Option A).
+   */
+  async validateActiveBankAccountPayout(accountNumber: string): Promise<void> {
+    const raw = (accountNumber || '').trim();
+    if (!raw) return;
+    const cleanAccount = raw.replace(/\D/g, '');
+    const searchAccounts = Array.from(new Set([cleanAccount, raw].filter(Boolean)));
+    if (searchAccounts.length === 0) return;
+
+    const masked = cleanAccount.length >= 4 ? `••••${cleanAccount.slice(-4)}` : raw;
+
+    // 1. Check for active Payout records across all users
+    const activePayout = await prisma.payout.findFirst({
+      where: {
+        status: 'PENDING',
+        OR: [
+          ...searchAccounts.map((acc) => ({ reference: acc })),
+          ...searchAccounts.map((acc) => ({ metadata: { path: ['accountNumber'], equals: acc } })),
+          ...searchAccounts.map((acc) => ({ metadata: { path: ['destinationAccountNumber'], equals: acc } })),
+          ...searchAccounts.map((acc) => ({ metadata: { path: ['account_no'], equals: acc } })),
+        ],
+      },
+    });
+
+    if (activePayout) {
+      throw new BadRequestException(
+        `This bank account number (${masked}) is already linked to an active payout. A bank account can only receive one payout per cycle. Please wait for the current payout to complete or fail before initiating another withdrawal.`,
+      );
+    }
+
+    // 2. Check for active WalletTransaction records across all users
+    const activeTx = await prisma.walletTransaction.findFirst({
+      where: {
+        account_no: { in: searchAccounts },
+        status: { in: ['Pending', 'PENDING', 'Processing', 'PROCESSING', 'REQUESTED', 'INITIATED', 'QUEUED', 'HOLD'] },
+      },
+    });
+
+    if (activeTx) {
+      throw new BadRequestException(
+        `This bank account number (${masked}) is already linked to an active payout. A bank account can only receive one payout per cycle. Please wait for the current payout to complete or fail before initiating another withdrawal.`,
+      );
+    }
+  }
+
   async creditWallet(userId: number, amount: number, title: string, description: string, accountType?: string, currency: string = 'NGN', streamTitle?: string) {
     console.log('[Wallet][creditWallet][START]', {
       userId,

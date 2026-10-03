@@ -747,6 +747,18 @@ async createClientHistory(payload: CreateClientHistoryDto) {
     // ✅ Enforce KYC-based withdrawal limits & ₦9,999 minimum withdrawal (SCRUM-350)
     await this.walletService.validateTransactionLimits(dto.userId, dto.amount, 'WITHDRAWAL');
 
+    // ✅ Enforce that a single bank account number can only be linked to one active payout at a time (Option A)
+    const meta = (dto.metadata || {}) as Record<string, any>;
+    const destinationAccount =
+      meta.accountNumber ||
+      meta.destinationAccountNumber ||
+      meta.account_no ||
+      (dto.method === 'MONNIFY' ? dto.reference : null);
+
+    if (destinationAccount) {
+      await this.walletService.validateActiveBankAccountPayout(String(destinationAccount));
+    }
+
     // check if reference already exists
     const existingPayout = await prisma.payout.findUnique({
       where: { reference: dto.reference },

@@ -17,6 +17,7 @@ import { TwoFactorController } from "./two-factor/two-factor.controller";
 import { TwoFactorService } from "./two-factor/two-factor.service";
 import { TalkingDrumService } from "./two-factor/talking-drum.service";
 import { ImageModule } from "../image/image.module";
+import { AccountCreationRateLimiterService } from "./account-creation-rate-limiter.service";
 
 @Global()
 @Module({
@@ -40,7 +41,8 @@ import { ImageModule } from "../image/image.module";
         DiditService,
         TwoFactorService,
         TalkingDrumService,
+        AccountCreationRateLimiterService,
     ],
-    exports: [UserService, PresenceGateway, DiditService, TwoFactorService, TalkingDrumService],
+    exports: [UserService, PresenceGateway, DiditService, TwoFactorService, TalkingDrumService, AccountCreationRateLimiterService],
 })
 export class UserModule {}
