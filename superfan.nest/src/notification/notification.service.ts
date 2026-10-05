@@ -367,8 +367,8 @@ export class NotificationService {
   }
 
   async liveQuizConsolationReward(userId: number, points = 500) {
-    const msg = `+${points} PTS consolation reward credited for completing the live quiz. Keep it up!`;
-    return this.notify(userId, NotificationTriggers.LIVE_QUIZ_CONSOLATION, msg, msg);
+    const msg = `+${Number(points).toLocaleString()} PTS for playing! Every quiz counts.`;
+    return this.notify(userId, NotificationTriggers.LIVE_QUIZ_CONSOLATION, msg, '');
   }
 
   async newQuizAvailable(userIds: number[], quizLabel = 'A fresh quiz just dropped.') {
