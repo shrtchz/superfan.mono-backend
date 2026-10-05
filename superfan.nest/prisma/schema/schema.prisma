@@ -446,7 +446,7 @@ model OngoingQuiz {
   totalEarning        Int // e.g. 2000
   totalEarninginUSDC  Int? // e.g. 2
   totalEarninginUSDT  Int? // e.g. 2
-  totalEarninginNaira Int? // e.g. 2000
+  totalEarninginNaira Float? // e.g. 2000
   totalQuestions      Int // e.g. 5
   totalTime           Int? // total time in seconds
   baseScore           Int? // base score for the quiz

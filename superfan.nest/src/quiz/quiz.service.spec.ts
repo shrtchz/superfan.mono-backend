@@ -4,12 +4,23 @@ import {
   rankLeaderboardUsers,
   sortLeaderboardByPosition,
   buildLiveQuizLeaderboardRows,
+  calculatePointsAmountInNaira,
   calculateLeaderboardAccuracy,
   calculateCompletedQuizAccuracy,
   getLeaderboardDateFilter,
   normalizeLeaderboardTimeRange,
   normalizeLeaderboardView,
 } from './quiz.service';
+
+describe('calculatePointsAmountInNaira', () => {
+  it('preserves fractional Naira when converting points', () => {
+    expect(calculatePointsAmountInNaira(2686, 1000)).toBe(2.686);
+  });
+
+  it('returns null for an invalid conversion rate', () => {
+    expect(calculatePointsAmountInNaira(2686, 0)).toBeNull();
+  });
+});
 
 describe('calculateCompletedQuizAccuracy', () => {
   it('recalculates a stale zero from persisted quiz answers', () => {

@@ -262,6 +262,22 @@ function calculateCompletedQuizTotalPoints(quiz: Record<string, any>): number | 
   return components.reduce((total, value) => total + value, 0);
 }
 
+export function calculatePointsAmountInNaira(
+  points: number | null,
+  pointsToNairaRate: number,
+): number | null {
+  if (
+    points === null ||
+    !Number.isFinite(points) ||
+    !Number.isFinite(pointsToNairaRate) ||
+    pointsToNairaRate <= 0
+  ) {
+    return null;
+  }
+
+  return points / pointsToNairaRate;
+}
+
 export function calculateCompletedQuizAccuracy(
   quiz: Record<string, any>,
   leaderboardRows: Array<{
@@ -2497,6 +2513,14 @@ async getQuizleaderboard(
   try {
     const timeRange = normalizeLeaderboardTimeRange(options.timeRange ?? filter);
     const view = normalizeLeaderboardView(options.view);
+    const configuredPointsToNairaRate = Number(
+      this.configService.get<string>('POINTS_TO_NAIRA_RATE'),
+    );
+    const pointsToNairaRate =
+      Number.isFinite(configuredPointsToNairaRate) &&
+      configuredPointsToNairaRate > 0
+        ? configuredPointsToNairaRate
+        : 1000;
 
     const now = new Date(
       new Date().toLocaleString('en-US', {
@@ -2627,6 +2651,9 @@ async getQuizleaderboard(
 
     grouped.forEach((entry) => {
       if (entry.totalPoints === null) entry.totalPoints = entry.totalEarning;
+      entry.amountInNaira =
+        calculatePointsAmountInNaira(entry.totalPoints, pointsToNairaRate) ??
+        entry.amountInNaira;
     });
 
     for (const quiz of completedQuizzes) {
@@ -2640,10 +2667,11 @@ async getQuizleaderboard(
             60_000,
       );
 
-      grouped.set(
-        `${quiz.userId}_${quiz.id}`,
-        buildLeaderboardEntryFromCompletedQuiz(quiz, quizRows),
-      );
+      const entry = buildLeaderboardEntryFromCompletedQuiz(quiz, quizRows);
+      entry.amountInNaira =
+        calculatePointsAmountInNaira(entry.totalPoints, pointsToNairaRate) ??
+        entry.amountInNaira;
+      grouped.set(`${quiz.userId}_${quiz.id}`, entry);
     }
 
     // Convert to array
