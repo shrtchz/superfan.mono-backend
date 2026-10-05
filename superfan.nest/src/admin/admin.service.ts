@@ -512,4 +512,178 @@ export class AdminService {
       throw failureResponse(error);
     }
   }
+
+  /**
+   * Returns the live Total Admins count and week-over-week delta for the
+   * admin Home dashboard card.
+   *
+   * - `total`       — active superadmin + subadmin accounts right now
+   * - `weeklyDelta` — raw integer: (new admins past 7 days) − (new admins prior 7 days)
+   * - `deltaLabel`  — human-readable string, e.g. "+3 this week" or "−1 this week"
+   * - `thisWeek`    — count of new admin accounts added in the current 7-day window
+   * - `lastWeek`    — count of new admin accounts added in the prior 7-day window
+   * - `asOf`        — ISO timestamp of when the snapshot was taken
+   */
+  async getAdminCount() {
+    const now = new Date();
+
+    // Current 7-day window
+    const startOfCurrentWeek = new Date(now);
+    startOfCurrentWeek.setDate(now.getDate() - 7);
+
+    // Prior 7-day window (8–14 days ago) — baseline for WoW comparison
+    const startOfPreviousWeek = new Date(now);
+    startOfPreviousWeek.setDate(now.getDate() - 14);
+
+    const [total, thisWeek, lastWeek] = await Promise.all([
+      // Live count of all active admin accounts
+      prisma.user.count({
+        where: {
+          roleName: { in: ['superadmin', 'subadmin'] },
+          active: true,
+          isBanned: false,
+        },
+      }),
+      // New admins added in the current 7-day window
+      prisma.user.count({
+        where: {
+          roleName: { in: ['superadmin', 'subadmin'] },
+          active: true,
+          isBanned: false,
+          createdAt: { gte: startOfCurrentWeek },
+        },
+      }),
+      // New admins added in the prior 7-day window
+      prisma.user.count({
+        where: {
+          roleName: { in: ['superadmin', 'subadmin'] },
+          active: true,
+          isBanned: false,
+          createdAt: { gte: startOfPreviousWeek, lt: startOfCurrentWeek },
+        },
+      }),
+    ]);
+
+    const weeklyDelta = thisWeek - lastWeek;
+    const deltaLabel =
+      weeklyDelta > 0
+        ? `+${weeklyDelta} this week`
+        : weeklyDelta < 0
+          ? `${weeklyDelta} this week`
+          : `+${thisWeek} this week`;
+
+    return {
+      total,
+      weeklyDelta,
+      deltaLabel,
+      thisWeek,
+      lastWeek,
+      asOf: now.toISOString(),
+    };
+  }
+
+  /**
+   * Returns the live Client Users count (registered members) and "+N today" delta
+   * for the admin Home dashboard (SCRUM-463).
+   *
+   * - `total`       — active registered client members right now
+   * - `today`       — count of new client accounts registered today
+   * - `dailyDelta`  — numeric delta for today
+   * - `deltaLabel`  — human-readable string, e.g. "+5 today"
+   * - `asOf`        — ISO timestamp of when the snapshot was taken
+   */
+  async getClientCount() {
+    const now = new Date();
+
+    // Start of today (00:00:00.000)
+    const startOfToday = new Date(now);
+    startOfToday.setHours(0, 0, 0, 0);
+
+    const [total, today] = await Promise.all([
+      // Live count of registered active client members
+      prisma.user.count({
+        where: {
+          roleName: 'client',
+          active: true,
+          isBanned: false,
+        },
+      }),
+      // New client members registered today
+      prisma.user.count({
+        where: {
+          roleName: 'client',
+          active: true,
+          isBanned: false,
+          createdAt: { gte: startOfToday },
+        },
+      }),
+    ]);
+
+    const deltaLabel = `+${today} today`;
+
+    return {
+      total,
+      today,
+      dailyDelta: today,
+      deltaLabel,
+      totalClients: total,
+      dailyChange: deltaLabel,
+      asOf: now.toISOString(),
+    };
+  }
+
+  /**
+   * Returns the live Pending Invites count (admin invites awaiting acceptance)
+   * for the admin Home dashboard.
+   *
+   * - `total`        — active non-expired admin invites awaiting acceptance
+   * - `today`        — invites sent today
+   * - `deltaLabel`   — label e.g. "3 total" or "0"
+   * - `asOf`         — snapshot timestamp
+   */
+  async getPendingInviteCount() {
+    const now = new Date();
+    const startOfToday = new Date(now);
+    startOfToday.setHours(0, 0, 0, 0);
+
+    const [users, activeInvites] = await Promise.all([
+      prisma.user.findMany({
+        select: { email: true },
+      }),
+      prisma.subAdminInvite.findMany({
+        where: {
+          expiresAt: { gt: now },
+        },
+        select: {
+          id: true,
+          email: true,
+          createdAt: true,
+          expiresAt: true,
+        },
+      }),
+    ]);
+
+    const registeredEmails = new Set(
+      users.map((u) => (u.email || '').toLowerCase().trim()).filter(Boolean),
+    );
+
+    const pendingInvites = activeInvites.filter(
+      (inv) => !registeredEmails.has((inv.email || '').toLowerCase().trim()),
+    );
+
+    const total = pendingInvites.length;
+    const today = pendingInvites.filter((inv) => inv.createdAt >= startOfToday).length;
+
+    const deltaLabel = total > 0 ? `${total} total` : '0';
+
+    return {
+      total,
+      pendingCount: total,
+      today,
+      deltaLabel,
+      asOf: now.toISOString(),
+    };
+  }
 }
+
+

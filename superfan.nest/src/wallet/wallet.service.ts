@@ -458,6 +458,76 @@ export class WalletService {
     }
   }
 
+  /**
+   * Credits a flat 500 PTS (₦0.50 at 1,000 PTS = ₦1) consolation reward to every participant
+   * who completes a live quiz when jackpot odds are heavily diluted
+   * (participants / winner-spots ≥ 20, i.e. ≤ 5% win chance).
+   *
+   * Awarded on top of jackpot winnings for actual winners.
+   * Idempotent — safe to call multiple times for the same session.
+   */
+  async createLiveQuizConsolationReward(
+    userId: number,
+    sessionId: number | string,
+    consolationPoints = 500,
+  ) {
+    const rewardReference = `live_quiz_consolation:${userId}:${sessionId}`;
+    const amount = this.pointsConversionUtil.pointsToNaira(consolationPoints);
+
+    // Idempotency guard — do not double-credit the same session
+    const existingReward = await this.prisma.reward.findFirst({
+      where: {
+        userId,
+        type: 'live_quiz_consolation',
+        reference: rewardReference,
+      },
+    });
+
+    if (existingReward) {
+      return;
+    }
+
+    await this.prisma.reward.create({
+      data: {
+        userId,
+        amount,
+        currency: 'NGN',
+        type: 'live_quiz_consolation',
+        status: 'PAID_OUT',
+        reference: rewardReference,
+      },
+    });
+
+    // Credit points record
+    await this.prisma.point.create({
+      data: {
+        userId,
+        points: consolationPoints,
+        reference: rewardReference,
+        type: 'live_quiz_consolation',
+      },
+    });
+
+    // Increment lifetime points
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { lifetimePoints: { increment: consolationPoints } },
+    });
+
+    // Credit the Gold Account wallet
+    await this.creditWallet(
+      userId,
+      amount,
+      'Live Quiz Consolation',
+      'Live Quiz Consolation',
+      'Gold',
+      'NGN',
+    );
+
+    // Push notification to user
+    await this.notificationService.liveQuizConsolationReward(userId, consolationPoints);
+  }
+
 
 async getUserWalletTransactions(filters: WalletTransactionFilterDto) {
   const {
