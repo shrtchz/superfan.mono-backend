@@ -15,39 +15,53 @@ export class AnalyticsService {
       const startOfToday = new Date(now);
       startOfToday.setHours(0, 0, 0, 0);
 
-      // Last 7 days
-      const startOfWeek = new Date(now);
-      startOfWeek.setDate(now.getDate() - 7);
+      // Current week window: last 7 days
+      const startOfCurrentWeek = new Date(now);
+      startOfCurrentWeek.setDate(now.getDate() - 7);
+
+      // Previous week window: 8–14 days ago (for true WoW comparison)
+      const startOfPreviousWeek = new Date(now);
+      startOfPreviousWeek.setDate(now.getDate() - 14);
 
       // Run all queries in parallel 🚀
       const [
         totalAdmins,
-        newAdminsThisWeek,
+        newAdminsCurrentWeek,
+        newAdminsPreviousWeek,
         totalInvites,
         invitesThisWeek,
         invitesToday,
         totalClients,
         newClientsToday,
       ] = await Promise.all([
-        // ✅ Admins (superadmin + subadmin)
+        // ✅ Admins (superadmin + subadmin) — all active admin accounts
         prisma.user.count({
           where: {
-            roleName: { in: ['subadmin'] },
+            roleName: { in: ['superadmin', 'subadmin'] },
             active: true,
           },
         }),
+        // New admins in the current 7-day window
         prisma.user.count({
           where: {
-            roleName: { in: ['subadmin'] },
+            roleName: { in: ['superadmin', 'subadmin'] },
             active: true,
-            createdAt: { gte: startOfWeek },
+            createdAt: { gte: startOfCurrentWeek },
+          },
+        }),
+        // New admins in the prior 7-day window (for WoW delta baseline)
+        prisma.user.count({
+          where: {
+            roleName: { in: ['superadmin', 'subadmin'] },
+            active: true,
+            createdAt: { gte: startOfPreviousWeek, lt: startOfCurrentWeek },
           },
         }),
 
         // ✅ Invites
         prisma.subAdminInvite.count(),
         prisma.subAdminInvite.count({
-          where: { createdAt: { gte: startOfWeek } },
+          where: { createdAt: { gte: startOfCurrentWeek } },
         }),
         prisma.subAdminInvite.count({
           where: { createdAt: { gte: startOfToday } },
@@ -66,10 +80,16 @@ export class AnalyticsService {
         }),
       ]);
 
+      // Week-over-week delta: positive means more admins added this week vs last week
+      const weeklyDelta = newAdminsCurrentWeek - newAdminsPreviousWeek;
+
       return {
         admins: {
           total: totalAdmins,
-          weeklyChange: `+${newAdminsThisWeek} this week`,
+          weeklyDelta,
+          weeklyChange: weeklyDelta >= 0
+            ? `+${newAdminsCurrentWeek} this week`
+            : `${newAdminsCurrentWeek} this week`,
         },
         invites: {
           total: totalInvites,
@@ -78,6 +98,8 @@ export class AnalyticsService {
         },
         clients: {
           total: totalClients,
+          today: newClientsToday,
+          dailyDelta: newClientsToday,
           dailyChange: `+${newClientsToday} today`,
         },
       };
@@ -85,6 +107,7 @@ export class AnalyticsService {
       throw error;
     }
   }
+
 
   async fetchTotalClients() {
     try {
@@ -99,6 +122,7 @@ export class AnalyticsService {
         where: {
           roleName: 'client',
           active: true,
+          isBanned: false,
         },
       });
 
@@ -107,6 +131,7 @@ export class AnalyticsService {
         where: {
           roleName: 'client',
           active: true,
+          isBanned: false,
           createdAt: {
             gte: startOfToday,
           },
@@ -114,8 +139,13 @@ export class AnalyticsService {
       });
 
       return {
+        total: totalClients,
+        today: newClientsToday,
+        dailyDelta: newClientsToday,
+        deltaLabel: `+${newClientsToday} today`,
         totalClients,
         dailyChange: `+${newClientsToday} today`,
+        asOf: now.toISOString(),
       };
     } catch (error) {
       throw error;

@@ -75,8 +75,11 @@ export class UserController {
   @Public()
   @Post('/auth/signup')
   @HttpCode(HttpStatus.OK)
-  async signupUser(@Body() dto: AuthDto): Promise<{ message: string }> {
-    return this.userService.signupUser(dto);
+  async signupUser(
+    @Body() dto: AuthDto,
+    @RealIp() ip: string,
+  ): Promise<{ message: string }> {
+    return this.userService.signupUser(dto, ip);
   }
 
   // Debug endpoint to list all users with referral codes
@@ -97,11 +100,16 @@ export class UserController {
   @Public()
   @Post('/sync')
   @HttpCode(HttpStatus.OK)
-  async syncUser(@Req() req: any, @Body() dto: SyncUserDto) {
+  async syncUser(
+    @Req() req: any,
+    @Body() dto: SyncUserDto,
+    @RealIp() ip: string,
+  ) {
     const user = await this.userService.syncFromClerkToken(
       req.headers.authorization,
       dto,
       req.headers['user-agent'] as string | undefined,
+      ip,
     );
     return successResponse('User synced successfully', user);
   }
@@ -110,8 +118,12 @@ export class UserController {
   @Public()
   @Post('/clerk-login')
   @HttpCode(HttpStatus.OK)
-  async clerkLogin(@Req() req: any, @Body() dto: SyncUserDto) {
-    return this.syncUser(req, dto);
+  async clerkLogin(
+    @Req() req: any,
+    @Body() dto: SyncUserDto,
+    @RealIp() ip: string,
+  ) {
+    return this.syncUser(req, dto, ip);
   }
   @Get(':id/login-method')
   async getLoginMethod(@Param('id', ParseIntPipe) userId: number) {

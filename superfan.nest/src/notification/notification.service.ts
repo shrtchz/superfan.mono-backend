@@ -75,6 +75,7 @@ export const NotificationTriggers = {
   STREAM_CHAT_LOCK_TOGGLE: 'stream_chat_lock_toggle',
   STREAM_MANUAL_CREDIT: 'stream_manual_credit',
   STREAM_LIVE_QUIZ_JACKPOT: 'stream_live_quiz_jackpot',
+  LIVE_QUIZ_CONSOLATION: 'live_quiz_consolation',
   CHALLENGE_INVITE_SENT: 'challenge_invite_sent',
   CHALLENGE_INVITE_ACCEPTED: 'challenge_invite_accepted',
   CHALLENGE_INVITE_DECLINED: 'challenge_invite_declined',
@@ -363,6 +364,11 @@ export class NotificationService {
   async liveQuizJackpot(userId: number, amountNaira: number) {
     const msg = `Jackpot! ₦${Number(amountNaira).toLocaleString()} credited to your Gold Account.`;
     return this.notify(userId, NotificationTriggers.LIVE_QUIZ_JACKPOT, msg, msg);
+  }
+
+  async liveQuizConsolationReward(userId: number, points = 500) {
+    const msg = `+${points} PTS consolation reward credited for completing the live quiz. Keep it up!`;
+    return this.notify(userId, NotificationTriggers.LIVE_QUIZ_CONSOLATION, msg, msg);
   }
 
   async newQuizAvailable(userIds: number[], quizLabel = 'A fresh quiz just dropped.') {

@@ -92,6 +92,34 @@ export class AdminController {
   };
 
   @Public()
+  @Get('/dashboard/admin-count')
+  @HttpCode(HttpStatus.OK)
+  async getAdminCount() {
+    return this.adminService.getAdminCount();
+  };
+
+  @Public()
+  @Get('/dashboard/client-count')
+  @HttpCode(HttpStatus.OK)
+  async getClientCount() {
+    return this.adminService.getClientCount();
+  };
+
+  @Public()
+  @Get('/dashboard/invite-count')
+  @HttpCode(HttpStatus.OK)
+  async getInviteCount() {
+    return this.adminService.getPendingInviteCount();
+  };
+
+  @Public()
+  @Get('/dashboard/pending-invites-count')
+  @HttpCode(HttpStatus.OK)
+  async getPendingInvitesCount() {
+    return this.adminService.getPendingInviteCount();
+  };
+
+  @Public()
   @Get('/:roleName')
   async getAdmins(@Param('roleName') roleName: string) {
     return this.adminService.getAdminsbyRole(roleName);
