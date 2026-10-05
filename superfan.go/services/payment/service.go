@@ -1634,6 +1634,60 @@ func (s *PaymentService) ValidateBankAccount(ctx context.Context, accountNumber,
 	return s.monnifyProvider.ValidateBankAccount(ctx, accountNumber, bankCode)
 }
 
+// ValidateActiveBankAccountPayout enforces that a single bank account number can only be linked
+// to one active payout/cash-out at a time across all users (one payout per cycle).
+func (s *PaymentService) ValidateActiveBankAccountPayout(ctx context.Context, accountNumber string) error {
+	accountNumber = strings.TrimSpace(accountNumber)
+	if accountNumber == "" {
+		return errors.New("destination bank account number is required")
+	}
+
+	cleanAccountNumber := normalizeCardDigits(accountNumber)
+	if cleanAccountNumber == "" {
+		cleanAccountNumber = accountNumber
+	}
+
+	// 1. Check for active/pending withdrawal in WalletTransaction across all accounts.
+	var activeTx models.WalletTransaction
+	txErr := s.db.WithContext(ctx).Model(&models.WalletTransaction{}).
+		Where("(account_no = ? OR account_no = ? OR REPLACE(REPLACE(COALESCE(account_no, ''), ' ', ''), '-', '') = ?)", accountNumber, cleanAccountNumber, cleanAccountNumber).
+		Where("(LOWER(COALESCE(\"transactionType\", '')) = 'withdrawal' OR LOWER(COALESCE(description, '')) LIKE '%withdraw%' OR LOWER(COALESCE(type, '')) = 'debit')").
+		Where("UPPER(COALESCE(status, 'PENDING')) IN ('PENDING', 'PROCESSING', 'REQUESTED', 'INITIATED', 'QUEUED', 'IN_PROGRESS', 'HOLD')").
+		Where("UPPER(COALESCE(status, '')) NOT IN ('SUCCESS', 'PAID', 'COMPLETED', 'FAILED', 'CANCELLED', 'REVERSED', 'REJECTED', 'EXPIRED')").
+		Order("\"createdAt\" DESC").
+		First(&activeTx).Error
+
+	if txErr == nil && activeTx.ID > 0 {
+		statusStr := "Pending"
+		if activeTx.Status != nil && *activeTx.Status != "" {
+			statusStr = *activeTx.Status
+		}
+		log.Printf("[PaymentService] Blocked withdrawal: Bank account %s has active WalletTransaction id=%d userId=%d status=%s",
+			cleanAccountNumber, activeTx.ID, activeTx.UserID, statusStr)
+		return fmt.Errorf("this bank account number (%s) is already linked to an active payout. A bank account can only receive one payout per cycle. Please wait for the current payout to complete or fail before initiating another withdrawal", maskIDNumber(accountNumber))
+	} else if txErr != nil && !errors.Is(txErr, gorm.ErrRecordNotFound) {
+		log.Printf("[PaymentService] WARNING: Error querying WalletTransaction for active payout check: %v", txErr)
+	}
+
+	// 2. Check for active/pending payout in Payout table across all accounts.
+	var activePayout models.Payout
+	payoutErr := s.db.WithContext(ctx).Model(&models.Payout{}).
+		Where("UPPER(status::text) = 'PENDING'").
+		Where("(reference = ? OR reference = ? OR metadata->>'accountNumber' = ? OR metadata->>'destinationAccountNumber' = ? OR metadata->>'account_no' = ?)", accountNumber, cleanAccountNumber, cleanAccountNumber, cleanAccountNumber, cleanAccountNumber).
+		Order("\"createdAt\" DESC").
+		First(&activePayout).Error
+
+	if payoutErr == nil && activePayout.ID > 0 {
+		log.Printf("[PaymentService] Blocked withdrawal: Bank account %s has active Payout id=%d userId=%d ref=%s",
+			cleanAccountNumber, activePayout.ID, activePayout.UserID, activePayout.Reference)
+		return fmt.Errorf("this bank account number (%s) is already linked to an active payout. A bank account can only receive one payout per cycle. Please wait for the current payout to complete or fail before initiating another withdrawal", maskIDNumber(accountNumber))
+	} else if payoutErr != nil && !errors.Is(payoutErr, gorm.ErrRecordNotFound) {
+		log.Printf("[PaymentService] WARNING: Error querying Payout for active payout check: %v", payoutErr)
+	}
+
+	return nil
+}
+
 // ProcessWalletWithdrawal executes a bank withdrawal for a user and atomically debits their wallet.
 func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int, amount float64, payload map[string]interface{}) (map[string]interface{}, error) {
 	if userID <= 0 {
@@ -1645,6 +1699,32 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 
 	// Enforce the minimum withdrawal and KYC transaction limits (SCRUM-350).
 	if err := s.ValidateTransactionLimits(ctx, userID, amount, "WITHDRAWAL"); err != nil {
+		return nil, err
+	}
+
+	accountName, _ := payload["accountName"].(string)
+	accountNumber := ""
+	if v, ok := payload["destinationAccountNumber"].(string); ok {
+		accountNumber = v
+	} else if v, ok := payload["accountNumber"].(string); ok {
+		accountNumber = v
+	} else if v, ok := payload["destinationAccountNumber"].(float64); ok {
+		accountNumber = fmt.Sprintf("%.0f", v)
+	} else if v, ok := payload["accountNumber"].(float64); ok {
+		accountNumber = fmt.Sprintf("%.0f", v)
+	}
+	accountNumber = strings.TrimSpace(accountNumber)
+	if accountNumber == "" {
+		return nil, errors.New("destination bank account number is required")
+	}
+
+	bankName, _ := payload["destinationBankName"].(string)
+	if bankName == "" {
+		bankName, _ = payload["bankName"].(string)
+	}
+
+	// Enforce rule: a single bank account number can only be linked to one active payout/cash-out at a time.
+	if err := s.ValidateActiveBankAccountPayout(ctx, accountNumber); err != nil {
 		return nil, err
 	}
 
@@ -1688,15 +1768,6 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 	}
 
 	log.Printf("[PaymentService] ProcessWalletWithdrawal - userID=%d amount=%.2f ref=%s", userID, amount, txRef)
-	accountName, _ := payload["accountName"].(string)
-	accountNumber, _ := payload["destinationAccountNumber"].(string)
-	if accountNumber == "" {
-		accountNumber, _ = payload["accountNumber"].(string)
-	}
-	bankName, _ := payload["destinationBankName"].(string)
-	if bankName == "" {
-		bankName, _ = payload["bankName"].(string)
-	}
 	paymentMethod := "bankTransfer"
 	transactionType := "WITHDRAWAL"
 	txStatus := "Pending"
