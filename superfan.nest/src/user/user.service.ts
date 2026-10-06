@@ -2395,24 +2395,46 @@ async checkSubscriptionStatusbyUserId(userId: number): Promise<{
     }
   }
 
-  async fetchSubadmin(params: { page: number; perPage: number }): Promise<any> {
+  async fetchSubadmin(params: {
+    page: number;
+    perPage: number;
+    status?: string;
+  }): Promise<any> {
     try {
-      const { page = 1, perPage = 10 } = params;
+      const { page = 1, perPage = 10, status } = params;
 
       const skip = (page - 1) * perPage;
 
-      const [users, total] = await prisma.$transaction([
+      const baseRoleWhere = {
+        roleName: { in: ['superadmin', 'subadmin'] },
+      };
+
+      const where: any = { ...baseRoleWhere };
+
+      if (status) {
+        const normalized = status.toLowerCase().trim();
+        if (normalized === 'active') {
+          where.active = true;
+        } else if (normalized === 'inactive') {
+          where.active = false;
+        }
+      }
+
+      const [users, total, activeCount, inactiveCount] = await prisma.$transaction([
         prisma.user.findMany({
-          where: {
-            roleName: { in: ['superadmin', 'subadmin'] },
-          },
+          where,
           skip,
           take: perPage,
+          orderBy: { createdAt: 'desc' },
         }),
         prisma.user.count({
-          where: {
-            roleName: { in: ['superadmin', 'subadmin'] },
-          },
+          where,
+        }),
+        prisma.user.count({
+          where: { ...baseRoleWhere, active: true },
+        }),
+        prisma.user.count({
+          where: { ...baseRoleWhere, active: false },
         }),
       ]);
 
@@ -2483,6 +2505,15 @@ async checkSubscriptionStatusbyUserId(userId: number): Promise<{
           perPage,
           total,
           lastPage: Math.ceil(total / perPage),
+        },
+        counts: {
+          active: activeCount,
+          inactive: inactiveCount,
+          total: activeCount + inactiveCount,
+        },
+        statusCounts: {
+          active: activeCount,
+          inactive: inactiveCount,
         },
       };
     } catch (error) {
