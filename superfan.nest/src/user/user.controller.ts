@@ -354,10 +354,12 @@ export class UserController {
   getAdmins(
     @Query('page') page: number = 1,
     @Query('perPage') perPage: number = 10,
+    @Query('status') status?: string,
   ): Promise<PaginatedOutputDto<UserDto>> {
     return this.userService.fetchSubadmin({
-      page,
-      perPage,
+      page: Number(page) || 1,
+      perPage: Number(perPage) || 10,
+      status,
     });
   }
 
