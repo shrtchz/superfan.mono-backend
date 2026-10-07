@@ -16,6 +16,7 @@ import { DiditService } from "./didit.service";
 import { TwoFactorController } from "./two-factor/two-factor.controller";
 import { TwoFactorService } from "./two-factor/two-factor.service";
 import { TalkingDrumService } from "./two-factor/talking-drum.service";
+import { TwilioService } from "./two-factor/twilio.service";
 import { ImageModule } from "../image/image.module";
 import { AccountCreationRateLimiterService } from "./account-creation-rate-limiter.service";
 
@@ -41,8 +42,9 @@ import { AccountCreationRateLimiterService } from "./account-creation-rate-limit
         DiditService,
         TwoFactorService,
         TalkingDrumService,
+        TwilioService,
         AccountCreationRateLimiterService,
     ],
-    exports: [UserService, PresenceGateway, DiditService, TwoFactorService, TalkingDrumService, AccountCreationRateLimiterService],
+    exports: [UserService, PresenceGateway, DiditService, TwoFactorService, TalkingDrumService, TwilioService, AccountCreationRateLimiterService],
 })
 export class UserModule {}
