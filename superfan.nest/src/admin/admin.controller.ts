@@ -214,6 +214,48 @@ export class AdminController {
     });
   }
 
+  /**
+   * GET /api/v1/admin/list-clients
+   * Lists all clients with all columns, pagination (page, perPage), and status/plan/search filters.
+   */
+  @Public()
+  @Get('/list-clients')
+  @HttpCode(HttpStatus.OK)
+  async listClients(
+    @Query('page') page: number = 1,
+    @Query('perPage') perPage: number = 10,
+    @Query('status') status?: string,
+    @Query('plan') plan?: string,
+    @Query('search') search?: string,
+  ) {
+    return this.adminService.listClients({
+      page: Number(page) || 1,
+      perPage: Number(perPage) || 10,
+      status,
+      plan,
+      search,
+    });
+  }
+
+  @Public()
+  @Get('/clients')
+  @HttpCode(HttpStatus.OK)
+  async getClients(
+    @Query('page') page: number = 1,
+    @Query('perPage') perPage: number = 10,
+    @Query('status') status?: string,
+    @Query('plan') plan?: string,
+    @Query('search') search?: string,
+  ) {
+    return this.adminService.listClients({
+      page: Number(page) || 1,
+      perPage: Number(perPage) || 10,
+      status,
+      plan,
+      search,
+    });
+  }
+
   @Public()
   @Get('/:roleName')
   async getAdmins(@Param('roleName') roleName: string) {

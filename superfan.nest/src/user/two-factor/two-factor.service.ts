@@ -5,8 +5,10 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import * as crypto from 'crypto';
+import { ConfigService } from '@nestjs/config';
 import { prisma } from '../../prisma/prisma';
 import { TalkingDrumService } from './talking-drum.service';
+import { TwilioService } from './twilio.service';
 import {
   buildOtpauthUri,
   generateTotpSecret,
@@ -19,6 +21,7 @@ const OTP_VALIDITY_MINUTES = 10;
 const PHONE_PATTERN = /^[0-9]{6,15}$/;
 
 export type TwoFactorMethod = 'authenticator' | 'phone';
+export type SmsProvider = 'twilio' | 'talking_drum' | 'africas_talking';
 
 function hashOtp(code: string): string {
   return crypto
@@ -58,7 +61,11 @@ function maskPhone(phone: string): string {
 export class TwoFactorService {
   private readonly logger = new Logger(TwoFactorService.name);
 
-  constructor(private readonly talkingDrumService: TalkingDrumService) {}
+  constructor(
+    private readonly talkingDrumService: TalkingDrumService,
+    private readonly twilioService: TwilioService,
+    private readonly configService: ConfigService,
+  ) {}
 
   async getStatus(userId: number) {
     const user = await prisma.user.findUnique({
@@ -152,7 +159,12 @@ export class TwoFactorService {
     return { enabled: true, method: 'authenticator' as const };
   }
 
-  async sendPhoneOtp(userId: number, phone: string, channel: 'text' | 'call' = 'text') {
+  async sendPhoneOtp(
+    userId: number,
+    phone: string,
+    channel: 'text' | 'call' = 'text',
+    provider?: SmsProvider,
+  ) {
     const user = await prisma.user.findUnique({
       where: { id: userId },
       select: { id: true },
@@ -173,16 +185,30 @@ export class TwoFactorService {
       },
     });
 
-    await this.talkingDrumService.sendOtp({
-      phone: normalizedPhone,
-      code,
-      channel,
-    });
+    const activeProvider =
+      provider ||
+      this.configService.get<string>('SMS_PROVIDER', 'twilio');
+
+    if (activeProvider === 'talking_drum' || activeProvider === 'africas_talking') {
+      await this.talkingDrumService.sendOtp({
+        phone: normalizedPhone,
+        code,
+        channel,
+      });
+    } else {
+      // Default to Twilio flow
+      await this.twilioService.sendOtp({
+        phone: normalizedPhone,
+        code,
+        channel,
+      });
+    }
 
     return {
       message: `A ${TOTP_DIGITS}-digit code was sent to ${maskPhone(normalizedPhone)} via ${channel}.`,
       expiresInMinutes: OTP_VALIDITY_MINUTES,
       phone: maskPhone(normalizedPhone),
+      provider: activeProvider === 'talking_drum' || activeProvider === 'africas_talking' ? 'talking_drum' : 'twilio',
     };
   }
 

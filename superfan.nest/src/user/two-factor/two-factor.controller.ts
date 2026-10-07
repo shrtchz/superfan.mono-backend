@@ -55,6 +55,20 @@ export class TwoFactorController {
       req.user.id,
       dto.phone,
       dto.channel,
+      dto.provider,
+    );
+  }
+
+  @Post('phone/twilio/send-otp')
+  async sendTwilioPhoneOtp(
+    @Req() req: AuthenticatedRequest,
+    @Body() dto: SendPhoneOtpDto,
+  ) {
+    return this.twoFactorService.sendPhoneOtp(
+      req.user.id,
+      dto.phone,
+      dto.channel,
+      'twilio',
     );
   }
 
