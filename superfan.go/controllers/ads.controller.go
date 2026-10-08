@@ -176,7 +176,7 @@ func (ac *AdsController) ApproveCampaign(c *gin.Context) {
 		return
 	}
 
-	campaign, err := ac.adsService.UpdateCampaignStatus(c.Request.Context(), id, models.AdStatusActive)
+	campaign, err := ac.adsService.ApproveCampaign(c.Request.Context(), id)
 	if err != nil {
 		utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
 		return
@@ -194,13 +194,59 @@ func (ac *AdsController) RejectCampaign(c *gin.Context) {
 		return
 	}
 
-	campaign, err := ac.adsService.UpdateCampaignStatus(c.Request.Context(), id, models.AdStatusPaused)
+	var req services.RejectCampaignRequest
+	_ = c.ShouldBindJSON(&req)
+
+	campaign, err := ac.adsService.RejectAndRefundCampaign(c.Request.Context(), id, &req)
 	if err != nil {
 		utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
 		return
 	}
 
-	utils.Success(c, http.StatusOK, "Campaign rejected successfully", campaign)
+	utils.Success(c, http.StatusOK, "Campaign rejected and refunded successfully", campaign)
+}
+
+// TestLink handles POST /v2/ads/test-link
+func (ac *AdsController) TestLink(c *gin.Context) {
+	var req struct {
+		URL        string `json:"url"`
+		CampaignID *int   `json:"campaignId"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "invalid request payload")
+		return
+	}
+
+	res, err := ac.adsService.TestLink(c.Request.Context(), req.URL, req.CampaignID)
+	if err != nil {
+		utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
+		return
+	}
+
+	utils.Success(c, http.StatusOK, "Link tested successfully", res)
+}
+
+// TestCampaignLink handles POST /v2/ads/campaigns/:id/test-link
+func (ac *AdsController) TestCampaignLink(c *gin.Context) {
+	idParam := c.Param("id")
+	id, err := strconv.Atoi(idParam)
+	if err != nil {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "invalid campaign ID")
+		return
+	}
+
+	var req struct {
+		URL string `json:"url"`
+	}
+	_ = c.ShouldBindJSON(&req)
+
+	res, err := ac.adsService.TestLink(c.Request.Context(), req.URL, &id)
+	if err != nil {
+		utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
+		return
+	}
+
+	utils.Success(c, http.StatusOK, "Campaign link tested successfully", res)
 }
 
 // LogAdEvent handles POST /v2/ads/events
@@ -313,6 +359,8 @@ func RegisterAdsRoutes(rg *gin.RouterGroup, ac *AdsController) {
 		adsGroup.POST("/reward", ac.AwardMidQuizReward)
 		adsGroup.POST("/campaigns", ac.CreateCampaign)
 		adsGroup.GET("/campaigns", ac.GetCampaigns)
+		adsGroup.POST("/test-link", ac.TestLink)
+		adsGroup.POST("/campaigns/:id/test-link", ac.TestCampaignLink)
 		authenticatedAdsGroup := rg.Group("/ads", middleware.AuthRequired())
 		authenticatedAdsGroup.GET("/campaigns/mine", ac.GetMyCampaigns)
 		authenticatedAdsGroup.GET("/campaigns/mine/insights", ac.GetMyInsights)

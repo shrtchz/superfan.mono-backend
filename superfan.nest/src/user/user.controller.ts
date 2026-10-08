@@ -282,10 +282,34 @@ export class UserController {
   getClients(
     @Query('page') page: number = 1,
     @Query('perPage') perPage: number = 10,
-  ): Promise<PaginatedOutputDto<UserDto>> {
+    @Query('status') status?: string,
+    @Query('plan') plan?: string,
+    @Query('search') search?: string,
+  ): Promise<any> {
     return this.userService.fetchClients({
-      page,
-      perPage,
+      page: Number(page) || 1,
+      perPage: Number(perPage) || 10,
+      status,
+      plan,
+      search,
+    });
+  }
+
+  @Get('/list-clients')
+  @ApiPaginatedResponse(UserDto)
+  listClients(
+    @Query('page') page: number = 1,
+    @Query('perPage') perPage: number = 10,
+    @Query('status') status?: string,
+    @Query('plan') plan?: string,
+    @Query('search') search?: string,
+  ): Promise<any> {
+    return this.userService.fetchClients({
+      page: Number(page) || 1,
+      perPage: Number(perPage) || 10,
+      status,
+      plan,
+      search,
     });
   }
 
@@ -354,10 +378,12 @@ export class UserController {
   getAdmins(
     @Query('page') page: number = 1,
     @Query('perPage') perPage: number = 10,
+    @Query('status') status?: string,
   ): Promise<PaginatedOutputDto<UserDto>> {
     return this.userService.fetchSubadmin({
-      page,
-      perPage,
+      page: Number(page) || 1,
+      perPage: Number(perPage) || 10,
+      status,
     });
   }
 

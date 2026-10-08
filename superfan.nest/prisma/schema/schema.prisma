@@ -252,6 +252,7 @@ model SubAdminInvite {
   token               String               @unique
   expiresAt           DateTime
   createdAt           DateTime             @default(now())
+  adminType           String               @default("subadmin")
   invitedById         Int?
   invitedBy           User?                @relation(fields: [invitedById], references: [id])
   subAdminPermissions SubAdminPermission[]

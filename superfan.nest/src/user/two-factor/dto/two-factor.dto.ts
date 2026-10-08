@@ -30,6 +30,10 @@ export class SendPhoneOtpDto {
   @IsOptional()
   @IsIn(['text', 'call'])
   channel?: 'text' | 'call';
+
+  @IsOptional()
+  @IsIn(['twilio', 'talking_drum', 'africas_talking'])
+  provider?: 'twilio' | 'talking_drum' | 'africas_talking';
 }
 
 export class VerifyPhoneOtpDto {

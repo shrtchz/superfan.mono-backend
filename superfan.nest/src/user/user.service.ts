@@ -2364,30 +2364,207 @@ async checkSubscriptionStatusbyUserId(userId: number): Promise<{
   };
 }
 
-  async fetchClients(params: { page: number; perPage: number }): Promise<any> {
+  async fetchClients(params: {
+    page?: number;
+    perPage?: number;
+    status?: string;
+    plan?: string;
+    search?: string;
+    sortBy?: string;
+    sortOrder?: 'asc' | 'desc';
+  }): Promise<any> {
     try {
-      const { page = 1, perPage = 10 } = params;
+      const page = Math.max(1, Number(params.page) || 1);
+      const perPage = Math.max(1, Number(params.perPage) || 10);
+      const { status, plan, search, sortBy = 'createdAt', sortOrder = 'desc' } = params;
 
       const skip = (page - 1) * perPage;
 
-      const [clients, total] = await prisma.$transaction([
+      const baseWhere: any = {
+        roleName: 'client',
+      };
+
+      const where: any = { ...baseWhere };
+
+      if (status) {
+        const normalized = status.toLowerCase().trim();
+        if (normalized === 'active') {
+          where.active = true;
+        } else if (normalized === 'inactive') {
+          where.active = false;
+        } else if (normalized === 'online') {
+          where.isOnline = true;
+        } else if (normalized === 'offline') {
+          where.isOnline = false;
+        } else if (normalized === 'banned') {
+          where.isBanned = true;
+        }
+      }
+
+      if (plan) {
+        const normalizedPlan = plan.toUpperCase().trim();
+        if (normalizedPlan === 'FREE') {
+          where.subscriptionPlan = 'FREE';
+        } else if (normalizedPlan === 'PREMIUM_PRO' || normalizedPlan === 'PRO') {
+          where.subscriptionPlan = 'PREMIUM_PRO';
+        } else if (normalizedPlan === 'PREMIUM_PRO_MAX' || normalizedPlan === 'PRO_MAX' || normalizedPlan === 'PRO MAX') {
+          where.subscriptionPlan = 'PREMIUM_PRO_MAX';
+        } else if (normalizedPlan === 'PREMIUM') {
+          where.subscriptionPlan = { in: ['PREMIUM_PRO', 'PREMIUM_PRO_MAX'] };
+        }
+      }
+
+      if (search && search.trim()) {
+        const q = search.trim();
+        where.OR = [
+          { username: { contains: q, mode: 'insensitive' } },
+          { firstName: { contains: q, mode: 'insensitive' } },
+          { lastName: { contains: q, mode: 'insensitive' } },
+          { email: { contains: q, mode: 'insensitive' } },
+          { phone: { contains: q, mode: 'insensitive' } },
+          { bvn: { contains: q, mode: 'insensitive' } },
+          { nin: { contains: q, mode: 'insensitive' } },
+          { country: { contains: q, mode: 'insensitive' } },
+          { state: { contains: q, mode: 'insensitive' } },
+        ];
+      }
+
+      const orderBy: any = {};
+      if (['createdAt', 'username', 'email', 'firstName', 'lastName', 'dob'].includes(sortBy)) {
+        orderBy[sortBy] = sortOrder === 'asc' ? 'asc' : 'desc';
+      } else {
+        orderBy.createdAt = 'desc';
+      }
+
+      const [clients, total, activeCount, inactiveCount, bannedCount] = await prisma.$transaction([
         prisma.user.findMany({
-          where: { roleName: 'client' },
+          where,
           skip,
           take: perPage,
+          orderBy,
         }),
-        prisma.user.count({
-          where: { roleName: 'client' },
-        }),
+        prisma.user.count({ where }),
+        prisma.user.count({ where: { ...baseWhere, active: true } }),
+        prisma.user.count({ where: { ...baseWhere, active: false } }),
+        prisma.user.count({ where: { ...baseWhere, isBanned: true } }),
       ]);
 
+      const clientIds = clients.map((c) => c.id);
+
+      const subscriptions = clientIds.length > 0
+        ? await prisma.subscription.findMany({
+            where: { userId: { in: clientIds } },
+            orderBy: { startDate: 'desc' },
+          })
+        : [];
+
+      const subscriptionMap = subscriptions.reduce((acc, sub) => {
+        if (!acc[sub.userId]) {
+          acc[sub.userId] = sub;
+        }
+        return acc;
+      }, {} as Record<number, any>);
+
+      const formatted = clients.map((user) => {
+        const sub = subscriptionMap[user.id];
+
+        const effectivePlan = user.subscriptionPlan || (sub?.subscriptionPlan ?? 'FREE');
+        let subscriptionName = 'Free';
+        let planTier: string | null = null;
+
+        if (effectivePlan === 'PREMIUM_PRO' || effectivePlan === 'PREMIUM_PRO_MAX') {
+          subscriptionName = 'Premium';
+          planTier = effectivePlan === 'PREMIUM_PRO' ? 'Pro' : 'Pro Max';
+        } else if (effectivePlan === 'FREE') {
+          subscriptionName = 'Free';
+          planTier = null;
+        } else if (effectivePlan) {
+          subscriptionName = String(effectivePlan);
+        }
+
+        let age: number | null = null;
+        if (user.dob) {
+          const birth = new Date(user.dob);
+          if (!isNaN(birth.getTime())) {
+            const today = new Date();
+            let calculatedAge = today.getFullYear() - birth.getFullYear();
+            const monthDiff = today.getMonth() - birth.getMonth();
+            if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birth.getDate())) {
+              calculatedAge--;
+            }
+            age = calculatedAge >= 0 ? calculatedAge : null;
+          }
+        }
+
+        const fullName = `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.username;
+
+        return {
+          id: user.id,
+          username: user.username,
+          displayPhoto: user.profilePicture || user.verify_photo || null,
+          profilePicture: user.profilePicture || null,
+          name: fullName,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          email: user.email,
+          phone: user.phone || null,
+          dateRegistered: user.createdAt,
+          createdAt: user.createdAt,
+          subscriptionPlan: effectivePlan,
+          subscription: subscriptionName,
+          plan: planTier,
+          subscriptionDate: sub?.startDate ?? null,
+          subscriptionExpiry: sub?.endDate ?? null,
+          birthDate: user.dob ?? null,
+          dob: user.dob ?? null,
+          age,
+          country: user.country || null,
+          state: user.state || null,
+          verifiedPhoto: user.verify_photo || null,
+          verify_photo: user.verify_photo || null,
+          bvn: user.bvn || null,
+          nin: user.nin || null,
+          residentialAddress: user.address || null,
+          address: user.address || null,
+          postal_code: user.postal_code || null,
+          status: user.isOnline ? 'active' : (user.active ? 'active' : 'inactive'),
+          active: user.active,
+          isOnline: user.isOnline,
+          isBanned: user.isBanned,
+          lastLogin: user.login_timestamp ?? null,
+          login_timestamp: user.login_timestamp ?? null,
+          location: user.location || null,
+          ip_address: user.ip_address || null,
+          kyc_status: user.kyc_status,
+          kyc_tier: user.kyc_tier,
+          report: {
+            banReason: user.banReason || '',
+            banCategory: user.banCategory || '',
+            unbanReason: user.unBanReason || '',
+          },
+        };
+      });
+
       return {
-        data: clients,
+        data: formatted,
         meta: {
           page,
           perPage,
           total,
           lastPage: Math.ceil(total / perPage),
+          hasNextPage: page < Math.ceil(total / perPage),
+          hasPrevPage: page > 1,
+        },
+        counts: {
+          total,
+          active: activeCount,
+          inactive: inactiveCount,
+          banned: bannedCount,
+        },
+        statusCounts: {
+          active: activeCount,
+          inactive: inactiveCount,
+          banned: bannedCount,
         },
       };
     } catch (error) {
@@ -2395,24 +2572,46 @@ async checkSubscriptionStatusbyUserId(userId: number): Promise<{
     }
   }
 
-  async fetchSubadmin(params: { page: number; perPage: number }): Promise<any> {
+  async fetchSubadmin(params: {
+    page: number;
+    perPage: number;
+    status?: string;
+  }): Promise<any> {
     try {
-      const { page = 1, perPage = 10 } = params;
+      const { page = 1, perPage = 10, status } = params;
 
       const skip = (page - 1) * perPage;
 
-      const [users, total] = await prisma.$transaction([
+      const baseRoleWhere = {
+        roleName: { in: ['superadmin', 'subadmin'] },
+      };
+
+      const where: any = { ...baseRoleWhere };
+
+      if (status) {
+        const normalized = status.toLowerCase().trim();
+        if (normalized === 'active') {
+          where.active = true;
+        } else if (normalized === 'inactive') {
+          where.active = false;
+        }
+      }
+
+      const [users, total, activeCount, inactiveCount] = await prisma.$transaction([
         prisma.user.findMany({
-          where: {
-            roleName: { in: ['superadmin', 'subadmin'] },
-          },
+          where,
           skip,
           take: perPage,
+          orderBy: { createdAt: 'desc' },
         }),
         prisma.user.count({
-          where: {
-            roleName: { in: ['superadmin', 'subadmin'] },
-          },
+          where,
+        }),
+        prisma.user.count({
+          where: { ...baseRoleWhere, active: true },
+        }),
+        prisma.user.count({
+          where: { ...baseRoleWhere, active: false },
         }),
       ]);
 
@@ -2483,6 +2682,15 @@ async checkSubscriptionStatusbyUserId(userId: number): Promise<{
           perPage,
           total,
           lastPage: Math.ceil(total / perPage),
+        },
+        counts: {
+          active: activeCount,
+          inactive: inactiveCount,
+          total: activeCount + inactiveCount,
+        },
+        statusCounts: {
+          active: activeCount,
+          inactive: inactiveCount,
         },
       };
     } catch (error) {
