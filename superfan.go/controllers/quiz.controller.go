@@ -827,10 +827,6 @@ func (qc *QuizController) UpdateLiveQuiz(c *gin.Context) {
 
 	err = qc.QuizService.UpdateLiveQuiz(&liveQuiz)
 	if err != nil {
-		if errors.Is(err, services.ErrLiveQuizActive) {
-			utils.SendError(c, http.StatusForbidden, "FORBIDDEN", err.Error())
-			return
-		}
 		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", err.Error())
 		return
 	}

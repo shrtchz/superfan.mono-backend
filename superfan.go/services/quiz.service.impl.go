@@ -374,7 +374,7 @@ func buildLiveQuizResponseMap(raw bson.M, now time.Time) map[string]interface{} 
 		"quizScheduleDate":           rawTimeString(raw["quizScheduleDate"]),
 		"quizFinishDate":             rawTimeString(raw["quizFinishDate"]),
 		"status":                     status,
-		"isEditable":                 !isActive,
+		"isEditable":                 true,
 		"isDeletable":                !isActive,
 		"imageLink":                  rawStringSlice(raw["imageLink"]),
 		"quizCountdownState":         status,
@@ -1897,11 +1897,6 @@ func (u *QuizServiceImpl) UpdateLiveQuiz(quiz *models.LiveQuiz) error {
 			return errors.New("live quiz not found")
 		}
 		return err
-	}
-
-	now, _ := lagosNow()
-	if (now.Equal(existing.QuizScheduleDate) || now.After(existing.QuizScheduleDate)) && now.Before(existing.QuizFinishDate) {
-		return fmt.Errorf("%w: active quizzes cannot be edited", ErrLiveQuizActive)
 	}
 
 	if quiz.QuizFinishDate.IsZero() {
