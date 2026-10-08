@@ -29,6 +29,28 @@ export class NotificationController {
   }
 
   @Public()
+  @Post('/triggers/ad-rejected')
+  @HttpCode(HttpStatus.OK)
+  triggerAdRejected(
+    @Body()
+    body: {
+      userId: number;
+      campaignTitle: string;
+      reason: string;
+      notes?: string;
+      refundAmount?: number;
+    },
+  ) {
+    return this.notificationService.adRejected(
+      body.userId,
+      body.campaignTitle,
+      body.reason,
+      body.notes,
+      body.refundAmount,
+    );
+  }
+
+  @Public()
   @Post('/triggers/ad-ended')
   @HttpCode(HttpStatus.OK)
   triggerAdEnded(@Body() body: { userId: number; campaignTitle: string }) {

@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -24,6 +26,9 @@ type AdsService interface {
 	GetMyInsights(ctx context.Context, query *AdInsightsQuery) (*AdInsightsResponse, error)
 	GetInventoryStats(ctx context.Context) (*InventoryStatsResponse, error)
 	UpdateCampaignStatus(ctx context.Context, id int, status models.AdStatus) (*models.AdCampaign, error)
+	ApproveCampaign(ctx context.Context, id int) (*models.AdCampaign, error)
+	RejectAndRefundCampaign(ctx context.Context, id int, req *RejectCampaignRequest) (*models.AdCampaign, error)
+	TestLink(ctx context.Context, rawURL string, campaignID *int) (*TestLinkResponse, error)
 	LogAdEvent(ctx context.Context, req *LogAdEventRequest) error
 	GetPlacementEligibility(ctx context.Context, userId int, placementKey string) (*PlacementEligibilityResponse, error)
 	EstimateAdCost(ctx context.Context, req *EstimateAdCostRequest) (*EstimateAdCostResponse, error)
@@ -347,6 +352,30 @@ type PlacementEligibilityResponse struct {
 	Reason    string              `json:"reason,omitempty"`
 	Campaign  *models.AdCampaign  `json:"campaign,omitempty"`
 	Placement *models.AdPlacement `json:"placement,omitempty"`
+}
+
+type RejectCampaignRequest struct {
+	Reason string `json:"reason" binding:"required"`
+	Notes  string `json:"notes,omitempty"`
+}
+
+type SafeBrowsingResult struct {
+	Status       string   `json:"status"` // "SAFE", "UNSAFE", "SUSPICIOUS", "INVALID"
+	ThreatsFound []string `json:"threatsFound"`
+	Details      string   `json:"details"`
+}
+
+type TestLinkResponse struct {
+	Pass           bool               `json:"pass"`
+	IsSafe         bool               `json:"isSafe"`
+	Resolves       bool               `json:"resolves"`
+	Status         int                `json:"status"`
+	StatusText     string             `json:"statusText"`
+	OriginalURL    string             `json:"originalUrl"`
+	ResolvedURL    string             `json:"resolvedUrl"`
+	ResponseTimeMs int64              `json:"responseTimeMs"`
+	SafeBrowsing   SafeBrowsingResult `json:"safeBrowsing"`
+	Message        string             `json:"message"`
 }
 
 func ResolvePlacementConfig(placementInput string) PlacementFormatRule {
@@ -1239,6 +1268,390 @@ func (s *adsServiceImpl) UpdateCampaignStatus(ctx context.Context, id int, statu
 	}
 
 	return &campaign, nil
+}
+
+func (s *adsServiceImpl) ApproveCampaign(ctx context.Context, id int) (*models.AdCampaign, error) {
+	var campaign models.AdCampaign
+	if err := s.db.WithContext(ctx).First(&campaign, id).Error; err != nil {
+		return nil, fmt.Errorf("campaign not found: %w", err)
+	}
+
+	// Approve campaign and set status to ACTIVE (ad server rotation schedules it from its startDate)
+	now := time.Now()
+	if err := s.db.WithContext(ctx).Model(&models.AdCampaign{}).
+		Where("id = ?", id).
+		Updates(map[string]interface{}{
+			"status":    models.AdStatusActive,
+			"updatedAt": now,
+		}).Error; err != nil {
+		return nil, fmt.Errorf("failed to approve campaign: %w", err)
+	}
+
+	if err := s.db.WithContext(ctx).First(&campaign, id).Error; err != nil {
+		return nil, fmt.Errorf("failed to reload campaign: %w", err)
+	}
+
+	// Notify advertiser that their ad is approved and in server rotation
+	s.notifyAdApprovedLive(campaign.UserID, campaign.Headline)
+
+	return &campaign, nil
+}
+
+func (s *adsServiceImpl) RejectAndRefundCampaign(ctx context.Context, id int, req *RejectCampaignRequest) (*models.AdCampaign, error) {
+	var campaign models.AdCampaign
+	if err := s.db.WithContext(ctx).First(&campaign, id).Error; err != nil {
+		return nil, fmt.Errorf("campaign not found: %w", err)
+	}
+
+	reason := "Rejected by moderation"
+	notes := ""
+	if req != nil {
+		if strings.TrimSpace(req.Reason) != "" {
+			reason = strings.TrimSpace(req.Reason)
+		}
+		notes = strings.TrimSpace(req.Notes)
+	}
+
+	now := time.Now()
+
+	// Update campaign status to PAUSED
+	if err := s.db.WithContext(ctx).Model(&models.AdCampaign{}).
+		Where("id = ?", id).
+		Updates(map[string]interface{}{
+			"status":    models.AdStatusPaused,
+			"updatedAt": now,
+		}).Error; err != nil {
+		return nil, fmt.Errorf("failed to update campaign status to rejected: %w", err)
+	}
+
+	// Issue wallet credit refund to advertiser if fee > 0 and user exists
+	refundAmount := float64(campaign.TotalFee)
+	if campaign.UserID != nil && *campaign.UserID > 0 && refundAmount > 0 {
+		userID := *campaign.UserID
+
+		// Credit user's wallet
+		var wallet models.Wallet
+		walletErr := s.db.WithContext(ctx).Where(`"userId" = ?`, userID).First(&wallet).Error
+		if walletErr == nil && wallet.ID > 0 {
+			if err := s.db.WithContext(ctx).Model(&models.Wallet{}).
+				Where("id = ?", wallet.ID).
+				Updates(map[string]interface{}{
+					"personalBalance": gorm.Expr(`"personalBalance" + ?`, refundAmount),
+					"balance":         gorm.Expr(`"balance" + ?`, refundAmount),
+				}).Error; err != nil {
+				fmt.Printf("Warning: failed to credit wallet %d: %v\n", wallet.ID, err)
+			}
+		} else {
+			// Create wallet with credited amount
+			newWallet := models.Wallet{
+				UserID:          userID,
+				PersonalBalance: refundAmount,
+				Balance:         refundAmount,
+			}
+			_ = s.db.WithContext(ctx).Create(&newWallet).Error
+		}
+
+		// Insert WalletTransaction record
+		trxType := "credit"
+		trxCategory := "AD_REFUND"
+		trxStatus := "SUCCESS"
+		trxDesc := fmt.Sprintf("Refund for rejected ad: %s (Reason: %s)", campaign.Headline, reason)
+		if notes != "" {
+			trxDesc += fmt.Sprintf(" - Note: %s", notes)
+		}
+		ref := fmt.Sprintf("REF-AD-%d-%d", campaign.ID, now.Unix())
+
+		txRecord := models.WalletTransaction{
+			UserID:          userID,
+			Amount:          refundAmount,
+			Type:            &trxType,
+			TransactionType: &trxCategory,
+			Currency:        "NGN",
+			Status:          &trxStatus,
+			Description:     &trxDesc,
+			Reference:       &ref,
+			TrxRef:          &ref,
+			CreatedAt:       now,
+		}
+		_ = s.db.WithContext(ctx).Create(&txRecord).Error
+
+		// Trigger in-app notification and email via Nest
+		s.notifyNest("ad-rejected", map[string]interface{}{
+			"userId":        userID,
+			"campaignTitle": campaign.Headline,
+			"reason":        reason,
+			"notes":         notes,
+			"refundAmount":  campaign.TotalFee,
+		})
+	}
+
+	if err := s.db.WithContext(ctx).First(&campaign, id).Error; err != nil {
+		return nil, fmt.Errorf("failed to reload campaign after rejection: %w", err)
+	}
+
+	return &campaign, nil
+}
+
+func isPrivateOrLoopbackHost(host string) bool {
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".internal") || strings.HasSuffix(host, ".local") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		ips, err := net.LookupIP(host)
+		if err == nil && len(ips) > 0 {
+			ip = ips[0]
+		}
+	}
+	if ip != nil {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+			return true
+		}
+	}
+	return false
+}
+
+func checkMaliciousOrExplicitContent(parsed *url.URL) []string {
+	threats := make([]string, 0)
+	full := strings.ToLower(parsed.String())
+	host := strings.ToLower(parsed.Hostname())
+
+	maliciousKeywords := []string{
+		"phishing", "malware", "ransomware", "trojan", "stealer", "keylogger",
+		"crypto-drainer", "wallet-drainer", "free-crypto-giveaway", "metamask-verify",
+		"binance-auth-check", "claim-airdrop-now",
+	}
+	for _, kw := range maliciousKeywords {
+		if strings.Contains(full, kw) {
+			threats = append(threats, fmt.Sprintf("Malicious keyword detected (%s)", kw))
+		}
+	}
+
+	explicitKeywords := []string{
+		"porn", "xxx", "nude", "nsfw", "hentai", "camgirl", "escort-service", "adult-dating",
+	}
+	for _, kw := range explicitKeywords {
+		if strings.Contains(full, kw) {
+			threats = append(threats, fmt.Sprintf("Explicit content keyword (%s)", kw))
+		}
+	}
+
+	// Suspicious TLD check
+	suspiciousTLDs := []string{".tk", ".ml", ".ga", ".cf", ".gq"}
+	for _, tld := range suspiciousTLDs {
+		if strings.HasSuffix(host, tld) {
+			threats = append(threats, fmt.Sprintf("High-risk TLD (%s)", tld))
+		}
+	}
+
+	return threats
+}
+
+func checkContentSafety(htmlSnippet string) []string {
+	threats := make([]string, 0)
+	lower := strings.ToLower(htmlSnippet)
+
+	explicitMarkers := []string{"hardcore porn", "xxx video", "adult webcam", "casino hack"}
+	for _, marker := range explicitMarkers {
+		if strings.Contains(lower, marker) {
+			threats = append(threats, fmt.Sprintf("Explicit content marker (%s)", marker))
+		}
+	}
+	return threats
+}
+
+func (s *adsServiceImpl) TestLink(ctx context.Context, rawURL string, campaignID *int) (*TestLinkResponse, error) {
+	if strings.TrimSpace(rawURL) == "" && campaignID != nil && *campaignID > 0 {
+		var c models.AdCampaign
+		if err := s.db.WithContext(ctx).First(&c, *campaignID).Error; err == nil && c.WebsiteURL != nil {
+			rawURL = *c.WebsiteURL
+		}
+	}
+
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return &TestLinkResponse{
+			Pass:           false,
+			IsSafe:         false,
+			Resolves:       false,
+			Status:         0,
+			StatusText:     "No URL Provided",
+			OriginalURL:    rawURL,
+			ResolvedURL:    rawURL,
+			ResponseTimeMs: 0,
+			SafeBrowsing: SafeBrowsingResult{
+				Status:       "INVALID",
+				ThreatsFound: []string{"Missing URL"},
+				Details:      "No destination URL was provided for verification.",
+			},
+			Message: "No destination URL provided to test.",
+		}, nil
+	}
+
+	// Ensure scheme
+	targetURL := rawURL
+	if !strings.HasPrefix(strings.ToLower(targetURL), "http://") && !strings.HasPrefix(strings.ToLower(targetURL), "https://") {
+		targetURL = "https://" + targetURL
+	}
+
+	parsed, err := url.Parse(targetURL)
+	if err != nil || parsed.Host == "" {
+		return &TestLinkResponse{
+			Pass:           false,
+			IsSafe:         false,
+			Resolves:       false,
+			Status:         0,
+			StatusText:     "Invalid URL Format",
+			OriginalURL:    rawURL,
+			ResolvedURL:    targetURL,
+			ResponseTimeMs: 0,
+			SafeBrowsing: SafeBrowsingResult{
+				Status:       "INVALID",
+				ThreatsFound: []string{"Malformed URL"},
+				Details:      "The URL could not be parsed into a valid hostname.",
+			},
+			Message: "Invalid destination URL format.",
+		}, nil
+	}
+
+	hostLower := strings.ToLower(parsed.Hostname())
+
+	// SSRF Protection: block localhost / private IPs
+	if isPrivateOrLoopbackHost(hostLower) {
+		return &TestLinkResponse{
+			Pass:           false,
+			IsSafe:         false,
+			Resolves:       false,
+			Status:         403,
+			StatusText:     "Forbidden Internal Target",
+			OriginalURL:    rawURL,
+			ResolvedURL:    targetURL,
+			ResponseTimeMs: 0,
+			SafeBrowsing: SafeBrowsingResult{
+				Status:       "UNSAFE",
+				ThreatsFound: []string{"Internal/Private IP Target"},
+				Details:      "Destination link points to an internal or non-routable address.",
+			},
+			Message: "Destination URL points to an internal or restricted IP address.",
+		}, nil
+	}
+
+	// Safe Browsing / Keyword heuristics
+	threats := checkMaliciousOrExplicitContent(parsed)
+	isSafe := len(threats) == 0
+
+	// HTTP Check
+	client := &http.Client{
+		Timeout: 8 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return errors.New("stopped after 5 redirects")
+			}
+			return nil
+		},
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", targetURL, nil)
+	if err != nil {
+		safeStatus := "UNSAFE"
+		if isSafe {
+			safeStatus = "SAFE"
+		}
+		return &TestLinkResponse{
+			Pass:           false,
+			IsSafe:         isSafe,
+			Resolves:       false,
+			Status:         0,
+			StatusText:     "Request Creation Failed",
+			OriginalURL:    rawURL,
+			ResolvedURL:    targetURL,
+			ResponseTimeMs: 0,
+			SafeBrowsing: SafeBrowsingResult{
+				Status:       safeStatus,
+				ThreatsFound: threats,
+				Details:      "Failed to initialize HTTP request.",
+			},
+			Message: "Failed to initialize HTTP connection: " + err.Error(),
+		}, nil
+	}
+
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 SuperfanAdBot/1.0")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+
+	startTime := time.Now()
+	resp, err := client.Do(req)
+	elapsedMs := time.Since(startTime).Milliseconds()
+
+	if err != nil {
+		safeStatus := "UNSAFE"
+		if isSafe {
+			safeStatus = "SAFE"
+		}
+		return &TestLinkResponse{
+			Pass:           false,
+			IsSafe:         isSafe,
+			Resolves:       false,
+			Status:         0,
+			StatusText:     "Connection Failed / Unreachable",
+			OriginalURL:    rawURL,
+			ResolvedURL:    targetURL,
+			ResponseTimeMs: elapsedMs,
+			SafeBrowsing: SafeBrowsingResult{
+				Status:       safeStatus,
+				ThreatsFound: append(threats, "Destination Unreachable"),
+				Details:      fmt.Sprintf("Failed to resolve URL: %v", err),
+			},
+			Message: fmt.Sprintf("Destination URL is unreachable or timed out (%dms): %v", elapsedMs, err),
+		}, nil
+	}
+	defer resp.Body.Close()
+
+	resolvedURL := resp.Request.URL.String()
+	resolves := resp.StatusCode >= 200 && resp.StatusCode < 400
+
+	// Check body sample if html
+	bodySample := make([]byte, 4096)
+	n, _ := resp.Body.Read(bodySample)
+	if n > 0 {
+		contentThreats := checkContentSafety(string(bodySample[:n]))
+		if len(contentThreats) > 0 {
+			threats = append(threats, contentThreats...)
+			isSafe = false
+		}
+	}
+
+	pass := resolves && isSafe
+
+	safeStatus := "SAFE"
+	safeDetails := "Destination passed all security, malware, and content safety checks."
+	if !isSafe {
+		safeStatus = "UNSAFE"
+		safeDetails = fmt.Sprintf("Flagged potential security concerns: %s", strings.Join(threats, ", "))
+	}
+
+	msg := "Destination URL is live, reachable, and verified safe."
+	if !resolves {
+		msg = fmt.Sprintf("Destination URL returned HTTP %d %s", resp.StatusCode, http.StatusText(resp.StatusCode))
+	} else if !isSafe {
+		msg = fmt.Sprintf("Destination URL resolved with HTTP %d but failed safe-browsing checks (%s)", resp.StatusCode, strings.Join(threats, ", "))
+	}
+
+	return &TestLinkResponse{
+		Pass:           pass,
+		IsSafe:         isSafe,
+		Resolves:       resolves,
+		Status:         resp.StatusCode,
+		StatusText:     http.StatusText(resp.StatusCode),
+		OriginalURL:    rawURL,
+		ResolvedURL:    resolvedURL,
+		ResponseTimeMs: elapsedMs,
+		SafeBrowsing: SafeBrowsingResult{
+			Status:       safeStatus,
+			ThreatsFound: threats,
+			Details:      safeDetails,
+		},
+		Message: msg,
+	}, nil
 }
 
 func (s *adsServiceImpl) LogAdEvent(ctx context.Context, req *LogAdEventRequest) error {

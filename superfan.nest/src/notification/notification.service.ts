@@ -15,6 +15,7 @@ export const NotificationTriggers = {
   ORDER_STATUS_UPDATE: 'order_status_update',
   PAYMENT_FAILED: 'payment_failed',
   AD_APPROVED_LIVE: 'ad_approved_live',
+  AD_REJECTED: 'ad_rejected',
   AD_ENDED: 'ad_ended',
   AD_PERFORMANCE_MILESTONE: 'ad_performance_milestone',
   AD_REWARD_CREDITED: 'ad_reward_credited',
@@ -263,6 +264,27 @@ export class NotificationService {
       userId,
       NotificationTriggers.AD_APPROVED_LIVE,
       msg,
+      msg,
+    );
+  }
+
+  async adRejected(
+    userId: number,
+    campaignTitle: string,
+    reason: string,
+    notes?: string,
+    refundAmount?: number,
+  ) {
+    const refundText =
+      refundAmount && refundAmount > 0
+        ? ` ₦${Number(refundAmount).toLocaleString()} has been refunded to your wallet.`
+        : '';
+    const noteText = notes ? ` Note: ${notes}.` : '';
+    const msg = `Ad Campaign Rejected: "${campaignTitle}" was not approved due to: ${reason}.${noteText}${refundText}`;
+    return this.notify(
+      userId,
+      NotificationTriggers.AD_REJECTED,
+      `Ad Campaign Rejected: "${campaignTitle}"`,
       msg,
     );
   }
