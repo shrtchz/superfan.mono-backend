@@ -50,6 +50,7 @@ export class StreamingController {
   }
 
   @Get('auth-url')
+  @Public()
   async getAuthUrl() {
     return { authUrl: this.streamingService.generateAuthUrl() };
   }
