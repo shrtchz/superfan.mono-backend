@@ -20,9 +20,7 @@
  * Safe to re-run — all operations are idempotent.
  */
 
-import { PrismaClient } from '@prisma/client';
-
-const prisma = new PrismaClient();
+import { prisma } from '../src/prisma/prisma';
 
 const DRY_RUN = process.env.DRY_RUN !== 'false'; // defaults to DRY_RUN for safety
 const POINTS_TO_NAIRA_RATE = (() => {
@@ -324,9 +322,7 @@ async function main() {
 `);
 }
 
-main()
-  .catch((e) => {
-    console.error('Backfill failed:', e);
-    process.exit(1);
-  })
-  .finally(() => prisma.$disconnect());
+main().catch((e) => {
+  console.error('Backfill failed:', e);
+  process.exit(1);
+});

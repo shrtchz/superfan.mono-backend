@@ -21,9 +21,7 @@
  */
 
 import axios from 'axios';
-import { PrismaClient } from '@prisma/client';
-
-const prisma = new PrismaClient();
+import { prisma } from '../src/prisma/prisma';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const GO_API_BASE = process.env.GO_ENDPOINT || process.env.NEXT_PUBLIC_GO_SERVICE_URL || 'http://localhost:8080';
@@ -244,9 +242,7 @@ async function main() {
   `);
 }
 
-main()
-  .catch((e) => {
-    console.error('Backfill failed:', e);
-    process.exit(1);
-  })
-  .finally(() => prisma.$disconnect());
+main().catch((e) => {
+  console.error('Backfill failed:', e);
+  process.exit(1);
+});
