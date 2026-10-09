@@ -1681,8 +1681,9 @@ func (u *QuizServiceImpl) GetLiveQuizAnswerById(userID int, id string) (map[stri
 
 	var ongoingQuiz models.OngoingQuiz
 	err = utils.DB.
-		Where(`"userId" = ? AND "isCompleted" = ?`, userID, false).
+		Where(`"userId" = ?`, userID).
 		Where(`"questions" @> ?`, fmt.Sprintf(`[{"id":"%s"}]`, id)).
+		Order(`"updatedAt" DESC`).
 		First(&ongoingQuiz).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
