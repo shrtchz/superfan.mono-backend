@@ -1158,14 +1158,32 @@ async startLiveQuizSession(
     throw new NotFoundException('No live quizzes provided');
   }
 
+  const incomingQuizIds = quizzes
+    .map((quiz) => String(quiz.id ?? quiz.quizId ?? '').trim())
+    .filter(Boolean);
+
   const existingQuiz = await prisma.ongoingLiveQuiz.findFirst({
     where: {
       userId: String(userId),
       completed: false,
     },
   });
+
   if (existingQuiz) {
-    return existingQuiz;
+    const existingQuizIds = new Set<string>(existingQuiz.quizIds ?? []);
+    const hasNewQuiz = incomingQuizIds.some((id) => !existingQuizIds.has(id));
+
+    if (!hasNewQuiz) {
+      // All incoming quizzes are already tracked in this session — resume it.
+      return existingQuiz;
+    }
+
+    // A new quiz has arrived for this stream. Mark the old session completed
+    // so the user can participate in the new quiz with a fresh session.
+    await prisma.ongoingLiveQuiz.update({
+      where: { id: existingQuiz.id },
+      data: { completed: true },
+    });
   }
 
   const filteredQuizzes = [];
@@ -1908,6 +1926,40 @@ async hasSubmittedLiveQuizForStream(
       }
       throw new InternalServerErrorException(message);
     }
+  }
+
+  /**
+   * Reads the user's submitted live quiz answer directly from Postgres.
+   * The Go service's /v2/quiz/live-answer/:quizId endpoint only returns empty
+   * strings because it has no record of the answer — answers are only stored
+   * in the ongoingLiveQuiz.answers JSON column in Nest's Postgres database.
+   */
+  async getLiveQuizAnswerFromDb(
+    userId: string,
+    quizId: string,
+  ): Promise<{ id: string; answer: string; selectedAnswer: string }> {
+    const session = await prisma.ongoingLiveQuiz.findFirst({
+      where: {
+        userId,
+        quizIds: { has: quizId },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const answers: any[] = (session?.answers as any[]) ?? [];
+    const match = answers.find(
+      (a) => String(a?.quizId ?? '') === String(quizId),
+    );
+
+    const selectedAnswer = typeof match?.selectedAnswer === 'string'
+      ? match.selectedAnswer.trim()
+      : '';
+
+    return {
+      id: quizId,
+      answer: selectedAnswer,
+      selectedAnswer,
+    };
   }
 
   async getCompletedLiveQuiz(userId: number) {
