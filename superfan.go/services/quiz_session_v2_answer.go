@@ -124,14 +124,34 @@ type liveQuizSubmission struct {
 	SubmittedAt    string `json:"submittedAt"`
 }
 
+type JSONB []byte
+
+func (value JSONB) Value() (driver.Value, error) {
+	return string(value), nil
+}
+
+func (value *JSONB) Scan(source interface{}) error {
+	switch source := source.(type) {
+	case nil:
+		*value = nil
+	case []byte:
+		*value = append((*value)[:0], source...)
+	case string:
+		*value = append((*value)[:0], source...)
+	default:
+		return fmt.Errorf("cannot scan %T into JSONB", source)
+	}
+	return nil
+}
+
 type ongoingLiveQuizRecord struct {
-	ID        int             `gorm:"column:id"`
-	UserID    string          `gorm:"column:userId"`
-	QuizIDs   StringArray     `gorm:"column:quizIds;type:text[]"`
-	Answers   json.RawMessage `gorm:"column:answers"`
-	Completed bool            `gorm:"column:completed"`
-	CreatedAt time.Time       `gorm:"column:createdAt"`
-	UpdatedAt time.Time       `gorm:"column:updatedAt"`
+	ID        int         `gorm:"column:id"`
+	UserID    string      `gorm:"column:userId"`
+	QuizIDs   StringArray `gorm:"column:quizIds;type:text[]"`
+	Answers   JSONB       `gorm:"column:answers;type:jsonb"`
+	Completed bool        `gorm:"column:completed"`
+	CreatedAt time.Time   `gorm:"column:createdAt"`
+	UpdatedAt time.Time   `gorm:"column:updatedAt"`
 }
 
 func (ongoingLiveQuizRecord) TableName() string {
@@ -142,7 +162,7 @@ func buildOngoingLiveQuizRecord(userID string, quizIDs StringArray, answersJSON 
 	return ongoingLiveQuizRecord{
 		UserID:    userID,
 		QuizIDs:   quizIDs,
-		Answers:   answersJSON,
+		Answers:   JSONB(answersJSON),
 		Completed: false,
 		CreatedAt: submittedAt,
 		UpdatedAt: submittedAt,
@@ -177,25 +197,52 @@ func mergeLiveQuizSubmissionAnswers(existingAnswers []byte, quizID, selectedAnsw
 	return json.Marshal(answers)
 }
 
-func persistLiveQuizAnswer(userID int, quizID, selectedAnswer string, submittedAt time.Time) error {
+func findLiveQuizSubmission(existingAnswers []byte, quizID string) (liveQuizSubmission, bool, error) {
+	var answers []liveQuizSubmission
+	if len(existingAnswers) > 0 {
+		if err := json.Unmarshal(existingAnswers, &answers); err != nil {
+			return liveQuizSubmission{}, false, err
+		}
+	}
+
+	for _, answer := range answers {
+		if answer.QuizID == quizID && strings.TrimSpace(answer.SelectedAnswer) != "" {
+			return answer, true, nil
+		}
+	}
+
+	return liveQuizSubmission{}, false, nil
+}
+
+func persistLiveQuizAnswer(userID int, quizID, selectedAnswer string, submittedAt time.Time) (string, bool, error) {
 	if utils.DB == nil {
-		return nil
+		return selectedAnswer, false, nil
 	}
 
 	if quizID == "" || selectedAnswer == "" {
-		return nil
+		return selectedAnswer, false, nil
 	}
 
 	userIDValue := strconv.Itoa(userID)
 	var record ongoingLiveQuizRecord
 	queryErr := utils.DB.Where(`"userId" = ? AND "completed" = ?`, userIDValue, false).First(&record).Error
 	if queryErr != nil && !errors.Is(queryErr, gorm.ErrRecordNotFound) {
-		return queryErr
+		return "", false, queryErr
 	}
 
-	answersJSON, mergeErr := mergeLiveQuizSubmissionAnswers(record.Answers, quizID, selectedAnswer, submittedAt)
+	if !errors.Is(queryErr, gorm.ErrRecordNotFound) {
+		existing, found, findErr := findLiveQuizSubmission([]byte(record.Answers), quizID)
+		if findErr != nil {
+			return "", false, findErr
+		}
+		if found {
+			return existing.SelectedAnswer, true, nil
+		}
+	}
+
+	answersJSON, mergeErr := mergeLiveQuizSubmissionAnswers([]byte(record.Answers), quizID, selectedAnswer, submittedAt)
 	if mergeErr != nil {
-		return mergeErr
+		return "", false, mergeErr
 	}
 
 	quizIDs := StringArray(append([]string(nil), record.QuizIDs...))
@@ -205,14 +252,20 @@ func persistLiveQuizAnswer(userID int, quizID, selectedAnswer string, submittedA
 
 	if errors.Is(queryErr, gorm.ErrRecordNotFound) {
 		recordToCreate := buildOngoingLiveQuizRecord(userIDValue, quizIDs, answersJSON, submittedAt)
-		return utils.DB.Create(&recordToCreate).Error
+		if err := utils.DB.Create(&recordToCreate).Error; err != nil {
+			return "", false, err
+		}
+		return selectedAnswer, false, nil
 	}
 
-	return utils.DB.Model(&record).Updates(map[string]interface{}{
+	if err := utils.DB.Model(&record).Updates(map[string]interface{}{
 		"quizIds":   quizIDs,
 		"answers":   answersJSON,
 		"updatedAt": submittedAt,
-	}).Error
+	}).Error; err != nil {
+		return "", false, err
+	}
+	return selectedAnswer, false, nil
 }
 
 func shouldCreateLiveQuizRecord(queryErr error) bool {
@@ -419,24 +472,37 @@ func (s *QuizSessionV2Service) SaveAnswer(sessionID string, req models.SaveAnswe
 	}
 
 	answers := parseStoredSessionAnswers(lookup.record.Answers)
-	updated := false
-	for index := range answers {
-		if answers[index].QuizID == questionID {
-			answers[index].SelectedAnswer = selectedAnswer
-			answers[index].AnsweredAt = now
-			answers[index].IsCorrect = isCorrect
-			updated = true
-			break
+	for _, answer := range answers {
+		if answer.QuizID == questionID && strings.TrimSpace(answer.SelectedAnswer) != "" {
+			alreadySubmittedCorrect := gradeAnswer(answer.SelectedAnswer, correctAnswer, options)
+			return &models.SaveAnswerV2Result{
+				Answer: models.SavedAnswerV2Feedback{
+					QuestionID:           questionID,
+					SelectedAnswer:       answer.SelectedAnswer,
+					IsCorrect:            alreadySubmittedCorrect,
+					CorrectAnswer:        correctAnswer,
+					CorrectAnswerDisplay: correctDisplay,
+					Earning:              questionEarningValue(question, alreadySubmittedCorrect),
+					AnsweredAt:           isoTime(answer.AnsweredAt),
+				},
+				Session: models.SaveAnswerV2Session{
+					ID:             sessionID,
+					CurrentIndex:   len(answers),
+					AnswersCount:   len(answers),
+					IsLastQuestion: len(answers) >= lookup.record.TotalQuestions,
+					Status:         deriveSessionStatus(lookup.record, false),
+				},
+				AlreadySubmitted: true,
+			}, nil
 		}
 	}
-	if !updated {
-		answers = append(answers, storedSessionAnswer{
-			QuizID:         questionID,
-			SelectedAnswer: selectedAnswer,
-			AnsweredAt:     now,
-			IsCorrect:      isCorrect,
-		})
-	}
+
+	answers = append(answers, storedSessionAnswer{
+		QuizID:         questionID,
+		SelectedAnswer: selectedAnswer,
+		AnsweredAt:     now,
+		IsCorrect:      isCorrect,
+	})
 
 	answersJSON, err := json.Marshal(answers)
 	if err != nil {
@@ -529,12 +595,23 @@ func (s *QuizSessionV2Service) GradeLiveAnswer(req models.SaveAnswerV2Request) (
 	// if err := persistLiveQuizAnswer(req.UserID, questionID, selectedAnswer, now); err != nil {
 	// 	return nil, utils.NewAppError(http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to persist live quiz answer")
 	// }
-	if err := persistLiveQuizAnswer(req.UserID, questionID, selectedAnswer, now); err != nil {
+	submittedAnswer, alreadySubmitted, err := persistLiveQuizAnswer(
+		req.UserID,
+		questionID,
+		selectedAnswer,
+		now,
+	)
+	if err != nil {
 		return nil, utils.NewAppError(
 			http.StatusInternalServerError,
 			"INTERNAL_SERVER_ERROR",
 			fmt.Sprintf("failed to persist live quiz answer: %v", err),
 		)
+	}
+	if alreadySubmitted {
+		selectedAnswer = submittedAnswer
+		isCorrect = gradeAnswer(selectedAnswer, correctAnswer, options)
+		earning = questionEarningValue(question, isCorrect)
 	}
 
 	// Return a result without mutating Postgres session state.
@@ -555,6 +632,7 @@ func (s *QuizSessionV2Service) GradeLiveAnswer(req models.SaveAnswerV2Request) (
 			IsLastQuestion: false,
 			Status:         "live",
 		},
+		AlreadySubmitted: alreadySubmitted,
 	}, nil
 }
 
