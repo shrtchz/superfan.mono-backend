@@ -361,7 +361,10 @@ export class WalletService {
 
   async createQuizReward(userId: number, points: number, subject: string, status: EarningStatus, reference?: string) {
     const amount = this.pointsConversionUtil.pointsToNaira(points);
-    const rewardReference = reference ?? `quiz_reward:${userId}:${subject}:${points}:${status}`;
+    // Key on the quiz session ID (passed as reference) — NOT on points/subject,
+    // because totalPoints can differ between retries (streak variance) and would
+    // defeat the idempotency guard, creating duplicate wallet credits.
+    const rewardReference = reference ?? `quiz_reward:${userId}:${subject}`;
 
     const existingReward = await this.prisma.reward.findFirst({
       where: {
@@ -387,22 +390,28 @@ export class WalletService {
       },
     });
 
-    // Credit the wallet - quiz rewards go to Gold Account
+    // Credit the wallet — test quiz rewards go to Savings (Gold) Account
     await this.creditWallet(userId, amount, 'Test Quiz Earning', 'Test Quiz Earning', 'Savings', 'NGN');
 
-    await this.prisma.point.create({
-      data: {
-        userId,
-        points,
-        reference: rewardReference,
-        type: 'quiz_reward',
-      }
+    // Guard point record with same reference to prevent double-counting
+    const existingPoint = await this.prisma.point.findFirst({
+      where: { userId, reference: rewardReference, type: 'quiz_reward' },
     });
+    if (!existingPoint) {
+      await this.prisma.point.create({
+        data: {
+          userId,
+          points,
+          reference: rewardReference,
+          type: 'quiz_reward',
+        },
+      });
 
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: { lifetimePoints: { increment: points } },
-    });
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: { lifetimePoints: { increment: points } },
+      });
+    }
 
     // Send notification — 🎉 You earned 20 pts (₦2).
     await this.notificationService.testQuizReward(userId, points, amount);

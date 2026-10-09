@@ -840,7 +840,10 @@ async submitQuiz(
   }
 
   const totalPoints = baseScore + accuracyGain + speedGain + adBonusPoints + streakBonus;
-  const pointsToNairaRate = parseInt(this.configService.get<string>('POINTS_TO_NAIRA_RATE'), 10);
+  const pointsToNairaRate = (() => {
+    const v = parseInt(this.configService.get<string>('POINTS_TO_NAIRA_RATE'), 10);
+    return Number.isFinite(v) && v > 0 ? v : 1000; // default 1000 PTS = ₦1
+  })();
   const amountInNaira = totalPoints / pointsToNairaRate;
   
   // Calculate currency equivalents using exchange rate service
@@ -868,6 +871,18 @@ async submitQuiz(
     }));
 
   if (leaderboardRows.length) {
+    // Delete existing rows for this quiz session before inserting fresh ones.
+    // Without this guard, each retry/resubmit appends new rows and the user
+    // sees duplicate entries in their history.
+    const quizIds = leaderboardRows.map((r) => r.quizId).filter(Boolean);
+    if (quizIds.length > 0) {
+      await prisma.quizLeaderboard.deleteMany({
+        where: {
+          userId: String(userId),
+          quizId: { in: quizIds },
+        },
+      });
+    }
     await prisma.quizLeaderboard.createMany({ data: leaderboardRows });
   }
 
