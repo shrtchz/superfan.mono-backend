@@ -86,40 +86,43 @@ function buildAnswerLabels(selectedAnswer: string, options: string[]): string[] 
 async function creditGoldWallet(
   userId: number,
   amountNaira: number,
-  quizFinishDate: Date,
+  ts: Date,
 ) {
+  // 1. Increment wallet balance
   await prisma.wallet.update({
     where: { userId },
     data: {
-      balance: { increment: amountNaira },
+      balance:     { increment: amountNaira },
       goldBalance: { increment: amountNaira },
     },
   });
 
-  await (prisma.walletTransaction as any).create({
+  // 2. WalletTransaction — plain userId Int, no relation connect
+  await prisma.walletTransaction.create({
     data: {
-      user: { connect: { id: userId } },
-      amount: amountNaira,
-      type: 'credit',
-      currency: 'NGN',
-      status: 'SUCCESS',
-      description: 'Live Quiz Prize',
+      userId,
+      amount:       amountNaira,
+      type:         'credit',
+      currency:     'NGN',
+      status:       'SUCCESS',
+      description:  'Live Quiz Prize',
       account_type: 'Gold',
-      trx_ref: `lqbf_${userId}_${Date.now()}`,
-      createdAt: quizFinishDate,
+      trx_ref:      `lqbf_${userId}_${Date.now()}`,
+      createdAt:    ts,
     },
   });
 
+  // 3. ActivityWallet — uses ActivityType enum (credit) and ActivityStatus enum (SUCCESS)
   await prisma.activityWallet.create({
     data: {
-      user: { connect: { id: userId } },
-      type: 'credit',
-      title: 'Live Quiz Prize',
+      userId,
+      type:        'credit',   // ActivityType.credit
+      title:       'Live Quiz Prize',
       description: 'Live Quiz Prize',
-      amount: amountNaira,
-      currency: 'NGN',
-      status: 'SUCCESS',
-      createdAt: quizFinishDate,
+      amount:      amountNaira,
+      currency:    'NGN',
+      status:      'SUCCESS',  // ActivityStatus.SUCCESS
+      createdAt:   ts,
     },
   });
 }
