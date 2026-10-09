@@ -1557,6 +1557,8 @@ async submitLiveQuiz(userId: string) {
   let totalCorrect = 0;
   let totalEarning = 0;
   const attemptsByQuizId = new Map(attempts.map((item) => [item.quizId, item]));
+  // Track quizFinishDate per quizId so wallet/comment timestamps match quiz end time
+  const quizFinishDateByQuizId = new Map<string, Date>();
 
   const gradedQuestions = await Promise.all(
     questions.map(async (question) => {
@@ -1571,6 +1573,10 @@ async submitLiveQuiz(userId: string) {
 
       if (isCorrect) totalCorrect += 1;
       totalEarning += Number(attempt?.earning ?? 0);
+
+      if (meta.quizFinishDate && !quizFinishDateByQuizId.has(quizId)) {
+        quizFinishDateByQuizId.set(quizId, meta.quizFinishDate);
+      }
 
       return {
         ...question,
@@ -1592,6 +1598,25 @@ async submitLiveQuiz(userId: string) {
 
   const isWinner = attempts.some((attempt) => attempt.isWinner);
   const rewardStatus = totalEarning > 0 ? 'paid' : 'none';
+
+  // ── Credit the actual cash prize for each winning question ───────────────
+  // attempt.earning = unitPrize in Naira (set by authenticateFinishedSubmissionsForQuiz).
+  // We pass it directly to creditWallet — NOT through pointsToNaira — because
+  // it is already a Naira amount, not a points balance.
+  // quizFinishDate is passed so the wallet transaction timestamp = quiz end time.
+  await Promise.allSettled(
+    attempts
+      .filter((attempt) => attempt.isWinner && Number(attempt.earning) > 0)
+      .map((attempt) =>
+        this.walletService.createLiveQuizWinnerReward(
+          Number(userId),
+          attempt.quizId,
+          Number(attempt.earning),
+          quizFinishDateByQuizId.get(attempt.quizId),
+        ),
+      ),
+  );
+  // ─────────────────────────────────────────────────────────────────────────
 
   await prisma.liveQuizLeaderboard.deleteMany({
     where: {

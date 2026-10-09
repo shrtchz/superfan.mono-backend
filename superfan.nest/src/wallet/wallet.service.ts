@@ -206,7 +206,7 @@ export class WalletService {
     }
   }
 
-  async creditWallet(userId: number, amount: number, title: string, description: string, accountType?: string, currency: string = 'NGN', streamTitle?: string) {
+  async creditWallet(userId: number, amount: number, title: string, description: string, accountType?: string, currency: string = 'NGN', streamTitle?: string, createdAt?: Date) {
     console.log('[Wallet][creditWallet][START]', {
       userId,
       amount,
@@ -249,7 +249,8 @@ export class WalletService {
           status: 'SUCCESS',
           description,
           account_type: accountType,
-          trx_ref: `${generateFiveUniqueRandomNumbers()}`
+          trx_ref: `${generateFiveUniqueRandomNumbers()}`,
+          ...(createdAt ? { createdAt } : {}),
         },
       });
       console.log('[Wallet][creditWallet] Wallet transaction created', {
@@ -269,6 +270,7 @@ export class WalletService {
           amount,
           currency,
           status: 'SUCCESS',
+          ...(createdAt ? { createdAt } : {}),
         },
       });
       console.log('[Wallet][creditWallet] Activity wallet created', {
@@ -481,6 +483,65 @@ export class WalletService {
 
     // Push notification to user
     await this.notificationService.liveQuizConsolationReward(userId, consolationPoints);
+  }
+
+  /**
+   * Credits the actual cash prize to a live quiz winner.
+   *
+   * IMPORTANT: unitPrize is already a Naira amount (e.g. ₦600), NOT points.
+   * Do NOT pass it through pointsToNaira() — that would divide by 1000 and
+   * produce ₦0.60 instead of ₦600.
+   *
+   * Idempotent — safe to call multiple times for the same quiz attempt.
+   */
+  async createLiveQuizWinnerReward(
+    userId: number,
+    quizId: string,
+    amountNaira: number,
+    quizFinishDate?: Date,
+  ): Promise<void> {
+    if (!amountNaira || amountNaira <= 0) return;
+
+    const rewardReference = `live_quiz_winner:${userId}:${quizId}`;
+    const ts = quizFinishDate ?? new Date();
+
+    // Idempotency guard — do not double-credit the same quiz win
+    const existingReward = await this.prisma.reward.findFirst({
+      where: {
+        userId,
+        type: 'live_quiz_winner',
+        reference: rewardReference,
+      },
+    });
+    if (existingReward) return;
+
+    await this.prisma.reward.create({
+      data: {
+        userId,
+        amount: amountNaira,
+        currency: 'NGN',
+        type: 'live_quiz_winner',
+        status: 'PAID_OUT',
+        reference: rewardReference,
+        createdAt: ts,
+      },
+    });
+
+    // Credit the Gold Account wallet with the raw Naira amount,
+    // stamped at quiz finish time so wallet history shows the correct time.
+    await this.creditWallet(
+      userId,
+      amountNaira,
+      'Live Quiz Prize',
+      'Live Quiz Prize',
+      'Gold',
+      'NGN',
+      undefined,
+      ts,
+    );
+
+    // Notify the user
+    await this.notificationService.liveQuizReward(userId, amountNaira);
   }
 
 
