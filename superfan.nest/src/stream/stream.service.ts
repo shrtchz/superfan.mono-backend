@@ -1613,7 +1613,7 @@ const stream = await prisma.stream.findUnique({
     }
   }
 
-  async commentOnStream(streamId: number, comment: string, userId: number): Promise<any> {
+  async commentOnStream(streamId: number, comment: string, userId: number, createdAt?: Date): Promise<any> {
     try {
       await this.assertStreamParticipation(streamId, userId, {
         bypassChatLock: await this.isStreamModerator(userId),
@@ -1626,6 +1626,7 @@ const stream = await prisma.stream.findUnique({
           userId,
           isDeleted: false,
           depth: 0,
+          ...(createdAt ? { createdAt } : {}),
         },
       });
 
@@ -1633,6 +1634,7 @@ const stream = await prisma.stream.findUnique({
         where: { id: createdComment.id },
         data: {
           rootId: createdComment.id,
+          ...(createdAt ? { createdAt } : {}),
         },
       });
 

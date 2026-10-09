@@ -146,13 +146,16 @@ export class StreamingController {
   async comment(
     @Param('streamId', ParseIntPipe) streamId: number,
     @Body('comment') comment: string,
+    @Body('quizFinishDate') quizFinishDateRaw: string | undefined,
     @Req() req,
   ) {
     const userId = req.user?.id;
+    const quizFinishDate = quizFinishDateRaw ? new Date(quizFinishDateRaw) : undefined;
     const created = await this.streamingService.commentOnStream(
       streamId,
       comment,
       Number(userId),
+      quizFinishDate,
     );
     this.streamGateway.broadcastChat('streamMessage', {
       ...created,
