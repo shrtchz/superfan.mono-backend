@@ -497,6 +497,39 @@ async getOngoingLiveQuiz(@Param('id', ParseIntPipe) id: number) {
     };
   }
 
+  /**
+   * GET /api/v1/quiz/live-answer/:quizId?userId=:userId
+   *
+   * Returns the user's previously submitted answer for a live quiz question.
+   * The answer is read from Nest's Postgres ongoingLiveQuiz table — NOT from
+   * the Go service, which only returns empty strings for this field.
+   *
+   * Authentication: public (supports both auth header and ?userId query param
+   * so the frontend can call it without a Clerk session on the streaming page).
+   */
+  @Public()
+  @Get('live-answer/:quizId')
+  async getLiveQuizAnswer(
+    @Req() req: any,
+    @Param('quizId') quizId: string,
+    @Query('userId') queryUserId?: string,
+  ) {
+    const userId = req.user?.id ?? queryUserId;
+    if (!userId) {
+      throw new BadRequestException('userId is required (pass as ?userId= or use auth header)');
+    }
+    const data = await this.quizService.getLiveQuizAnswerFromDb(
+      String(userId),
+      quizId,
+    );
+    return {
+      success: true,
+      message: 'success',
+      data,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
   @Public()
   @Post('live/:id/answer')
   async submitLiveAnswerByQuizId(
