@@ -2109,9 +2109,18 @@ const stream = await prisma.stream.findUnique({
     }
   }
 
-async getStreamCommentsandReplies(streamId?: number, viewerUserId?: number | null) {
-  // Live chat is shared across streams — serve one global recent feed.
-  const cacheKey = 'stream:global:comments';
+async getStreamCommentsandReplies(
+  streamId?: number | string,
+  viewerUserId?: number | null,
+) {
+  const requestedStreamId = Number(streamId);
+  const normalizedStreamId =
+    Number.isFinite(requestedStreamId) && requestedStreamId > 0
+      ? requestedStreamId
+      : undefined;
+  const cacheKey = normalizedStreamId
+    ? `stream:${normalizedStreamId}:comments`
+    : 'stream:global:comments';
 
   try {
     const cached = await this.redis.get(cacheKey);
@@ -2128,6 +2137,7 @@ async getStreamCommentsandReplies(streamId?: number, viewerUserId?: number | nul
 
   const rootComments = await prisma.streamComment.findMany({
     where: {
+      ...(normalizedStreamId ? { streamId: normalizedStreamId } : {}),
       isDeleted: false,
       parentId: null,
     },
@@ -2146,6 +2156,7 @@ async getStreamCommentsandReplies(streamId?: number, viewerUserId?: number | nul
     ? await prisma.streamComment.findMany({
         where: {
           isDeleted: false,
+          ...(normalizedStreamId ? { streamId: normalizedStreamId } : {}),
           OR: [
             { id: { in: rootIds } },
             { rootId: { in: rootIds } },
@@ -2172,9 +2183,9 @@ async getStreamCommentsandReplies(streamId?: number, viewerUserId?: number | nul
 
   // Prefer a pinned comment for the active stream at the front when present.
   let result = tree;
-  if (streamId) {
+  if (normalizedStreamId) {
     const pinnedForStream = tree.find(
-      (comment) => comment.streamId === streamId && comment.isPinned,
+      (comment) => comment.streamId === normalizedStreamId && comment.isPinned,
     );
     if (pinnedForStream) {
       result = [
@@ -2677,7 +2688,7 @@ async isWinner(commentId: number, winAmount: number) {
       comments,
       realtime: {
         transport: 'websocket',
-        scope: 'global',
+        scope: 'stream',
         events: [
           'streamMessage',
           'replyMessage',

@@ -187,7 +187,7 @@ export class StreamingController {
   }
 
   @Get('/comment')
-  async getStreamcomment(@Query('streamId') streamId: number, @Req() req) {
+  async getStreamcomment(@Query('streamId') streamId: string, @Req() req) {
     return this.streamingService.getStreamCommentsandReplies(
       streamId,
       Number(req.user?.id),
