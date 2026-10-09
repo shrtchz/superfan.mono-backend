@@ -413,51 +413,6 @@ export class WalletService {
     );
   }
 
-  async createLiveQuizReward(userId: number, points: number, status: EarningStatus, reference?: string) {
-    const amount = this.pointsConversionUtil.pointsToNaira(points);
-    const rewardReference = reference ?? `live_quiz_reward:${userId}:${points}:${status}`;
-
-    const existingReward = await this.prisma.reward.findFirst({
-      where: {
-        userId,
-        type: 'live_quiz_reward',
-        reference: rewardReference,
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-
-    if (existingReward) {
-      return;
-    }
-    
-    await this.prisma.reward.create({
-      data: {
-        userId,
-        amount,
-        currency: 'NGN',
-        type: 'live_quiz_reward',
-        status,
-        reference: rewardReference,
-      },
-    });
-
-    // Credit the wallet - live quiz rewards go to Gold Account
-    await this.creditWallet(userId, amount, 'Test Quiz Earning', 'Test Quiz Earning', 'Savings', 'NGN');
-
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: { lifetimePoints: { increment: points } },
-    });
-
-    // Send notification — 🏆 You earned ₦2,000 from today's live quiz.
-    await this.notificationService.liveQuizReward(userId, amount);
-
-    // 💥 Jackpot! ₦5,000 credited to your Gold Account. — jackpot = ≥ ₦5,000 live quiz payout
-    if (amount >= 5000) {
-      await this.notificationService.streamLiveQuizJackpot(userId, amount);
-    }
-  }
-
   /**
    * Credits a flat 500 PTS (₦0.50 at 1,000 PTS = ₦1) consolation reward to every participant
    * who completes a live quiz when jackpot odds are heavily diluted

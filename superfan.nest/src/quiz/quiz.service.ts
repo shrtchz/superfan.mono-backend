@@ -1604,15 +1604,6 @@ async submitLiveQuiz(userId: string) {
       .filter((row): row is NonNullable<typeof row> => Boolean(row)),
   });
 
-  if (totalEarning > 0) {
-    await this.walletService.createLiveQuizReward(
-      Number(userId),
-      Math.round(totalEarning),
-      EarningStatus.PAID_OUT,
-      `live_quiz_reward:${userId}:${updatedQuiz?.id ?? 'session'}`,
-    );
-  }
-
   // ── Consolation reward (500 PTS flat) ────────────────────────────────────
   // When jackpot odds are heavily diluted (participants / winner-spots ≥ 20,
   // e.g. 20,000 free users competing for 10 spots ≈ 0.05% win chance),
