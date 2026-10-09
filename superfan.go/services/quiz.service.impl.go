@@ -1656,6 +1656,29 @@ func (u *QuizServiceImpl) GetLiveQuizAnswerById(userID int, id string) (map[stri
 		return nil, errors.New("postgres is not configured")
 	}
 
+	var liveQuizSessions []struct {
+		Answers JSONB `gorm:"column:answers"`
+	}
+	if err := utils.DB.Raw(
+		`SELECT "answers" FROM "ongoing_live_quiz" WHERE "userId" = ? AND ? = ANY("quizIds") ORDER BY "updatedAt" DESC`,
+		strconv.Itoa(userID),
+		id,
+	).Scan(&liveQuizSessions).Error; err != nil {
+		return nil, err
+	}
+
+	for _, session := range liveQuizSessions {
+		answer, found, err := findLiveQuizSubmission([]byte(session.Answers), id)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			response["selectedAnswer"] = answer.SelectedAnswer
+			response["answer"] = answer.SelectedAnswer
+			return response, nil
+		}
+	}
+
 	var ongoingQuiz models.OngoingQuiz
 	err = utils.DB.
 		Where(`"userId" = ? AND "isCompleted" = ?`, userID, false).
