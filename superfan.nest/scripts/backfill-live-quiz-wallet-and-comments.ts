@@ -153,11 +153,15 @@ async function main() {
     const earning = Number(attempt.earning ?? 0);
     const isWinner = attempt.isWinner;
 
-    // Use completedAt (= quiz finish time) as the canonical timestamp.
-    // Fall back to Go API quizFinishDate if completedAt is missing.
+    // Resolve quiz finish time from best available source:
+    //  1. attempt.completedAt      (set by authenticateFinishedSubmissionsForQuiz)
+    //  2. Go API quizFinishDate    (returned by /v2/quiz/live/:id)
+    //  3. ongoingLiveQuiz.updatedAt (proxy — updated when session was graded)
+    //  4. null                     (wallet credit still happens with now() fallback)
     let quizFinishDate: Date | null = attempt.completedAt ?? null;
     const meta = await getLiveQuizMeta(quizId);
     if (!quizFinishDate && meta.quizFinishDate) quizFinishDate = meta.quizFinishDate;
+    if (!quizFinishDate && attempt.ongoingLiveQuiz?.updatedAt) quizFinishDate = new Date(attempt.ongoingLiveQuiz.updatedAt);
 
     // ── A. Wallet credit for winners ────────────────────────────────────────
     if (isWinner && earning > 0) {
@@ -194,36 +198,38 @@ async function main() {
     }
 
     // ── B. Fix comment timestamp ─────────────────────────────────────────────
-    if (!quizFinishDate) {
-      console.log(`  ⚠️  No quizFinishDate for quizId=${quizId} userId=${userId} — skipping comment fix`);
-      commentNotFound++;
-      continue;
-    }
-
+    // For comment timestamps: prefer quizFinishDate, fall back to the answer's
+    // own submittedAt (= the real moment the user selected their answer).
     const session = attempt.ongoingLiveQuiz;
     if (!session?.streamId) continue;
 
-    // Get the exact answer and submission time from the session's answers array
     const answers: any[] = (session.answers as any[]) ?? [];
-    const answerEntry = answers.find(
-      (a: any) => String(a?.quizId) === quizId,
-    );
+    const answerEntry = answers.find((a: any) => String(a?.quizId) === quizId);
     if (!answerEntry?.selectedAnswer) continue;
 
     const selectedAnswer = String(answerEntry.selectedAnswer);
-    const submittedAt: Date | null = answerEntry.submittedAt
+    const answerSubmittedAt: Date | null = answerEntry.submittedAt
       ? new Date(answerEntry.submittedAt)
       : null;
+
+    // The timestamp we'll stamp the comment with: quiz end time if available,
+    // otherwise the moment the user submitted their answer.
+    const commentTs = quizFinishDate ?? answerSubmittedAt;
+    if (!commentTs) {
+      console.log(
+        `  ⚠️  No timestamp available for quizId=${quizId} userId=${userId} — skipping comment fix`,
+      );
+      commentNotFound++;
+      continue;
+    }
 
     // Build all label variants the frontend may have posted
     const labels = buildAnswerLabels(selectedAnswer, meta.options);
     const labelsNorm = labels.map(normalizeText);
 
-    // Find comments by this user on this stream with a message matching the answer.
-    // Use a generous ±2h window around submittedAt to catch network/clock drift.
-    const windowBase = submittedAt ?? quizFinishDate;
-    const windowStart = new Date(windowBase.getTime() - 2 * 60 * 60 * 1000);
-    const windowEnd   = new Date(windowBase.getTime() + 2 * 60 * 60 * 1000);
+    // Search ±2h around the answer submission time
+    const windowStart = new Date(commentTs.getTime() - 2 * 60 * 60 * 1000);
+    const windowEnd   = new Date(commentTs.getTime() + 2 * 60 * 60 * 1000);
 
     const candidates = await prisma.streamComment.findMany({
       where: {
@@ -248,19 +254,18 @@ async function main() {
     }
 
     for (const comment of matched) {
-      const alreadyCorrect =
-        Math.abs(comment.createdAt.getTime() - quizFinishDate.getTime()) < 1000;
+      const alreadyCorrect = Math.abs(comment.createdAt.getTime() - commentTs.getTime()) < 1000;
       if (alreadyCorrect) continue;
 
       console.log(
         `  ✅ Comment #${comment.id} userId=${userId} "${comment.message}"` +
-        `\n     ${comment.createdAt.toISOString()} → ${quizFinishDate.toISOString()}`,
+        `\n     ${comment.createdAt.toISOString()} → ${commentTs.toISOString()}`,
       );
 
       if (!DRY_RUN) {
         await prisma.streamComment.update({
           where: { id: comment.id },
-          data: { createdAt: quizFinishDate },
+          data: { createdAt: commentTs },
         });
       }
       commentFixed++;
