@@ -265,11 +265,13 @@ func (f *LiveQuizFinaliser) finaliseQuiz(raw bson.M, quizID string) {
 		winnersSet[w.UserID] = true
 	}
 
+	// In live quizzes, unitPrize is already the cash prize amount in Naira (e.g. ₦600), NOT points.
+	// Do NOT divide by POINTS_TO_NAIRA_RATE.
+	rewardAmount := unitPrize
 	rewardPoints := int(math.Round(unitPrize))
-	if rewardPoints <= 0 {
+	if rewardAmount <= 0 {
 		log.Printf("[LiveQuizFinaliser] quiz %s – unitPrize is zero, skipping reward distribution", quizID)
 	}
-	rewardAmount := liveQuizRewardAmount(rewardPoints)
 
 	now, err := lagosNow()
 	if err != nil {
