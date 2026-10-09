@@ -1,11 +1,19 @@
 -- CreateEnum
-CREATE TYPE "TaskPriority" AS ENUM ('HIGH', 'MEDIUM', 'LOW');
+DO $$ BEGIN
+    CREATE TYPE "TaskPriority" AS ENUM ('HIGH', 'MEDIUM', 'LOW');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
 
 -- CreateEnum
-CREATE TYPE "TaskStatus" AS ENUM ('PENDING', 'COMPLETED');
+DO $$ BEGIN
+    CREATE TYPE "TaskStatus" AS ENUM ('PENDING', 'COMPLETED');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
 
 -- CreateTable
-CREATE TABLE "Task" (
+CREATE TABLE IF NOT EXISTS "Task" (
     "id" SERIAL NOT NULL,
     "title" TEXT NOT NULL,
     "description" TEXT,

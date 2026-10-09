@@ -13,18 +13,30 @@ export class ElasticsearchService implements OnModuleInit {
       return;
     }
 
-    this.client = new Client({
-      node,
-      auth: {
-        username: process.env.LOCAL_ELASTICSEARCH_USERNAME || process.env.PROD_ELASTICSEARCH_USERNAME,
-        password: process.env.LOCAL_ELASTICSEARCH_PASSWORD || process.env.PROD_ELASTICSEARCH_PASSWORD,
-      },
-      tls: {
-        rejectUnauthorized: false, // for local self-signed cert
-      }
-    });
+    try {
+      this.client = new Client({
+        node,
+        auth: {
+          username: process.env.LOCAL_ELASTICSEARCH_USERNAME || process.env.PROD_ELASTICSEARCH_USERNAME,
+          password: process.env.LOCAL_ELASTICSEARCH_PASSWORD || process.env.PROD_ELASTICSEARCH_PASSWORD,
+        },
+        tls: {
+          rejectUnauthorized: false,
+        },
+      });
 
-    await this.ensureIndex();
+      await this.ensureIndex();
+      this.logger.log('Elasticsearch connected and indices verified.');
+    } catch (err) {
+      // A bad/misconfigured ES URL (e.g. pointing at a Cloudflare proxy) throws
+      // ProductNotSupportedError and would crash the whole NestJS bootstrap.
+      // We degrade gracefully instead: reset the client so all `if (!this.client)`
+      // guards in the service return early without erroring.
+      this.client = null;
+      this.logger.error(
+        `Elasticsearch initialisation failed — running without search. Reason: ${err?.message ?? err}`,
+      );
+    }
   }
 
   private async ensureIndex() {
@@ -32,49 +44,55 @@ export class ElasticsearchService implements OnModuleInit {
     const indices = ['users', 'comments'];
 
     for (const index of indices) {
-      const exists = await this.client.indices.exists({ index });
+      try {
+        const exists = await this.client.indices.exists({ index });
 
-      if (!exists) {
-        if (index === 'users') {
-          await this.client.indices.create({
-            index,
-            mappings: {
-              properties: {
-                id: { type: 'keyword' },
-                username: { type: 'search_as_you_type' },
-                email: { type: 'keyword' },
-                createdAt: { type: 'date' },
-              },
-            },
-          });
-        }
-
-        if (index === 'comments') {
-          await this.client.indices.create({
-            index,
-            mappings: {
-              properties: {
-                id: { type: 'keyword' },
-                streamId: { type: 'integer' },
-                parentId: { type: 'keyword' }, // null for comments, comment id for replies
-                content: {
-                  type: 'search_as_you_type',
-                },
-                type: {
-                  type: 'keyword', // comment | reply
-                },
-                createdAt: {
-                  type: 'date',
+        if (!exists) {
+          if (index === 'users') {
+            await this.client.indices.create({
+              index,
+              mappings: {
+                properties: {
+                  id: { type: 'keyword' },
+                  username: { type: 'search_as_you_type' },
+                  email: { type: 'keyword' },
+                  createdAt: { type: 'date' },
                 },
               },
-            },
-          });
-        }
+            });
+          }
 
-        this.logger.log(`Index "${index}" created`);
+          if (index === 'comments') {
+            await this.client.indices.create({
+              index,
+              mappings: {
+                properties: {
+                  id: { type: 'keyword' },
+                  streamId: { type: 'integer' },
+                  parentId: { type: 'keyword' }, // null for comments, comment id for replies
+                  content: {
+                    type: 'search_as_you_type',
+                  },
+                  type: {
+                    type: 'keyword', // comment | reply
+                  },
+                  createdAt: {
+                    type: 'date',
+                  },
+                },
+              },
+            });
+          }
+
+          this.logger.log(`Index "${index}" created`);
+        }
+      } catch (err) {
+        this.logger.error(`Failed to ensure index "${index}": ${err?.message ?? err}`);
+        throw err; // re-throw so onModuleInit catch can reset this.client
       }
     }
   }
+
 
   /** Upsert a user document into ES when created/updated via Prisma */
   async indexUser(user: { id: number; username: string; email?: string; createdAt?: Date }) {
@@ -107,6 +125,19 @@ export class ElasticsearchService implements OnModuleInit {
     });
 
     return hits.hits.map((hit) => hit._source);
+  }
+
+  async deleteComment(commentId: number) {
+    if (!this.client) return;
+
+    try {
+      await this.client.delete({
+        index: 'comments',
+        id: commentId.toString(),
+      });
+    } catch {
+      // Best-effort cleanup for search index.
+    }
   }
 
   async indexComment(comment: {

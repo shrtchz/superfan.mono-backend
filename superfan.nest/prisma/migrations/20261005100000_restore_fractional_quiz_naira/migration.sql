@@ -1,0 +1,2 @@
+ALTER TABLE "ongoing_quizzes"
+ALTER COLUMN "totalEarninginNaira" SET DATA TYPE DOUBLE PRECISION;
