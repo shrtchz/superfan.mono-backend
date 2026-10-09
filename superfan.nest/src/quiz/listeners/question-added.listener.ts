@@ -1,6 +1,7 @@
 // question-added.listener.ts
 import { Injectable } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
+import { NotificationService } from '../../notification/notification.service';
 import { PushNotificationService } from '../../notification/push-notification.service';
 import { UserService } from '../../user/user.service';
 import { QuestionAddedEvent } from '../quiz.events';
@@ -9,7 +10,8 @@ import { QuestionAddedEvent } from '../quiz.events';
 export class QuestionAddedListener {
   constructor(
     private readonly userService: UserService,
-    private readonly notificationService: PushNotificationService,
+    private readonly pushNotificationService: PushNotificationService,
+    private readonly notificationService: NotificationService,
   ) {}
 
   @OnEvent('question.added', { async: true })
@@ -42,7 +44,17 @@ export class QuestionAddedListener {
   const title = `New ${event.subject} question available!🔥`;
   const message = `Earn up to ₦3,000 today`;
 
-  await this.notificationService.sendPushNotificationToUsers(
+  // 📝 In-app "fresh quiz just dropped" notification on the notifications page.
+  try {
+    await this.notificationService.newQuizAvailable(
+      userIds,
+      `New ${event.subject} ${event.testQuiz} quiz just dropped.`,
+    );
+  } catch {
+    // notifications must never break quiz publishing
+  }
+
+  await this.pushNotificationService.sendPushNotificationToUsers(
     userIds,
     title,
     message,
