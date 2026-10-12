@@ -308,8 +308,8 @@ func (f *LiveQuizFinaliser) finaliseQuiz(raw bson.M, quizID string) {
 				log.Printf("[LiveQuizFinaliser] failed to credit gold wallet for user %s: %v", p.UserID, err)
 			}
 
-			// Send notification via NestJS
-			if err := f.sendNotification(p.UserID, rewardAmount, question, quizID); err != nil {
+			// Send notification via NestJS at the exact credit time
+			if err := f.sendNotification(p.UserID, rewardAmount, question, quizID, now); err != nil {
 				log.Printf("[LiveQuizFinaliser] failed to send notification for user %s: %v", p.UserID, err)
 			}
 		}
@@ -489,7 +489,7 @@ func liveQuizRewardAmount(points int) float64 {
 	return float64(points) / float64(getPointsToNairaRate())
 }
 
-func (f *LiveQuizFinaliser) sendNotification(userID string, amount float64, question, quizID string) error {
+func (f *LiveQuizFinaliser) sendNotification(userID string, amount float64, question, quizID string, createdAt time.Time) error {
 	userIDInt, err := parseInt(userID)
 	if err != nil {
 		return fmt.Errorf("invalid user ID for notification: %w", err)
@@ -497,10 +497,11 @@ func (f *LiveQuizFinaliser) sendNotification(userID string, amount float64, ques
 
 	msg := fmt.Sprintf("You earned ₦%.2f from today's live quiz.", amount)
 	payload := map[string]interface{}{
-		"userId":  userIDInt,
-		"title":   msg,
-		"message": msg,
-		"type":    "live_quiz_reward",
+		"userId":    userIDInt,
+		"title":     msg,
+		"message":   msg,
+		"type":      "live_quiz_reward",
+		"createdAt": createdAt.UTC().Format(time.RFC3339Nano),
 		"data": map[string]interface{}{
 			"quizId": quizID,
 			"amount": amount,

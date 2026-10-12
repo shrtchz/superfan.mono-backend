@@ -549,8 +549,8 @@ export class WalletService {
       ts,
     );
 
-    // Notify the user
-    await this.notificationService.liveQuizReward(userId, amountNaira);
+    // Notify the user at the exact credit reward timestamp
+    await this.notificationService.liveQuizReward(userId, amountNaira, ts);
   }
 
 

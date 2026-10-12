@@ -697,9 +697,11 @@ export class QuizService {
           .filter((u: any) => u.roleName === 'client')
           .map((u: any) => u.id);
         if (clientUserIds.length > 0) {
+          const createdAt = new Date();
           await this.notificationService.newQuizAvailable(
             clientUserIds,
             'A fresh quiz just dropped.',
+            createdAt,
           );
         }
       } catch (notifyErr) {
