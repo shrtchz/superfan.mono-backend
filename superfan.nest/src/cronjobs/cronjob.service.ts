@@ -88,7 +88,7 @@ export class CronJobService {
         }
       }
 
-    @Cron(CronExpression.EVERY_5_MINUTES)
+    @Cron(CronExpression.EVERY_MINUTE)
     async sendLiveQuizStartingSoonNotifications() {
         this.logger.log('Checking for live quizzes starting soon...');
         try {
@@ -98,7 +98,9 @@ export class CronJobService {
             if (!quizzes.length) return;
 
             const now = new Date();
-            const soonWindowMs = 10 * 60 * 1000;
+            // Kickoff window: between 1 minute (60,000ms) and 5 minutes (300,000ms)
+            const minWindowMs = 60 * 1000;
+            const maxWindowMs = 5 * 60 * 1000;
 
             const upcoming = quizzes
                 .map((quiz: any) => {
@@ -106,7 +108,8 @@ export class CronJobService {
                     const schedule = raw ? new Date(String(raw)) : null;
                     if (!schedule || Number.isNaN(schedule.getTime())) return null;
                     const diffMs = schedule.getTime() - now.getTime();
-                    if (diffMs <= 0 || diffMs > soonWindowMs) return null;
+                    // Must be between 1 min and 5 mins before start
+                    if (diffMs < minWindowMs || diffMs > maxWindowMs) return null;
                     return { minutes: Math.max(1, Math.round(diffMs / 60000)) };
                 })
                 .filter((entry: any) => entry !== null);

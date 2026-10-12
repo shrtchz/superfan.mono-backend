@@ -116,7 +116,13 @@ export class NotificationService {
     });
   }
 
-  async createNotification(userId: number, title: string, message: string, type?: string) {
+  async createNotification(
+    userId: number,
+    title: string,
+    message: string,
+    type?: string,
+    createdAt?: Date,
+  ) {
     const sanitizedTitle = this.sanitizeText(title);
     const sanitizedMessage = this.sanitizeText(message);
 
@@ -132,7 +138,8 @@ export class NotificationService {
         userId,
         title: sanitizedTitle,
         message: sanitizedMessage,
-        type
+        type,
+        ...(createdAt ? { createdAt } : {}),
       },
     });
 
@@ -150,8 +157,9 @@ export class NotificationService {
     type: NotificationTrigger | string,
     title: string,
     message: string,
+    createdAt?: Date,
   ) {
-    return this.createNotification(userId, title, message, type);
+    return this.createNotification(userId, title, message, type, createdAt);
   }
 
   async referralSignupBonus(referrerId: number, refereeUsername: string) {
@@ -378,26 +386,26 @@ export class NotificationService {
     return this.notify(userId, NotificationTriggers.TEST_QUIZ_REWARD, msg, msg);
   }
 
-  async liveQuizReward(userId: number, amountNaira: number) {
+  async liveQuizReward(userId: number, amountNaira: number, createdAt?: Date) {
     const msg = `You earned ₦${Number(amountNaira).toLocaleString()} from today's live quiz.`;
-    return this.notify(userId, NotificationTriggers.LIVE_QUIZ_REWARD, msg, msg);
+    return this.notify(userId, NotificationTriggers.LIVE_QUIZ_REWARD, msg, msg, createdAt);
   }
 
-  async liveQuizJackpot(userId: number, amountNaira: number) {
+  async liveQuizJackpot(userId: number, amountNaira: number, createdAt?: Date) {
     const msg = `Jackpot! ₦${Number(amountNaira).toLocaleString()} credited to your Gold Account.`;
-    return this.notify(userId, NotificationTriggers.LIVE_QUIZ_JACKPOT, msg, msg);
+    return this.notify(userId, NotificationTriggers.LIVE_QUIZ_JACKPOT, msg, msg, createdAt);
   }
 
-  async liveQuizConsolationReward(userId: number, points = 500) {
+  async liveQuizConsolationReward(userId: number, points = 500, createdAt?: Date) {
     const msg = `+${Number(points).toLocaleString()} PTS for playing! Every quiz counts.`;
-    return this.notify(userId, NotificationTriggers.LIVE_QUIZ_CONSOLATION, msg, '');
+    return this.notify(userId, NotificationTriggers.LIVE_QUIZ_CONSOLATION, msg, '', createdAt);
   }
 
-  async newQuizAvailable(userIds: number[], quizLabel = 'A fresh quiz just dropped.') {
+  async newQuizAvailable(userIds: number[], quizLabel = 'A fresh quiz just dropped.', createdAt?: Date) {
     const msg = quizLabel;
     await Promise.all(
       userIds.map((id) =>
-        this.notify(id, NotificationTriggers.NEW_QUIZ_AVAILABLE, msg, msg).catch(() => null),
+        this.notify(id, NotificationTriggers.NEW_QUIZ_AVAILABLE, msg, msg, createdAt).catch(() => null),
       ),
     );
     return { sent: userIds.length };

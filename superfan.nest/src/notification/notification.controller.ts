@@ -10,13 +10,15 @@ export class NotificationController {
   @Public()
   @Post('/create')
   async createNotification(
-    @Body() body: { userId: number; title: string; message: string; type?: string; data?: any },
+    @Body() body: { userId: number; title: string; message: string; type?: string; createdAt?: string; data?: any },
   ) {
+    const createdAtDate = body.createdAt ? new Date(body.createdAt) : undefined;
     return this.notificationService.createNotification(
       body.userId,
       body.title,
       body.message,
       body.type || 'live_quiz_reward',
+      createdAtDate,
     );
   }
 
