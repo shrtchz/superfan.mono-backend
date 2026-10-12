@@ -541,8 +541,8 @@ export class WalletService {
     await this.creditWallet(
       userId,
       amountNaira,
-      'Live Quiz Prize',
-      'Live Quiz Prize',
+      'Live Quiz',
+      'Live Quiz',
       'Gold',
       'NGN',
       undefined,
