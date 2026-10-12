@@ -495,10 +495,11 @@ func (f *LiveQuizFinaliser) sendNotification(userID string, amount float64, ques
 		return fmt.Errorf("invalid user ID for notification: %w", err)
 	}
 
+	msg := fmt.Sprintf("You earned ₦%.2f from today's live quiz.", amount)
 	payload := map[string]interface{}{
 		"userId":  userIDInt,
-		"title":   fmt.Sprintf("You won ₦%.2f from Live Quiz!", amount),
-		"message": fmt.Sprintf("Congratulations! You got the correct answer for \"%s\" and earned ₦%.2f.", truncate(question, 60), amount),
+		"title":   msg,
+		"message": msg,
 		"type":    "live_quiz_reward",
 		"data": map[string]interface{}{
 			"quizId": quizID,
