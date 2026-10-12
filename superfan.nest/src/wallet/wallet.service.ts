@@ -542,7 +542,7 @@ export class WalletService {
       userId,
       amountNaira,
       'Live Quiz',
-      'Live quiz earning',
+      'Live Quiz Earning',
       'Gold',
       'NGN',
       undefined,

@@ -433,7 +433,7 @@ func (f *LiveQuizFinaliser) creditGoldWallet(userID string, amount float64, poin
 
 		trxType := "credit"
 		goldType := "Gold"
-		description := "Live quiz earning"
+		description := "Live Quiz Earning"
 		status := "Completed"
 		txnType := "Reward"
 		if err := tx.Create(&models.WalletTransaction{
@@ -470,7 +470,7 @@ func (f *LiveQuizFinaliser) creditGoldWallet(userID string, amount float64, poin
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 				userIDInt, "credit",
 				"Live Quiz",
-				"Live quiz earning",
+				"Live Quiz Earning",
 				amount, "NGN", "SUCCESS", now,
 			).Error; err != nil {
 				log.Printf("[LiveQuizFinaliser] activity wallet insert warning: %v", err)
