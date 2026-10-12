@@ -497,7 +497,7 @@ func (f *LiveQuizFinaliser) sendNotification(userID string, amount float64, ques
 
 	payload := map[string]interface{}{
 		"userId":  userIDInt,
-		"title":   fmt.Sprintf("🎉 You won ₦%.2f from Live Quiz!", amount),
+		"title":   fmt.Sprintf("You won ₦%.2f from Live Quiz!", amount),
 		"message": fmt.Sprintf("Congratulations! You got the correct answer for \"%s\" and earned ₦%.2f.", truncate(question, 60), amount),
 		"type":    "live_quiz_reward",
 		"data": map[string]interface{}{
