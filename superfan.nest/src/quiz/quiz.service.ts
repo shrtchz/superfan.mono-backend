@@ -689,6 +689,25 @@ export class QuizService {
         this.httpService.post(`${this.liveQuizGoBaseUrl}/live`, liveQuizData),
       );
       this.eventEmitter.emit('liveQuiz.changed', { action: 'created' });
+
+      // 📝 Notify client users that a fresh live quiz just dropped
+      try {
+        const usersResult = await this.userService.findAllUsers();
+        const clientUserIds = (usersResult.data ?? [])
+          .filter((u: any) => u.roleName === 'client')
+          .map((u: any) => u.id);
+        if (clientUserIds.length > 0) {
+          const createdAt = new Date();
+          await this.notificationService.newQuizAvailable(
+            clientUserIds,
+            'A fresh quiz just dropped.',
+            createdAt,
+          );
+        }
+      } catch (notifyErr) {
+        this.logger.warn(`Failed to dispatch new live quiz notification: ${notifyErr?.message ?? notifyErr}`);
+      }
+
       return response.data;
     } catch (error) {
       this.rethrowGoProxyError(error, 'Failed to create live quiz');
@@ -840,7 +859,10 @@ async submitQuiz(
   }
 
   const totalPoints = baseScore + accuracyGain + speedGain + adBonusPoints + streakBonus;
-  const pointsToNairaRate = parseInt(this.configService.get<string>('POINTS_TO_NAIRA_RATE'), 10);
+  const pointsToNairaRate = (() => {
+    const v = parseInt(this.configService.get<string>('POINTS_TO_NAIRA_RATE'), 10);
+    return Number.isFinite(v) && v > 0 ? v : 1000; // default 1000 PTS = ₦1
+  })();
   const amountInNaira = totalPoints / pointsToNairaRate;
   
   // Calculate currency equivalents using exchange rate service
@@ -868,6 +890,18 @@ async submitQuiz(
     }));
 
   if (leaderboardRows.length) {
+    // Delete existing rows for this quiz session before inserting fresh ones.
+    // Without this guard, each retry/resubmit appends new rows and the user
+    // sees duplicate entries in their history.
+    const quizIds = leaderboardRows.map((r) => r.quizId).filter(Boolean);
+    if (quizIds.length > 0) {
+      await prisma.quizLeaderboard.deleteMany({
+        where: {
+          userId: String(userId),
+          quizId: { in: quizIds },
+        },
+      });
+    }
     await prisma.quizLeaderboard.createMany({ data: leaderboardRows });
   }
 
@@ -1158,14 +1192,32 @@ async startLiveQuizSession(
     throw new NotFoundException('No live quizzes provided');
   }
 
+  const incomingQuizIds = quizzes
+    .map((quiz) => String(quiz.id ?? quiz.quizId ?? '').trim())
+    .filter(Boolean);
+
   const existingQuiz = await prisma.ongoingLiveQuiz.findFirst({
     where: {
       userId: String(userId),
       completed: false,
     },
   });
+
   if (existingQuiz) {
-    return existingQuiz;
+    const existingQuizIds = new Set<string>(existingQuiz.quizIds ?? []);
+    const hasNewQuiz = incomingQuizIds.some((id) => !existingQuizIds.has(id));
+
+    if (!hasNewQuiz) {
+      // All incoming quizzes are already tracked in this session — resume it.
+      return existingQuiz;
+    }
+
+    // A new quiz has arrived for this stream. Mark the old session completed
+    // so the user can participate in the new quiz with a fresh session.
+    await prisma.ongoingLiveQuiz.update({
+      where: { id: existingQuiz.id },
+      data: { completed: true },
+    });
   }
 
   const filteredQuizzes = [];
@@ -1539,6 +1591,8 @@ async submitLiveQuiz(userId: string) {
   let totalCorrect = 0;
   let totalEarning = 0;
   const attemptsByQuizId = new Map(attempts.map((item) => [item.quizId, item]));
+  // Track quizFinishDate per quizId so wallet/comment timestamps match quiz end time
+  const quizFinishDateByQuizId = new Map<string, Date>();
 
   const gradedQuestions = await Promise.all(
     questions.map(async (question) => {
@@ -1553,6 +1607,10 @@ async submitLiveQuiz(userId: string) {
 
       if (isCorrect) totalCorrect += 1;
       totalEarning += Number(attempt?.earning ?? 0);
+
+      if (meta.quizFinishDate && !quizFinishDateByQuizId.has(quizId)) {
+        quizFinishDateByQuizId.set(quizId, meta.quizFinishDate);
+      }
 
       return {
         ...question,
@@ -1574,6 +1632,25 @@ async submitLiveQuiz(userId: string) {
 
   const isWinner = attempts.some((attempt) => attempt.isWinner);
   const rewardStatus = totalEarning > 0 ? 'paid' : 'none';
+
+  // ── Credit the actual cash prize for each winning question ───────────────
+  // attempt.earning = unitPrize in Naira (set by authenticateFinishedSubmissionsForQuiz).
+  // We pass it directly to creditWallet — NOT through pointsToNaira — because
+  // it is already a Naira amount, not a points balance.
+  // quizFinishDate is passed so the wallet transaction timestamp = quiz end time.
+  await Promise.allSettled(
+    attempts
+      .filter((attempt) => attempt.isWinner && Number(attempt.earning) > 0)
+      .map((attempt) =>
+        this.walletService.createLiveQuizWinnerReward(
+          Number(userId),
+          attempt.quizId,
+          Number(attempt.earning),
+          quizFinishDateByQuizId.get(attempt.quizId),
+        ),
+      ),
+  );
+  // ─────────────────────────────────────────────────────────────────────────
 
   await prisma.liveQuizLeaderboard.deleteMany({
     where: {
@@ -1603,15 +1680,6 @@ async submitLiveQuiz(userId: string) {
       })
       .filter((row): row is NonNullable<typeof row> => Boolean(row)),
   });
-
-  if (totalEarning > 0) {
-    await this.walletService.createLiveQuizReward(
-      Number(userId),
-      Math.round(totalEarning),
-      EarningStatus.PAID_OUT,
-      `live_quiz_reward:${userId}:${updatedQuiz?.id ?? 'session'}`,
-    );
-  }
 
   // ── Consolation reward (500 PTS flat) ────────────────────────────────────
   // When jackpot odds are heavily diluted (participants / winner-spots ≥ 20,
@@ -1917,6 +1985,40 @@ async hasSubmittedLiveQuizForStream(
       }
       throw new InternalServerErrorException(message);
     }
+  }
+
+  /**
+   * Reads the user's submitted live quiz answer directly from Postgres.
+   * The Go service's /v2/quiz/live-answer/:quizId endpoint only returns empty
+   * strings because it has no record of the answer — answers are only stored
+   * in the ongoingLiveQuiz.answers JSON column in Nest's Postgres database.
+   */
+  async getLiveQuizAnswerFromDb(
+    userId: string,
+    quizId: string,
+  ): Promise<{ id: string; answer: string; selectedAnswer: string }> {
+    const session = await prisma.ongoingLiveQuiz.findFirst({
+      where: {
+        userId,
+        quizIds: { has: quizId },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const answers: any[] = (session?.answers as any[]) ?? [];
+    const match = answers.find(
+      (a) => String(a?.quizId ?? '') === String(quizId),
+    );
+
+    const selectedAnswer = typeof match?.selectedAnswer === 'string'
+      ? match.selectedAnswer.trim()
+      : '';
+
+    return {
+      id: quizId,
+      answer: selectedAnswer,
+      selectedAnswer,
+    };
   }
 
   async getCompletedLiveQuiz(userId: number) {

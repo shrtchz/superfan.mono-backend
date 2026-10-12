@@ -316,12 +316,18 @@ export class StreamGateway
 
   private startLiveQuizTicker() {
     if (this.liveQuizTicker) return;
+    // Emit a periodic sync so clients pick up quiz state changes
+    // (e.g. a new quiz going live between explicit create/update events).
+    // 30 s is sufficient because the client renders countdowns locally from
+    // quizScheduleDate/quizFinishDate; we do NOT need sub-second socket polls.
+    // The previous 1 s interval caused one Go API call per second per server
+    // instance and flooded clients with events that interfered with answer state.
     this.liveQuizTicker = setInterval(() => {
       if (!this.server || this.server.sockets.sockets.size === 0) {
         return;
       }
       void this.emitLiveQuizUpdate('sync');
-    }, 1000);
+    }, 30_000);
   }
 
   private stopLiveQuizTicker() {

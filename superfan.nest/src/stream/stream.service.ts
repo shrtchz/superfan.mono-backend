@@ -620,24 +620,39 @@ export class StreamingService {
     service?: string;
     token_type?: string;
   }): Promise<void> {
+    const serviceName = tokens.service || 'youtube';
+    const updateData: any = {
+      accessToken: tokens.access_token,
+      expiryDate: tokens.expiry_date ? new Date(tokens.expiry_date) : undefined,
+      scope: tokens.scope,
+      tokenType: tokens.token_type,
+    };
+    if (tokens.refresh_token) {
+      updateData.refreshToken = tokens.refresh_token;
+    }
+
     await prisma.youTubeToken.upsert({
-      where: { service: tokens.service },
+      where: { service: serviceName },
       create: {
-        service: tokens.service,
+        service: serviceName,
         accessToken: tokens.access_token,
         refreshToken: tokens.refresh_token,
         expiryDate: tokens.expiry_date ? new Date(tokens.expiry_date) : undefined,
         scope: tokens.scope,
         tokenType: tokens.token_type,
       },
-      update: {
-        accessToken: tokens.access_token,
-        refreshToken: tokens.refresh_token,
-        expiryDate: tokens.expiry_date ? new Date(tokens.expiry_date) : undefined,
-        scope: tokens.scope,
-        tokenType: tokens.token_type,
-      },
+      update: updateData,
     });
+
+    const currentCreds = this.oauth2Client?.credentials || {};
+    this.oauth2Client.setCredentials({
+      access_token: tokens.access_token || currentCreds.access_token,
+      refresh_token: tokens.refresh_token || currentCreds.refresh_token,
+      expiry_date: tokens.expiry_date || currentCreds.expiry_date,
+      scope: tokens.scope || currentCreds.scope,
+      token_type: tokens.token_type || currentCreds.token_type,
+    });
+    this.youtubeTokensLoaded = true;
   }
 
   /**
@@ -763,6 +778,15 @@ export class StreamingService {
             'Failed to refresh YouTube access token.',
           );
         }
+
+        await this.persistYoutubeTokens({
+          access_token: token,
+          refresh_token: credentials.refresh_token,
+          expiry_date: this.oauth2Client.credentials.expiry_date,
+          scope: this.oauth2Client.credentials.scope,
+          token_type: this.oauth2Client.credentials.token_type,
+          service: 'youtube',
+        });
       }
     } catch (error) {
       this.logger.error(`Failed to refresh token: ${error.message}`);
@@ -848,6 +872,9 @@ export class StreamingService {
       return broadcast;
     } catch (error: any) {
       this.logger.error(error);
+      if (error instanceof ForbiddenException) {
+        throw error;
+      }
       if (error?.code === 401 || error?.code === 403 || error?.response?.status === 401 || error?.response?.status === 403) {
         throw new ForbiddenException(
           `YouTube authorization failed: ${error?.message || 'Authentication required'}`,
@@ -907,6 +934,9 @@ export class StreamingService {
       return session;
     } catch (error: any) {
       this.logger.error(error);
+      if (error instanceof ForbiddenException) {
+        throw error;
+      }
       if (error?.code === 401 || error?.code === 403 || error?.response?.status === 401 || error?.response?.status === 403) {
         throw new ForbiddenException(
           `YouTube authorization failed: ${error?.message || 'Authentication required'}`,
@@ -1176,6 +1206,18 @@ async editStream(
     },
   });
 
+  if (status === 'live' && existingStream.status !== 'live') {
+    try {
+      await prisma.streamComment.updateMany({
+        where: { streamId, isDeleted: false },
+        data: { isDeleted: true },
+      });
+      await this.invalidateCommentCaches(streamId);
+    } catch (cleanErr: any) {
+      this.logger.warn(`Failed to clean previous comments for stream ${streamId}: ${cleanErr?.message}`);
+    }
+  }
+
   return updatedStream;
 }
 
@@ -1354,6 +1396,22 @@ async editStream(
         part: ['id', 'status'],
       });
       this.logger.log(`Broadcast ${broadcastId} is LIVE`);
+
+      try {
+        const liveStream = await prisma.stream.findFirst({
+          where: { broadcastId },
+          select: { id: true },
+        });
+        if (liveStream?.id) {
+          await prisma.streamComment.updateMany({
+            where: { streamId: liveStream.id, isDeleted: false },
+            data: { isDeleted: true },
+          });
+          await this.invalidateCommentCaches(liveStream.id);
+        }
+      } catch (cleanErr: any) {
+        this.logger.warn(`Failed to clean previous comments for broadcast ${broadcastId}: ${cleanErr?.message}`);
+      }
     } catch (error: any) {
       throw new InternalServerErrorException(
         `Failed to go live: ${error.message}`,
@@ -1583,7 +1641,7 @@ const stream = await prisma.stream.findUnique({
     }
   }
 
-  async commentOnStream(streamId: number, comment: string, userId: number): Promise<any> {
+  async commentOnStream(streamId: number, comment: string, userId: number, createdAt?: Date): Promise<any> {
     try {
       await this.assertStreamParticipation(streamId, userId, {
         bypassChatLock: await this.isStreamModerator(userId),
@@ -1596,6 +1654,7 @@ const stream = await prisma.stream.findUnique({
           userId,
           isDeleted: false,
           depth: 0,
+          ...(createdAt ? { createdAt } : {}),
         },
       });
 
@@ -1603,6 +1662,7 @@ const stream = await prisma.stream.findUnique({
         where: { id: createdComment.id },
         data: {
           rootId: createdComment.id,
+          ...(createdAt ? { createdAt } : {}),
         },
       });
 
@@ -2079,9 +2139,18 @@ const stream = await prisma.stream.findUnique({
     }
   }
 
-async getStreamCommentsandReplies(streamId?: number, viewerUserId?: number | null) {
-  // Live chat is shared across streams — serve one global recent feed.
-  const cacheKey = 'stream:global:comments';
+async getStreamCommentsandReplies(
+  streamId?: number | string,
+  viewerUserId?: number | null,
+) {
+  const requestedStreamId = Number(streamId);
+  const normalizedStreamId =
+    Number.isFinite(requestedStreamId) && requestedStreamId > 0
+      ? requestedStreamId
+      : undefined;
+  const cacheKey = normalizedStreamId
+    ? `stream:${normalizedStreamId}:comments`
+    : 'stream:global:comments';
 
   try {
     const cached = await this.redis.get(cacheKey);
@@ -2096,8 +2165,22 @@ async getStreamCommentsandReplies(streamId?: number, viewerUserId?: number | nul
     );
   }
 
+  const targetStream = normalizedStreamId
+    ? await prisma.stream.findUnique({
+        where: { id: normalizedStreamId },
+        select: { id: true, scheduledDate: true, createdAt: true, status: true },
+      })
+    : null;
+
+  const streamCutoff =
+    targetStream?.status === 'live' && (targetStream?.scheduledDate || targetStream?.createdAt)
+      ? targetStream.scheduledDate ?? targetStream.createdAt
+      : undefined;
+
   const rootComments = await prisma.streamComment.findMany({
     where: {
+      ...(normalizedStreamId ? { streamId: normalizedStreamId } : {}),
+      ...(streamCutoff ? { createdAt: { gte: streamCutoff } } : {}),
       isDeleted: false,
       parentId: null,
     },
@@ -2116,6 +2199,7 @@ async getStreamCommentsandReplies(streamId?: number, viewerUserId?: number | nul
     ? await prisma.streamComment.findMany({
         where: {
           isDeleted: false,
+          ...(normalizedStreamId ? { streamId: normalizedStreamId } : {}),
           OR: [
             { id: { in: rootIds } },
             { rootId: { in: rootIds } },
@@ -2142,9 +2226,9 @@ async getStreamCommentsandReplies(streamId?: number, viewerUserId?: number | nul
 
   // Prefer a pinned comment for the active stream at the front when present.
   let result = tree;
-  if (streamId) {
+  if (normalizedStreamId) {
     const pinnedForStream = tree.find(
-      (comment) => comment.streamId === streamId && comment.isPinned,
+      (comment) => comment.streamId === normalizedStreamId && comment.isPinned,
     );
     if (pinnedForStream) {
       result = [
@@ -2647,7 +2731,7 @@ async isWinner(commentId: number, winAmount: number) {
       comments,
       realtime: {
         transport: 'websocket',
-        scope: 'global',
+        scope: 'stream',
         events: [
           'streamMessage',
           'replyMessage',

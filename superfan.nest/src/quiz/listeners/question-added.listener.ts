@@ -48,7 +48,7 @@ export class QuestionAddedListener {
   try {
     await this.notificationService.newQuizAvailable(
       userIds,
-      `New ${event.subject} ${event.testQuiz} quiz just dropped.`,
+      'A fresh quiz just dropped.',
     );
   } catch {
     // notifications must never break quiz publishing

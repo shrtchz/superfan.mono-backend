@@ -50,6 +50,7 @@ export class StreamingController {
   }
 
   @Get('auth-url')
+  @Public()
   async getAuthUrl() {
     return { authUrl: this.streamingService.generateAuthUrl() };
   }
@@ -145,13 +146,16 @@ export class StreamingController {
   async comment(
     @Param('streamId', ParseIntPipe) streamId: number,
     @Body('comment') comment: string,
+    @Body('quizFinishDate') quizFinishDateRaw: string | undefined,
     @Req() req,
   ) {
     const userId = req.user?.id;
+    const quizFinishDate = quizFinishDateRaw ? new Date(quizFinishDateRaw) : undefined;
     const created = await this.streamingService.commentOnStream(
       streamId,
       comment,
       Number(userId),
+      quizFinishDate,
     );
     this.streamGateway.broadcastChat('streamMessage', {
       ...created,
@@ -186,7 +190,7 @@ export class StreamingController {
   }
 
   @Get('/comment')
-  async getStreamcomment(@Query('streamId') streamId: number, @Req() req) {
+  async getStreamcomment(@Query('streamId') streamId: string, @Req() req) {
     return this.streamingService.getStreamCommentsandReplies(
       streamId,
       Number(req.user?.id),

@@ -170,4 +170,62 @@ describe('StreamingService unified comment tree', () => {
     expect(result.rootCommentId).toBe(10);
     expect(result.depth).toBe(1);
   });
+
+  it('loads comments and replies only for the requested stream', async () => {
+    const service = Object.create(StreamingService.prototype) as StreamingService;
+    (service as any).redis = {
+      get: jest.fn().mockResolvedValue(null),
+      set: jest.fn().mockResolvedValue(undefined),
+    };
+    (service as any).configService = { get: jest.fn().mockReturnValue(undefined) };
+    (service as any).logger = { warn: jest.fn() };
+
+    const streamComment = {
+      id: 5,
+      streamId: 42,
+      userId: 7,
+      parentId: null,
+      rootId: 5,
+      depth: 0,
+      message: 'Stream comment',
+      likesCount: 0,
+      reportsCount: 0,
+      isDeleted: false,
+      isPinned: false,
+      createdAt: new Date('2026-08-01T10:00:00.000Z'),
+    };
+    (prisma.streamComment.findMany as jest.Mock)
+      .mockResolvedValueOnce([streamComment])
+      .mockResolvedValueOnce([
+        { ...streamComment, stream: { id: 42, title: 'Stream' } },
+      ]);
+    (prisma.user.findMany as jest.Mock).mockResolvedValueOnce([]);
+
+    await service.getStreamCommentsandReplies('42');
+
+    expect((service as any).redis.get).toHaveBeenCalledWith(
+      'stream:42:comments',
+    );
+    expect(prisma.streamComment.findMany).toHaveBeenNthCalledWith(1, {
+      where: {
+        streamId: 42,
+        isDeleted: false,
+        parentId: null,
+      },
+      orderBy: [{ isPinned: 'desc' }, { createdAt: 'desc' }],
+      take: 500,
+    });
+    expect(prisma.streamComment.findMany).toHaveBeenNthCalledWith(2, {
+      where: {
+        isDeleted: false,
+        streamId: 42,
+        OR: [{ id: { in: [5] } }, { rootId: { in: [5] } }],
+      },
+      include: {
+        stream: {
+          select: { id: true, title: true },
+        },
+      },
+    });
+  });
 });

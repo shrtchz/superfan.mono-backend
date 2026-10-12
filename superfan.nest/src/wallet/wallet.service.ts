@@ -206,7 +206,7 @@ export class WalletService {
     }
   }
 
-  async creditWallet(userId: number, amount: number, title: string, description: string, accountType?: string, currency: string = 'NGN', streamTitle?: string) {
+  async creditWallet(userId: number, amount: number, title: string, description: string, accountType?: string, currency: string = 'NGN', streamTitle?: string, createdAt?: Date) {
     console.log('[Wallet][creditWallet][START]', {
       userId,
       amount,
@@ -249,7 +249,8 @@ export class WalletService {
           status: 'SUCCESS',
           description,
           account_type: accountType,
-          trx_ref: `${generateFiveUniqueRandomNumbers()}`
+          trx_ref: `${generateFiveUniqueRandomNumbers()}`,
+          ...(createdAt ? { createdAt } : {}),
         },
       });
       console.log('[Wallet][creditWallet] Wallet transaction created', {
@@ -269,6 +270,7 @@ export class WalletService {
           amount,
           currency,
           status: 'SUCCESS',
+          ...(createdAt ? { createdAt } : {}),
         },
       });
       console.log('[Wallet][creditWallet] Activity wallet created', {
@@ -359,7 +361,10 @@ export class WalletService {
 
   async createQuizReward(userId: number, points: number, subject: string, status: EarningStatus, reference?: string) {
     const amount = this.pointsConversionUtil.pointsToNaira(points);
-    const rewardReference = reference ?? `quiz_reward:${userId}:${subject}:${points}:${status}`;
+    // Key on the quiz session ID (passed as reference) — NOT on points/subject,
+    // because totalPoints can differ between retries (streak variance) and would
+    // defeat the idempotency guard, creating duplicate wallet credits.
+    const rewardReference = reference ?? `quiz_reward:${userId}:${subject}`;
 
     const existingReward = await this.prisma.reward.findFirst({
       where: {
@@ -385,22 +390,28 @@ export class WalletService {
       },
     });
 
-    // Credit the wallet - quiz rewards go to Gold Account
+    // Credit the wallet — test quiz rewards go to Savings (Gold) Account
     await this.creditWallet(userId, amount, 'Test Quiz Earning', 'Test Quiz Earning', 'Savings', 'NGN');
 
-    await this.prisma.point.create({
-      data: {
-        userId,
-        points,
-        reference: rewardReference,
-        type: 'quiz_reward',
-      }
+    // Guard point record with same reference to prevent double-counting
+    const existingPoint = await this.prisma.point.findFirst({
+      where: { userId, reference: rewardReference, type: 'quiz_reward' },
     });
+    if (!existingPoint) {
+      await this.prisma.point.create({
+        data: {
+          userId,
+          points,
+          reference: rewardReference,
+          type: 'quiz_reward',
+        },
+      });
 
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: { lifetimePoints: { increment: points } },
-    });
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: { lifetimePoints: { increment: points } },
+      });
+    }
 
     // Send notification — 🎉 You earned 20 pts (₦2).
     await this.notificationService.testQuizReward(userId, points, amount);
@@ -411,51 +422,6 @@ export class WalletService {
       `from ${subject} Quiz`,
       'quiz_reward'
     );
-  }
-
-  async createLiveQuizReward(userId: number, points: number, status: EarningStatus, reference?: string) {
-    const amount = this.pointsConversionUtil.pointsToNaira(points);
-    const rewardReference = reference ?? `live_quiz_reward:${userId}:${points}:${status}`;
-
-    const existingReward = await this.prisma.reward.findFirst({
-      where: {
-        userId,
-        type: 'live_quiz_reward',
-        reference: rewardReference,
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-
-    if (existingReward) {
-      return;
-    }
-    
-    await this.prisma.reward.create({
-      data: {
-        userId,
-        amount,
-        currency: 'NGN',
-        type: 'live_quiz_reward',
-        status,
-        reference: rewardReference,
-      },
-    });
-
-    // Credit the wallet - live quiz rewards go to Gold Account
-    await this.creditWallet(userId, amount, 'Test Quiz Earning', 'Test Quiz Earning', 'Savings', 'NGN');
-
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: { lifetimePoints: { increment: points } },
-    });
-
-    // Send notification — 🏆 You earned ₦2,000 from today's live quiz.
-    await this.notificationService.liveQuizReward(userId, amount);
-
-    // 💥 Jackpot! ₦5,000 credited to your Gold Account. — jackpot = ≥ ₦5,000 live quiz payout
-    if (amount >= 5000) {
-      await this.notificationService.streamLiveQuizJackpot(userId, amount);
-    }
   }
 
   /**
@@ -526,6 +492,65 @@ export class WalletService {
 
     // Push notification to user
     await this.notificationService.liveQuizConsolationReward(userId, consolationPoints);
+  }
+
+  /**
+   * Credits the actual cash prize to a live quiz winner.
+   *
+   * IMPORTANT: unitPrize is already a Naira amount (e.g. ₦600), NOT points.
+   * Do NOT pass it through pointsToNaira() — that would divide by 1000 and
+   * produce ₦0.60 instead of ₦600.
+   *
+   * Idempotent — safe to call multiple times for the same quiz attempt.
+   */
+  async createLiveQuizWinnerReward(
+    userId: number,
+    quizId: string,
+    amountNaira: number,
+    quizFinishDate?: Date,
+  ): Promise<void> {
+    if (!amountNaira || amountNaira <= 0) return;
+
+    const rewardReference = `live_quiz_winner:${userId}:${quizId}`;
+    const ts = quizFinishDate ?? new Date();
+
+    // Idempotency guard — do not double-credit the same quiz win
+    const existingReward = await this.prisma.reward.findFirst({
+      where: {
+        userId,
+        type: 'live_quiz_winner',
+        reference: rewardReference,
+      },
+    });
+    if (existingReward) return;
+
+    await this.prisma.reward.create({
+      data: {
+        userId,
+        amount: amountNaira,
+        currency: 'NGN',
+        type: 'live_quiz_winner',
+        status: 'PAID_OUT',
+        reference: rewardReference,
+        createdAt: ts,
+      },
+    });
+
+    // Credit the Gold Account wallet with the raw Naira amount,
+    // stamped at quiz finish time so wallet history shows the correct time.
+    await this.creditWallet(
+      userId,
+      amountNaira,
+      'Live Quiz',
+      'Live Quiz Earning',
+      'Gold',
+      'NGN',
+      undefined,
+      ts,
+    );
+
+    // Notify the user at the exact credit reward timestamp
+    await this.notificationService.liveQuizReward(userId, amountNaira, ts);
   }
 
 

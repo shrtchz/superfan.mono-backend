@@ -556,7 +556,10 @@ func (qc *QuizController) SubmitLiveQuizAnswer(ctx *gin.Context) {
 				sendServiceError(ctx, err)
 				return
 			}
-			utils.Success(ctx, http.StatusOK, "Live quiz answer submitted", gin.H{"answer": result.Answer})
+			utils.Success(ctx, http.StatusOK, "Live quiz answer submitted", gin.H{
+				"answer":           result.Answer,
+				"alreadySubmitted": result.AlreadySubmitted,
+			})
 			return
 		}
 		utils.SendError(ctx, http.StatusInternalServerError, "ERROR", err.Error())
@@ -574,7 +577,10 @@ func (qc *QuizController) SubmitLiveQuizAnswer(ctx *gin.Context) {
 		return
 	}
 
-	utils.Success(ctx, http.StatusOK, "Live quiz answer submitted", gin.H{"answer": result.Answer})
+	utils.Success(ctx, http.StatusOK, "Live quiz answer submitted", gin.H{
+		"answer":           result.Answer,
+		"alreadySubmitted": result.AlreadySubmitted,
+	})
 }
 
 func (qc *QuizController) UpdateQuiz(ctx *gin.Context) {
