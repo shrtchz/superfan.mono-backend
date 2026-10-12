@@ -433,7 +433,7 @@ func (f *LiveQuizFinaliser) creditGoldWallet(userID string, amount float64, poin
 
 		trxType := "credit"
 		goldType := "Gold"
-		description := fmt.Sprintf("You earned ₦%.2f from Live Quiz: %s", amount, truncate(question, 80))
+		description := "Live Quiz Earning"
 		status := "Completed"
 		txnType := "Reward"
 		if err := tx.Create(&models.WalletTransaction{
@@ -469,8 +469,8 @@ func (f *LiveQuizFinaliser) creditGoldWallet(userID string, amount float64, poin
 				`INSERT INTO "ActivityWallet" ("userId", "type", "title", "description", "amount", "currency", "status", "createdAt")
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 				userIDInt, "credit",
-				fmt.Sprintf("₦%.2f has been added to your wallet", amount),
-				fmt.Sprintf("You earned ₦%.2f from Live Quiz", amount),
+				"Live Quiz",
+				"Live Quiz Earning",
 				amount, "NGN", "SUCCESS", now,
 			).Error; err != nil {
 				log.Printf("[LiveQuizFinaliser] activity wallet insert warning: %v", err)
@@ -495,10 +495,11 @@ func (f *LiveQuizFinaliser) sendNotification(userID string, amount float64, ques
 		return fmt.Errorf("invalid user ID for notification: %w", err)
 	}
 
+	msg := fmt.Sprintf("You earned ₦%.2f from today's live quiz.", amount)
 	payload := map[string]interface{}{
 		"userId":  userIDInt,
-		"title":   fmt.Sprintf("🎉 You won ₦%.2f from Live Quiz!", amount),
-		"message": fmt.Sprintf("Congratulations! You got the correct answer for \"%s\" and earned ₦%.2f.", truncate(question, 60), amount),
+		"title":   msg,
+		"message": msg,
 		"type":    "live_quiz_reward",
 		"data": map[string]interface{}{
 			"quizId": quizID,

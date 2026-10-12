@@ -7,6 +7,7 @@ import { NotificationService } from './notification.service';
 export class NotificationController {
   constructor(private notificationService: NotificationService) {}
 
+  @Public()
   @Post('/create')
   async createNotification(
     @Body() body: { userId: number; title: string; message: string; type?: string; data?: any },

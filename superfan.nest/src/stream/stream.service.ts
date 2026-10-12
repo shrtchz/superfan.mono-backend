@@ -1206,6 +1206,18 @@ async editStream(
     },
   });
 
+  if (status === 'live' && existingStream.status !== 'live') {
+    try {
+      await prisma.streamComment.updateMany({
+        where: { streamId, isDeleted: false },
+        data: { isDeleted: true },
+      });
+      await this.invalidateCommentCaches(streamId);
+    } catch (cleanErr: any) {
+      this.logger.warn(`Failed to clean previous comments for stream ${streamId}: ${cleanErr?.message}`);
+    }
+  }
+
   return updatedStream;
 }
 
@@ -1384,6 +1396,22 @@ async editStream(
         part: ['id', 'status'],
       });
       this.logger.log(`Broadcast ${broadcastId} is LIVE`);
+
+      try {
+        const liveStream = await prisma.stream.findFirst({
+          where: { broadcastId },
+          select: { id: true },
+        });
+        if (liveStream?.id) {
+          await prisma.streamComment.updateMany({
+            where: { streamId: liveStream.id, isDeleted: false },
+            data: { isDeleted: true },
+          });
+          await this.invalidateCommentCaches(liveStream.id);
+        }
+      } catch (cleanErr: any) {
+        this.logger.warn(`Failed to clean previous comments for broadcast ${broadcastId}: ${cleanErr?.message}`);
+      }
     } catch (error: any) {
       throw new InternalServerErrorException(
         `Failed to go live: ${error.message}`,
@@ -2137,9 +2165,22 @@ async getStreamCommentsandReplies(
     );
   }
 
+  const targetStream = normalizedStreamId
+    ? await prisma.stream.findUnique({
+        where: { id: normalizedStreamId },
+        select: { id: true, scheduledDate: true, createdAt: true, status: true },
+      })
+    : null;
+
+  const streamCutoff =
+    targetStream?.status === 'live' && (targetStream?.scheduledDate || targetStream?.createdAt)
+      ? targetStream.scheduledDate ?? targetStream.createdAt
+      : undefined;
+
   const rootComments = await prisma.streamComment.findMany({
     where: {
       ...(normalizedStreamId ? { streamId: normalizedStreamId } : {}),
+      ...(streamCutoff ? { createdAt: { gte: streamCutoff } } : {}),
       isDeleted: false,
       parentId: null,
     },

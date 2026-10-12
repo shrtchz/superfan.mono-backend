@@ -689,6 +689,23 @@ export class QuizService {
         this.httpService.post(`${this.liveQuizGoBaseUrl}/live`, liveQuizData),
       );
       this.eventEmitter.emit('liveQuiz.changed', { action: 'created' });
+
+      // 📝 Notify client users that a fresh live quiz just dropped
+      try {
+        const usersResult = await this.userService.findAllUsers();
+        const clientUserIds = (usersResult.data ?? [])
+          .filter((u: any) => u.roleName === 'client')
+          .map((u: any) => u.id);
+        if (clientUserIds.length > 0) {
+          await this.notificationService.newQuizAvailable(
+            clientUserIds,
+            'A fresh quiz just dropped.',
+          );
+        }
+      } catch (notifyErr) {
+        this.logger.warn(`Failed to dispatch new live quiz notification: ${notifyErr?.message ?? notifyErr}`);
+      }
+
       return response.data;
     } catch (error) {
       this.rethrowGoProxyError(error, 'Failed to create live quiz');

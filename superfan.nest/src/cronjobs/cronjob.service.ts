@@ -115,7 +115,8 @@ export class CronJobService {
 
             const result = await this.userService.findAllUsers();
             const clientUsers = (result.data ?? []).filter((user: any) => user.roleName === 'client');
-            const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+            // Only dedup within the last 30 minutes so users get alerts for each distinct live quiz
+            const cutoff = new Date(Date.now() - 30 * 60 * 1000);
 
             const targetUsers: number[] = [];
             for (const user of clientUsers) {
