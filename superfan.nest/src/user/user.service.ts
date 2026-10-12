@@ -365,13 +365,9 @@ export class UserService {
   async syncFromClerk(clerkUser: any, metadata: SyncUserMetadata = {}, userAgent?: string, ip?: string) {
     try {
       const clerkUserId = clerkUser.id as string;
-      const email = clerkUser.emailAddresses?.[0]?.emailAddress as
-        | string
-        | undefined;
-
-      if (!email) {
-        throw new BadRequestException('Clerk user has no email address');
-      }
+      const email =
+        (clerkUser.emailAddresses?.[0]?.emailAddress as string | undefined) ||
+        `${clerkUserId}@snapchat.superfan.app`;
 
       const phone =
         (clerkUser.unsafeMetadata?.phone as string) ||

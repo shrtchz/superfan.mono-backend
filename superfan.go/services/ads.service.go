@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -96,6 +97,10 @@ func (s *adsServiceImpl) completeEndedCampaigns(ctx context.Context, now time.Ti
 const activeCampaignDateCondition = `("AdCampaign"."runContinuously" = TRUE OR (CASE WHEN "AdCampaign"."endDate" IS NOT NULL THEN "AdCampaign"."endDate" + INTERVAL '1 day' ELSE "AdCampaign"."startDate" + GREATEST("AdCampaign"."days", 1) * INTERVAL '1 day' END) > NOW())`
 
 func NewAdsService(db *gorm.DB) AdsService {
+	if db != nil {
+		_ = db.Exec(`ALTER TABLE "AdCampaign" ADD COLUMN IF NOT EXISTS "guaranteedDailyViews" INTEGER NOT NULL DEFAULT 1000`).Error
+		_ = db.Exec(`CREATE INDEX IF NOT EXISTS "idx_adevent_campaign_event_created" ON "AdEvent"("campaignId", "eventType", "createdAt")`).Error
+	}
 	return &adsServiceImpl{
 		db:          db,
 		nestBaseURL: utils.GetEnvWithKey("NEST_BASE_URL"),
@@ -279,10 +284,11 @@ type CreateCampaignRequest struct {
 	PaymentMethod   *string  `json:"paymentMethod"`
 	PaymentRef      *string  `json:"paymentRef"`
 	PlacementKey    *string  `json:"placementKey"` // e.g. "QUIZ_AD_Q1", "MID_QUIZ_AD", "POST_QUIZ_AD", "PRE_QUIZ_AD", "SPONSORED_QUESTIONS"
-	PlacementType   *string  `json:"placementType"`
-	QuestionBlocks  *int     `json:"questionBlocks"`
-	DurationSec     *int     `json:"durationSec"`
-	Status          *string  `json:"status"`
+	PlacementType        *string  `json:"placementType"`
+	QuestionBlocks       *int     `json:"questionBlocks"`
+	GuaranteedDailyViews *int     `json:"guaranteedDailyViews"`
+	DurationSec          *int     `json:"durationSec"`
+	Status               *string  `json:"status"`
 }
 
 type CampaignListQuery struct {
@@ -348,10 +354,13 @@ type LogAdEventRequest struct {
 }
 
 type PlacementEligibilityResponse struct {
-	Eligible  bool                `json:"eligible"`
-	Reason    string              `json:"reason,omitempty"`
-	Campaign  *models.AdCampaign  `json:"campaign,omitempty"`
-	Placement *models.AdPlacement `json:"placement,omitempty"`
+	Eligible             bool                `json:"eligible"`
+	Reason               string              `json:"reason,omitempty"`
+	Campaign             *models.AdCampaign  `json:"campaign,omitempty"`
+	Placement            *models.AdPlacement `json:"placement,omitempty"`
+	GuaranteedDailyViews int                 `json:"guaranteedDailyViews,omitempty"`
+	TodayViews           int                 `json:"todayViews,omitempty"`
+	CycleResetsAt        *time.Time          `json:"cycleResetsAt,omitempty"`
 }
 
 type RejectCampaignRequest struct {
@@ -951,30 +960,43 @@ func (s *adsServiceImpl) CreateCampaign(ctx context.Context, req *CreateCampaign
 		}
 	}
 
+	guaranteedDailyViews := 1000
+	if req.GuaranteedDailyViews != nil && *req.GuaranteedDailyViews > 0 {
+		guaranteedDailyViews = *req.GuaranteedDailyViews
+	} else if rule.GuaranteedDailyUnits > 0 {
+		guaranteedDailyViews = rule.GuaranteedDailyUnits
+	} else if dailyFee > 0 {
+		guaranteedDailyViews = int(math.Round((float64(dailyFee) / 500.0) * 1000.0))
+		if guaranteedDailyViews <= 0 {
+			guaranteedDailyViews = 1000
+		}
+	}
+
 	campaign := models.AdCampaign{
-		UserID:          req.UserID,
-		Username:        campaignUsername,
-		Headline:        req.Headline,
-		Description:     req.Description,
-		ButtonLabel:     req.ButtonLabel,
-		WebsiteURL:      req.WebsiteURL,
-		MediaURLs:       pq.StringArray(req.MediaURLs),
-		MediaType:       req.MediaType,
-		DailyFee:        dailyFee,
-		TotalFee:        totalFee,
-		Days:            days,
-		StartDate:       parsedStart,
-		EndDate:         parsedEnd,
-		RunContinuously: req.RunContinuously,
-		AgeRange:        req.AgeRange,
-		PlacementType:   &placementTypeStr,
-		PricingModel:    &pricingModelStr,
-		QuestionBlocks:  blocks,
-		Status:          status,
-		PaymentStatus:   paymentStatus,
-		PaymentRef:      req.PaymentRef,
-		CreatedAt:       time.Now(),
-		UpdatedAt:       time.Now(),
+		UserID:               req.UserID,
+		Username:             campaignUsername,
+		Headline:             req.Headline,
+		Description:          req.Description,
+		ButtonLabel:          req.ButtonLabel,
+		WebsiteURL:           req.WebsiteURL,
+		MediaURLs:            pq.StringArray(req.MediaURLs),
+		MediaType:            req.MediaType,
+		DailyFee:             dailyFee,
+		TotalFee:             totalFee,
+		Days:                 days,
+		StartDate:            parsedStart,
+		EndDate:              parsedEnd,
+		RunContinuously:      req.RunContinuously,
+		AgeRange:             req.AgeRange,
+		PlacementType:        &placementTypeStr,
+		PricingModel:         &pricingModelStr,
+		QuestionBlocks:       blocks,
+		GuaranteedDailyViews: guaranteedDailyViews,
+		Status:               status,
+		PaymentStatus:        paymentStatus,
+		PaymentRef:           req.PaymentRef,
+		CreatedAt:            time.Now(),
+		UpdatedAt:            time.Now(),
 	}
 
 	if err := s.db.WithContext(ctx).Create(&campaign).Error; err != nil {
@@ -1710,12 +1732,101 @@ func (s *adsServiceImpl) LogAdEvent(ctx context.Context, req *LogAdEventRequest)
 	return nil
 }
 
+// getCycleStart returns the start of the current 24-hour cycle (midnight in Africa/Lagos WAT).
+func getCycleStart(now time.Time) time.Time {
+	lagosLoc, err := time.LoadLocation("Africa/Lagos")
+	if err != nil {
+		lagosLoc = time.FixedZone("WAT", 1*60*60)
+	}
+	nowLagos := now.In(lagosLoc)
+	return time.Date(nowLagos.Year(), nowLagos.Month(), nowLagos.Day(), 0, 0, 0, 0, lagosLoc)
+}
+
+// getNextCycleReset returns the start of the next 24-hour cycle when daily view quotas reset.
+func getNextCycleReset(now time.Time) time.Time {
+	return getCycleStart(now).AddDate(0, 0, 1)
+}
+
+// getCampaignGuaranteedDailyViews resolves the guaranteed daily view volume for a campaign.
+// e.g. 1,000 views for the 500 NGN/day Starter Daily package.
+func getCampaignGuaranteedDailyViews(campaign *models.AdCampaign) int {
+	if campaign == nil {
+		return 1000
+	}
+	if campaign.GuaranteedDailyViews > 0 {
+		return campaign.GuaranteedDailyViews
+	}
+
+	// Dynamic calculation based on pricing and placement format if not explicitly set
+	if campaign.PlacementType != nil && *campaign.PlacementType != "" {
+		rule := ResolvePlacementConfig(*campaign.PlacementType)
+		if rule.GuaranteedDailyUnits > 0 {
+			return rule.GuaranteedDailyUnits
+		}
+	}
+
+	// If daily fee is set, base package is 500 NGN -> 1,000 views (2 views per NGN 1)
+	if campaign.DailyFee > 0 {
+		views := int(math.Round((float64(campaign.DailyFee) / 500.0) * 1000.0))
+		if views > 0 {
+			return views
+		}
+	}
+
+	// Default Starter Daily guaranteed volume: 1,000 views
+	return 1000
+}
+
+func (s *adsServiceImpl) getCampaignsCycleViews(ctx context.Context, campaignIDs []int, cycleStart time.Time) (map[int]int, error) {
+	viewsMap := make(map[int]int)
+	if s.db == nil || len(campaignIDs) == 0 {
+		return viewsMap, nil
+	}
+
+	type ViewCount struct {
+		CampaignID int `gorm:"column:campaignId"`
+		Count      int `gorm:"column:count"`
+	}
+	var results []ViewCount
+
+	if err := s.db.WithContext(ctx).Model(&models.AdEvent{}).
+		Select(`"campaignId", COUNT(*) as count`).
+		Where(`"campaignId" IN (?) AND "eventType" = ? AND "createdAt" >= ?`, campaignIDs, models.AdEventTypeViewStart, cycleStart).
+		Group(`"campaignId"`).
+		Scan(&results).Error; err != nil {
+		return viewsMap, err
+	}
+
+	for _, r := range results {
+		viewsMap[r.CampaignID] = r.Count
+	}
+	return viewsMap, nil
+}
+
+type servingCandidate struct {
+	campaign   models.AdCampaign
+	placement  *models.AdPlacement
+	viewsToday int
+	guaranteed int
+	ratio      float64
+}
+
 func (s *adsServiceImpl) GetPlacementEligibility(ctx context.Context, userId int, placementKey string) (*PlacementEligibilityResponse, error) {
-	if err := s.completeEndedCampaigns(ctx, time.Now()); err != nil {
+	now := time.Now()
+	if err := s.completeEndedCampaigns(ctx, now); err != nil {
 		return nil, err
 	}
 
+	if s.db == nil {
+		return &PlacementEligibilityResponse{
+			Eligible: false,
+			Reason:   "Database not available",
+		}, nil
+	}
+
 	rule := ResolvePlacementConfig(placementKey)
+	resetsAt := getNextCycleReset(now)
+	cycleStart := getCycleStart(now)
 
 	// 1. Check user's subscription
 	if userId > 0 {
@@ -1725,8 +1836,9 @@ func (s *adsServiceImpl) GetPlacementEligibility(ctx context.Context, userId int
 			plan := strings.ToUpper(strings.TrimSpace(*user.SubscriptionPlan))
 			if plan == "PREMIUM_PRO" || plan == "PREMIUM_PRO_MAX" || plan == "PRO" || plan == "PRO_MAX" {
 				return &PlacementEligibilityResponse{
-					Eligible: false,
-					Reason:   "User subscription plan is ad-free",
+					Eligible:      false,
+					Reason:        "User subscription plan is ad-free",
+					CycleResetsAt: &resetsAt,
 				}, nil
 			}
 		}
@@ -1735,189 +1847,296 @@ func (s *adsServiceImpl) GetPlacementEligibility(ctx context.Context, userId int
 	placementKeyUpper := strings.ToUpper(strings.TrimSpace(placementKey))
 	ruleTypeUpper := strings.ToUpper(string(rule.PlacementType))
 
-	// 2. Primary Lookup: Try finding an active/valid AdPlacement linked to an active/valid campaign
-	var placement models.AdPlacement
-	var campaign models.AdCampaign
+	var selectedCandidate *servingCandidate
+	hasCappedCampaigns := false
 
+	// Helper to rank eligible candidates using fair rotation:
+	// Prioritize lower ratio of daily view quota consumed (protects inventory for other advertisers and avoids monopolization)
+	sortCandidates := func(candidates []servingCandidate) {
+		sort.SliceStable(candidates, func(i, j int) bool {
+			// 1. Quota ratio consumed today (ascending)
+			if candidates[i].ratio != candidates[j].ratio {
+				return candidates[i].ratio < candidates[j].ratio
+			}
+			// 2. Status priority: active > approved > paid > pending
+			priority := func(st models.AdStatus) int {
+				switch strings.ToLower(string(st)) {
+				case "active":
+					return 1
+				case "approved":
+					return 2
+				case "paid":
+					return 3
+				default:
+					return 4
+				}
+			}
+			pi, pj := priority(candidates[i].campaign.Status), priority(candidates[j].campaign.Status)
+			if pi != pj {
+				return pi < pj
+			}
+			// 3. Absolute views today (ascending)
+			if candidates[i].viewsToday != candidates[j].viewsToday {
+				return candidates[i].viewsToday < candidates[j].viewsToday
+			}
+			return candidates[i].campaign.ID < candidates[j].campaign.ID
+		})
+	}
+
+	// 2. Primary Lookup: Try finding active AdPlacements linked to active campaigns
+	var placements []models.AdPlacement
 	err := s.db.WithContext(ctx).
 		Table(`"AdPlacement"`).
 		Select(`"AdPlacement".*`).
 		Joins(`JOIN "AdCampaign" ON "AdCampaign".id = "AdPlacement"."campaignId"`).
 		Where(`(UPPER("AdPlacement".key) IN (?, ?) OR UPPER("AdPlacement"."placementType") IN (?, ?)) AND LOWER("AdCampaign".status::text) IN ('active', 'approved', 'paid', 'pending') AND `+activeCampaignDateCondition, placementKeyUpper, ruleTypeUpper, placementKeyUpper, ruleTypeUpper).
-		Order(`CASE WHEN LOWER("AdCampaign".status::text) = 'active' THEN 1 WHEN LOWER("AdCampaign".status::text) = 'approved' THEN 2 WHEN LOWER("AdCampaign".status::text) = 'paid' THEN 3 ELSE 4 END, "AdPlacement".id DESC`).
-		First(&placement).Error
+		Find(&placements).Error
 
-	if err == nil && placement.CampaignID > 0 {
-		_ = s.db.WithContext(ctx).First(&campaign, placement.CampaignID).Error
-		s.enrichCampaignUser(ctx, &campaign)
-
-		media := placement.MediaURL
-		if strings.TrimSpace(media) == "" && len(campaign.MediaURLs) > 0 {
-			media = campaign.MediaURLs[0]
+	if err == nil && len(placements) > 0 {
+		campaignIDs := make([]int, 0, len(placements))
+		for _, p := range placements {
+			campaignIDs = append(campaignIDs, p.CampaignID)
 		}
-		if strings.TrimSpace(media) == "" {
-			return &PlacementEligibilityResponse{
-				Eligible: false,
-			}, nil
-		}
+		viewsMap, _ := s.getCampaignsCycleViews(ctx, campaignIDs, cycleStart)
 
-		durationSec := placement.DurationSec
-		if durationSec <= 0 {
-			durationSec = rule.DurationSec
+		var campaigns []models.AdCampaign
+		_ = s.db.WithContext(ctx).Where("id IN ?", campaignIDs).Find(&campaigns).Error
+		campMap := make(map[int]models.AdCampaign)
+		for _, c := range campaigns {
+			campMap[c.ID] = c
 		}
 
-		skipAfterSec := placement.SkipAfterSec
-		if skipAfterSec <= 0 && rule.SkipAfterSec > 0 {
-			skipAfterSec = rule.SkipAfterSec
+		var eligible []servingCandidate
+		for _, p := range placements {
+			camp, ok := campMap[p.CampaignID]
+			if !ok {
+				continue
+			}
+			media := p.MediaURL
+			if strings.TrimSpace(media) == "" && len(camp.MediaURLs) > 0 {
+				media = camp.MediaURLs[0]
+			}
+			if strings.TrimSpace(media) == "" {
+				continue
+			}
+
+			viewsToday := viewsMap[camp.ID]
+			guaranteed := getCampaignGuaranteedDailyViews(&camp)
+			if viewsToday >= guaranteed {
+				// Capped! Rotate banner out of serving pool for remainder of this 24-hour cycle.
+				hasCappedCampaigns = true
+				continue
+			}
+
+			ratio := 0.0
+			if guaranteed > 0 {
+				ratio = float64(viewsToday) / float64(guaranteed)
+			}
+			pCopy := p
+			eligible = append(eligible, servingCandidate{
+				campaign:   camp,
+				placement:  &pCopy,
+				viewsToday: viewsToday,
+				guaranteed: guaranteed,
+				ratio:      ratio,
+			})
 		}
 
-		ptsAmount := placement.PointsAwardAmount
-		if ptsAmount <= 0 && rule.PointsAwardAmount > 0 {
-			ptsAmount = rule.PointsAwardAmount
+		if len(eligible) > 0 {
+			sortCandidates(eligible)
+			selectedCandidate = &eligible[0]
 		}
-
-		pricingModel := placement.PricingModel
-		if strings.TrimSpace(pricingModel) == "" && campaign.PricingModel != nil {
-			pricingModel = *campaign.PricingModel
-		}
-		if strings.TrimSpace(pricingModel) == "" {
-			pricingModel = rule.PricingModel
-		}
-
-		createdAt := placement.CreatedAt
-		if createdAt.IsZero() {
-			createdAt = campaign.CreatedAt
-		}
-		if createdAt.IsZero() {
-			createdAt = time.Now()
-		}
-
-		key := placement.Key
-		if strings.TrimSpace(key) == "" {
-			key = string(rule.PlacementType)
-		}
-
-		placementType := placement.PlacementType
-		if strings.TrimSpace(string(placementType)) == "" {
-			placementType = rule.PlacementType
-		}
-
-		return &PlacementEligibilityResponse{
-			Eligible: true,
-			Campaign: &campaign,
-			Placement: &models.AdPlacement{
-				ID:                placement.ID,
-				CampaignID:        placement.CampaignID,
-				Key:               key,
-				PlacementType:     placementType,
-				MediaURL:          media,
-				DurationSec:       durationSec,
-				SkipAllowed:       placement.SkipAllowed,
-				SkipAfterSec:      skipAfterSec,
-				PointsAwardActive: placement.PointsAwardActive || rule.PointsAwardActive,
-				PointsAwardAmount: ptsAmount,
-				PricingModel:      pricingModel,
-				CreatedAt:         createdAt,
-			},
-		}, nil
 	}
 
 	// 3. Secondary Lookup: Try finding an AdCampaign directly matching the placement type
-	var directCampaign models.AdCampaign
-	directErr := s.db.WithContext(ctx).
-		Where(`(UPPER("placementType") = ? OR UPPER("placementType") = ?) AND LOWER(status::text) IN ('active', 'approved', 'paid', 'pending') AND `+activeCampaignDateCondition, placementKeyUpper, ruleTypeUpper, placementKeyUpper, ruleTypeUpper).
-		Order(`CASE WHEN LOWER(status::text) = 'active' THEN 1 WHEN LOWER(status::text) = 'approved' THEN 2 WHEN LOWER(status::text) = 'paid' THEN 3 ELSE 4 END, id DESC`).
-		First(&directCampaign).Error
+	if selectedCandidate == nil {
+		var directCampaigns []models.AdCampaign
+		directErr := s.db.WithContext(ctx).
+			Where(`(UPPER("placementType") = ? OR UPPER("placementType") = ?) AND LOWER(status::text) IN ('active', 'approved', 'paid', 'pending') AND `+activeCampaignDateCondition, placementKeyUpper, ruleTypeUpper, placementKeyUpper, ruleTypeUpper).
+			Find(&directCampaigns).Error
 
-	if directErr == nil && directCampaign.ID > 0 {
-		s.enrichCampaignUser(ctx, &directCampaign)
-		media := ""
-		if len(directCampaign.MediaURLs) > 0 && strings.TrimSpace(directCampaign.MediaURLs[0]) != "" {
-			media = directCampaign.MediaURLs[0]
-		}
-		if media == "" {
-			return &PlacementEligibilityResponse{Eligible: false}, nil
-		}
+		if directErr == nil && len(directCampaigns) > 0 {
+			campaignIDs := make([]int, 0, len(directCampaigns))
+			for _, c := range directCampaigns {
+				campaignIDs = append(campaignIDs, c.ID)
+			}
+			viewsMap, _ := s.getCampaignsCycleViews(ctx, campaignIDs, cycleStart)
 
-		pricingModel := rule.PricingModel
-		if directCampaign.PricingModel != nil && strings.TrimSpace(*directCampaign.PricingModel) != "" {
-			pricingModel = *directCampaign.PricingModel
-		}
+			var eligible []servingCandidate
+			for _, camp := range directCampaigns {
+				media := ""
+				if len(camp.MediaURLs) > 0 && strings.TrimSpace(camp.MediaURLs[0]) != "" {
+					media = camp.MediaURLs[0]
+				}
+				if media == "" {
+					continue
+				}
 
-		createdAt := directCampaign.CreatedAt
-		if createdAt.IsZero() {
-			createdAt = time.Now()
-		}
+				viewsToday := viewsMap[camp.ID]
+				guaranteed := getCampaignGuaranteedDailyViews(&camp)
+				if viewsToday >= guaranteed {
+					hasCappedCampaigns = true
+					continue
+				}
 
+				ratio := 0.0
+				if guaranteed > 0 {
+					ratio = float64(viewsToday) / float64(guaranteed)
+				}
+				eligible = append(eligible, servingCandidate{
+					campaign:   camp,
+					placement:  nil,
+					viewsToday: viewsToday,
+					guaranteed: guaranteed,
+					ratio:      ratio,
+				})
+			}
+
+			if len(eligible) > 0 {
+				sortCandidates(eligible)
+				selectedCandidate = &eligible[0]
+			}
+		}
+	}
+
+	// 4. Tertiary Lookup: Try finding ANY active AdCampaign in database
+	if selectedCandidate == nil {
+		var activeCampaigns []models.AdCampaign
+		campaignErr := s.db.WithContext(ctx).
+			Where(`LOWER(status::text) IN ('active', 'approved', 'paid', 'pending') AND ` + activeCampaignDateCondition).
+			Find(&activeCampaigns).Error
+
+		if campaignErr == nil && len(activeCampaigns) > 0 {
+			campaignIDs := make([]int, 0, len(activeCampaigns))
+			for _, c := range activeCampaigns {
+				campaignIDs = append(campaignIDs, c.ID)
+			}
+			viewsMap, _ := s.getCampaignsCycleViews(ctx, campaignIDs, cycleStart)
+
+			var eligible []servingCandidate
+			for _, camp := range activeCampaigns {
+				media := ""
+				if len(camp.MediaURLs) > 0 && strings.TrimSpace(camp.MediaURLs[0]) != "" {
+					media = camp.MediaURLs[0]
+				}
+				if media == "" {
+					continue
+				}
+
+				viewsToday := viewsMap[camp.ID]
+				guaranteed := getCampaignGuaranteedDailyViews(&camp)
+				if viewsToday >= guaranteed {
+					hasCappedCampaigns = true
+					continue
+				}
+
+				ratio := 0.0
+				if guaranteed > 0 {
+					ratio = float64(viewsToday) / float64(guaranteed)
+				}
+				eligible = append(eligible, servingCandidate{
+					campaign:   camp,
+					placement:  nil,
+					viewsToday: viewsToday,
+					guaranteed: guaranteed,
+					ratio:      ratio,
+				})
+			}
+
+			if len(eligible) > 0 {
+				sortCandidates(eligible)
+				selectedCandidate = &eligible[0]
+			}
+		}
+	}
+
+	// No eligible campaigns available in serving pool
+	if selectedCandidate == nil {
+		reason := "No active campaign found in serving pool"
+		if hasCappedCampaigns {
+			reason = "Active campaigns have reached their guaranteed daily view volume for the current 24-hour cycle and are rotated out"
+		}
 		return &PlacementEligibilityResponse{
-			Eligible: true,
-			Campaign: &directCampaign,
-			Placement: &models.AdPlacement{
-				ID:                directCampaign.ID,
-				CampaignID:        directCampaign.ID,
-				Key:               string(rule.PlacementType),
-				PlacementType:     rule.PlacementType,
-				MediaURL:          media,
-				DurationSec:       rule.DurationSec,
-				SkipAllowed:       rule.SkipAllowed,
-				SkipAfterSec:      rule.SkipAfterSec,
-				PointsAwardActive: rule.PointsAwardActive,
-				PointsAwardAmount: rule.PointsAwardAmount,
-				PricingModel:      pricingModel,
-				CreatedAt:         createdAt,
-			},
+			Eligible:      false,
+			Reason:        reason,
+			CycleResetsAt: &resetsAt,
 		}, nil
 	}
 
-	// 4. Tertiary Lookup: Try finding ANY active AdCampaign directly in database
-	var activeCampaign models.AdCampaign
-	campaignErr := s.db.WithContext(ctx).
-		Where(`LOWER(status::text) IN ('active', 'approved', 'paid', 'pending') AND ` + activeCampaignDateCondition).
-		Order(`CASE WHEN LOWER(status::text) = 'active' THEN 1 WHEN LOWER(status::text) = 'approved' THEN 2 WHEN LOWER(status::text) = 'paid' THEN 3 ELSE 4 END, id DESC`).
-		First(&activeCampaign).Error
+	// Prepare and return the winning candidate
+	s.enrichCampaignUser(ctx, &selectedCandidate.campaign)
+	camp := selectedCandidate.campaign
 
-	if campaignErr == nil && activeCampaign.ID > 0 {
-		s.enrichCampaignUser(ctx, &activeCampaign)
-		media := ""
-		if len(activeCampaign.MediaURLs) > 0 && strings.TrimSpace(activeCampaign.MediaURLs[0]) != "" {
-			media = activeCampaign.MediaURLs[0]
-		}
-		if media == "" {
-			return &PlacementEligibilityResponse{Eligible: false}, nil
-		}
-
-		pricingModel := rule.PricingModel
-		if activeCampaign.PricingModel != nil && strings.TrimSpace(*activeCampaign.PricingModel) != "" {
-			pricingModel = *activeCampaign.PricingModel
-		}
-
-		createdAt := activeCampaign.CreatedAt
-		if createdAt.IsZero() {
-			createdAt = time.Now()
-		}
-
-		return &PlacementEligibilityResponse{
-			Eligible: true,
-			Campaign: &activeCampaign,
-			Placement: &models.AdPlacement{
-				ID:                activeCampaign.ID,
-				CampaignID:        activeCampaign.ID,
-				Key:               string(rule.PlacementType),
-				PlacementType:     rule.PlacementType,
-				MediaURL:          media,
-				DurationSec:       rule.DurationSec,
-				SkipAllowed:       rule.SkipAllowed,
-				SkipAfterSec:      rule.SkipAfterSec,
-				PointsAwardActive: rule.PointsAwardActive,
-				PointsAwardAmount: rule.PointsAwardAmount,
-				PricingModel:      pricingModel,
-				CreatedAt:         createdAt,
-			},
-		}, nil
+	media := ""
+	if selectedCandidate.placement != nil && strings.TrimSpace(selectedCandidate.placement.MediaURL) != "" {
+		media = selectedCandidate.placement.MediaURL
+	} else if len(camp.MediaURLs) > 0 {
+		media = camp.MediaURLs[0]
 	}
 
-	// No active campaign in database
+	durationSec := rule.DurationSec
+	skipAllowed := rule.SkipAllowed
+	skipAfterSec := rule.SkipAfterSec
+	pointsAwardActive := rule.PointsAwardActive
+	pointsAwardAmount := rule.PointsAwardAmount
+	pricingModel := rule.PricingModel
+	key := string(rule.PlacementType)
+	placementType := rule.PlacementType
+	placementID := camp.ID
+	createdAt := camp.CreatedAt
+
+	if selectedCandidate.placement != nil {
+		placementID = selectedCandidate.placement.ID
+		if selectedCandidate.placement.DurationSec > 0 {
+			durationSec = selectedCandidate.placement.DurationSec
+		}
+		skipAllowed = selectedCandidate.placement.SkipAllowed
+		if selectedCandidate.placement.SkipAfterSec > 0 {
+			skipAfterSec = selectedCandidate.placement.SkipAfterSec
+		}
+		if selectedCandidate.placement.PointsAwardAmount > 0 {
+			pointsAwardAmount = selectedCandidate.placement.PointsAwardAmount
+		}
+		pointsAwardActive = selectedCandidate.placement.PointsAwardActive || rule.PointsAwardActive
+		if strings.TrimSpace(selectedCandidate.placement.PricingModel) != "" {
+			pricingModel = selectedCandidate.placement.PricingModel
+		}
+		if strings.TrimSpace(selectedCandidate.placement.Key) != "" {
+			key = selectedCandidate.placement.Key
+		}
+		if strings.TrimSpace(string(selectedCandidate.placement.PlacementType)) != "" {
+			placementType = selectedCandidate.placement.PlacementType
+		}
+		if !selectedCandidate.placement.CreatedAt.IsZero() {
+			createdAt = selectedCandidate.placement.CreatedAt
+		}
+	} else if camp.PricingModel != nil && strings.TrimSpace(*camp.PricingModel) != "" {
+		pricingModel = *camp.PricingModel
+	}
+
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
+
 	return &PlacementEligibilityResponse{
-		Eligible: false,
+		Eligible: true,
+		Campaign: &camp,
+		Placement: &models.AdPlacement{
+			ID:                placementID,
+			CampaignID:        camp.ID,
+			Key:               key,
+			PlacementType:     placementType,
+			MediaURL:          media,
+			DurationSec:       durationSec,
+			SkipAllowed:       skipAllowed,
+			SkipAfterSec:      skipAfterSec,
+			PointsAwardActive: pointsAwardActive,
+			PointsAwardAmount: pointsAwardAmount,
+			PricingModel:      pricingModel,
+			CreatedAt:         createdAt,
+		},
+		GuaranteedDailyViews: selectedCandidate.guaranteed,
+		TodayViews:           selectedCandidate.viewsToday,
+		CycleResetsAt:        &resetsAt,
 	}, nil
 }

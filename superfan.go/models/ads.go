@@ -56,8 +56,9 @@ type AdCampaign struct {
 	AgeRange        *string        `gorm:"column:ageRange" json:"ageRange,omitempty"`
 	PlacementType   *string        `gorm:"column:placementType" json:"placementType,omitempty"`
 	PricingModel    *string        `gorm:"column:pricingModel" json:"pricingModel,omitempty"`
-	QuestionBlocks  int            `gorm:"column:questionBlocks;default:0" json:"questionBlocks,omitempty"`
-	Status          AdStatus       `gorm:"column:status;default:PENDING" json:"status"`
+	QuestionBlocks       int            `gorm:"column:questionBlocks;default:0" json:"questionBlocks,omitempty"`
+	GuaranteedDailyViews int            `gorm:"column:guaranteedDailyViews;default:1000" json:"guaranteedDailyViews"`
+	Status               AdStatus       `gorm:"column:status;default:PENDING" json:"status"`
 	Views           int            `gorm:"column:views;default:0" json:"views"`
 	Clicks          int            `gorm:"column:clicks;default:0" json:"clicks"`
 	PaymentStatus   string         `gorm:"column:paymentStatus;default:PENDING" json:"paymentStatus"`
