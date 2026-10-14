@@ -48,6 +48,7 @@ export class AutoSeedService implements OnApplicationBootstrap {
       `ALTER TABLE "AdCampaign" ADD COLUMN IF NOT EXISTS "placementType" TEXT`,
       `ALTER TABLE "AdCampaign" ADD COLUMN IF NOT EXISTS "pricingModel" TEXT`,
       `ALTER TABLE "AdCampaign" ADD COLUMN IF NOT EXISTS "questionBlocks" INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE "AdCampaign" ADD COLUMN IF NOT EXISTS "guaranteedDailyViews" INTEGER NOT NULL DEFAULT 1000`,
     ];
 
     for (const statement of statements) {
@@ -69,6 +70,9 @@ export class AutoSeedService implements OnApplicationBootstrap {
   private async ensureAdEventColumns() {
     await this.prisma.$executeRawUnsafe(
       `ALTER TABLE "AdEvent" ADD COLUMN IF NOT EXISTS "pointsGiven" INTEGER NOT NULL DEFAULT 0`,
+    );
+    await this.prisma.$executeRawUnsafe(
+      `CREATE INDEX IF NOT EXISTS "idx_adevent_campaign_event_created" ON "AdEvent"("campaignId", "eventType", "createdAt")`,
     );
   }
 

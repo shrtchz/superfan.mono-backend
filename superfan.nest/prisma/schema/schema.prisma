@@ -1248,8 +1248,9 @@ model AdCampaign {
   startDate       DateTime
   endDate         DateTime?
   runContinuously Boolean       @default(true)
-  ageRange        String?       // "18-24", "18-35", "25-45", "45+"
-  status          AdStatus      @default(PENDING)
+  ageRange             String?       // "18-24", "18-35", "25-45", "45+"
+  guaranteedDailyViews Int           @default(1000)
+  status               AdStatus      @default(PENDING)
   views           Int           @default(0)
   clicks          Int           @default(0)
   paymentStatus   String        @default("PENDING") // PENDING, PAID, FAILED
