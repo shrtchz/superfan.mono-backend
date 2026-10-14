@@ -257,6 +257,17 @@ func (ac *AdsController) LogAdEvent(c *gin.Context) {
 		return
 	}
 
+	if req.ClientIP == "" {
+		req.ClientIP = c.ClientIP()
+	}
+	if req.UserID == nil {
+		if uidVal, ok := c.Get(middleware.ContextUserIDKey); ok {
+			if uid, ok := uidVal.(int); ok && uid > 0 {
+				req.UserID = &uid
+			}
+		}
+	}
+
 	if err := ac.adsService.LogAdEvent(c.Request.Context(), &req); err != nil {
 		utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
 		return

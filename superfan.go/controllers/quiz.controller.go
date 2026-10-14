@@ -20,6 +20,7 @@ import (
 
 type QuizController struct {
 	QuizService services.QuizService
+	TTSService  services.TTSService
 }
 
 type QuizSubmissionController struct {
@@ -44,7 +45,10 @@ type customCountdownLabelUpdatePayload struct {
 }
 
 func NewQuizController(quizService services.QuizService) *QuizController {
-	return &QuizController{QuizService: quizService}
+	return &QuizController{
+		QuizService: quizService,
+		TTSService:  services.NewTTSService(),
+	}
 }
 
 func NewQuizSubmissionController(service *services.QuizServiceImpl) *QuizSubmissionController {
@@ -56,6 +60,7 @@ func NewQuizSubmissionController(service *services.QuizServiceImpl) *QuizSubmiss
 func New(quizservice services.QuizService) QuizController {
 	return QuizController{
 		QuizService: quizservice,
+		TTSService:  services.NewTTSService(),
 	}
 }
 
@@ -1209,12 +1214,74 @@ func asTime(v interface{}) (time.Time, error) {
 	}
 }
 
+// GetQuizTTS handles GET /quiz/tts
+// Reads full quiz question and answer options aloud via speech synthesis.
+// Parameters:
+//   - questionId: MongoDB hex ID of standard Quiz or LiveQuiz (optional)
+//   - text: raw text to read aloud if not resolving by ID (optional)
+//   - lang: language code ("yo" for Yoruba, "ig" for Igbo, "ha" for Hausa, "en" for English, default "yo")
+//   - includeOptions: boolean (default true)
+func (qc *QuizController) GetQuizTTS(c *gin.Context) {
+	if qc.TTSService == nil {
+		qc.TTSService = services.NewTTSService()
+	}
+
+	questionID := strings.TrimSpace(c.Query("questionId"))
+	rawText := strings.TrimSpace(c.Query("text"))
+	lang := strings.TrimSpace(c.Query("lang"))
+	includeOptionsStr := c.DefaultQuery("includeOptions", "true")
+	includeOptions := includeOptionsStr == "true" || includeOptionsStr == "1"
+
+	var audioBytes []byte
+	var err error
+
+	if questionID != "" {
+		// 1. Try finding in standard Quiz collection
+		quiz, qErr := qc.QuizService.GetQuiz(questionID)
+		if qErr == nil && quiz != nil {
+			audioBytes, err = qc.TTSService.SynthesizeQuiz(c.Request.Context(), quiz, lang, includeOptions)
+		} else {
+			// 2. Try finding in LiveQuiz collection
+			liveQuiz, lqErr := qc.QuizService.GetLiveQuiz(questionID)
+			if lqErr == nil && liveQuiz != nil {
+				audioBytes, err = qc.TTSService.SynthesizeLiveQuiz(c.Request.Context(), liveQuiz, lang, includeOptions)
+			} else {
+				// If not found by ID but raw text was supplied, fall back to raw text
+				if rawText != "" {
+					audioBytes, err = qc.TTSService.Synthesize(c.Request.Context(), rawText, lang)
+				} else {
+					utils.SendError(c, http.StatusNotFound, "NOT_FOUND", "question not found for the provided questionId")
+					return
+				}
+			}
+		}
+	} else if rawText != "" {
+		audioBytes, err = qc.TTSService.Synthesize(c.Request.Context(), rawText, lang)
+	} else {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "either questionId or text must be provided")
+		return
+	}
+
+	if err != nil {
+		utils.SendError(c, http.StatusInternalServerError, "TTS_ERROR", err.Error())
+		return
+	}
+
+	c.Header("Content-Type", "audio/mpeg")
+	c.Header("Cache-Control", "public, max-age=604800")
+	c.Header("Accept-Ranges", "bytes")
+	c.Data(http.StatusOK, "audio/mpeg", audioBytes)
+}
+
 func RegisterQuizRoutes(
 	rg *gin.RouterGroup,
 	qc *QuizController,
 	qsc *QuizSubmissionController,
 ) {
 	quizroute := rg.Group("/quiz")
+
+	// TTS Read-Aloud endpoint (public accessibility read-aloud)
+	quizroute.GET("/tts", qc.GetQuizTTS)
 
 	// Airtable Webhook stays public
 	quizroute.POST("/airtable-webhook", qc.AirtableWebhook)

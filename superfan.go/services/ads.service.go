@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lib/pq"
@@ -39,9 +40,10 @@ type AdsService interface {
 }
 
 type adsServiceImpl struct {
-	db          *gorm.DB
-	nestBaseURL string
-	httpClient  *http.Client
+	db             *gorm.DB
+	nestBaseURL    string
+	httpClient     *http.Client
+	clickDebouncer *ClickDebouncer
 }
 
 func campaignHasEnded(campaign *models.AdCampaign, now time.Time) bool {
@@ -100,11 +102,13 @@ func NewAdsService(db *gorm.DB) AdsService {
 	if db != nil {
 		_ = db.Exec(`ALTER TABLE "AdCampaign" ADD COLUMN IF NOT EXISTS "guaranteedDailyViews" INTEGER NOT NULL DEFAULT 1000`).Error
 		_ = db.Exec(`CREATE INDEX IF NOT EXISTS "idx_adevent_campaign_event_created" ON "AdEvent"("campaignId", "eventType", "createdAt")`).Error
+		_ = db.Exec(`CREATE INDEX IF NOT EXISTS "idx_adevent_campaign_user_event_created" ON "AdEvent"("campaignId", "userId", "eventType", "createdAt")`).Error
 	}
 	return &adsServiceImpl{
-		db:          db,
-		nestBaseURL: utils.GetEnvWithKey("NEST_BASE_URL"),
-		httpClient:  &http.Client{Timeout: 10 * time.Second},
+		db:             db,
+		nestBaseURL:    utils.GetEnvWithKey("NEST_BASE_URL"),
+		httpClient:     &http.Client{Timeout: 10 * time.Second},
+		clickDebouncer: NewClickDebouncer(),
 	}
 }
 
@@ -351,6 +355,7 @@ type LogAdEventRequest struct {
 	QuizID      *string            `json:"quizId"`
 	EventType   models.AdEventType `json:"eventType"`
 	PointsGiven *int               `json:"pointsGiven,omitempty"`
+	ClientIP    string             `json:"clientIp,omitempty"`
 }
 
 type PlacementEligibilityResponse struct {
@@ -1676,9 +1681,133 @@ func (s *adsServiceImpl) TestLink(ctx context.Context, rawURL string, campaignID
 	}, nil
 }
 
+const ClickDebounceDuration = 5 * time.Second
+
+// ClickDebouncer manages in-memory rate-limiting of counted clicks per (user, ad) or (ip, ad).
+type ClickDebouncer struct {
+	mu       sync.Mutex
+	clicks   map[string]time.Time
+	duration time.Duration
+}
+
+func NewClickDebouncer() *ClickDebouncer {
+	return &ClickDebouncer{
+		clicks:   make(map[string]time.Time),
+		duration: ClickDebounceDuration,
+	}
+}
+
+// ShouldCountClick checks if a click should be counted for metrics.
+// Returns true if the click is counted (and updates the last counted click timestamp).
+// Returns false if the click is within the debounce duration of the last counted click
+// (the last counted timestamp is intentionally NOT modified, ensuring debounce is measured
+// strictly from the last counted click).
+func (d *ClickDebouncer) ShouldCountClick(key string, now time.Time) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	duration := d.duration
+	if duration <= 0 {
+		duration = ClickDebounceDuration
+	}
+
+	// Housekeeping: evict stale entries (> 10 minutes) if cache size grows large
+	if len(d.clicks) > 10000 {
+		cutoff := now.Add(-10 * time.Minute)
+		for k, t := range d.clicks {
+			if t.Before(cutoff) {
+				delete(d.clicks, k)
+			}
+		}
+	}
+
+	if lastCounted, exists := d.clicks[key]; exists {
+		if now.Sub(lastCounted) < duration {
+			return false
+		}
+	}
+
+	d.clicks[key] = now
+	return true
+}
+
+func (d *ClickDebouncer) RecordCountedClick(key string, t time.Time) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.clicks[key] = t
+}
+
+func getClickDebounceKey(userID *int, clientIP string, campaignID int) string {
+	if userID != nil && *userID > 0 {
+		return fmt.Sprintf("u:%d:ad:%d", *userID, campaignID)
+	}
+	if clientIP != "" {
+		return fmt.Sprintf("ip:%s:ad:%d", clientIP, campaignID)
+	}
+	return fmt.Sprintf("ad:%d", campaignID)
+}
+
+func (s *adsServiceImpl) shouldDebounceClick(ctx context.Context, userID *int, clientIP string, campaignID int, now time.Time) bool {
+	if s.clickDebouncer == nil {
+		s.clickDebouncer = NewClickDebouncer()
+	}
+
+	debounceKey := getClickDebounceKey(userID, clientIP, campaignID)
+
+	s.clickDebouncer.mu.Lock()
+	lastCounted, inMemory := s.clickDebouncer.clicks[debounceKey]
+	duration := s.clickDebouncer.duration
+	if duration <= 0 {
+		duration = ClickDebounceDuration
+	}
+	if inMemory {
+		if now.Sub(lastCounted) < duration {
+			s.clickDebouncer.mu.Unlock()
+			return true // Debounce! Ignore click within 5 seconds of last counted click
+		}
+		// Debounce window expired, count new click and update timestamp
+		s.clickDebouncer.clicks[debounceKey] = now
+		s.clickDebouncer.mu.Unlock()
+		return false
+	}
+	s.clickDebouncer.mu.Unlock()
+
+	// Cold start / cache miss: check database for recent click event in AdEvent
+	if s.db != nil && userID != nil && *userID > 0 {
+		var lastClick models.AdEvent
+		err := s.db.WithContext(ctx).
+			Select(`"createdAt"`).
+			Where(`"campaignId" = ? AND "userId" = ? AND "eventType" = ?`, campaignID, *userID, models.AdEventTypeClick).
+			Order(`"createdAt" DESC`).
+			Limit(1).
+			Find(&lastClick).Error
+
+		if err == nil && !lastClick.CreatedAt.IsZero() {
+			if now.Sub(lastClick.CreatedAt) < duration {
+				s.clickDebouncer.RecordCountedClick(debounceKey, lastClick.CreatedAt)
+				return true // Debounce!
+			}
+		}
+	}
+
+	// Count this click
+	s.clickDebouncer.RecordCountedClick(debounceKey, now)
+	return false
+}
+
 func (s *adsServiceImpl) LogAdEvent(ctx context.Context, req *LogAdEventRequest) error {
 	if req == nil {
 		return nil
+	}
+
+	// 🛑 5-second click debounce per user ID per ad:
+	// Any clicks on the same ad from the same user within 5 seconds of their last
+	// counted click are ignored for click-metric purposes (so a single user cannot
+	// spam-click to inflate advertiser click-through numbers).
+	if req.EventType == models.AdEventTypeClick && req.CampaignID > 0 {
+		if s.shouldDebounceClick(ctx, req.UserID, req.ClientIP, req.CampaignID, time.Now()) {
+			return nil
+		}
 	}
 
 	var campaignIDPtr *int
