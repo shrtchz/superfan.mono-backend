@@ -1263,7 +1263,11 @@ func (qc *QuizController) GetQuizTTS(c *gin.Context) {
 	}
 
 	if err != nil {
-		utils.SendError(c, http.StatusInternalServerError, "TTS_ERROR", err.Error())
+		c.JSON(http.StatusOK, gin.H{
+			"fallback": true,
+			"message":  err.Error(),
+			"lang":     lang,
+		})
 		return
 	}
 
