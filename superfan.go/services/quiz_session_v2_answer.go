@@ -260,7 +260,7 @@ func persistLiveQuizAnswer(userID int, quizID, selectedAnswer string, submittedA
 
 	if err := utils.DB.Model(&record).Updates(map[string]interface{}{
 		"quizIds":   quizIDs,
-		"answers":   answersJSON,
+		"answers":   JSONB(answersJSON),
 		"updatedAt": submittedAt,
 	}).Error; err != nil {
 		return "", false, err
