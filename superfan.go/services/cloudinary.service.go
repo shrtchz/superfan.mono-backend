@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -18,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"quiz.superfan.com/apis/utils"
 )
 
 var (
@@ -272,3 +275,122 @@ func generateCloudinarySignature(params map[string]string, apiSecret string) str
 	hash := sha1.Sum([]byte(stringToSign))
 	return hex.EncodeToString(hash[:])
 }
+
+// UploadAudioBytesToCloudinary uploads raw audio bytes (MP3/WAV) to Cloudinary and returns the permanent secure_url.
+func UploadAudioBytesToCloudinary(audioData []byte, filename, publicID string) (string, error) {
+	if len(audioData) == 0 {
+		return "", errors.New("cannot upload empty audio bytes")
+	}
+
+	cloudName := strings.TrimSpace(os.Getenv("CLOUDINARY_CLOUD_NAME"))
+	if cloudName == "" {
+		cloudName = strings.TrimSpace(utils.GetEnvWithKey("CLOUDINARY_CLOUD_NAME"))
+	}
+	apiKey := strings.TrimSpace(os.Getenv("CLOUDINARY_API_KEY"))
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(utils.GetEnvWithKey("CLOUDINARY_API_KEY"))
+	}
+	apiSecret := strings.TrimSpace(os.Getenv("CLOUDINARY_API_SECRET"))
+	if apiSecret == "" {
+		apiSecret = strings.TrimSpace(utils.GetEnvWithKey("CLOUDINARY_API_SECRET"))
+	}
+
+	if cloudName == "" || apiKey == "" || apiSecret == "" {
+		return "", errors.New("cloudinary credentials not configured")
+	}
+
+	folder := strings.TrimSpace(os.Getenv("CLOUDINARY_TTS_FOLDER"))
+	if folder == "" {
+		folder = strings.TrimSpace(utils.GetEnvWithKey("CLOUDINARY_TTS_FOLDER"))
+	}
+	if folder == "" {
+		folder = "superfan_quiz_tts"
+	}
+
+	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
+
+	paramsToSign := map[string]string{
+		"timestamp": timestamp,
+	}
+	if folder != "" {
+		paramsToSign["folder"] = folder
+	}
+	if publicID != "" {
+		paramsToSign["public_id"] = publicID
+	}
+
+	signature := generateCloudinarySignature(paramsToSign, apiSecret)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+
+	for k, v := range paramsToSign {
+		if err := writer.WriteField(k, v); err != nil {
+			return "", fmt.Errorf("write field %s failed: %w", k, err)
+		}
+	}
+	if err := writer.WriteField("api_key", apiKey); err != nil {
+		return "", fmt.Errorf("write api_key failed: %w", err)
+	}
+	if err := writer.WriteField("signature", signature); err != nil {
+		return "", fmt.Errorf("write signature failed: %w", err)
+	}
+
+	if filename == "" {
+		filename = "audio.mp3"
+	}
+	part, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		return "", fmt.Errorf("create form file failed: %w", err)
+	}
+	if _, err := part.Write(audioData); err != nil {
+		return "", fmt.Errorf("write audio bytes failed: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return "", fmt.Errorf("close multipart writer failed: %w", err)
+	}
+
+	uploadEndpoint := fmt.Sprintf("https://api.cloudinary.com/v1_1/%s/auto/upload", url.PathEscape(cloudName))
+	req, err := http.NewRequest("POST", uploadEndpoint, &body)
+	if err != nil {
+		return "", fmt.Errorf("create request failed: %w", err)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("cloudinary upload request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("reading response failed: %w", err)
+	}
+
+	var uploadResp CloudinaryUploadResponse
+	if err := json.Unmarshal(respBytes, &uploadResp); err != nil {
+		return "", fmt.Errorf("decode cloudinary response failed: %w (body: %s)", err, string(respBytes))
+	}
+
+	if uploadResp.Error != nil && uploadResp.Error.Message != "" {
+		return "", fmt.Errorf("cloudinary api error: %s", uploadResp.Error.Message)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("cloudinary returned HTTP %d: %s", resp.StatusCode, string(respBytes))
+	}
+
+	finalURL := uploadResp.SecureURL
+	if finalURL == "" {
+		finalURL = uploadResp.URL
+	}
+	if finalURL == "" {
+		return "", fmt.Errorf("empty secure_url in cloudinary response: %s", string(respBytes))
+	}
+
+	log.Printf("[Cloudinary] Uploaded audio (%d bytes, public_id: %s) -> %s", len(audioData), publicID, finalURL)
+	return finalURL, nil
+}
+

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -31,25 +32,43 @@ type TTSService interface {
 }
 
 type ttsServiceImpl struct {
-	httpClient *http.Client
-	apiKey     string
-	mu         sync.RWMutex
-	cache      map[string][]byte
-	cacheDir   string
+	httpClient  *http.Client
+	googleKey   string
+	yarnGPTKey  string
+	quizService QuizService
+	mu          sync.RWMutex
+	cache       map[string][]byte
+	cacheDir    string
 }
 
 func NewTTSService() TTSService {
+	return NewTTSServiceWithQuizService(nil)
+}
+
+func NewTTSServiceWithQuizService(quizService QuizService) TTSService {
 	cacheDir := os.Getenv("TTS_CACHE_DIR")
 	if cacheDir == "" {
 		cacheDir = filepath.Join(os.TempDir(), "superfan_tts_cache")
 	}
 	_ = os.MkdirAll(cacheDir, 0755)
 
+	yarnKey := strings.TrimSpace(os.Getenv("YARNGPT_API_KEY"))
+	if yarnKey == "" {
+		yarnKey = strings.TrimSpace(utils.GetEnvWithKey("YARNGPT_API_KEY"))
+	}
+
+	googleKey := strings.TrimSpace(os.Getenv("GOOGLE_TTS_API_KEY"))
+	if googleKey == "" {
+		googleKey = strings.TrimSpace(utils.GetEnvWithKey("GOOGLE_TTS_API_KEY"))
+	}
+
 	return &ttsServiceImpl{
-		httpClient: &http.Client{Timeout: 15 * time.Second},
-		apiKey:     utils.GetEnvWithKey("GOOGLE_TTS_API_KEY"),
-		cache:      make(map[string][]byte),
-		cacheDir:   cacheDir,
+		httpClient:  &http.Client{Timeout: 30 * time.Second},
+		googleKey:   googleKey,
+		yarnGPTKey:  yarnKey,
+		quizService: quizService,
+		cache:       make(map[string][]byte),
+		cacheDir:    cacheDir,
 	}
 }
 
@@ -129,7 +148,42 @@ func (s *ttsServiceImpl) setCached(key string, data []byte) {
 	}
 }
 
-// Synthesize generates MP3 audio for the given text in the requested language.
+// fetchAudioFromURL downloads audio from a URL (e.g. Cloudinary CDN) and caches it.
+func (s *ttsServiceImpl) fetchAudioFromURL(ctx context.Context, audioURL string) ([]byte, error) {
+	key := s.cacheKey(audioURL, "cdn")
+	if cached := s.getCached(key); cached != nil {
+		return cached, nil
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, audioURL, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to fetch audio from %s: HTTP %d", audioURL, resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(data) > 0 {
+		s.setCached(key, data)
+	}
+	return data, nil
+}
+
+// Synthesize generates MP3 audio for the given text.
+// Uses YarnGPT first (for natural African voice generation in Yoruba, Igbo, Hausa, Pidgin, English),
+// then Google Cloud TTS if configured, then public voice fallback.
 func (s *ttsServiceImpl) Synthesize(ctx context.Context, text string, lang string) ([]byte, error) {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
@@ -146,16 +200,34 @@ func (s *ttsServiceImpl) Synthesize(ctx context.Context, text string, lang strin
 	var audioBytes []byte
 	var err error
 
-	// If a Google Cloud API Key is configured, use the official Cloud Text-to-Speech API
-	if s.apiKey != "" {
+	// 1. YarnGPT (Primary for African Languages)
+	yarnKey := s.yarnGPTKey
+	if yarnKey == "" {
+		yarnKey = strings.TrimSpace(os.Getenv("YARNGPT_API_KEY"))
+	}
+	if yarnKey == "" {
+		yarnKey = strings.TrimSpace(utils.GetEnvWithKey("YARNGPT_API_KEY"))
+	}
+	if yarnKey != "" {
+		audioBytes, err = s.synthesizeViaYarnGPT(ctx, trimmed, langCode, yarnKey)
+		if err == nil && len(audioBytes) > 0 {
+			s.setCached(key, audioBytes)
+			return audioBytes, nil
+		}
+		log.Printf("[TTS] YarnGPT error: %v, falling back...", err)
+	}
+
+	// 2. Google Cloud Text-to-Speech API
+	if s.googleKey != "" {
 		audioBytes, err = s.synthesizeViaGoogleCloudAPI(ctx, trimmed, langCode)
+		if err == nil && len(audioBytes) > 0 {
+			s.setCached(key, audioBytes)
+			return audioBytes, nil
+		}
 	}
 
-	// If no API key is configured or official API failed, fall back to Google public voice endpoint
-	if err != nil || len(audioBytes) == 0 {
-		audioBytes, err = s.synthesizeViaGoogleVoiceEndpoint(ctx, trimmed, langCode)
-	}
-
+	// 3. Fallback to Google public voice endpoint (supports English)
+	audioBytes, err = s.synthesizeViaGoogleVoiceEndpoint(ctx, trimmed, langCode)
 	if err != nil {
 		return nil, err
 	}
@@ -167,9 +239,95 @@ func (s *ttsServiceImpl) Synthesize(ctx context.Context, text string, lang strin
 	return audioBytes, nil
 }
 
+// synthesizeViaYarnGPT calls YarnGPT's African Text-to-Speech API.
+// https://yarngpt.ai/api-docs
+func (s *ttsServiceImpl) synthesizeViaYarnGPT(ctx context.Context, text, langCode, apiKey string) ([]byte, error) {
+	// Method A: Single-turn streaming conversation endpoint (fastest, direct MP3 stream)
+	conversationURL := "https://api.yarngpt.ai/api/v1/streaming/conversation"
+	payload := map[string]interface{}{
+		"text":          text,
+		"output_format": "mp3",
+	}
+
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, conversationURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.httpClient.Do(req)
+	if err == nil && resp.StatusCode == http.StatusOK {
+		defer resp.Body.Close()
+		data, readErr := io.ReadAll(resp.Body)
+		if readErr == nil && len(data) > 0 {
+			return data, nil
+		}
+	}
+	if resp != nil {
+		resp.Body.Close()
+	}
+
+	// Method B: Low-latency prepare and stream ticket endpoint
+	prepareURL := "https://api.yarngpt.ai/api/v1/tts/prepare"
+	pReq, err := http.NewRequestWithContext(ctx, http.MethodPost, prepareURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	pReq.Header.Set("Authorization", "Bearer "+apiKey)
+	pReq.Header.Set("Content-Type", "application/json")
+
+	pResp, err := s.httpClient.Do(pReq)
+	if err != nil {
+		return nil, fmt.Errorf("yarngpt prepare failed: %w", err)
+	}
+	defer pResp.Body.Close()
+
+	if pResp.StatusCode != http.StatusOK && pResp.StatusCode != http.StatusAccepted {
+		pBody, _ := io.ReadAll(pResp.Body)
+		return nil, fmt.Errorf("yarngpt returned HTTP %d: %s", pResp.StatusCode, string(pBody))
+	}
+
+	var prepResult struct {
+		Ticket    string `json:"ticket"`
+		StreamURL string `json:"stream_url"`
+	}
+	if err := json.NewDecoder(pResp.Body).Decode(&prepResult); err != nil {
+		return nil, err
+	}
+
+	fetchURL := prepResult.StreamURL
+	if !strings.HasPrefix(fetchURL, "http") {
+		fetchURL = "https://api.yarngpt.ai" + fetchURL
+	}
+
+	clientWithRedirect := &http.Client{Timeout: 30 * time.Second}
+	sReq, err := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	sResp, err := clientWithRedirect.Do(sReq)
+	if err != nil {
+		return nil, fmt.Errorf("yarngpt stream failed: %w", err)
+	}
+	defer sResp.Body.Close()
+
+	if sResp.StatusCode != http.StatusOK {
+		sBody, _ := io.ReadAll(sResp.Body)
+		return nil, fmt.Errorf("yarngpt stream returned HTTP %d: %s", sResp.StatusCode, string(sBody))
+	}
+
+	return io.ReadAll(sResp.Body)
+}
+
 // synthesizeViaGoogleCloudAPI calls the Google Cloud Text-to-Speech v1 REST API.
 func (s *ttsServiceImpl) synthesizeViaGoogleCloudAPI(ctx context.Context, text, langCode string) ([]byte, error) {
-	apiURL := fmt.Sprintf("https://texttospeech.googleapis.com/v1/text:synthesize?key=%s", url.QueryEscape(s.apiKey))
+	apiURL := fmt.Sprintf("https://texttospeech.googleapis.com/v1/text:synthesize?key=%s", url.QueryEscape(s.googleKey))
 
 	payload := map[string]interface{}{
 		"input": map[string]string{
@@ -221,7 +379,6 @@ func (s *ttsServiceImpl) synthesizeViaGoogleCloudAPI(ctx context.Context, text, 
 }
 
 // synthesizeViaGoogleVoiceEndpoint calls Google's speech synthesis engine directly.
-// Splits text into natural sentences/phrases if it exceeds length limits and joins the MP3 stream.
 func (s *ttsServiceImpl) synthesizeViaGoogleVoiceEndpoint(ctx context.Context, text, langCode string) ([]byte, error) {
 	chunks := splitTextForTTS(text, 160)
 	if len(chunks) == 0 {
@@ -278,7 +435,6 @@ func splitTextForTTS(text string, maxChars int) []string {
 	}
 
 	var chunks []string
-	// Split by sentences or punctuation first
 	delimiters := []string{". ", "? ", "! ", "; ", ", "}
 
 	current := clean
@@ -297,7 +453,6 @@ func splitTextForTTS(text string, maxChars int) []string {
 			}
 		}
 
-		// Fallback to last space before maxChars
 		if cutIndex <= 0 {
 			spaceIdx := strings.LastIndex(current[:maxChars], " ")
 			if spaceIdx > 0 {
@@ -358,14 +513,113 @@ func (s *ttsServiceImpl) SynthesizeQuiz(ctx context.Context, quiz *models.Quiz, 
 	if effectiveLang == "" && quiz.Subject != "" {
 		effectiveLang = quiz.Subject
 	}
+	langCode := normalizeLanguageCode(effectiveLang)
+
+	// 1. Check if Cloudinary audio URL is already stored for this Quiz
+	var existingAudioURL string
+	if quiz.AudioURLs != nil && quiz.AudioURLs[langCode] != "" {
+		existingAudioURL = quiz.AudioURLs[langCode]
+	} else if quiz.AudioURL != "" && (langCode == "yo" || len(quiz.AudioURLs) == 0) {
+		existingAudioURL = quiz.AudioURL
+	}
+
+	if existingAudioURL != "" {
+		audioBytes, err := s.fetchAudioFromURL(ctx, existingAudioURL)
+		if err == nil && len(audioBytes) > 0 {
+			log.Printf("[TTS] Reusing existing Cloudinary audio for Quiz %s (%s): %s", quiz.IDHex, langCode, existingAudioURL)
+			return audioBytes, nil
+		}
+	}
+
+	// 2. Synthesize audio
 	script := formatQuestionScript(quiz.Question, quiz.Options, effectiveLang, includeOptions)
-	return s.Synthesize(ctx, script, effectiveLang)
+	audioBytes, err := s.Synthesize(ctx, script, effectiveLang)
+	if err != nil {
+		return nil, err
+	}
+
+	// 3. Upload to Cloudinary and update MongoDB Quiz (so audio is never regenerated for this question)
+	if len(audioBytes) > 0 {
+		quizID := quiz.IDHex
+		if quizID == "" && !quiz.ID.IsZero() {
+			quizID = quiz.ID.Hex()
+		}
+		if quizID != "" {
+			publicID := fmt.Sprintf("quiz_%s_%s", quizID, langCode)
+			filename := fmt.Sprintf("quiz_%s_%s.mp3", quizID, langCode)
+			cdnURL, uploadErr := UploadAudioBytesToCloudinary(audioBytes, filename, publicID)
+			if uploadErr == nil && cdnURL != "" {
+				quiz.AudioURL = cdnURL
+				if quiz.AudioURLs == nil {
+					quiz.AudioURLs = make(map[string]string)
+				}
+				quiz.AudioURLs[langCode] = cdnURL
+				if s.quizService != nil {
+					_ = s.quizService.UpdateQuizAudioURL(quizID, langCode, cdnURL)
+				}
+				log.Printf("[TTS] Uploaded & cached audio to Cloudinary for Quiz %s (%s) -> %s", quizID, langCode, cdnURL)
+			} else {
+				log.Printf("[TTS] Cloudinary upload note: %v", uploadErr)
+			}
+		}
+	}
+
+	return audioBytes, nil
 }
 
 func (s *ttsServiceImpl) SynthesizeLiveQuiz(ctx context.Context, liveQuiz *models.LiveQuiz, lang string, includeOptions bool) ([]byte, error) {
 	if liveQuiz == nil {
 		return nil, errors.New("liveQuiz is nil")
 	}
-	script := formatQuestionScript(liveQuiz.Question, liveQuiz.Options, lang, includeOptions)
-	return s.Synthesize(ctx, script, lang)
+	effectiveLang := lang
+	langCode := normalizeLanguageCode(effectiveLang)
+
+	// 1. Check if Cloudinary audio URL is already stored for this LiveQuiz
+	var existingAudioURL string
+	if liveQuiz.AudioURLs != nil && liveQuiz.AudioURLs[langCode] != "" {
+		existingAudioURL = liveQuiz.AudioURLs[langCode]
+	} else if liveQuiz.AudioURL != "" && (langCode == "yo" || len(liveQuiz.AudioURLs) == 0) {
+		existingAudioURL = liveQuiz.AudioURL
+	}
+
+	if existingAudioURL != "" {
+		audioBytes, err := s.fetchAudioFromURL(ctx, existingAudioURL)
+		if err == nil && len(audioBytes) > 0 {
+			log.Printf("[TTS] Reusing existing Cloudinary audio for LiveQuiz %s (%s): %s", liveQuiz.IDHex, langCode, existingAudioURL)
+			return audioBytes, nil
+		}
+	}
+
+	// 2. Synthesize audio
+	script := formatQuestionScript(liveQuiz.Question, liveQuiz.Options, effectiveLang, includeOptions)
+	audioBytes, err := s.Synthesize(ctx, script, effectiveLang)
+	if err != nil {
+		return nil, err
+	}
+
+	// 3. Upload to Cloudinary and update MongoDB LiveQuiz
+	if len(audioBytes) > 0 {
+		quizID := liveQuiz.IDHex
+		if quizID == "" && !liveQuiz.ID.IsZero() {
+			quizID = liveQuiz.ID.Hex()
+		}
+		if quizID != "" {
+			publicID := fmt.Sprintf("live_quiz_%s_%s", quizID, langCode)
+			filename := fmt.Sprintf("live_quiz_%s_%s.mp3", quizID, langCode)
+			cdnURL, uploadErr := UploadAudioBytesToCloudinary(audioBytes, filename, publicID)
+			if uploadErr == nil && cdnURL != "" {
+				liveQuiz.AudioURL = cdnURL
+				if liveQuiz.AudioURLs == nil {
+					liveQuiz.AudioURLs = make(map[string]string)
+				}
+				liveQuiz.AudioURLs[langCode] = cdnURL
+				if s.quizService != nil {
+					_ = s.quizService.UpdateLiveQuizAudioURL(quizID, langCode, cdnURL)
+				}
+				log.Printf("[TTS] Uploaded & cached audio to Cloudinary for LiveQuiz %s (%s) -> %s", quizID, langCode, cdnURL)
+			}
+		}
+	}
+
+	return audioBytes, nil
 }

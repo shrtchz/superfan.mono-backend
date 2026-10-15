@@ -47,7 +47,7 @@ type customCountdownLabelUpdatePayload struct {
 func NewQuizController(quizService services.QuizService) *QuizController {
 	return &QuizController{
 		QuizService: quizService,
-		TTSService:  services.NewTTSService(),
+		TTSService:  services.NewTTSServiceWithQuizService(quizService),
 	}
 }
 
@@ -1240,11 +1240,21 @@ func (qc *QuizController) GetQuizTTS(c *gin.Context) {
 		quiz, qErr := qc.QuizService.GetQuiz(questionID)
 		if qErr == nil && quiz != nil {
 			audioBytes, err = qc.TTSService.SynthesizeQuiz(c.Request.Context(), quiz, lang, includeOptions)
+			if quiz.AudioURLs != nil && quiz.AudioURLs[lang] != "" {
+				c.Header("X-Audio-URL", quiz.AudioURLs[lang])
+			} else if quiz.AudioURL != "" {
+				c.Header("X-Audio-URL", quiz.AudioURL)
+			}
 		} else {
 			// 2. Try finding in LiveQuiz collection
 			liveQuiz, lqErr := qc.QuizService.GetLiveQuiz(questionID)
 			if lqErr == nil && liveQuiz != nil {
 				audioBytes, err = qc.TTSService.SynthesizeLiveQuiz(c.Request.Context(), liveQuiz, lang, includeOptions)
+				if liveQuiz.AudioURLs != nil && liveQuiz.AudioURLs[lang] != "" {
+					c.Header("X-Audio-URL", liveQuiz.AudioURLs[lang])
+				} else if liveQuiz.AudioURL != "" {
+					c.Header("X-Audio-URL", liveQuiz.AudioURL)
+				}
 			} else {
 				// If not found by ID but raw text was supplied, fall back to raw text
 				if rawText != "" {
