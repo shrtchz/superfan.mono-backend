@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -214,7 +215,13 @@ func (s *ttsServiceImpl) Synthesize(ctx context.Context, text string, lang strin
 			s.setCached(key, audioBytes)
 			return audioBytes, nil
 		}
-		log.Printf("[TTS] YarnGPT error: %v, falling back...", err)
+		log.Printf("[TTS] YarnGPT error: %v", err)
+		// For African languages, return the YarnGPT error directly instead of falling back to Google
+		if langCode == "yo" || langCode == "ig" || langCode == "ha" {
+			return nil, fmt.Errorf("YarnGPT synthesis failed: %w", err)
+		}
+	} else if langCode == "yo" || langCode == "ig" || langCode == "ha" {
+		return nil, errors.New("YARNGPT_API_KEY is not set in backend environment. Please set YARNGPT_API_KEY in server environment variables to enable African TTS")
 	}
 
 	// 2. Google Cloud Text-to-Speech API
@@ -242,6 +249,8 @@ func (s *ttsServiceImpl) Synthesize(ctx context.Context, text string, lang strin
 // synthesizeViaYarnGPT calls YarnGPT's African Text-to-Speech API.
 // https://yarngpt.ai/api-docs
 func (s *ttsServiceImpl) synthesizeViaYarnGPT(ctx context.Context, text, langCode, apiKey string) ([]byte, error) {
+	idempotencyKey := fmt.Sprintf("superfan-%x", sha256.Sum256([]byte(text+langCode+strconv.FormatInt(time.Now().Unix()/300, 10))))
+
 	// Method A: Single-turn streaming conversation endpoint (fastest, direct MP3 stream)
 	conversationURL := "https://api.yarngpt.ai/api/v1/streaming/conversation"
 	payload := map[string]interface{}{
@@ -260,17 +269,26 @@ func (s *ttsServiceImpl) synthesizeViaYarnGPT(ctx context.Context, text, langCod
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", idempotencyKey)
 
 	resp, err := s.httpClient.Do(req)
-	if err == nil && resp.StatusCode == http.StatusOK {
+	var streamErr error
+	if err == nil {
 		defer resp.Body.Close()
-		data, readErr := io.ReadAll(resp.Body)
-		if readErr == nil && len(data) > 0 {
-			return data, nil
+		if resp.StatusCode == http.StatusOK {
+			data, readErr := io.ReadAll(resp.Body)
+			if readErr == nil && len(data) > 100 {
+				log.Printf("[TTS] YarnGPT streaming conversation successful (%d bytes)", len(data))
+				return data, nil
+			}
+			streamErr = readErr
+		} else {
+			respBody, _ := io.ReadAll(resp.Body)
+			streamErr = fmt.Errorf("YarnGPT streaming HTTP %d: %s", resp.StatusCode, string(respBody))
+			log.Printf("[TTS] %v", streamErr)
 		}
-	}
-	if resp != nil {
-		resp.Body.Close()
+	} else {
+		streamErr = err
 	}
 
 	// Method B: Low-latency prepare and stream ticket endpoint
@@ -281,15 +299,22 @@ func (s *ttsServiceImpl) synthesizeViaYarnGPT(ctx context.Context, text, langCod
 	}
 	pReq.Header.Set("Authorization", "Bearer "+apiKey)
 	pReq.Header.Set("Content-Type", "application/json")
+	pReq.Header.Set("Idempotency-Key", idempotencyKey)
 
 	pResp, err := s.httpClient.Do(pReq)
 	if err != nil {
+		if streamErr != nil {
+			return nil, fmt.Errorf("%w; prepare failed: %v", streamErr, err)
+		}
 		return nil, fmt.Errorf("yarngpt prepare failed: %w", err)
 	}
 	defer pResp.Body.Close()
 
+	pBody, _ := io.ReadAll(pResp.Body)
 	if pResp.StatusCode != http.StatusOK && pResp.StatusCode != http.StatusAccepted {
-		pBody, _ := io.ReadAll(pResp.Body)
+		if streamErr != nil {
+			return nil, fmt.Errorf("%w; prepare returned HTTP %d: %s", streamErr, pResp.StatusCode, string(pBody))
+		}
 		return nil, fmt.Errorf("yarngpt returned HTTP %d: %s", pResp.StatusCode, string(pBody))
 	}
 
@@ -297,16 +322,27 @@ func (s *ttsServiceImpl) synthesizeViaYarnGPT(ctx context.Context, text, langCod
 		Ticket    string `json:"ticket"`
 		StreamURL string `json:"stream_url"`
 	}
-	if err := json.NewDecoder(pResp.Body).Decode(&prepResult); err != nil {
-		return nil, err
+	if err := json.Unmarshal(pBody, &prepResult); err != nil {
+		return nil, fmt.Errorf("yarngpt prepare decode failed: %w (body: %s)", err, string(pBody))
 	}
 
 	fetchURL := prepResult.StreamURL
+	if fetchURL == "" && prepResult.Ticket != "" {
+		fetchURL = "/api/v1/tts/stream/" + prepResult.Ticket
+	}
 	if !strings.HasPrefix(fetchURL, "http") {
 		fetchURL = "https://api.yarngpt.ai" + fetchURL
 	}
 
-	clientWithRedirect := &http.Client{Timeout: 30 * time.Second}
+	clientWithRedirect := &http.Client{
+		Timeout: 30 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return errors.New("stopped after 10 redirects")
+			}
+			return nil
+		},
+	}
 	sReq, err := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
 	if err != nil {
 		return nil, err
@@ -322,7 +358,15 @@ func (s *ttsServiceImpl) synthesizeViaYarnGPT(ctx context.Context, text, langCod
 		return nil, fmt.Errorf("yarngpt stream returned HTTP %d: %s", sResp.StatusCode, string(sBody))
 	}
 
-	return io.ReadAll(sResp.Body)
+	audioData, err := io.ReadAll(sResp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if len(audioData) > 100 {
+		log.Printf("[TTS] YarnGPT prepare/stream successful (%d bytes)", len(audioData))
+		return audioData, nil
+	}
+	return nil, errors.New("yarngpt returned empty audio stream")
 }
 
 // synthesizeViaGoogleCloudAPI calls the Google Cloud Text-to-Speech v1 REST API.
