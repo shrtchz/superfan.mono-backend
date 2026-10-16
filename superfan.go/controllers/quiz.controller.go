@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -1223,7 +1224,17 @@ func asTime(v interface{}) (time.Time, error) {
 //   - includeOptions: boolean (default true)
 func (qc *QuizController) GetQuizTTS(c *gin.Context) {
 	if qc.TTSService == nil {
-		qc.TTSService = services.NewTTSService()
+		qc.TTSService = services.NewTTSServiceWithQuizService(qc.QuizService)
+	}
+
+	yarnKey := strings.TrimSpace(os.Getenv("YARNGPT_API_KEY"))
+	if yarnKey == "" {
+		yarnKey = strings.TrimSpace(utils.GetEnvWithKey("YARNGPT_API_KEY"))
+	}
+	if yarnKey != "" {
+		c.Header("X-YarnGPT-Key-Configured", "true")
+	} else {
+		c.Header("X-YarnGPT-Key-Configured", "false")
 	}
 
 	questionID := strings.TrimSpace(c.Query("questionId"))
@@ -1274,9 +1285,10 @@ func (qc *QuizController) GetQuizTTS(c *gin.Context) {
 
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
-			"fallback": true,
-			"message":  err.Error(),
-			"lang":     lang,
+			"fallback":       true,
+			"message":        err.Error(),
+			"lang":           lang,
+			"yarnConfigured": yarnKey != "",
 		})
 		return
 	}
