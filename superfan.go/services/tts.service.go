@@ -32,14 +32,24 @@ type TTSService interface {
 	SynthesizeLiveQuiz(ctx context.Context, liveQuiz *models.LiveQuiz, lang string, includeOptions bool) ([]byte, error)
 }
 
+type YarnVoice struct {
+	ID        string      `json:"id"`
+	Name      string      `json:"name"`
+	Default   bool        `json:"default"`
+	Language  string      `json:"language"`
+	Languages interface{} `json:"languages"`
+}
+
 type ttsServiceImpl struct {
-	httpClient  *http.Client
-	googleKey   string
-	yarnGPTKey  string
-	quizService QuizService
-	mu          sync.RWMutex
-	cache       map[string][]byte
-	cacheDir    string
+	httpClient   *http.Client
+	googleKey    string
+	yarnGPTKey   string
+	quizService  QuizService
+	mu           sync.RWMutex
+	cache        map[string][]byte
+	cacheDir     string
+	yarnVoices   []YarnVoice
+	yarnVoicesAt time.Time
 }
 
 func NewTTSService() TTSService {
@@ -246,15 +256,155 @@ func (s *ttsServiceImpl) Synthesize(ctx context.Context, text string, lang strin
 	return audioBytes, nil
 }
 
+// parseYarnVoices decodes voices catalogue returned by GET /api/v1/voices.
+func parseYarnVoices(data []byte) []YarnVoice {
+	var list []YarnVoice
+	if err := json.Unmarshal(data, &list); err == nil && len(list) > 0 {
+		return list
+	}
+	var wrapper struct {
+		Voices []YarnVoice `json:"voices"`
+		Data   []YarnVoice `json:"data"`
+	}
+	if err := json.Unmarshal(data, &wrapper); err == nil {
+		if len(wrapper.Voices) > 0 {
+			return wrapper.Voices
+		}
+		if len(wrapper.Data) > 0 {
+			return wrapper.Data
+		}
+	}
+	return nil
+}
+
+// resolveYarnVoice finds the best voice for the given language.
+// If YARNGPT_VOICE is explicitly configured in env, it is used.
+// Otherwise it queries GET /api/v1/voices (cached for 1h) or defaults to "umar".
+func (s *ttsServiceImpl) resolveYarnVoice(ctx context.Context, langCode, apiKey string) string {
+	// 1. Explicit environment variable override
+	if v := strings.TrimSpace(os.Getenv("YARNGPT_VOICE")); v != "" {
+		return v
+	}
+	if v := strings.TrimSpace(utils.GetEnvWithKey("YARNGPT_VOICE")); v != "" {
+		return v
+	}
+
+	// 2. Read from in-memory cache
+	s.mu.RLock()
+	cached := s.yarnVoices
+	cachedAt := s.yarnVoicesAt
+	s.mu.RUnlock()
+
+	var voices []YarnVoice
+	if len(cached) > 0 && time.Since(cachedAt) < 1*time.Hour {
+		voices = cached
+	} else if apiKey != "" {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.yarngpt.ai/api/v1/voices", nil)
+		if err == nil {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+			resp, err := s.httpClient.Do(req)
+			if err == nil && resp.StatusCode == http.StatusOK {
+				defer resp.Body.Close()
+				body, _ := io.ReadAll(resp.Body)
+				voices = parseYarnVoices(body)
+				if len(voices) > 0 {
+					log.Printf("[TTS] Loaded %d voices from YarnGPT catalogue", len(voices))
+					s.mu.Lock()
+					s.yarnVoices = voices
+					s.yarnVoicesAt = time.Now()
+					s.mu.Unlock()
+				}
+			} else if resp != nil {
+				resp.Body.Close()
+			}
+		}
+	}
+
+	// 3. Match voice by language
+	target := strings.ToLower(normalizeLanguageCode(langCode))
+	var defaultVoice string
+	for _, v := range voices {
+		vid := v.ID
+		if vid == "" {
+			vid = v.Name
+		}
+		if vid == "" {
+			continue
+		}
+		if defaultVoice == "" || v.Default {
+			defaultVoice = vid
+		}
+		if strings.Contains(strings.ToLower(v.Language), target) {
+			return vid
+		}
+		if arr, ok := v.Languages.([]interface{}); ok {
+			for _, item := range arr {
+				if str, ok := item.(string); ok && strings.ToLower(str) == target {
+					return vid
+				}
+			}
+		}
+	}
+
+	if defaultVoice != "" {
+		return defaultVoice
+	}
+
+	// 4. Default African speaker recognized on YarnGPT
+	return "umar"
+}
+
+// pollYarnGPTJob polls GET /api/v1/status/{job_id} until completed.
+func (s *ttsServiceImpl) pollYarnGPTJob(ctx context.Context, jobID, apiKey string) ([]byte, error) {
+	statusURL := "https://api.yarngpt.ai/api/v1/status/" + jobID
+	deadline := time.Now().Add(25 * time.Second)
+
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(600 * time.Millisecond):
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, statusURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+
+		resp, err := s.httpClient.Do(req)
+		if err != nil {
+			continue
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		var statusResp struct {
+			Status   string `json:"status"`
+			AudioURL string `json:"audio_url"`
+		}
+		if json.Unmarshal(body, &statusResp) == nil {
+			if statusResp.Status == "completed" && statusResp.AudioURL != "" {
+				return s.fetchAudioFromURL(ctx, statusResp.AudioURL)
+			}
+			if statusResp.Status == "failed" {
+				return nil, fmt.Errorf("yarngpt job failed: %s", string(body))
+			}
+		}
+	}
+	return nil, errors.New("yarngpt job polling timed out")
+}
+
 // synthesizeViaYarnGPT calls YarnGPT's African Text-to-Speech API.
 // https://yarngpt.ai/api-docs
 func (s *ttsServiceImpl) synthesizeViaYarnGPT(ctx context.Context, text, langCode, apiKey string) ([]byte, error) {
 	idempotencyKey := fmt.Sprintf("superfan-%x", sha256.Sum256([]byte(text+langCode+strconv.FormatInt(time.Now().Unix()/300, 10))))
+	voice := s.resolveYarnVoice(ctx, langCode, apiKey)
 
-	// Method A: Single-turn streaming conversation endpoint (fastest, direct MP3 stream)
-	conversationURL := "https://api.yarngpt.ai/api/v1/streaming/conversation"
+	// Payload with voice (required by YarnGPT API validation)
 	payload := map[string]interface{}{
 		"text":          text,
+		"voice":         voice,
 		"output_format": "mp3",
 	}
 
@@ -263,6 +413,8 @@ func (s *ttsServiceImpl) synthesizeViaYarnGPT(ctx context.Context, text, langCod
 		return nil, err
 	}
 
+	// Method A: Single-turn streaming conversation endpoint (fastest, direct MP3 stream)
+	conversationURL := "https://api.yarngpt.ai/api/v1/streaming/conversation"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, conversationURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
@@ -278,7 +430,7 @@ func (s *ttsServiceImpl) synthesizeViaYarnGPT(ctx context.Context, text, langCod
 		if resp.StatusCode == http.StatusOK {
 			data, readErr := io.ReadAll(resp.Body)
 			if readErr == nil && len(data) > 100 {
-				log.Printf("[TTS] YarnGPT streaming conversation successful (%d bytes)", len(data))
+				log.Printf("[TTS] YarnGPT streaming conversation successful (voice: %s, %d bytes)", voice, len(data))
 				return data, nil
 			}
 			streamErr = readErr
@@ -311,62 +463,77 @@ func (s *ttsServiceImpl) synthesizeViaYarnGPT(ctx context.Context, text, langCod
 	defer pResp.Body.Close()
 
 	pBody, _ := io.ReadAll(pResp.Body)
-	if pResp.StatusCode != http.StatusOK && pResp.StatusCode != http.StatusAccepted {
-		if streamErr != nil {
-			return nil, fmt.Errorf("%w; prepare returned HTTP %d: %s", streamErr, pResp.StatusCode, string(pBody))
+	if pResp.StatusCode == http.StatusOK || pResp.StatusCode == http.StatusAccepted {
+		var prepResult struct {
+			Ticket    string `json:"ticket"`
+			StreamURL string `json:"stream_url"`
 		}
-		return nil, fmt.Errorf("yarngpt returned HTTP %d: %s", pResp.StatusCode, string(pBody))
-	}
-
-	var prepResult struct {
-		Ticket    string `json:"ticket"`
-		StreamURL string `json:"stream_url"`
-	}
-	if err := json.Unmarshal(pBody, &prepResult); err != nil {
-		return nil, fmt.Errorf("yarngpt prepare decode failed: %w (body: %s)", err, string(pBody))
-	}
-
-	fetchURL := prepResult.StreamURL
-	if fetchURL == "" && prepResult.Ticket != "" {
-		fetchURL = "/api/v1/tts/stream/" + prepResult.Ticket
-	}
-	if !strings.HasPrefix(fetchURL, "http") {
-		fetchURL = "https://api.yarngpt.ai" + fetchURL
-	}
-
-	clientWithRedirect := &http.Client{
-		Timeout: 30 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 10 {
-				return errors.New("stopped after 10 redirects")
+		if err := json.Unmarshal(pBody, &prepResult); err == nil {
+			fetchURL := prepResult.StreamURL
+			if fetchURL == "" && prepResult.Ticket != "" {
+				fetchURL = "/api/v1/tts/stream/" + prepResult.Ticket
 			}
-			return nil
-		},
-	}
-	sReq, err := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	sResp, err := clientWithRedirect.Do(sReq)
-	if err != nil {
-		return nil, fmt.Errorf("yarngpt stream failed: %w", err)
-	}
-	defer sResp.Body.Close()
+			if !strings.HasPrefix(fetchURL, "http") {
+				fetchURL = "https://api.yarngpt.ai" + fetchURL
+			}
 
-	if sResp.StatusCode != http.StatusOK {
-		sBody, _ := io.ReadAll(sResp.Body)
-		return nil, fmt.Errorf("yarngpt stream returned HTTP %d: %s", sResp.StatusCode, string(sBody))
+			clientWithRedirect := &http.Client{
+				Timeout: 30 * time.Second,
+				CheckRedirect: func(req *http.Request, via []*http.Request) error {
+					if len(via) >= 10 {
+						return errors.New("stopped after 10 redirects")
+					}
+					return nil
+				},
+			}
+			sReq, sErr := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
+			if sErr == nil {
+				sResp, doErr := clientWithRedirect.Do(sReq)
+				if doErr == nil {
+					defer sResp.Body.Close()
+					if sResp.StatusCode == http.StatusOK {
+						audioData, rErr := io.ReadAll(sResp.Body)
+						if rErr == nil && len(audioData) > 100 {
+							log.Printf("[TTS] YarnGPT prepare/stream successful (voice: %s, %d bytes)", voice, len(audioData))
+							return audioData, nil
+						}
+					}
+				}
+			}
+		}
 	}
 
-	audioData, err := io.ReadAll(sResp.Body)
-	if err != nil {
-		return nil, err
+	// Method C: Standard async TTS job with status polling
+	ttsURL := "https://api.yarngpt.ai/api/v1/tts"
+	jReq, err := http.NewRequestWithContext(ctx, http.MethodPost, ttsURL, bytes.NewReader(bodyBytes))
+	if err == nil {
+		jReq.Header.Set("Authorization", "Bearer "+apiKey)
+		jReq.Header.Set("Content-Type", "application/json")
+		jReq.Header.Set("Idempotency-Key", idempotencyKey)
+
+		jResp, jErr := s.httpClient.Do(jReq)
+		if jErr == nil {
+			defer jResp.Body.Close()
+			jBody, _ := io.ReadAll(jResp.Body)
+			if jResp.StatusCode == http.StatusOK || jResp.StatusCode == http.StatusAccepted {
+				var jobResult struct {
+					JobID string `json:"job_id"`
+				}
+				if json.Unmarshal(jBody, &jobResult) == nil && jobResult.JobID != "" {
+					audioData, pollErr := s.pollYarnGPTJob(ctx, jobResult.JobID, apiKey)
+					if pollErr == nil && len(audioData) > 100 {
+						log.Printf("[TTS] YarnGPT job polling successful (voice: %s, %d bytes)", voice, len(audioData))
+						return audioData, nil
+					}
+				}
+			}
+		}
 	}
-	if len(audioData) > 100 {
-		log.Printf("[TTS] YarnGPT prepare/stream successful (%d bytes)", len(audioData))
-		return audioData, nil
+
+	if streamErr != nil {
+		return nil, streamErr
 	}
-	return nil, errors.New("yarngpt returned empty audio stream")
+	return nil, fmt.Errorf("yarngpt prepare returned HTTP %d: %s", pResp.StatusCode, string(pBody))
 }
 
 // synthesizeViaGoogleCloudAPI calls the Google Cloud Text-to-Speech v1 REST API.
