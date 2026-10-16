@@ -5,7 +5,9 @@ import { Job } from "bullmq";
 import * as fs from 'fs';
 import * as path from 'path';
 
-@Processor('mail')
+@Processor('mail', {
+    stalledInterval: 300000, // 5 minutes (reduces Redis polling to save Upstash quota without crashing)
+})
 @Injectable()
 export class Mailprocessor extends WorkerHost {
     private readonly logger = new Logger(Mailprocessor.name);
