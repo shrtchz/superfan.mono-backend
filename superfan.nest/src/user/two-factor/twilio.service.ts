@@ -96,14 +96,51 @@ export class TwilioService {
 
       return { simulated: false, provider: 'twilio', to: phone };
     } catch (error) {
+      const twilioError = this.extractTwilioError(error);
       this.logger.error(
-        `Twilio ${channel} delivery failed for ${phone}`,
+        `Twilio ${channel} delivery failed for ${phone}${
+          twilioError ? ` — ${twilioError.message}` : ''
+        }`,
         error instanceof Error ? error.message : JSON.stringify(error),
       );
-      throw new ServiceUnavailableException(
-        'Unable to send your verification code via Twilio right now. Please try again.',
-      );
+      throw new ServiceUnavailableException({
+        statusCode: 503,
+        error: 'Service Unavailable',
+        message:
+          'Unable to send your verification code via Twilio right now. Please try again.',
+        ...(twilioError?.message
+          ? { twilioMessage: twilioError.message }
+          : {}),
+        ...(twilioError?.code !== undefined
+          ? { twilioCode: twilioError.code }
+          : {}),
+      });
     }
+  }
+
+  private extractTwilioError(
+    error: unknown,
+  ): { message: string; code?: number } | null {
+    if (axios.isAxiosError(error)) {
+      const data = error.response?.data;
+      if (data && typeof data === 'object') {
+        const record = data as { message?: unknown; code?: unknown };
+        if (typeof record.message === 'string' && record.message.trim()) {
+          return {
+            message: record.message,
+            code: typeof record.code === 'number' ? record.code : undefined,
+          };
+        }
+      }
+      if (typeof data === 'string' && data.trim()) {
+        return { message: data };
+      }
+      return { message: error.message };
+    }
+    if (error instanceof Error && error.message) {
+      return { message: error.message };
+    }
+    return null;
   }
 
   private isSimulation(): boolean {

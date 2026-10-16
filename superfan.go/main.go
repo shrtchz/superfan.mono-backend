@@ -240,9 +240,21 @@ func main() {
 	})
 
 	basepath := server.Group("/v1")
+	apibasepath := server.Group("/api/v1")
+	rootbasepath := server.Group("")
 
 	controllers.RegisterQuizRoutes(
 		basepath,
+		qc,
+		qsc,
+	)
+	controllers.RegisterQuizRoutes(
+		apibasepath,
+		qc,
+		qsc,
+	)
+	controllers.RegisterQuizRoutes(
+		rootbasepath,
 		qc,
 		qsc,
 	)
@@ -256,9 +268,7 @@ func main() {
 
 	// Payment Routes
 	paymentControllers.RegisterPaymentRoutes(basepath, paymentCtrl)
-	apibasepath := server.Group("/api/v1")
 	paymentControllers.RegisterPaymentRoutes(apibasepath, paymentCtrl)
-	rootbasepath := server.Group("")
 	paymentControllers.RegisterPaymentRoutes(rootbasepath, paymentCtrl)
 
 	// Ledger Routes

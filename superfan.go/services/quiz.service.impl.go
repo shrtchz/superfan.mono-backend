@@ -2231,3 +2231,50 @@ func (u *QuizServiceImpl) DeleteQuiz(id string) error {
 
 	return nil
 }
+
+func (u *QuizServiceImpl) UpdateQuizAudioURL(id string, lang string, audioURL string) error {
+	objectId, err := bson.ObjectIDFromHex(id)
+	if err != nil {
+		return errors.New("invalid id format")
+	}
+
+	normalizedLang := strings.ToLower(strings.TrimSpace(lang))
+	if normalizedLang == "" {
+		normalizedLang = "yo"
+	}
+
+	filter := bson.M{"_id": objectId}
+	update := bson.M{
+		"$set": bson.M{
+			"audioUrl": audioURL,
+			fmt.Sprintf("audioUrls.%s", normalizedLang): audioURL,
+		},
+	}
+
+	_, err = u.quizcollection.UpdateOne(u.ctx, filter, update)
+	return err
+}
+
+func (u *QuizServiceImpl) UpdateLiveQuizAudioURL(id string, lang string, audioURL string) error {
+	objectId, err := bson.ObjectIDFromHex(id)
+	if err != nil {
+		return errors.New("invalid id format")
+	}
+
+	normalizedLang := strings.ToLower(strings.TrimSpace(lang))
+	if normalizedLang == "" {
+		normalizedLang = "yo"
+	}
+
+	filter := bson.M{"_id": objectId}
+	update := bson.M{
+		"$set": bson.M{
+			"audioUrl": audioURL,
+			fmt.Sprintf("audioUrls.%s", normalizedLang): audioURL,
+		},
+	}
+
+	_, err = u.liveQuizCollection.UpdateOne(u.ctx, filter, update)
+	return err
+}
+
