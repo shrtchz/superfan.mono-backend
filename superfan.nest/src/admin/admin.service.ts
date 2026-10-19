@@ -144,7 +144,13 @@ export class AdminService {
       });
 
       // ── Send invitation email ─────────────────────────────────────────────
-      const inviteLink = `${this.configService.get<string>('ADMIN_FRONTEND_URL')}/admin-invitation?token=${token}`;
+      const adminFrontendUrl = (
+        this.configService.get<string>('ADMIN_FRONTEND_URL') ||
+        (process.env.NODE_ENV === 'development'
+          ? 'http://localhost:9090'
+          : 'https://sa1.superfan.ng')
+      ).replace(/\/+$/, '');
+      const inviteLink = `${adminFrontendUrl}/admin-invitation?token=${token}`;
 
       const emailRoleLabel =
         accessLevel === 'owner'

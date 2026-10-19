@@ -4,8 +4,9 @@ import { ConfigService } from '@nestjs/config';
 import { Queue } from 'bullmq';
 import * as fs from 'fs';
 import * as handlebars from 'handlebars';
-import path from 'path';
+import * as path from 'path';
 import { failureResponse } from '../common/interceptors/response.interceptor';
+import { resolveTemplatesDir } from './mail.utils';
 
 @Injectable()
 export class MailService implements OnModuleInit {
@@ -19,7 +20,7 @@ export class MailService implements OnModuleInit {
   }
 
   private registerPartials() {
-    const partialsDir = this.resolveTemplatesDir();
+    const partialsDir = resolveTemplatesDir(__dirname);
 
     if (fs.existsSync(partialsDir)) {
       const files = this.findHbsFiles(partialsDir);
@@ -61,20 +62,6 @@ export class MailService implements OnModuleInit {
     return results;
   }
 
-  private resolveTemplatesDir(): string {
-    const localDir = path.join(__dirname, 'templates');
-    const distAlternative = path.join(__dirname, '..', '..', 'mail', 'templates');
-
-    if (fs.existsSync(localDir)) {
-      return localDir;
-    }
-
-    if (fs.existsSync(distAlternative)) {
-      return distAlternative;
-    }
-
-    return localDir;
-  }
 
   async sendTestEmail(to: string, subject: string, context: any) {
     try {
@@ -144,28 +131,39 @@ export class MailService implements OnModuleInit {
     email: string,
     inviterName: string,
     inviteUrl: string,
-    role,
-    expiryDays,
-    expiryDate,
+    role: string,
+    expiryDays: number,
+    expiryDate: Date | string,
   ): Promise<any> {
     try {
+      const formattedExpiryDate =
+        expiryDate instanceof Date
+          ? expiryDate.toLocaleDateString('en-US', {
+              month: 'short',
+              day: 'numeric',
+              year: 'numeric',
+            })
+          : String(expiryDate);
+
       let send_text = await this.mailQueue.add('send_email', {
         to: email,
         from: `Superfan <${
           this.configService.get<string>('LOCAL_SENDER_EMAIL') ||
-          this.configService.get<string>('PROD_SENDER_EMAIL')
+          this.configService.get<string>('PROD_SENDER_EMAIL') ||
+          'admin@superfan.ng'
         }>`,
         subject: `You have been invited to be a ${role}`,
-        template: './subadmin-invitation',
+        template: 'subadmin-invitation',
         context: {
           email,
           inviterName,
           inviteUrl,
           role,
           expiryDays,
-          expiryDate,
+          expiryDate: formattedExpiryDate,
         },
       });
+      return send_text;
     } catch (error) {
       throw failureResponse(error);
     }

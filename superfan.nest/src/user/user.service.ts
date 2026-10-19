@@ -2963,8 +2963,26 @@ async checkSubscriptionStatusbyUserId(userId: number): Promise<{
     }
   }
 
-  async deleteUser(id: number) {
+  async deleteUser(id: number, password?: string) {
     try {
+      const user = await prisma.user.findUnique({
+        where: { id: id },
+      });
+      if (!user) {
+        throw new NotFoundException('User not found');
+      }
+      if (password && user.password) {
+        const passwordMatches = await argon.verify(user.password, password);
+        if (!passwordMatches) {
+          throw new ForbiddenException('Current password is incorrect');
+        }
+      }
+      await prisma.userCard
+        .deleteMany({
+          where: { userId: id },
+        })
+        .catch(() => null);
+
       await prisma.user.delete({
         where: { id: id },
       });

@@ -11,8 +11,8 @@
     "emitDecoratorMetadata": true,
     "experimentalDecorators": true,
 
-       "listFiles": true,        // Prints the files read during compilation
-    "explainFiles": true,
+    "listFiles": false,
+    "explainFiles": false,
 
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,

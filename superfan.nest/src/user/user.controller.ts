@@ -444,8 +444,11 @@ export class UserController {
 
   @Public()
   @Delete('/delete/:userId')
-  async deleteAdmin(@Param('userId') userId: number) {
-    return this.userService.deleteUser(userId);
+  async deleteUser(
+    @Param('userId', ParseIntPipe) userId: number,
+    @Body() body?: { password?: string },
+  ) {
+    return this.userService.deleteUser(userId, body?.password);
   }
 
   @Get('/payment-methods')
