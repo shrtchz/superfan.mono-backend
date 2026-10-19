@@ -302,7 +302,7 @@ type CampaignListQuery struct {
 	Search  string `form:"search"`
 	SortBy  string `form:"sortBy,default=createdAt"`
 	SortDir string `form:"sortDir,default=desc"`
-	UserID  *int   `form:"-"`
+	UserID  *int   `form:"userId"`
 }
 
 type CampaignListResponse struct {
