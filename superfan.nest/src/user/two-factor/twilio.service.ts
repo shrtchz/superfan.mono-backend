@@ -50,13 +50,18 @@ export class TwilioService {
 
     try {
       if (channel === 'call') {
+        if (!fromNumber) {
+          throw new ServiceUnavailableException(
+            'Twilio Voice calling requires a voice-capable TWILIO_PHONE_NUMBER configured in your backend environment.',
+          );
+        }
         // Twilio Voice Call with TwiML
         const spacedCode = code.split('').join(' ');
         const twiml = `<Response><Pause length="1"/><Say voice="alice">Your Superfan verification code is ${spacedCode}. Again, your code is ${spacedCode}. Goodbye.</Say></Response>`;
 
         const params = new URLSearchParams();
         params.append('To', phone);
-        if (fromNumber) params.append('From', fromNumber);
+        params.append('From', fromNumber);
         params.append('Twiml', twiml);
 
         await axios.post(
@@ -96,18 +101,24 @@ export class TwilioService {
 
       return { simulated: false, provider: 'twilio', to: phone };
     } catch (error) {
+      if (error instanceof ServiceUnavailableException) {
+        throw error;
+      }
       const twilioError = this.extractTwilioError(error);
+      const detail =
+        twilioError?.message || (error instanceof Error ? error.message : null);
       this.logger.error(
         `Twilio ${channel} delivery failed for ${phone}${
-          twilioError ? ` — ${twilioError.message}` : ''
+          detail ? ` — ${detail}` : ''
         }`,
         error instanceof Error ? error.message : JSON.stringify(error),
       );
       throw new ServiceUnavailableException({
         statusCode: 503,
         error: 'Service Unavailable',
-        message:
-          'Unable to send your verification code via Twilio right now. Please try again.',
+        message: detail
+          ? `Twilio: ${detail}`
+          : 'Unable to send your verification code via Twilio right now. Please try again.',
         ...(twilioError?.message
           ? { twilioMessage: twilioError.message }
           : {}),

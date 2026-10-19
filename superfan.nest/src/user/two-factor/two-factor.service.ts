@@ -43,8 +43,17 @@ function generateOtpCode(): string {
 
 function normalizePhone(phone: string): string {
   const cleaned = phone.replace(/[^0-9+]/g, '');
-  const withPlus = cleaned.startsWith('+') ? cleaned : `+${cleaned}`;
-  const digits = withPlus.replace(/^\+/, '');
+  if (cleaned.startsWith('+')) {
+    const digits = cleaned.slice(1).replace(/\D/g, '');
+    if (!PHONE_PATTERN.test(digits)) {
+      throw new BadRequestException('Please provide a valid phone number.');
+    }
+    return `+${digits}`;
+  }
+  const digits = cleaned.replace(/\D/g, '');
+  if (digits.startsWith('0') && digits.length === 11) {
+    return `+234${digits.slice(1)}`;
+  }
   if (!PHONE_PATTERN.test(digits)) {
     throw new BadRequestException('Please provide a valid phone number.');
   }
