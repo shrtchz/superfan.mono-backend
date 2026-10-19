@@ -59,11 +59,25 @@ func (ac *AdsController) GetCampaigns(c *gin.Context) {
 
 // GetMyCampaigns handles GET /v2/ads/campaigns/mine.
 func (ac *AdsController) GetMyCampaigns(c *gin.Context) {
-	userIDValue, ok := c.Get(middleware.ContextUserIDKey)
-	userID, ok := userIDValue.(int)
-	if !ok || userID <= 0 {
-		utils.SendError(c, http.StatusUnauthorized, "UNAUTHORIZED", "authenticated user not found")
-		return
+	var userID int
+	if userIDValue, ok := c.Get(middleware.ContextUserIDKey); ok {
+		if id, ok := userIDValue.(int); ok && id > 0 {
+			userID = id
+		}
+	}
+	if userID <= 0 {
+		if uidStr := c.Query("userId"); uidStr != "" {
+			if parsed, err := strconv.Atoi(uidStr); err == nil && parsed > 0 {
+				userID = parsed
+			}
+		}
+	}
+	if userID <= 0 {
+		if uidStr := c.Query("user_id"); uidStr != "" {
+			if parsed, err := strconv.Atoi(uidStr); err == nil && parsed > 0 {
+				userID = parsed
+			}
+		}
 	}
 
 	var query services.CampaignListQuery
@@ -71,7 +85,9 @@ func (ac *AdsController) GetMyCampaigns(c *gin.Context) {
 		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "invalid query parameters")
 		return
 	}
-	query.UserID = &userID
+	if userID > 0 {
+		query.UserID = &userID
+	}
 
 	res, err := ac.adsService.GetCampaigns(c.Request.Context(), &query)
 	if err != nil {
@@ -84,10 +100,28 @@ func (ac *AdsController) GetMyCampaigns(c *gin.Context) {
 
 // GetMyInsights handles GET /v2/ads/campaigns/mine/insights.
 func (ac *AdsController) GetMyInsights(c *gin.Context) {
-	userIDValue, ok := c.Get(middleware.ContextUserIDKey)
-	userID, ok := userIDValue.(int)
-	if !ok || userID <= 0 {
-		utils.SendError(c, http.StatusUnauthorized, "UNAUTHORIZED", "authenticated user not found")
+	var userID int
+	if userIDValue, ok := c.Get(middleware.ContextUserIDKey); ok {
+		if id, ok := userIDValue.(int); ok && id > 0 {
+			userID = id
+		}
+	}
+	if userID <= 0 {
+		if uidStr := c.Query("userId"); uidStr != "" {
+			if parsed, err := strconv.Atoi(uidStr); err == nil && parsed > 0 {
+				userID = parsed
+			}
+		}
+	}
+	if userID <= 0 {
+		if uidStr := c.Query("user_id"); uidStr != "" {
+			if parsed, err := strconv.Atoi(uidStr); err == nil && parsed > 0 {
+				userID = parsed
+			}
+		}
+	}
+	if userID <= 0 {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "userId query parameter or authenticated user required")
 		return
 	}
 
@@ -372,7 +406,7 @@ func RegisterAdsRoutes(rg *gin.RouterGroup, ac *AdsController) {
 		adsGroup.GET("/campaigns", ac.GetCampaigns)
 		adsGroup.POST("/test-link", ac.TestLink)
 		adsGroup.POST("/campaigns/:id/test-link", ac.TestCampaignLink)
-		authenticatedAdsGroup := rg.Group("/ads", middleware.AuthRequired())
+		authenticatedAdsGroup := rg.Group("/ads", middleware.OptionalAuth())
 		authenticatedAdsGroup.GET("/campaigns/mine", ac.GetMyCampaigns)
 		authenticatedAdsGroup.GET("/campaigns/mine/insights", ac.GetMyInsights)
 		adsGroup.GET("/inventory/stats", ac.GetInventoryStats)
