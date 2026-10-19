@@ -161,17 +161,21 @@ export class TwoFactorService {
 
   async sendPhoneOtp(
     userId: number,
-    phone: string,
+    phone?: string,
     channel: 'text' | 'call' = 'text',
     provider?: SmsProvider,
   ) {
     const user = await prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true },
+      select: { id: true, twoFactorPhone: true, phone: true },
     });
     if (!user) throw new NotFoundException('User not found');
 
-    const normalizedPhone = normalizePhone(phone);
+    const cleanPhone = (phone && !phone.includes('•')) ? phone : user.twoFactorPhone || user.phone;
+    if (!cleanPhone) {
+      throw new BadRequestException('Please provide a valid phone number.');
+    }
+    const normalizedPhone = normalizePhone(cleanPhone);
     const code = generateOtpCode();
 
     await prisma.user.update({
@@ -212,23 +216,28 @@ export class TwoFactorService {
     };
   }
 
-  async enablePhoneOtp(userId: number, phone: string, code: string) {
+  async enablePhoneOtp(userId: number, phone: string | undefined, code: string) {
     const user = await prisma.user.findUnique({
       where: { id: userId },
       select: {
         twoFactorOtp: true,
         twoFactorOtpExpiry: true,
         twoFactorPhone: true,
+        phone: true,
       },
     });
     if (!user) throw new NotFoundException('User not found');
 
-    const normalizedPhone = normalizePhone(phone);
-    const storedPhone = user.twoFactorPhone;
+    const cleanPhone = (phone && !phone.includes('•')) ? phone : user.twoFactorPhone || user.phone;
+    if (!cleanPhone) {
+      throw new BadRequestException('No phone number found. Send a new code first.');
+    }
+    const normalizedPhone = normalizePhone(cleanPhone);
+    const storedPhone = user.twoFactorPhone || normalizedPhone;
     const storedHash = user.twoFactorOtp;
     const expiry = user.twoFactorOtpExpiry;
 
-    if (!storedPhone || storedPhone !== normalizedPhone) {
+    if (!storedPhone || (storedPhone !== normalizedPhone && user.twoFactorPhone !== storedPhone)) {
       throw new BadRequestException(
         'No code was sent to this phone number. Send a new code first.',
       );

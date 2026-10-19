@@ -23,9 +23,9 @@ export class VerifyTotpDto {
 }
 
 export class SendPhoneOtpDto {
+  @IsOptional()
   @IsString()
-  @Matches(PHONE_REGEX, { message: 'phone must be a valid phone number' })
-  phone: string;
+  phone?: string;
 
   @IsOptional()
   @IsIn(['text', 'call'])
@@ -37,9 +37,9 @@ export class SendPhoneOtpDto {
 }
 
 export class VerifyPhoneOtpDto {
+  @IsOptional()
   @IsString()
-  @Matches(PHONE_REGEX, { message: 'phone must be a valid phone number' })
-  phone: string;
+  phone?: string;
 
   @IsString()
   @Length(6, 6)
