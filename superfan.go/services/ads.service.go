@@ -1412,10 +1412,7 @@ func (s *adsServiceImpl) RejectAndRefundCampaign(ctx context.Context, id int, re
 		trxType := "credit"
 		trxCategory := "AD_REFUND"
 		trxStatus := "SUCCESS"
-		trxDesc := fmt.Sprintf("Refund for rejected ad: %s (Reason: %s)", campaign.Headline, reason)
-		if notes != "" {
-			trxDesc += fmt.Sprintf(" - Note: %s", notes)
-		}
+		trxDesc := "Refund for Rejected Ad"
 		ref := fmt.Sprintf("REF-AD-%d-%d", campaign.ID, now.Unix())
 
 		txRecord := models.WalletTransaction{
