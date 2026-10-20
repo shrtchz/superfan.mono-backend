@@ -2697,9 +2697,13 @@ async getQuizleaderboard(
 
     const dateFilter = getLeaderboardDateFilter(timeRange, now);
 
-    // Fetch leaderboard rows
+    // Fetch leaderboard rows (excluding live quizzes so scoreboard only displays test quiz sessions)
     const quizBoard = await prisma.quizLeaderboard.findMany({
-      where: timeRange === 'all' ? {} : { submittedAt: dateFilter },
+      where: {
+        ...(timeRange === 'all' ? {} : { submittedAt: dateFilter }),
+        subject: { notIn: ['live-quiz', 'live'] },
+        testLevel: { notIn: ['live', 'Live'] },
+      },
       orderBy: {
         submittedAt: 'asc',
       },

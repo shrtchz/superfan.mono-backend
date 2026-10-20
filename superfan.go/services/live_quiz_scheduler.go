@@ -535,21 +535,27 @@ func (f *LiveQuizFinaliser) recordLeaderboard(quizID, question, correctAnswer st
 			earning = 1
 		}
 
-		entry := models.QuizLeaderboard{
-			UserID:         p.UserID,
-			QuizID:         quizID,
-			Subject:        "live-quiz",
-			TestLevel:      "live",
-			SelectedAnswer: p.SelectedAnswer,
-			CorrectAnswer:  correctAnswer,
-			Earning:        earning,
-			SubmittedAt:    p.SubmittedAt,
-			CreatedAt:      now,
-			UpdatedAt:      now,
+		rewardStatus := "none"
+		if isWinner {
+			rewardStatus = "pending"
+		}
+
+		entry := models.LiveQuizLeaderboardRow{
+			UserID:       p.UserID,
+			QuizID:       quizID,
+			Question:     question,
+			Answer:       correctAnswer,
+			RewardType:   "CASH",
+			IsWinner:     isWinner,
+			Participants: len(participants),
+			UnitPrize:    earning,
+			RewardStatus: rewardStatus,
+			QuizDate:     now,
+			CreatedAt:    now,
 		}
 
 		if err := utils.DB.Create(&entry).Error; err != nil {
-			log.Printf("[LiveQuizFinaliser] leaderboard insert error for user %s quiz %s: %v", p.UserID, quizID, err)
+			log.Printf("[LiveQuizFinaliser] live quiz leaderboard insert error for user %s quiz %s: %v", p.UserID, quizID, err)
 		}
 	}
 	return nil
