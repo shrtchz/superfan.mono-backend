@@ -103,6 +103,8 @@ func NewAdsService(db *gorm.DB) AdsService {
 	if db != nil {
 		_ = db.Exec(`ALTER TABLE "AdCampaign" ADD COLUMN IF NOT EXISTS "guaranteedDailyViews" INTEGER NOT NULL DEFAULT 1000`).Error
 		_ = db.Exec(`ALTER TABLE "AdCampaign" ADD COLUMN IF NOT EXISTS "pausedByAdmin" BOOLEAN DEFAULT FALSE`).Error
+		_ = db.Exec(`ALTER TABLE "AdCampaign" ADD COLUMN IF NOT EXISTS "approvedByAdmin" BOOLEAN DEFAULT FALSE`).Error
+		_ = db.Exec(`UPDATE "AdCampaign" SET "approvedByAdmin" = TRUE WHERE "status" = 'ACTIVE' OR "status" = 'COMPLETED'`).Error
 		_ = db.Exec(`CREATE INDEX IF NOT EXISTS "idx_adevent_campaign_event_created" ON "AdEvent"("campaignId", "eventType", "createdAt")`).Error
 		_ = db.Exec(`CREATE INDEX IF NOT EXISTS "idx_adevent_campaign_user_event_created" ON "AdEvent"("campaignId", "userId", "eventType", "createdAt")`).Error
 	}
@@ -1281,6 +1283,11 @@ func (s *adsServiceImpl) UpdateCampaignStatus(ctx context.Context, id int, statu
 		}
 	}
 
+	// An ad cannot be set to active if it was not approved by an admin
+	if !campaign.ApprovedByAdmin && status == models.AdStatusActive {
+		return nil, errors.New("this ad has not been approved by an administrator yet")
+	}
+
 	previous := campaign.Status
 
 	updates := map[string]interface{}{
@@ -1338,8 +1345,10 @@ func (s *adsServiceImpl) ApproveCampaign(ctx context.Context, id int) (*models.A
 	if err := s.db.WithContext(ctx).Model(&models.AdCampaign{}).
 		Where("id = ?", id).
 		Updates(map[string]interface{}{
-			"status":    models.AdStatusActive,
-			"updatedAt": now,
+			"status":          models.AdStatusActive,
+			"approvedByAdmin": true,
+			"pausedByAdmin":   false,
+			"updatedAt":       now,
 		}).Error; err != nil {
 		return nil, fmt.Errorf("failed to approve campaign: %w", err)
 	}
@@ -1371,12 +1380,13 @@ func (s *adsServiceImpl) RejectAndRefundCampaign(ctx context.Context, id int, re
 
 	now := time.Now()
 
-	// Update campaign status to PAUSED
+	// Update campaign status to PAUSED and revoke approval
 	if err := s.db.WithContext(ctx).Model(&models.AdCampaign{}).
 		Where("id = ?", id).
 		Updates(map[string]interface{}{
-			"status":    models.AdStatusPaused,
-			"updatedAt": now,
+			"status":          models.AdStatusPaused,
+			"approvedByAdmin": false,
+			"updatedAt":       now,
 		}).Error; err != nil {
 		return nil, fmt.Errorf("failed to update campaign status to rejected: %w", err)
 	}

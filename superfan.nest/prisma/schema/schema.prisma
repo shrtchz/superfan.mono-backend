@@ -1251,6 +1251,7 @@ model AdCampaign {
   ageRange             String?       // "18-24", "18-35", "25-45", "45+"
   guaranteedDailyViews Int           @default(1000)
   pausedByAdmin        Boolean       @default(false)
+  approvedByAdmin      Boolean       @default(false)
   status               AdStatus      @default(PENDING)
   views           Int           @default(0)
   clicks          Int           @default(0)

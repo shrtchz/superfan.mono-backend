@@ -83,7 +83,11 @@ export class MailService implements OnModuleInit {
 
   async verifyEmail(email: string, code: string, firstName: string): Promise<any> {
     try {
-      const verify_url = `${process.env.FRONTEND_URL}/verify/${email}?token=${code}`
+      const frontendUrl =
+        this.configService.get<string>('FRONTEND_URL') ||
+        process.env.FRONTEND_URL ||
+        'https://superfan.ng';
+      const verify_url = `${frontendUrl}/verify-email?email=${encodeURIComponent(email)}&token=${code}`;
       let send_text = await this.mailQueue.add('send_email', {
         to: email,
         from: `Superfan <${
@@ -92,7 +96,7 @@ export class MailService implements OnModuleInit {
         }>`,
         subject: 'Verify your email',
         template: './verify-email',
-        context: { email, verify_url, firstName },
+        context: { email, verify_url, firstName, code },
       },
         {
     attempts: 5,
