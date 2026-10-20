@@ -40,7 +40,7 @@ export class PaymentService {
 
   
   // create conversion to USDT, USD
-    async convertNgnToUsd(amount: number): Promise<any> {
+  async convertNgnToUsd(amount: number): Promise<any> {
     try {
       const { data } = await axios.get(this.FX_API);
 
@@ -52,12 +52,12 @@ export class PaymentService {
 
       return {value: amount * rate};
     } catch (error) {
-      throw new HttpException(
-        'Failed to fetch exchange rate',
-        HttpStatus.BAD_GATEWAY,
-      );
+      console.warn('FX API failed or rate limit exceeded, using fallback exchange rate: 1 USD = 1500 NGN');
+      return {value: amount * 1500};
     }
   }
+
+
 
   async UpdatePaymentProcessors(dto: PaymentProcessorDto): Promise<any> {
     try {

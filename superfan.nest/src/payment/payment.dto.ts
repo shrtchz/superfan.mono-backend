@@ -631,6 +631,20 @@ export class RewardCreditDto {
   userId: number;
 }
 
+export class CreditWalletDto {
+  @IsNumber()
+  userId: number;
+
+  @IsNumber()
+  amount: number;
+
+  @IsString()
+  title: string;
+
+  @IsString()
+  description: string;
+}
+
 class IncomeSplitDto {
   @IsString()
   subAccountCode: string;

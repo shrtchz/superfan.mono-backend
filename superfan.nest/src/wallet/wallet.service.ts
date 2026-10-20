@@ -1,51 +1,99 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { EarningStatus } from '../common/enums/task.enum';
 import { generateFiveUniqueRandomNumbers } from '../common/utils/utils';
+import { PointsConversionUtil } from '../common/utils/points-conversion.util';
 import { PrismaService } from '../config/database/prisma.service';
 import { NotificationService } from '../notification/notification.service';
 import { MonnifyService } from '../payment/monnify.service';
 import { prisma } from '../prisma/prisma';
+import { WalletTransactionFilterDto } from './wallet.dto';
 
 
 @Injectable()
 export class WalletService {
-  constructor(private prisma: PrismaService, private monnifyService: MonnifyService, private notificationService: NotificationService) {}
-  async creditWallet(userId: number, amount: number, title: string, description: string) {
-    await prisma.wallet.update({
-      where: { userId },
-      data: {
-        balance: {
-          increment: amount,
-        },
-      },
+  constructor(private prisma: PrismaService, private monnifyService: MonnifyService, private notificationService: NotificationService, private pointsConversionUtil: PointsConversionUtil) {}
+  async creditWallet(userId: number, amount: number, title: string, description: string, accountType?: string, currency: string = 'NGN') {
+    console.log('[Wallet][creditWallet][START]', {
+      userId,
+      amount,
+      title,
+      description,
+      accountType,
+      currency,
     });
 
-    await prisma.walletTransaction.create({
-      data: {
-        user: {
-          connect: { id: userId },
-        },
-        amount,
-        type: 'credit',
-        description,
-        trx_ref: `${generateFiveUniqueRandomNumbers()}`
-      },
-    });
+    const isGold = accountType === 'Gold';
+    const balanceField = isGold ? 'goldBalance' : 'personalBalance';
 
-          await prisma.activityWallet.create({
+    // Use transaction to ensure atomicity - all or nothing
+    await prisma.$transaction(async (tx) => {
+      const updatedWallet = await tx.wallet.update({
+        where: { userId },
         data: {
-          // userId,
-            user: {
-          connect: { id: userId },
+          balance: {
+            increment: amount,
+          },
+          [balanceField]: {
+            increment: amount,
+          },
         },
+      });
+      console.log('[Wallet][creditWallet] Wallet balance updated', {
+        userId,
+        newBalance: updatedWallet.balance,
+        increment: amount,
+      });
+
+      const walletTransaction = await (tx.walletTransaction as any).create({
+        data: {
+          user: {
+            connect: { id: userId },
+          },
+          amount,
+          type: 'credit',
+          currency,
+          status: 'SUCCESS',
+          description,
+          account_type: accountType,
+          trx_ref: `${generateFiveUniqueRandomNumbers()}`
+        },
+      });
+      console.log('[Wallet][creditWallet] Wallet transaction created', {
+        transactionId: walletTransaction.id,
+        userId,
+        amount,
+      });
+
+      const activityWallet = await tx.activityWallet.create({
+        data: {
+          user: {
+            connect: { id: userId },
+          },
           type: 'credit',
           title,
           description,
           amount,
-          currency: 'NGN',
+          currency,
           status: 'SUCCESS',
         },
       });
+      console.log('[Wallet][creditWallet] Activity wallet created', {
+        activityId: activityWallet.id,
+        userId,
+        amount,
+      });
+
+      // Send notification for manual wallet credit
+      await this.notificationService.createNotification(
+        userId,
+        'Wallet Credit - Manual',
+        `Your wallet has been credited with ₦${amount}`,
+        'wallet_credit_manual'
+      );
+    });
+
+    console.log('[Wallet][creditWallet][END] Completed successfully');
   }
 
 
@@ -63,7 +111,12 @@ export class WalletService {
   }
 
 
-  async createReward(userId: number, amount: number, currency: string, type: string, status: EarningStatus) {
+  createReward(userId: number, points: number, type: string, status: EarningStatus) {
+    const amount = this.pointsConversionUtil.pointsToNaira(points);
+    return this.createRewardWithAmount(userId, amount, 'NGN', type, status);
+  }
+
+  private async createRewardWithAmount(userId: number, amount: number, currency: string, type: string, status: EarningStatus) {
     await this.prisma.reward.create({
       data: {
         userId,
@@ -74,8 +127,8 @@ export class WalletService {
       },
     });
 
-    // Credit the wallet
-    await this.creditWallet(userId, amount, `${type} Reward`, `Earned ${amount} ${currency} from ${type}`);
+    // Credit the wallet - system rewards always go to Gold Account
+    await this.creditWallet(userId, amount, `${type} Reward`, `Earned ${amount} ${currency} from ${type}`, 'Gold', currency);
 
     // Send notification
     await this.notificationService.createNotification(
@@ -85,27 +138,49 @@ export class WalletService {
     );
   }
 
-  async createQuizReward(userId: number, amount: number, currency: string, subject: string, status: EarningStatus, points: number) {
-        await this.prisma.reward.create({
+  async createQuizReward(userId: number, points: number, subject: string, status: EarningStatus, reference?: string) {
+    const amount = this.pointsConversionUtil.pointsToNaira(points);
+    const rewardReference = reference ?? `quiz_reward:${userId}:${subject}:${points}:${status}`;
+
+    const existingReward = await this.prisma.reward.findFirst({
+      where: {
+        userId,
+        type: 'quiz_reward',
+        reference: rewardReference,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (existingReward) {
+      return;
+    }
+    
+    await this.prisma.reward.create({
       data: {
         userId,
         amount,
-        currency,
+        currency: 'NGN',
         type: 'quiz_reward',
         status,
+        reference: rewardReference,
       },
     });
 
-        // Credit the wallet
-    await this.creditWallet(userId, amount, `₦${amount} has  been added to your wallet`, `You earned ${amount} from Quiz`);
+    // Credit the wallet - quiz rewards go to Gold Account
+    await this.creditWallet(userId, amount, `₦${amount} has  been added to your wallet`, `You earned ${amount} from Quiz`, 'Gold', 'NGN');
 
     await this.prisma.point.create({
       data: {
         userId,
         points,
-        reference: `POINTS_${generateFiveUniqueRandomNumbers()}`,
+        reference: rewardReference,
         type: 'quiz_reward',
       }
+    });
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { lifetimePoints: { increment: points } },
     });
 
     // Send notification
@@ -119,26 +194,48 @@ export class WalletService {
         await this.notificationService.createNotification(
       userId,
       `you earned ${points}PTS🎮`,
-      // `₦${amount} has  been added to your wallet`,
       `from ${subject} Quiz`,
       'quiz_reward'
     );
   }
 
-  async createLiveQuizReward(userId: number, amount: number, status: EarningStatus) {
-            await this.prisma.reward.create({
+  async createLiveQuizReward(userId: number, points: number, status: EarningStatus, reference?: string) {
+    const amount = this.pointsConversionUtil.pointsToNaira(points);
+    const rewardReference = reference ?? `live_quiz_reward:${userId}:${points}:${status}`;
+
+    const existingReward = await this.prisma.reward.findFirst({
+      where: {
+        userId,
+        type: 'live_quiz_reward',
+        reference: rewardReference,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (existingReward) {
+      return;
+    }
+    
+    await this.prisma.reward.create({
       data: {
         userId,
         amount,
         currency: 'NGN',
         type: 'live_quiz_reward',
         status,
+        reference: rewardReference,
       },
     });
 
-    await this.creditWallet(userId, amount, `₦${amount} has  been added to your wallet`, `You earned ${amount} from Live Quiz`);
+    // Credit the wallet - live quiz rewards go to Gold Account
+    await this.creditWallet(userId, amount, `₦${amount} has  been added to your wallet`, `You earned ${amount} from Live Quiz`, 'Gold', 'NGN');
 
-        await this.notificationService.createNotification(
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { lifetimePoints: { increment: points } },
+    });
+
+    await this.notificationService.createNotification(
       userId,
       `₦${amount} has  been added to your wallet`,
       `You earned ₦${amount} from Live Quiz`,
@@ -147,17 +244,50 @@ export class WalletService {
   }
 
 
-async getUserWalletTransactions(
-  userId?: number,
-  accountType?: string,
-) {
-  return await this.prisma.walletTransaction.findMany({
-    where: {
-      ...(userId && { userId }),
-      ...(accountType && { account_type: accountType }),
-    },
-    orderBy: { id: 'desc' },
-  });
+async getUserWalletTransactions(filters: WalletTransactionFilterDto) {
+  const {
+    userId,
+    accountType,
+    startDate,
+    endDate,
+    type,
+    currency,
+    status,
+    page = 1,
+    limit = 20,
+  } = filters;
+
+  const where: Prisma.WalletTransactionWhereInput = {
+    ...(userId && { userId: Number(userId) }),
+    ...(accountType && { account_type: accountType }),
+    ...(type && { type }),
+    ...(currency && { currency }),
+    ...(status && { status }),
+    ...((startDate || endDate) && {
+      createdAt: {
+        ...(startDate && { gte: new Date(startDate) }),
+        ...(endDate && { lte: new Date(endDate) }),
+      },
+    }),
+  };
+
+  const [data, total] = await Promise.all([
+    this.prisma.walletTransaction.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      skip: (page - 1) * limit,
+      take: limit,
+    }),
+    this.prisma.walletTransaction.count({ where }),
+  ]);
+
+  return {
+    data,
+    total,
+    page,
+    limit,
+    totalPages: Math.ceil(total / limit),
+  };
 }
 
   async getWalletTransactionsbyId(id: number) {
@@ -177,7 +307,6 @@ async getUserWalletTransactions(
     const amount = Number(transaction.responseBody.amountPaid);
     const reference = transaction.responseBody.paymentReference || transactionReference;
     const paymentMethod = transaction.responseBody.paymentMethod;
-    // const currency = transaction.responseBody.currency;
     const customerName = transaction.responseBody.customer?.name;
     const bankName = transaction.responseBody.destinationAccountInformation?.bankName;
     const accountNumber = transaction.responseBody.destinationAccountInformation?.accountNumber;
@@ -191,10 +320,13 @@ async getUserWalletTransactions(
       throw new Error('Transaction already processed');
     }
 
-    // Get user accounts to find accountType
+    // Get user with subscription plan and accounts
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { accounts: true },
+      select: {
+        accounts: true,
+        subscriptionPlan: true,
+      },
     });
 
     if (!user) {
@@ -206,21 +338,38 @@ async getUserWalletTransactions(
       (acc: any) => acc.accountNumber === accountNumber,
     );
 
-    const accountType = matchedAccount?.accountType
+    const accountType = matchedAccount?.accountType || 'Personal';
+
+    // ✅ Reject deposits into Gold Account
+    if (accountType === 'Gold') {
+      throw new Error('Deposits into Gold Account are not allowed');
+    }
+
+    // ✅ Block Free-tier users from Personal Account deposits
+    if (accountType === 'Personal' && user.subscriptionPlan === 'FREE') {
+      throw new Error('Free tier users cannot deposit into Personal Account. Please upgrade to Pro or Pro Max.');
+    }
+
+    // Determine which balance to increment
+    const balanceField = accountType === 'Gold' ? 'goldBalance' : 'personalBalance';
 
     await this.prisma.$transaction([
-      // Update wallet balance
+      // Update wallet balances
       this.prisma.wallet.update({
         where: { userId },
-        data: { balance: { increment: amount } },
+        data: {
+          balance: { increment: amount },
+          [balanceField]: { increment: amount },
+        },
       }),
 
       // Create wallet transaction
-      this.prisma.walletTransaction.create({
+      (this.prisma.walletTransaction as any).create({
         data: {
           userId,
           amount,
           type: 'credit',
+          currency: 'NGN',
           transactionType: 'FUNDING',
           status: 'SUCCESS',
           reference,
@@ -228,7 +377,7 @@ async getUserWalletTransactions(
           account_name: customerName,
           bank_name: bankName,
           account_no: accountNumber,
-          account_type: 'Personal',
+          account_type: accountType,
           description: 'Wallet funded with card',
           trx_ref: `${generateFiveUniqueRandomNumbers()}`
         },
@@ -304,11 +453,12 @@ const trf_reference = `TRANSFER_${Date.now()}`;
     // Perform transfer in a transaction
     await this.prisma.$transaction([
       // Debit source account
-      this.prisma.walletTransaction.create({
+      (this.prisma.walletTransaction as any).create({
         data: {
           userId,
           amount,
           type: 'debit',
+          currency: 'NGN',
           transactionType: 'TRANSFER',
           status: 'SUCCESS',
           reference: trf_reference,
@@ -321,11 +471,12 @@ const trf_reference = `TRANSFER_${Date.now()}`;
       }),
 
       // Credit destination account
-      this.prisma.walletTransaction.create({
+      (this.prisma.walletTransaction as any).create({
         data: {
           userId,
           amount,
           type: 'credit',
+          currency: 'NGN',
           transactionType: 'TRANSFER',
           status: 'SUCCESS',
           reference: trf_reference,

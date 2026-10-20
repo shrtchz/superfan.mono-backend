@@ -1,13 +1,18 @@
 import { TestLevel } from '@prisma/client';
 import { Transform, Type } from 'class-transformer';
 import {
+  ArrayNotEmpty,
   IsArray,
   IsBoolean,
   IsEnum,
+  IsInt,
   IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
+  Matches,
+  Min,
+  ValidateNested,
 } from 'class-validator';
 
 export class CreateQuizDto {
@@ -102,6 +107,98 @@ export class CreateLiveQuizDto {
   @IsOptional()
   @IsString()
   quizScheduleDate: string;
+
+  @IsOptional()
+  @IsString()
+  quizFinishDate: string;
+
+  @IsOptional()
+  @IsNumber()
+  jackpotAmount: number;
+}
+
+export class UpdateLiveQuizDto {
+  @IsOptional()
+  @IsString()
+  question?: string;
+
+  @IsOptional()
+  @IsString({ each: true })
+  imageLink?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  options?: string[];
+
+  @IsOptional()
+  @IsString()
+  answer?: string;
+
+  @IsOptional()
+  @IsString()
+  typedAnswer?: string;
+
+  @IsOptional()
+  @IsNumber()
+  recipients?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  isTypedAnswer?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  showAnswer?: boolean;
+
+  @IsOptional()
+  @IsNumber()
+  totalPrize?: number;
+
+  @IsOptional()
+  @IsNumber()
+  unitPrize?: number;
+
+  @IsOptional()
+  @IsNumber()
+  jackpotAmount?: number;
+
+  @IsOptional()
+  @IsString()
+  quizScheduleDate?: string;
+
+  @IsOptional()
+  @IsString()
+  quizFinishDate?: string;
+
+  @IsOptional()
+  @IsString()
+  customCountdownLabelBefore?: string;
+
+  @IsOptional()
+  @IsString()
+  customCountdownLabelDuring?: string;
+
+  @IsOptional()
+  @IsString()
+  customCountdownLabelAfter?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => CustomCountdownLabelDto)
+  customCountdownLabels?: CustomCountdownLabelDto[];
+}
+
+export class CustomCountdownLabelDto {
+  @IsString()
+  id: string;
+
+  @IsString()
+  phase: 'before' | 'during' | 'after';
+
+  @IsString()
+  text: string;
 }
 
 export class startRandomQuiz {
@@ -148,6 +245,7 @@ export class GetQuizWithPreferencesDto {
 }
 
 export class UpdateLiveAnswerDto {
+  @IsOptional()
   @IsString()
   userId: string;
 
@@ -155,6 +253,16 @@ export class UpdateLiveAnswerDto {
   quizId: string;
 
   @IsString()
+  selectedAnswer: string;
+}
+
+export class SubmitLiveAnswerDto {
+  @IsOptional()
+  @IsString()
+  userId?: string;
+
+  @IsString()
+  @IsNotEmpty()
   selectedAnswer: string;
 }
 
@@ -169,4 +277,45 @@ export class CreateQuizCategoryDto {
 
   @IsString()
   subject: string;
+}
+
+export class SubmitQuizResponseItemDto {
+  @IsString()
+  @IsNotEmpty()
+  @Matches(/^[a-f\d]{24}$/i, { message: 'quizId must be a valid ObjectId' })
+  quizId: string;
+
+  @IsString()
+  selectedAnswer: string;
+}
+
+export class SubmitQuizDto {
+  @IsString()
+  @IsNotEmpty()
+  userId: string;
+
+  @IsString()
+  @IsNotEmpty()
+  rewardType: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  quizTimeSeconds?: number;
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  quizTime?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  ad_bonuses?: number;
+
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => SubmitQuizResponseItemDto)
+  responses: SubmitQuizResponseItemDto[];
 }

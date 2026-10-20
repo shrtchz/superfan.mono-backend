@@ -42,6 +42,7 @@ import {
   CreateBushaCustomerDto,
   CreateBushaQuoteDto,
   CreateBushaTransferDto,
+  CreditWalletDto,
   CreatePaymentMethodDto,
   CreatePaymentPlanDto,
   CreatePayoutQuoteDto,
@@ -182,7 +183,10 @@ export class PaymentController {
   }
 
   @Get('/banks')
-  async getBanks() {
+  async getBanks(@Query('country') country?: string) {
+    if (country) {
+      return this.flutterwaveService.getBanks(country);
+    }
     return this.monnifyService.getBanks();
   }
 
@@ -313,12 +317,27 @@ export class PaymentController {
 async getWalletTransactions(
   @Query('userId') userId?: string,
   @Query('accountType') accountType?: string,
+  @Query('startDate') startDate?: string,
+  @Query('endDate') endDate?: string,
+  @Query('type') type?: string,
+  @Query('currency') currency?: string,
+  @Query('status') status?: string,
+  @Query('page') page?: string,
+  @Query('limit') limit?: string,
 ) {
-  return this.walletService.getUserWalletTransactions(
-    userId ? Number(userId) : undefined,
+  return this.walletService.getUserWalletTransactions({
+    userId: userId ? Number(userId) : undefined,
     accountType,
-  );
+    startDate,
+    endDate,
+    type,
+    currency,
+    status,
+    page: page ? Number(page) : undefined,
+    limit: limit ? Number(limit) : undefined,
+  });
 }
+
 
     @Get('transactions-by-id')
   async getWalletTransactionsById(@Query('id') id: number) {
@@ -446,24 +465,26 @@ async getWalletTransactions(
   }
 
   @Post('/credit-wallet')
-  async creditWallet(@Body() userId: number, @Body() amount: number, @Body() title: string, @Body() description: string) {
-    return this.walletService.creditWallet(userId, amount, title, description);
+  async creditWallet(@Body() dto: CreditWalletDto) {
+    return this.walletService.creditWallet(dto.userId, dto.amount, dto.title, dto.description);
   }
 
   @Post('/wallet/credit/test-quiz-reward')
   async creditTestQuizReward(@Body() dto: RewardCreditDto, @Req() req: any) {
-    let points = dto.amount * 1000;
-    return this.walletService.createQuizReward(req.user.id ||  dto.userId, dto.amount, 'NGN', dto.subject, EarningStatus.AVAILABLE, points);
+    const points = dto.amount * 1000;
+    return this.walletService.createQuizReward(req.user.id ||  dto.userId, points, dto.subject, EarningStatus.AVAILABLE);
   }
 
   @Post('/wallet/credit/live-quiz-reward')
   async creditLiveQuizReward(@Body() dto: RewardCreditDto, @Req() req: any) {
-    return this.walletService.createLiveQuizReward(req.user.id ||  dto.userId, dto.amount, EarningStatus.AVAILABLE);
+    const points = dto.amount * 1000;
+    return this.walletService.createLiveQuizReward(req.user.id ||  dto.userId, points, EarningStatus.AVAILABLE);
   }
 
   @Post('/wallet/credit/ad-reward')
   async creditAdReward(@Body() dto: RewardCreditDto, @Req() req: any) {
-    return this.walletService.createReward(req.user.id ||  dto.userId, dto.amount, 'NGN', 'ad', EarningStatus.AVAILABLE);
+    const points = dto.amount * 1000;
+    return this.walletService.createReward(req.user.id ||  dto.userId, points, 'ad', EarningStatus.AVAILABLE);
   }
 
   @Post('/resend-otp')
@@ -502,10 +523,7 @@ async getWalletTransactions(
     return this.flutterwaveService.createflwPayment(body);
   }
 
-  @Get('banks')
-  async getflwBanks(@Query('country') country: string) {
-    return this.flutterwaveService.getBanks(country);
-  }
+
 
   @Patch('/cancel-mandate')
   async cancelMandate(@Body() dto: CancelMandateDto) {
