@@ -3154,6 +3154,20 @@ async findUserByEmail(email: string): Promise<any> {
       await this.processReferralSignup(user, data.referralCode);
     }
 
+    // Send welcome email asynchronously
+    try {
+      const magicLink = await this.generateMagicLink(user).catch(() => null);
+      const frontendUrl = process.env.FRONTEND_URL || 'https://superfan.ng';
+      const startQuizUrl = magicLink?.magicLinkURI || `${frontendUrl}/get-started`;
+      await this.mail.welcomeUserEmail(
+        user.email,
+        user.firstName || 'Superfan',
+        startQuizUrl,
+      );
+    } catch (welcomeErr) {
+      console.warn('Failed to queue welcome email for Clerk registered user:', welcomeErr);
+    }
+
     return user;
   }
 
