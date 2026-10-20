@@ -3,6 +3,7 @@ package controllers
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"strconv"
 	"time"
 
@@ -185,20 +186,46 @@ func (ac *AdsController) UpdateCampaignStatus(c *gin.Context) {
 	}
 
 	var req struct {
-		Status models.AdStatus `json:"status" binding:"required"`
+		Status        models.AdStatus `json:"status" binding:"required"`
+		PausedByAdmin *bool           `json:"pausedByAdmin"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "invalid status payload")
 		return
 	}
 
-	campaign, err := ac.adsService.UpdateCampaignStatus(c.Request.Context(), id, req.Status)
+	campaign, err := ac.adsService.UpdateCampaignStatus(c.Request.Context(), id, req.Status, req.PausedByAdmin)
 	if err != nil {
+		if strings.Contains(err.Error(), "paused by an administrator") {
+			utils.SendError(c, http.StatusForbidden, "FORBIDDEN", err.Error())
+			return
+		}
 		utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
 		return
 	}
 
 	utils.Success(c, http.StatusOK, "Campaign status updated successfully", campaign)
+}
+
+// DeleteCampaign handles DELETE /v2/ads/campaigns/:id
+func (ac *AdsController) DeleteCampaign(c *gin.Context) {
+	idParam := c.Param("id")
+	id, err := strconv.Atoi(idParam)
+	if err != nil {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "invalid campaign ID")
+		return
+	}
+
+	if err := ac.adsService.DeleteCampaign(c.Request.Context(), id); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			utils.SendError(c, http.StatusNotFound, "NOT_FOUND", err.Error())
+			return
+		}
+		utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
+		return
+	}
+
+	utils.Success(c, http.StatusOK, "Campaign deleted successfully", nil)
 }
 
 // ApproveCampaign handles POST /v2/ads/campaigns/:id/approve
@@ -411,6 +438,7 @@ func RegisterAdsRoutes(rg *gin.RouterGroup, ac *AdsController) {
 		authenticatedAdsGroup.GET("/campaigns/mine/insights", ac.GetMyInsights)
 		adsGroup.GET("/inventory/stats", ac.GetInventoryStats)
 		adsGroup.PATCH("/campaigns/:id/status", ac.UpdateCampaignStatus)
+		adsGroup.DELETE("/campaigns/:id", ac.DeleteCampaign)
 		adsGroup.POST("/campaigns/:id/approve", ac.ApproveCampaign)
 		adsGroup.POST("/campaigns/:id/reject", ac.RejectCampaign)
 		adsGroup.POST("/events", ac.LogAdEvent)

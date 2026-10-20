@@ -27,7 +27,8 @@ type AdsService interface {
 	GetCampaigns(ctx context.Context, query *CampaignListQuery) (*CampaignListResponse, error)
 	GetMyInsights(ctx context.Context, query *AdInsightsQuery) (*AdInsightsResponse, error)
 	GetInventoryStats(ctx context.Context) (*InventoryStatsResponse, error)
-	UpdateCampaignStatus(ctx context.Context, id int, status models.AdStatus) (*models.AdCampaign, error)
+	UpdateCampaignStatus(ctx context.Context, id int, status models.AdStatus, pausedByAdmin *bool) (*models.AdCampaign, error)
+	DeleteCampaign(ctx context.Context, id int) error
 	ApproveCampaign(ctx context.Context, id int) (*models.AdCampaign, error)
 	RejectAndRefundCampaign(ctx context.Context, id int, req *RejectCampaignRequest) (*models.AdCampaign, error)
 	TestLink(ctx context.Context, rawURL string, campaignID *int) (*TestLinkResponse, error)
@@ -101,6 +102,7 @@ const activeCampaignDateCondition = `("AdCampaign"."runContinuously" = TRUE OR (
 func NewAdsService(db *gorm.DB) AdsService {
 	if db != nil {
 		_ = db.Exec(`ALTER TABLE "AdCampaign" ADD COLUMN IF NOT EXISTS "guaranteedDailyViews" INTEGER NOT NULL DEFAULT 1000`).Error
+		_ = db.Exec(`ALTER TABLE "AdCampaign" ADD COLUMN IF NOT EXISTS "pausedByAdmin" BOOLEAN DEFAULT FALSE`).Error
 		_ = db.Exec(`CREATE INDEX IF NOT EXISTS "idx_adevent_campaign_event_created" ON "AdEvent"("campaignId", "eventType", "createdAt")`).Error
 		_ = db.Exec(`CREATE INDEX IF NOT EXISTS "idx_adevent_campaign_user_event_created" ON "AdEvent"("campaignId", "userId", "eventType", "createdAt")`).Error
 	}
@@ -1266,20 +1268,32 @@ func (s *adsServiceImpl) GetInventoryStats(ctx context.Context) (*InventoryStats
 	}, nil
 }
 
-func (s *adsServiceImpl) UpdateCampaignStatus(ctx context.Context, id int, status models.AdStatus) (*models.AdCampaign, error) {
+func (s *adsServiceImpl) UpdateCampaignStatus(ctx context.Context, id int, status models.AdStatus, pausedByAdmin *bool) (*models.AdCampaign, error) {
 	var campaign models.AdCampaign
 	if err := s.db.WithContext(ctx).First(&campaign, id).Error; err != nil {
 		return nil, fmt.Errorf("campaign not found: %w", err)
 	}
 
+	// If this ad was paused by an admin, regular users cannot unpause it.
+	if campaign.PausedByAdmin && status != models.AdStatusPaused {
+		if pausedByAdmin == nil || *pausedByAdmin {
+			return nil, errors.New("this ad was paused by an administrator and cannot be unpaused by the user")
+		}
+	}
+
 	previous := campaign.Status
+
+	updates := map[string]interface{}{
+		"status":    status,
+		"updatedAt": time.Now(),
+	}
+	if pausedByAdmin != nil {
+		updates["pausedByAdmin"] = *pausedByAdmin
+	}
 
 	if err := s.db.WithContext(ctx).Model(&models.AdCampaign{}).
 		Where("id = ?", id).
-		Updates(map[string]interface{}{
-			"status":    status,
-			"updatedAt": time.Now(),
-		}).Error; err != nil {
+		Updates(updates).Error; err != nil {
 		return nil, fmt.Errorf("failed to update campaign status: %w", err)
 	}
 
@@ -1295,6 +1309,22 @@ func (s *adsServiceImpl) UpdateCampaignStatus(ctx context.Context, id int, statu
 	}
 
 	return &campaign, nil
+}
+
+func (s *adsServiceImpl) DeleteCampaign(ctx context.Context, id int) error {
+	var campaign models.AdCampaign
+	if err := s.db.WithContext(ctx).First(&campaign, id).Error; err != nil {
+		return fmt.Errorf("campaign not found: %w", err)
+	}
+
+	_ = s.db.WithContext(ctx).Where(`"campaignId" = ?`, id).Delete(&models.AdEvent{}).Error
+	_ = s.db.WithContext(ctx).Where(`"campaignId" = ?`, id).Delete(&models.AdPlacement{}).Error
+
+	if err := s.db.WithContext(ctx).Delete(&campaign).Error; err != nil {
+		return fmt.Errorf("failed to delete campaign: %w", err)
+	}
+
+	return nil
 }
 
 func (s *adsServiceImpl) ApproveCampaign(ctx context.Context, id int) (*models.AdCampaign, error) {
