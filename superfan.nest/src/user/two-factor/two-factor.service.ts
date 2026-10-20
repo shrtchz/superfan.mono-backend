@@ -9,6 +9,7 @@ import { ConfigService } from '@nestjs/config';
 import { prisma } from '../../prisma/prisma';
 import { TalkingDrumService } from './talking-drum.service';
 import { TwilioService } from './twilio.service';
+import { OtpRateLimiterService } from './otp-rate-limiter.service';
 import {
   buildOtpauthUri,
   generateTotpSecret,
@@ -43,8 +44,17 @@ function generateOtpCode(): string {
 
 function normalizePhone(phone: string): string {
   const cleaned = phone.replace(/[^0-9+]/g, '');
-  const withPlus = cleaned.startsWith('+') ? cleaned : `+${cleaned}`;
-  const digits = withPlus.replace(/^\+/, '');
+  if (cleaned.startsWith('+')) {
+    const digits = cleaned.slice(1).replace(/\D/g, '');
+    if (!PHONE_PATTERN.test(digits)) {
+      throw new BadRequestException('Please provide a valid phone number.');
+    }
+    return `+${digits}`;
+  }
+  const digits = cleaned.replace(/\D/g, '');
+  if (digits.startsWith('0') && digits.length === 11) {
+    return `+234${digits.slice(1)}`;
+  }
   if (!PHONE_PATTERN.test(digits)) {
     throw new BadRequestException('Please provide a valid phone number.');
   }
@@ -65,6 +75,7 @@ export class TwoFactorService {
     private readonly talkingDrumService: TalkingDrumService,
     private readonly twilioService: TwilioService,
     private readonly configService: ConfigService,
+    private readonly otpRateLimiter: OtpRateLimiterService,
   ) {}
 
   async getStatus(userId: number) {
@@ -176,6 +187,10 @@ export class TwoFactorService {
       throw new BadRequestException('Please provide a valid phone number.');
     }
     const normalizedPhone = normalizePhone(cleanPhone);
+
+    // ── Rate limit: max 3 OTPs per phone per hour ─────────────────────────
+    const releaseSlot = await this.otpRateLimiter.checkAndReserve(normalizedPhone);
+
     const code = generateOtpCode();
 
     await prisma.user.update({
@@ -193,19 +208,25 @@ export class TwoFactorService {
       provider ||
       this.configService.get<string>('SMS_PROVIDER', 'twilio');
 
-    if (activeProvider === 'talking_drum' || activeProvider === 'africas_talking') {
-      await this.talkingDrumService.sendOtp({
-        phone: normalizedPhone,
-        code,
-        channel,
-      });
-    } else {
-      // Default to Twilio flow
-      await this.twilioService.sendOtp({
-        phone: normalizedPhone,
-        code,
-        channel,
-      });
+    try {
+      if (activeProvider === 'talking_drum' || activeProvider === 'africas_talking') {
+        await this.talkingDrumService.sendOtp({
+          phone: normalizedPhone,
+          code,
+          channel,
+        });
+      } else {
+        // Default to Twilio flow
+        await this.twilioService.sendOtp({
+          phone: normalizedPhone,
+          code,
+          channel,
+        });
+      }
+    } catch (sendError) {
+      // Roll back the reserved slot so the user can retry without hitting the limit.
+      releaseSlot();
+      throw sendError;
     }
 
     return {

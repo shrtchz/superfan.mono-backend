@@ -1,8 +1,9 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, HttpException, HttpStatus, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { TwoFactorService } from './two-factor.service';
 import { TalkingDrumService } from './talking-drum.service';
 import { TwilioService } from './twilio.service';
+import { OtpRateLimiterService } from './otp-rate-limiter.service';
 import { prisma } from '../../prisma/prisma';
 
 // Mock dependencies
@@ -20,6 +21,7 @@ describe('TwoFactorService - Twilio & TalkingDrum flows', () => {
   let talkingDrumService: Partial<TalkingDrumService>;
   let twilioService: Partial<TwilioService>;
   let configService: Partial<ConfigService>;
+  let otpRateLimiter: Partial<OtpRateLimiterService>;
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -47,10 +49,15 @@ describe('TwoFactorService - Twilio & TalkingDrum flows', () => {
       }),
     };
 
+    otpRateLimiter = {
+      checkAndReserve: jest.fn().mockResolvedValue(jest.fn()),
+    };
+
     service = new TwoFactorService(
       talkingDrumService as TalkingDrumService,
       twilioService as TwilioService,
       configService as ConfigService,
+      otpRateLimiter as OtpRateLimiterService,
     );
   });
 
@@ -93,6 +100,41 @@ describe('TwoFactorService - Twilio & TalkingDrum flows', () => {
         channel: 'call',
       });
       expect(result.message).toContain('via call');
+    });
+
+    it('should block OTP send when rate limit of 3 per hour is exceeded', async () => {
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue({ id: 1 });
+      (otpRateLimiter.checkAndReserve as jest.Mock).mockRejectedValue(
+        new HttpException(
+          {
+            statusCode: HttpStatus.TOO_MANY_REQUESTS,
+            error: 'Too Many Requests',
+            message: 'Too many verification codes requested. You can request at most 3 codes per hour. Please try again later.',
+          },
+          HttpStatus.TOO_MANY_REQUESTS,
+        ),
+      );
+
+      await expect(
+        service.sendPhoneOtp(1, '+1234567890', 'text', 'twilio'),
+      ).rejects.toThrow(HttpException);
+
+      expect(twilioService.sendOtp).not.toHaveBeenCalled();
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it('should rollback rate limiter slot if Twilio delivery throws an error', async () => {
+      const rollbackMock = jest.fn();
+      (prisma.user.findUnique as jest.Mock).mockResolvedValue({ id: 1 });
+      (prisma.user.update as jest.Mock).mockResolvedValue({ id: 1 });
+      (otpRateLimiter.checkAndReserve as jest.Mock).mockResolvedValue(rollbackMock);
+      (twilioService.sendOtp as jest.Mock).mockRejectedValue(new Error('Twilio Network Error'));
+
+      await expect(
+        service.sendPhoneOtp(1, '+1234567890', 'text', 'twilio'),
+      ).rejects.toThrow('Twilio Network Error');
+
+      expect(rollbackMock).toHaveBeenCalledTimes(1);
     });
   });
 
