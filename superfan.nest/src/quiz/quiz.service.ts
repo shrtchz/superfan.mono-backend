@@ -222,6 +222,29 @@ export function addLeaderboardInviteeFlags(
   }));
 }
 
+export function formatDurationWindow(
+  start?: Date | string | null,
+  end?: Date | string | null,
+): string {
+  if (!start || !end) return '15m';
+  const startMs = new Date(start).getTime();
+  const endMs = new Date(end).getTime();
+  if (Number.isNaN(startMs) || Number.isNaN(endMs)) return '15m';
+
+  const diffSec = Math.max(1, Math.round(Math.abs(endMs - startMs) / 1000));
+  const hours = Math.floor(diffSec / 3600);
+  const minutes = Math.floor((diffSec % 3600) / 60);
+  const seconds = diffSec % 60;
+
+  if (hours > 0) {
+    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  }
+  if (minutes > 0) {
+    return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+  }
+  return `${seconds}s`;
+}
+
 export function buildLeaderboardEntryFromCompletedQuiz(
   quiz: Record<string, any>,
   leaderboardRows: Array<{
@@ -2843,6 +2866,156 @@ async getQuizleaderboard(
         calculatePointsAmountInNaira(entry.totalPoints, pointsToNairaRate) ??
         entry.amountInNaira;
       grouped.set(`${quiz.userId}_${quiz.id}`, entry);
+    }
+
+    // Query completed Live Quizzes and Live Quiz attempts for the leaderboard ledger
+    const [liveAttempts, liveLeaderboard, ongoingLiveList] = await Promise.all([
+      prisma.liveQuizAttempt.findMany({
+        where: {
+          isCompleted: true,
+          ...(timeRange === 'all' ? {} : { createdAt: dateFilter }),
+        },
+      }),
+      prisma.liveQuizLeaderboard.findMany({
+        where: {
+          ...(timeRange === 'all' ? {} : { createdAt: dateFilter }),
+        },
+      }),
+      prisma.ongoingLiveQuiz.findMany({
+        where: {
+          completed: true,
+          ...(timeRange === 'all' ? {} : { updatedAt: dateFilter }),
+        },
+      }),
+    ]);
+
+    const liveLeaderboardByQuizUser = new Map<string, (typeof liveLeaderboard)[0]>();
+    for (const row of liveLeaderboard) {
+      liveLeaderboardByQuizUser.set(`${row.userId}_${row.quizId}`, row);
+    }
+
+    const liveQuestionsMeta = new Map<string, any>();
+    for (const ongoing of ongoingLiveList) {
+      const questions = (ongoing.questions as any[]) || [];
+      for (const q of questions) {
+        if (q && q.quizId && !liveQuestionsMeta.has(q.quizId)) {
+          liveQuestionsMeta.set(q.quizId, q);
+        }
+      }
+    }
+
+    const processedLiveKeys = new Set<string>();
+
+    for (const attempt of liveAttempts) {
+      const pairKey = `${attempt.userId}_${attempt.quizId}`;
+      processedLiveKeys.add(pairKey);
+
+      const liveLead = liveLeaderboardByQuizUser.get(pairKey);
+      const questionMeta = liveQuestionsMeta.get(attempt.quizId);
+
+      const isWinner = Boolean(attempt.isWinner || liveLead?.isWinner);
+      const isRight = Boolean(isWinner || questionMeta?.isCorrect === true);
+      const score = isRight ? 1 : 0;
+      const accuracy = isRight ? 100 : 0;
+
+      let pointsEquivalent = 500;
+      if (isWinner) {
+        const prizeNaira = Number(attempt.earning || liveLead?.unitPrize || 0);
+        pointsEquivalent = prizeNaira > 0 ? prizeNaira * pointsToNairaRate : 1000;
+      }
+
+      const startTime = attempt.startedAt || questionMeta?.quizScheduleDate || attempt.createdAt;
+      const endTime = attempt.completedAt || liveLead?.quizDate || questionMeta?.quizFinishDate || attempt.createdAt;
+      const formattedDuration = formatDurationWindow(startTime, endTime);
+      const diffSec = Math.max(1, Math.round(Math.abs(new Date(endTime).getTime() - new Date(startTime).getTime()) / 1000));
+      const submittedAt = attempt.completedAt || liveLead?.quizDate || attempt.createdAt;
+
+      const liveEntry: Record<string, any> = {
+        userId: String(attempt.userId),
+        submittedAt,
+        totalScore: score,
+        score,
+        totalEarning: pointsEquivalent,
+        totalPoints: pointsEquivalent,
+        reward: pointsEquivalent,
+        amountInNaira: isWinner ? (attempt.earning || liveLead?.unitPrize || 0) : 0.5,
+        totalQuestions: 1,
+        accuracy,
+        correctAnswers: score,
+        attemptedAnswers: 1,
+        quizTimeSeconds: diffSec,
+        quizTime: formattedDuration,
+        testLevel: 'Live Quiz',
+        createdAt: startTime,
+        rows: [
+          {
+            quizId: attempt.quizId,
+            testLevel: 'Live Quiz',
+            quizTime: formattedDuration,
+            earning: pointsEquivalent,
+            submittedAt,
+            selectedAnswer: null,
+            correctAnswer: liveLead?.answer || questionMeta?.correctAnswer || null,
+          },
+        ],
+      };
+
+      grouped.set(`live_${pairKey}_${new Date(submittedAt).toISOString()}`, liveEntry as any);
+    }
+
+    for (const lead of liveLeaderboard) {
+      const pairKey = `${lead.userId}_${lead.quizId}`;
+      if (processedLiveKeys.has(pairKey)) continue;
+
+      const questionMeta = liveQuestionsMeta.get(lead.quizId);
+      const isWinner = Boolean(lead.isWinner);
+      const isRight = Boolean(isWinner || questionMeta?.isCorrect === true);
+      const score = isRight ? 1 : 0;
+      const accuracy = isRight ? 100 : 0;
+
+      let pointsEquivalent = 500;
+      if (isWinner) {
+        const prizeNaira = Number(lead.unitPrize || 0);
+        pointsEquivalent = prizeNaira > 0 ? prizeNaira * pointsToNairaRate : 1000;
+      }
+
+      const startTime = questionMeta?.quizScheduleDate || lead.createdAt;
+      const endTime = lead.quizDate || questionMeta?.quizFinishDate || lead.createdAt;
+      const formattedDuration = formatDurationWindow(startTime, endTime);
+      const diffSec = Math.max(1, Math.round(Math.abs(new Date(endTime).getTime() - new Date(startTime).getTime()) / 1000));
+      const submittedAt = lead.quizDate || lead.createdAt;
+
+      const liveEntry: Record<string, any> = {
+        userId: String(lead.userId),
+        submittedAt,
+        totalScore: score,
+        score,
+        totalEarning: pointsEquivalent,
+        totalPoints: pointsEquivalent,
+        reward: pointsEquivalent,
+        amountInNaira: isWinner ? (lead.unitPrize || 0) : 0.5,
+        totalQuestions: 1,
+        accuracy,
+        correctAnswers: score,
+        attemptedAnswers: 1,
+        quizTimeSeconds: diffSec,
+        quizTime: formattedDuration,
+        testLevel: 'Live Quiz',
+        createdAt: startTime,
+        rows: [
+          {
+            quizId: lead.quizId,
+            testLevel: 'Live Quiz',
+            quizTime: formattedDuration,
+            earning: pointsEquivalent,
+            submittedAt,
+            selectedAnswer: null,
+            correctAnswer: lead.answer,
+          },
+        ],
+      };
+
+      grouped.set(`live_${pairKey}_${new Date(submittedAt).toISOString()}`, liveEntry as any);
     }
 
     // Convert to array
