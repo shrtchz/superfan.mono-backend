@@ -49,6 +49,7 @@ export class AutoSeedService implements OnApplicationBootstrap {
       `ALTER TABLE "AdCampaign" ADD COLUMN IF NOT EXISTS "pricingModel" TEXT`,
       `ALTER TABLE "AdCampaign" ADD COLUMN IF NOT EXISTS "questionBlocks" INTEGER NOT NULL DEFAULT 0`,
       `ALTER TABLE "AdCampaign" ADD COLUMN IF NOT EXISTS "guaranteedDailyViews" INTEGER NOT NULL DEFAULT 1000`,
+      `ALTER TABLE "AdCampaign" ADD COLUMN IF NOT EXISTS "pausedByAdmin" BOOLEAN NOT NULL DEFAULT false`,
     ];
 
     for (const statement of statements) {
@@ -924,6 +925,7 @@ export class AutoSeedService implements OnApplicationBootstrap {
         "placementType" TEXT,
         "pricingModel" TEXT,
         "questionBlocks" INTEGER NOT NULL DEFAULT 0,
+        "pausedByAdmin" BOOLEAN NOT NULL DEFAULT false,
         "status" "AdStatus" NOT NULL DEFAULT 'PENDING',
         "views" INTEGER NOT NULL DEFAULT 0,
         "clicks" INTEGER NOT NULL DEFAULT 0,

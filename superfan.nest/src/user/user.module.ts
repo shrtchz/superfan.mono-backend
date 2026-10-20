@@ -17,6 +17,7 @@ import { TwoFactorController } from "./two-factor/two-factor.controller";
 import { TwoFactorService } from "./two-factor/two-factor.service";
 import { TalkingDrumService } from "./two-factor/talking-drum.service";
 import { TwilioService } from "./two-factor/twilio.service";
+import { OtpRateLimiterService } from "./two-factor/otp-rate-limiter.service";
 import { ImageModule } from "../image/image.module";
 import { AccountCreationRateLimiterService } from "./account-creation-rate-limiter.service";
 
@@ -43,8 +44,9 @@ import { AccountCreationRateLimiterService } from "./account-creation-rate-limit
         TwoFactorService,
         TalkingDrumService,
         TwilioService,
+        OtpRateLimiterService,
         AccountCreationRateLimiterService,
     ],
-    exports: [UserService, PresenceGateway, DiditService, TwoFactorService, TalkingDrumService, TwilioService, AccountCreationRateLimiterService],
+    exports: [UserService, PresenceGateway, DiditService, TwoFactorService, TalkingDrumService, TwilioService, OtpRateLimiterService, AccountCreationRateLimiterService],
 })
 export class UserModule {}

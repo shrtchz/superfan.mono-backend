@@ -58,6 +58,7 @@ type AdCampaign struct {
 	PricingModel    *string        `gorm:"column:pricingModel" json:"pricingModel,omitempty"`
 	QuestionBlocks       int            `gorm:"column:questionBlocks;default:0" json:"questionBlocks,omitempty"`
 	GuaranteedDailyViews int            `gorm:"column:guaranteedDailyViews;default:1000" json:"guaranteedDailyViews"`
+	PausedByAdmin        bool           `gorm:"column:pausedByAdmin;default:false" json:"pausedByAdmin"`
 	Status               AdStatus       `gorm:"column:status;default:PENDING" json:"status"`
 	Views           int            `gorm:"column:views;default:0" json:"views"`
 	Clicks          int            `gorm:"column:clicks;default:0" json:"clicks"`
