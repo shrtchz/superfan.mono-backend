@@ -266,8 +266,9 @@ export class NotificationService {
     );
   }
 
-  async adApprovedLive(userId: number, campaignTitle: string) {
-    const msg = `Your Ad Is Live! "${campaignTitle}" is now running.`;
+  async adApprovedLive(userId: number, campaignTitle?: string) {
+    void campaignTitle;
+    const msg = 'Your Ad Is Live';
     return this.notify(
       userId,
       NotificationTriggers.AD_APPROVED_LIVE,
