@@ -1023,9 +1023,9 @@ if (bankTransfer) {
     const eventType = event?.type;
     this.logger.log('Processing Clerk webhook event: ' + eventType);
 
-    if (eventType === 'emails.created') {
+    if (eventType === 'email.created' || eventType === 'emails.created') {
       const emailData = event.data || {};
-      const toEmail = emailData.to_email_address;
+      const toEmail = emailData.to_email_address || emailData.email_address || emailData.to || emailData.data?.to_email_address || emailData.data?.email_address;
 
       if (!toEmail) {
         this.logger.warn('emails.created event received without to_email_address');
