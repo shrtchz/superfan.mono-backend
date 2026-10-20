@@ -59,6 +59,7 @@ type AdCampaign struct {
 	QuestionBlocks       int            `gorm:"column:questionBlocks;default:0" json:"questionBlocks,omitempty"`
 	GuaranteedDailyViews int            `gorm:"column:guaranteedDailyViews;default:1000" json:"guaranteedDailyViews"`
 	PausedByAdmin        bool           `gorm:"column:pausedByAdmin;default:false" json:"pausedByAdmin"`
+	ApprovedByAdmin      bool           `gorm:"column:approvedByAdmin;default:false" json:"approvedByAdmin"`
 	Status               AdStatus       `gorm:"column:status;default:PENDING" json:"status"`
 	Views           int            `gorm:"column:views;default:0" json:"views"`
 	Clicks          int            `gorm:"column:clicks;default:0" json:"clicks"`

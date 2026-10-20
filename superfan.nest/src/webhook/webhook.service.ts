@@ -1,6 +1,7 @@
 import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHmac } from 'crypto';
+import { MailService } from '../mail/mail.service';
 import { generateFiveUniqueRandomNumbers } from '../common/utils/utils';
 import { NotificationService } from '../notification/notification.service';
 import { WalletService } from '../wallet/wallet.service';
@@ -16,6 +17,7 @@ export class MonnifyWebhookService {
     private readonly configService: ConfigService,
     private readonly notificationService: NotificationService,
     private readonly walletService: WalletService,
+    private readonly mailService: MailService,
   ) {
     this.merchantClientSecret = process.env.MONNIFY_SECRET_KEY;
   }
@@ -970,4 +972,128 @@ if (bankTransfer) {
     throw error;
   }
 }
+
+  /**
+   * Verifies Clerk webhook signature using svix headers and CLERK_WEBHOOK_SECRET.
+   */
+  async verifyClerkWebhook(
+    rawBody: string,
+    headers: {
+      'svix-id'?: string;
+      'svix-timestamp'?: string;
+      'svix-signature'?: string;
+    },
+  ): Promise<any> {
+    const webhookSecret =
+      this.configService.get<string>('CLERK_WEBHOOK_SECRET') ||
+      process.env.CLERK_WEBHOOK_SECRET;
+
+    if (!webhookSecret) {
+      this.logger.error('CLERK_WEBHOOK_SECRET is not configured in server environment');
+      throw new UnauthorizedException('CLERK_WEBHOOK_SECRET is not configured');
+    }
+
+    const svixId = headers['svix-id'];
+    const svixTimestamp = headers['svix-timestamp'];
+    const svixSignature = headers['svix-signature'];
+
+    if (!svixId || !svixTimestamp || !svixSignature) {
+      this.logger.warn('Missing required Svix headers in Clerk webhook');
+      throw new UnauthorizedException('Missing Svix signature headers');
+    }
+
+    try {
+      const { Webhook } = await import('svix');
+      const wh = new Webhook(webhookSecret);
+      return wh.verify(rawBody, {
+        'svix-id': svixId,
+        'svix-timestamp': svixTimestamp,
+        'svix-signature': svixSignature,
+      });
+    } catch (err: any) {
+      this.logger.warn('Clerk webhook signature verification failed: ' + err.message);
+      throw new UnauthorizedException('Invalid Clerk webhook signature: ' + err.message);
+    }
+  }
+
+  /**
+   * Handles verified Clerk webhook events (e.g. emails.created).
+   */
+  async handleClerkWebhookEvent(event: any): Promise<any> {
+    const eventType = event?.type;
+    this.logger.log('Processing Clerk webhook event: ' + eventType);
+
+    if (eventType === 'emails.created') {
+      const emailData = event.data || {};
+      const toEmail = emailData.to_email_address;
+
+      if (!toEmail) {
+        this.logger.warn('emails.created event received without to_email_address');
+        return { received: true, handled: false, reason: 'missing_email' };
+      }
+
+      // Extract 6-digit OTP code from data object, subject, or text body
+      let otpCode: string | undefined =
+        emailData.data?.otp ||
+        emailData.data?.code ||
+        emailData.otp;
+
+      if (!otpCode && typeof emailData.body_plain === 'string') {
+        const match = emailData.body_plain.match(/\b\d{6}\b/);
+        if (match) otpCode = match[0];
+      }
+
+      if (!otpCode && typeof emailData.subject === 'string') {
+        const match = emailData.subject.match(/\b\d{6}\b/);
+        if (match) otpCode = match[0];
+      }
+
+      if (!otpCode && typeof emailData.body === 'string') {
+        const match = emailData.body.match(/\b\d{6}\b/);
+        if (match) otpCode = match[0];
+      }
+
+      if (!otpCode) {
+        this.logger.warn(
+          'emails.created received for ' + toEmail + ' but could not extract OTP code',
+        );
+        return { received: true, handled: false, reason: 'otp_not_found' };
+      }
+
+      // Determine recipient's first name
+      let firstName: string =
+        emailData.data?.first_name ||
+        emailData.data?.firstName ||
+        '';
+
+      if (!firstName) {
+        try {
+          const user = await prisma.user.findFirst({
+            where: { email: { equals: toEmail, mode: 'insensitive' } },
+            select: { firstName: true },
+          });
+          if (user?.firstName) {
+            firstName = user.firstName;
+          }
+        } catch {
+          // ignore lookup error
+        }
+      }
+
+      if (!firstName) {
+        firstName = toEmail.split('@')[0] || 'Superfan';
+      }
+
+      this.logger.log(
+        'Queueing Superfan verification email for ' + toEmail + ' (OTP: ' + otpCode + ')',
+      );
+
+      await this.mailService.verifyEmail(toEmail, otpCode, firstName);
+
+      return { received: true, handled: true, event: 'emails.created' };
+    }
+
+    return { received: true, handled: false, event: eventType };
+  }
+
 }

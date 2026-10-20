@@ -166,6 +166,28 @@ async handleBitnobWebhook(
   return { status: 'success' };
 }
 
+  @Post(['clerk', '/api/v1/webhook/clerk', '/api/v1/webhooks/clerk'])
+  @HttpCode(HttpStatus.OK)
+  async handleClerkWebhook(
+    @Headers('svix-id') svixId: string,
+    @Headers('svix-timestamp') svixTimestamp: string,
+    @Headers('svix-signature') svixSignature: string,
+    @Req() req: Request & { rawBody?: Buffer },
+    @Body() body: any,
+  ): Promise<any> {
+    const rawBody =
+      req.rawBody?.toString('utf-8') ||
+      (typeof body === 'string' ? body : JSON.stringify(body));
+
+    const event = await this.webhookService.verifyClerkWebhook(rawBody, {
+      'svix-id': svixId,
+      'svix-timestamp': svixTimestamp,
+      'svix-signature': svixSignature,
+    });
+
+    const result = await this.webhookService.handleClerkWebhookEvent(event);
+    return result;
+  }
 
 private async handleBitnobTransferSuccess(payload: any) {
   try {
