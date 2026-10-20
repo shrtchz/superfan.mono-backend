@@ -283,16 +283,14 @@ export class NotificationService {
     notes?: string,
     refundAmount?: number,
   ) {
-    const refundText =
-      refundAmount && refundAmount > 0
-        ? ` ₦${Number(refundAmount).toLocaleString()} has been refunded to your wallet.`
-        : '';
-    const noteText = notes ? ` Note: ${notes}.` : '';
-    const msg = `Ad Campaign Rejected: "${campaignTitle}" was not approved due to: ${reason}.${noteText}${refundText}`;
+    void refundAmount;
+    const cleanNotes = (notes || '').trim();
+    const noteText = cleanNotes ? ` - Note: ${cleanNotes}` : '';
+    const msg = `Refund for rejected ad: ${campaignTitle} (Reason: ${reason})${noteText}`;
     return this.notify(
       userId,
       NotificationTriggers.AD_REJECTED,
-      `Ad Campaign Rejected: "${campaignTitle}"`,
+      `Refund for rejected ad: ${campaignTitle}`,
       msg,
     );
   }
