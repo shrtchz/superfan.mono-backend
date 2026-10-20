@@ -106,7 +106,8 @@ export class Mailprocessor extends WorkerHost {
 
       this.logger.log(`Email sent via ZeptoMail to ${to}`);
       return { success: true, method: 'zepto' };
-    } catch (zeptoError) {
+    } catch (zeptoError: any) {
+      const zeptoErrMsg = zeptoError?.error?.message || zeptoError?.message || JSON.stringify(zeptoError);
       this.logger.warn(
         `ZeptoMail sending failed for ${to}. Falling back to MailerService (SMTP). Error: ${zeptoError?.message}`,
         zeptoError?.stack,
