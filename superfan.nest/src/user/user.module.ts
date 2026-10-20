@@ -5,7 +5,6 @@ import { AccessControlService } from "../common/shared/access-control.service";
 import { DatabaseModule } from "../config/database/database.module";
 import { MailModule } from "../mail/mail.module";
 import { NotificationModule } from "../notification/notification.module";
-import { PaymentModule } from "../payment/payment.module";
 import { PosthogModule } from "../posthog/posthog.module";
 import { TaskModule } from "../tasks/tasks.module";
 import { WalletModule } from "../wallet/wallet.module";
@@ -13,6 +12,8 @@ import { PresenceGateway } from './gateway/presence.gateway';
 import { UserController } from "./user.controller";
 import { UserService } from "./user.service";
 import { UserListener } from "./user.listener";
+import { DiditService } from "./didit.service";
+import { ImageModule } from "../image/image.module";
 
 @Global()
 @Module({
@@ -24,16 +25,17 @@ import { UserListener } from "./user.listener";
         forwardRef(() => TaskModule),
         DatabaseModule,
         WalletModule,
-        PaymentModule,
-        NotificationModule
+        NotificationModule,
+        ImageModule,
     ],
     controllers: [UserController],
     providers: [
         UserService, 
         PresenceGateway, 
         UserListener, 
-        AccessControlService
+        AccessControlService,
+        DiditService,
     ],
-    exports: [UserService, PresenceGateway],
+    exports: [UserService, PresenceGateway, DiditService],
 })
 export class UserModule {}

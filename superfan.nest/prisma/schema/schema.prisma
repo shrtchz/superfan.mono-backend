@@ -18,7 +18,7 @@ model User {
   username               String              @unique
   referral_code          String?             @unique
   phone                  String?
-  hashedRt               String?
+  clerkUserId            String?             @unique
   roleName               String
   login_timestamp        DateTime?
   active                 Boolean             @default(false)
@@ -61,6 +61,13 @@ model User {
   busha_customer_id      String?
   busha_balance_id       String?
   bitnob_customer_id     String?
+  kyc_status             KycStatus           @default(UNVERIFIED)
+  kyc_tier               KycTier             @default(TIER_0)
+  didit_session_id       String?             @unique
+  didit_verification_id  String?
+  kyc_rejection_reason   String?
+  kyc_verified_at        DateTime?
+  lifetimePoints         Int                 @default(0) @map("lifetime_points")
   dailyStreak            Int                 @default(0)
   lastStreakDate         DateTime? // last date a streak was counted
   questionPreference     QuestionPreference?
@@ -80,6 +87,8 @@ model User {
   bankTransfers          BankTransfer[]
   userCards              UserCard[]
   ongoingQuizs           OngoingQuiz[]
+  orders                 Order[]             @relation("UserToOrders")
+  returns                OrderReturn[]       @relation("UserToReturns")
 }
 
 model Reward {
@@ -94,12 +103,13 @@ model Reward {
 }
 
 model Point {
-  id        String   @id @default(uuid())
-  userId    Int
-  points    Int
-  reference String?
-  type      String // e.g. 'REFERRAL_SIGNUP', 'REFERRAL_TEST'
-  createdAt DateTime @default(now())
+  id          String   @id @default(uuid())
+  userId      Int
+  points      Int
+  reference   String?
+  type        String // e.g. 'REFERRAL_SIGNUP', 'REFERRAL_TEST'
+  accountType String   @default("Gold")
+  createdAt   DateTime @default(now())
 }
 
 model Admin {
@@ -388,11 +398,13 @@ model OngoingQuiz {
   totalTime           Int? // total time in seconds
   baseScore           Int? // base score for the quiz
   isRandom            Boolean @default(false)
+  submissionMode     String  @default("interval")
   accuracyBonus       Int? // bonus points for accuracy
   speedBonus          Int? // bonus points for speed
   streakMultiplier    Int? // multiplier for consecutive correct answers
   adBonuses           Int? // bonus points from ads
-  quizTime            String? // time taken by user in seconds
+  quizTimeSeconds     Int? // time taken by user in seconds (authoritative)
+  quizTime            String? // formatted time taken by user in MM:SS
   timeRemaining       Int // countdown tracker in seconds
 
   // Questions stored as JSON array
@@ -512,6 +524,7 @@ model QuizLeaderboard {
   testLevel      String
   score          Int?
   selectedAnswer String
+  quizTimeSeconds Int?
   quizTime       String?
   accuracyBonus  String?
   position       Int?
@@ -526,12 +539,14 @@ model QuizLeaderboard {
 }
 
 model Wallet {
-  id          Int   @id @default(autoincrement())
-  userId      Int   @unique
-  balance     Float @default(0)
-  usdcBalance Float @default(0)
-  usdtBalance Float @default(0)
-  user        User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id              Int   @id @default(autoincrement())
+  userId          Int   @unique
+  balance         Float @default(0)
+  goldBalance     Float @default(0)
+  personalBalance Float @default(0)
+  usdcBalance     Float @default(0)
+  usdtBalance     Float @default(0)
+  user            User  @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model WalletTransaction {
@@ -539,6 +554,7 @@ model WalletTransaction {
   userId       Int
   amount       Float
   type         String?
+  currency     String  @default("NGN")
   username     String?
   account_name String?
 
@@ -560,11 +576,18 @@ model WalletTransaction {
   transactionType String?
   description     String?
   trx_ref         String?
+  holdUntil       DateTime?
 
   walletId Int?
 
   createdAt DateTime @default(now())
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([type])
+  @@index([status])
+  @@index([account_type])
+  @@index([currency])
 }
 
 model exchangeRate {
@@ -737,6 +760,38 @@ model Stream {
   isActive          Boolean         @default(false)
   createdAt         DateTime        @default(now())
   streamComments    StreamComment[]
+  streamUserBans    StreamUserBan[]
+  chatLockLogs      StreamChatLockLog[]
+}
+
+model StreamChatLockLog {
+  id        Int      @id @default(autoincrement())
+  streamId  Int
+  adminId   Int
+  action    String
+  createdAt DateTime @default(now())
+
+  stream Stream @relation(fields: [streamId], references: [id], onDelete: Cascade)
+
+  @@index([streamId])
+  @@index([adminId])
+  @@index([createdAt])
+  @@map("stream_chat_lock_logs")
+}
+
+model StreamUserBan {
+  id        Int      @id @default(autoincrement())
+  streamId  Int
+  userId    Int
+  banReason String?
+  bannedBy  Int?
+  createdAt DateTime @default(now())
+
+  stream Stream @relation(fields: [streamId], references: [id], onDelete: Cascade)
+
+  @@unique([streamId, userId])
+  @@index([streamId])
+  @@index([userId])
 }
 
 model YouTubeToken {
@@ -752,9 +807,14 @@ model YouTubeToken {
 }
 
 model StreamComment {
-  id       Int @id @default(autoincrement())
-  streamId Int
-  userId   Int
+  id            Int  @id @default(autoincrement())
+  streamId      Int
+  userId        Int
+  parentId      Int?
+  rootId        Int?
+  replyToUserId Int?
+  depth         Int  @default(0)
+  legacyReplyId Int? @unique
 
   message String
 
@@ -770,10 +830,19 @@ model StreamComment {
   updatedAt DateTime @updatedAt
 
   // Relations
-  stream  Stream          @relation(fields: [streamId], references: [id], onDelete: Cascade)
-  likes   CommentLike[]
-  reports CommentReport[]
-  replies CommentReply[]
+  stream       Stream          @relation(fields: [streamId], references: [id], onDelete: Cascade)
+  parent       StreamComment?  @relation("StreamCommentChildren", fields: [parentId], references: [id], onDelete: Cascade)
+  replies      StreamComment[] @relation("StreamCommentChildren")
+  root         StreamComment?  @relation("StreamCommentRoot", fields: [rootId], references: [id], onDelete: Cascade)
+  descendants  StreamComment[] @relation("StreamCommentRoot")
+  likes        CommentLike[]
+  reports      CommentReport[]
+  legacyReplies CommentReply[] @relation("LegacyCommentReplies")
+
+  @@index([streamId, createdAt])
+  @@index([parentId, createdAt])
+  @@index([rootId, createdAt])
+  @@index([replyToUserId])
 }
 
 model CommentLike {
@@ -804,9 +873,34 @@ model CommentReply {
   updatedAt DateTime @updatedAt
 
   // relation
-  comment StreamComment @relation(fields: [commentId], references: [id])
+  comment StreamComment @relation("LegacyCommentReplies", fields: [commentId], references: [id])
+  likes CommentReplyLike[]
+  reports CommentReplyReport[]
 
   @@index([commentId])
+}
+
+model CommentReplyLike {
+  id      Int @id @default(autoincrement())
+  replyId Int
+  userId  Int
+  createdAt DateTime @default(now())
+
+  reply CommentReply @relation(fields: [replyId], references: [id], onDelete: Cascade)
+
+  @@unique([replyId, userId])
+}
+
+model CommentReplyReport {
+  id      Int @id @default(autoincrement())
+  replyId Int
+  userId  Int
+  reason  String?
+  createdAt DateTime @default(now())
+
+  reply CommentReply @relation(fields: [replyId], references: [id], onDelete: Cascade)
+
+  @@unique([replyId, userId])
 }
 
 model CommentReport {
@@ -948,4 +1042,180 @@ enum BankTransferStatus {
   FAILED
   CANCELLED
   SUCCESS
+}
+
+enum KycStatus {
+  UNVERIFIED
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+enum KycTier {
+  TIER_0
+  TIER_1
+}
+
+model Product {
+  id          Int         @id @default(autoincrement())
+  title       String
+  price       String
+  priceAmount Float       @default(0)
+  images      String[]
+  colors      String[]
+  sizes       String[]
+  badge       String?
+  description String?
+  stock       Int         @default(100)
+  isActive    Boolean     @default(true)
+  orderItems  OrderItem[]
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+}
+
+enum OrderStatus {
+  ORDERED
+  PROCESSING
+  SHIPPED
+  OUT_FOR_DELIVERY
+  DELIVERED
+  CANCELLED
+}
+
+enum ReturnStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  COMPLETED
+}
+
+model Order {
+  id            Int           @id @default(autoincrement())
+  orderNumber   String        @unique
+  userId        Int
+  user          User          @relation("UserToOrders", fields: [userId], references: [id], onDelete: Cascade)
+  status        OrderStatus   @default(ORDERED)
+  totalAmount   Float
+  currency      String        @default("NGN")
+  shippingFee   Float         @default(0)
+  vatAmount     Float         @default(0)
+  paymentMethod String        // e.g. "wallet", "card", "bank", "stablecoin"
+  subWallet     String?       // e.g. "Personal", "Gold"
+  paymentStatus String        @default("PAID")
+  fullName      String
+  country       String
+  address       String
+  phoneCode     String
+  phoneNumber   String
+  items         OrderItem[]
+  returns       OrderReturn[]
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@index([userId])
+}
+
+model OrderItem {
+  id           Int      @id @default(autoincrement())
+  orderId      Int
+  order        Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId    Int?
+  product      Product? @relation(fields: [productId], references: [id])
+  productName  String
+  productImage String?
+  price        Float
+  quantity     Int      @default(1)
+  color        String?
+  size         String?
+  createdAt    DateTime @default(now())
+
+  @@index([orderId])
+}
+
+model OrderReturn {
+  id           Int          @id @default(autoincrement())
+  orderId      Int
+  order        Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  userId       Int
+  user         User         @relation("UserToReturns", fields: [userId], references: [id], onDelete: Cascade)
+  productId    Int?
+  productName  String
+  productImage String?
+  price        Float
+  reason       String
+  refundMethod String       @default("mastercard")
+  status       ReturnStatus @default(PENDING)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  @@index([orderId])
+  @@index([userId])
+}
+
+model AdCampaign {
+  id              Int           @id @default(autoincrement())
+  userId          Int?
+  username        String?
+  headline        String
+  description     String?
+  buttonLabel     String?
+  websiteUrl      String?
+  mediaUrls       String[]      @default([])
+  mediaType       String?       // "video" | "image"
+  dailyFee        Int           @default(500)
+  totalFee        Int
+  days            Int           @default(1)
+  startDate       DateTime
+  endDate         DateTime?
+  runContinuously Boolean       @default(true)
+  ageRange        String?       // "18-24", "18-35", "25-45", "45+"
+  status          AdStatus      @default(PENDING)
+  views           Int           @default(0)
+  clicks          Int           @default(0)
+  paymentStatus   String        @default("PENDING") // PENDING, PAID, FAILED
+  paymentRef      String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  placements      AdPlacement[]
+  events          AdEvent[]
+}
+
+model AdPlacement {
+  id          Int          @id @default(autoincrement())
+  campaignId  Int
+  key         String       // e.g. "QUIZ_MIDPOINT"
+  mediaUrl    String
+  durationSec Int          @default(30)
+  skipAllowed Boolean      @default(false)
+  createdAt   DateTime     @default(now())
+
+  campaign    AdCampaign   @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  events      AdEvent[]
+}
+
+model AdEvent {
+  id          Int         @id @default(autoincrement())
+  userId      Int?
+  campaignId  Int
+  placementId Int?
+  quizId      String?
+  eventType   AdEventType @default(VIEW_START)
+  createdAt   DateTime    @default(now())
+
+  campaign    AdCampaign   @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  placement   AdPlacement? @relation(fields: [placementId], references: [id], onDelete: SetNull)
+}
+
+enum AdStatus {
+  PENDING
+  ACTIVE
+  PAUSED
+  COMPLETED
+}
+
+enum AdEventType {
+  VIEW_START
+  COMPLETION
+  CLICK
 }

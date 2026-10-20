@@ -17,6 +17,8 @@ import { CreateClientHistoryDto, CreatePayoutDto, GetClientHistoryDto, TaskDto, 
 import { TaskChatGateway } from './tasks.gateway';
 import { TaskStatus, ActivityType } from '../common/enums/task.enum';
 import { CronJobService } from '../cronjobs/cronjob.service';
+import { generateFiveUniqueRandomNumbers } from '../common/utils/utils';
+import { PointsConversionUtil } from '../common/utils/points-conversion.util';
 
 @Injectable()
 export class TaskService {
@@ -26,7 +28,8 @@ export class TaskService {
     private notificationService: NotificationService,
     @Inject(forwardRef(() => UserService))
     private userService: UserService,
-    private cronService: CronJobService
+    private cronService: CronJobService,
+    private pointsConversionUtil: PointsConversionUtil
   ) {}
 
   async createTask(dto: TaskDto) {
@@ -401,14 +404,69 @@ export class TaskService {
 
     if (!referral) return;
 
+    // Referrer Bonus: 10,000 PTS into Gold Account
+    const referrerPoints = 10000;
+    const referrerNaira = this.pointsConversionUtil.pointsToNaira(referrerPoints);
+    await prisma.point.create({
+      data: {
+        userId: referral.referrerId,
+        points: referrerPoints,
+        reference: `POINTS_${generateFiveUniqueRandomNumbers()}`,
+        type: 'referral_first_test_referrer',
+        accountType: 'Gold',
+      },
+    });
     await this.walletService.creditWallet(
       referral.referrerId,
-      10,
-      'referral_test_bonus',
-      `You earned ₦10 because completed a test`,
+      referrerNaira,
+      'Referral Bonus — First Test: NGN 10',
+      `You earned ₦${referrerNaira} because your referee completed their first test.`,
+      'Gold'
     );
 
-    // call createReward and createPoints
+    await prisma.user.update({
+      where: { id: referral.referrerId },
+      data: { lifetimePoints: { increment: 10000 } },
+    });
+
+    await this.notificationService.createNotification(
+      referral.referrerId,
+      'Referral Bonus — First Test: NGN 10',
+      'You earned 10,000 PTS (Gold Account) because your referee completed their first test.',
+      'referral_reward',
+    );
+
+    // Referee Bonus: 20,000 PTS into Gold Account
+    const refereePoints = 20000;
+    const refereeNaira = this.pointsConversionUtil.pointsToNaira(refereePoints);
+    await prisma.point.create({
+      data: {
+        userId: referral.refereeId,
+        points: refereePoints,
+        reference: `POINTS_${generateFiveUniqueRandomNumbers()}`,
+        type: 'referral_first_test_referee',
+        accountType: 'Gold',
+      },
+    });
+    await this.walletService.creditWallet(
+      referral.refereeId,
+      refereeNaira,
+      'Referee Bonus (NGN 20)',
+      `You earned ₦${refereeNaira} for completing your first test.`,
+      'Gold'
+    );
+
+    await prisma.user.update({
+      where: { id: referral.refereeId },
+      data: { lifetimePoints: { increment: 20000 } },
+    });
+
+    await this.notificationService.createNotification(
+      referral.refereeId,
+      'Referee Bonus (NGN 20)',
+      'You earned 20,000 PTS (Gold Account) for completing your first test.',
+      'welcome_bonus',
+    );
 
     await prisma.referral.update({
       where: { id: referral.id },
@@ -596,8 +654,11 @@ async createClientHistory(payload: CreateClientHistoryDto) {
     });
 
     if (!user) {
-      throw new Error('User not found');
+      throw new NotFoundException('User not found');
     }
+
+    // ✅ Enforce KYC-based withdrawal limits & ₦9,999 minimum withdrawal (SCRUM-350)
+    await this.walletService.validateTransactionLimits(dto.userId, dto.amount, 'WITHDRAWAL');
 
     // check if reference already exists
     const existingPayout = await prisma.payout.findUnique({
@@ -617,7 +678,8 @@ async createClientHistory(payload: CreateClientHistoryDto) {
         reference: dto.reference,
         currency: dto.currency,
         provider: dto.provider,
-
+        providerRef: dto.providerRef,
+        metadata: dto.metadata,
       }
   })
 
@@ -627,6 +689,11 @@ async createClientHistory(payload: CreateClientHistoryDto) {
 
   async getAllPayouts() {
     return prisma.payout.findMany({
+      include: {
+        user: {
+          select: { username: true, firstName: true, lastName: true },
+        },
+      },
       orderBy: { createdAt: 'desc' },
     });
   }
@@ -645,6 +712,22 @@ async getUserPayoutDetail(userId: number) {
   if (!user) {
     throw new NotFoundException('User not found');
   }
+
+  // Fetch Gold wallet transactions (quiz rewards, live quiz, referrals, ad bonuses, gold transfers/payouts)
+  const goldTransactions = await prisma.walletTransaction.findMany({
+    where: {
+      userId,
+      OR: [
+        { account_type: { equals: 'Gold', mode: 'insensitive' } },
+        { rewardType: { not: null } },
+        { description: { contains: 'Quiz', mode: 'insensitive' } },
+        { description: { contains: 'Reward', mode: 'insensitive' } },
+        { description: { contains: 'Referral', mode: 'insensitive' } },
+        { description: { contains: 'Bonus', mode: 'insensitive' } },
+      ],
+    },
+    orderBy: { createdAt: 'desc' },
+  });
 
   const [payouts, aggregates] = await Promise.all([
     prisma.payout.findMany({
@@ -674,14 +757,67 @@ async getUserPayoutDetail(userId: number) {
     },
   });
 
+  // Calculate total earnings from Gold transactions
+  const goldEarningsSum = goldTransactions
+    .filter(tx => {
+      const type = (tx.type || '').toLowerCase();
+      return (type === 'credit' || !type.includes('debit')) && tx.amount > 0;
+    })
+    .reduce((sum, tx) => sum + tx.amount, 0);
+
+  const totalEarnings = goldEarningsSum > 0 ? goldEarningsSum : (aggregates._sum.amount || 0);
+
+  // Total payouts count
+  const goldPayoutsCount = goldTransactions.filter(tx => {
+    const type = (tx.type || '').toLowerCase();
+    const desc = (tx.description || '').toLowerCase();
+    return type === 'debit' || desc.includes('withdraw') || tx.amount < 0;
+  }).length;
+
+  const totalPayouts = aggregates._count.id > 0 ? aggregates._count.id : goldPayoutsCount;
+
+  // Combine Payout records and Gold Wallet Transactions
+  const mappedPayouts = payouts.map(p => ({
+    id: p.id,
+    date: p.processedAt || p.createdAt,
+    amount: p.amount,
+    type: 'DEBIT',
+    rawType: 'DEBIT',
+    method: p.method || p.provider || 'Bank Transfer',
+    ref: p.reference,
+    description: p.reference,
+    status: p.status || 'COMPLETED',
+    createdAt: p.createdAt,
+  }));
+
+  const mappedGoldTransactions = goldTransactions.map(tx => {
+    const isDebit = (tx.type || '').toLowerCase() === 'debit' || (tx.description || '').toLowerCase().includes('withdraw') || tx.amount < 0;
+    return {
+      id: tx.id,
+      date: tx.payment_date || tx.createdAt,
+      amount: Math.abs(tx.amount),
+      type: isDebit ? 'DEBIT' : 'CREDIT',
+      rawType: isDebit ? 'DEBIT' : 'CREDIT',
+      method: isDebit ? 'Wallet Debit' : 'Wallet Credit',
+      ref: tx.reference || tx.trx_ref || tx.description || 'Gold Wallet Earning',
+      description: tx.description || tx.rewardType || 'Gold Wallet Earning',
+      status: tx.status || 'SUCCESS',
+      createdAt: tx.createdAt,
+    };
+  });
+
+  const combinedHistory = [...mappedPayouts, ...mappedGoldTransactions].sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  );
+
   return {
     user,
     summary: {
-      totalEarnings: aggregates._sum.amount || 0,
+      totalEarnings,
       pendingAmount: pending._sum.amount || 0,
-      totalPayouts: aggregates._count.id,
+      totalPayouts,
     },
-    payouts,
+    payouts: combinedHistory,
   };
 }
 

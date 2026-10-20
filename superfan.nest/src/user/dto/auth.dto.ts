@@ -24,6 +24,7 @@ export class AuthDto {
   @IsString()
   lastName: string;
 
+  @IsOptional()
   @IsString()
   phone?: string;
 
@@ -246,7 +247,51 @@ export class KycDto {
 
   @IsOptional()
   @IsString()
-  selfieBase64: string;
+  selfieBase64?: string;
+
+  @IsOptional()
+  @IsString()
+  callbackUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  workflowId?: string;
+}
+
+export class VerifyBvnDto {
+  @IsString()
+  bvn: string;
+
+  @IsOptional()
+  @IsString()
+  firstName?: string;
+
+  @IsOptional()
+  @IsString()
+  lastName?: string;
+}
+
+export class VerifyNinDto {
+  @IsString()
+  nin: string;
+
+  @IsOptional()
+  @IsString()
+  firstName?: string;
+
+  @IsOptional()
+  @IsString()
+  lastName?: string;
+}
+
+export class VerifyIdDocumentDto {
+  @IsOptional()
+  @IsString()
+  frontImageBase64?: string;
+
+  @IsOptional()
+  @IsString()
+  backImageBase64?: string;
 }
 
 export class SubAdminDto {
@@ -285,16 +330,7 @@ export class SubAdminDto {
 
 export class LoginDto {
   @IsString()
-  @IsOptional()
-  email?: string;
-
-  @IsString()
-  @IsOptional()
-  phone?: string;
-
-  @IsString()
-  @IsOptional()
-  username?: string;
+  identifier: string;
 
   @IsString()
   @IsOptional()
@@ -378,6 +414,20 @@ export class ResetPasswordDto {
   @IsString()
   @MinLength(6)
   newPassword: string;
+}
+
+export class SyncUserDto {
+  @IsOptional()
+  @IsString()
+  referralCode?: string;
+
+  @IsOptional()
+  @IsString()
+  ip_address?: string;
+
+  @IsOptional()
+  @IsString()
+  location?: string;
 }
 
 export class RewardPaymentDto {

@@ -407,22 +407,42 @@ export class AnalyticsService {
 
       const wallet_balance = gold_balance + personal_balance;
 
-      // Total deposits: sum of credits from monnify_deposit, flutterwave_card, busha_stablecoin
-      const depositMethods = ['monnify_deposit', 'flutterwave_card', 'busha_stablecoin'];
+      // Total deposits: sum of deposit credits into personal wallet (excluding quiz/reward earnings)
       const total_deposits = transactions
-        .filter(tx => tx.type === 'credit' && depositMethods.includes(tx.payment_method || ''))
-        .reduce((sum, tx) => sum + tx.amount, 0);
+        .filter(tx => {
+          const typeLower = (tx.type || '').toLowerCase();
+          const descLower = (tx.description || '').toLowerCase();
+          const accLower = (tx.account_type || '').toLowerCase();
+          const isDeposit = typeLower === 'credit' || typeLower === 'deposit';
+          const isNotReward = !descLower.includes('quiz') && !descLower.includes('reward') && !descLower.includes('bonus') && !descLower.includes('referral');
+          const isPersonal = accLower === 'personal' || accLower === '' || accLower == null;
+          return isDeposit && isNotReward && isPersonal;
+        })
+        .reduce((sum, tx) => sum + Math.abs(tx.amount), 0);
 
       // Total earnings: sum of gold account credits that are rewards/bonuses/quiz earnings
       const total_earnings = transactions
-        .filter(tx => tx.type === 'CREDIT' && (tx.account_type === 'Gold' || tx.account_type == null) && 
-                     (tx.description?.includes('Reward') || tx.description?.includes('Earned')))
-        .reduce((sum, tx) => sum + tx.amount, 0);
+        .filter(tx => {
+          const typeUpper = (tx.type || '').toUpperCase();
+          const accLower = (tx.account_type || '').toLowerCase();
+          const isGold = accLower === 'gold' || accLower === '' || accLower == null;
+          const isReward = tx.description?.toLowerCase().includes('reward') ||
+                           tx.description?.toLowerCase().includes('earned') ||
+                           tx.description?.toLowerCase().includes('quiz') ||
+                           tx.description?.toLowerCase().includes('bonus');
+          return typeUpper === 'CREDIT' && isGold && isReward;
+        })
+        .reduce((sum, tx) => sum + Math.abs(tx.amount), 0);
 
-      // Total withdrawals: sum of all debits across both sub-accounts
+      // Total withdrawals: sum of debits from personal wallet
       const total_withdrawals = transactions
-        .filter(tx => tx.type === 'DEBIT')
-        .reduce((sum, tx) => sum + tx.amount, 0);
+        .filter(tx => {
+          const typeLower = (tx.type || '').toLowerCase();
+          const descLower = (tx.description || '').toLowerCase();
+          const isWithdrawal = typeLower === 'debit' || typeLower === 'withdrawal' || descLower.includes('withdraw');
+          return isWithdrawal;
+        })
+        .reduce((sum, tx) => sum + Math.abs(tx.amount), 0);
 
       // Currencies used: for now, assume NGN, but could be extended
       const currencies_used = ['NGN'];

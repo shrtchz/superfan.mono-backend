@@ -1,4 +1,4 @@
-import { InternalServerErrorException, NotFoundException } from "@nestjs/common";
+import { InternalServerErrorException, NotFoundException, HttpException } from "@nestjs/common";
 
 export function successResponse(message: string, result: any = []) {
     return {
@@ -9,6 +9,10 @@ export function successResponse(message: string, result: any = []) {
 }
 
 export function failureResponse(error: any) {
+    if (error instanceof HttpException) {
+        return error;
+    }
+
     if(error.response && error.response.statusCode) {
         return error;
     }

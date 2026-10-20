@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Patch, Delete } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Delete } from '@nestjs/common';
 import { ApiRoutes } from '../common/enums/routes.enum';
 import { NotificationService } from './notification.service';
 
@@ -6,6 +6,17 @@ import { NotificationService } from './notification.service';
 export class NotificationController {
   constructor(private notificationService: NotificationService) {}
 
+  @Post('/create')
+  async createNotification(
+    @Body() body: { userId: number; title: string; message: string; type?: string; data?: any },
+  ) {
+    return this.notificationService.createNotification(
+      body.userId,
+      body.title,
+      body.message,
+      body.type || 'live_quiz_reward',
+    );
+  }
 
 @Get('/:userId')
 getUserNotifications(@Param('userId') userId: number) {

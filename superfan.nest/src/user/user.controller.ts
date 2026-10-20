@@ -11,9 +11,11 @@ import {
   Post,
   Query,
   Req,
+  UploadedFiles,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
+import { FileFieldsInterceptor } from '@nestjs/platform-express';
 import { ApiPaginatedResponse, Public } from '../common/decorators';
 import { RealIp } from '../common/decorators/RealIp.decorator';
 import { PaginatedOutputDto } from '../common/dto/paginated-output.dto';
@@ -27,7 +29,6 @@ import {
   failureResponse,
   successResponse,
 } from '../common/interceptors/response.interceptor';
-import { PaymentDto, SubscriptionCardPaymentDto } from '../payment/payment.dto';
 import { WalletService } from '../wallet/wallet.service';
 import {
   AuthDto,
@@ -41,6 +42,10 @@ import {
   UpdateUserDto,
   UserDto,
   VerifyEmailDto,
+  SyncUserDto,
+  VerifyBvnDto,
+  VerifyNinDto,
+  VerifyIdDocumentDto,
 } from './dto/auth.dto';
 import { PresenceGateway } from './gateway/presence.gateway';
 import { UserService } from './user.service';
@@ -74,6 +79,39 @@ export class UserController {
     return this.userService.signupUser(dto);
   }
 
+  // Debug endpoint to list all users with referral codes
+  @Public()
+  @Get('/debug/referral-codes')
+  async getAllReferralCodes() {
+    const users = await this.userService.findAllUsersWithReferralCodes();
+    return users;
+  }
+
+  @Public()
+  @Post('/auth/login')
+  @HttpCode(HttpStatus.OK)
+  async loginUser(@Body() dto: LoginDto) {
+    return this.userService.signinUser(dto);
+  }
+
+  @Public()
+  @Post('/sync')
+  @HttpCode(HttpStatus.OK)
+  async syncUser(@Req() req: any, @Body() dto: SyncUserDto) {
+    const user = await this.userService.syncFromClerkToken(
+      req.headers.authorization,
+      dto,
+    );
+    return successResponse('User synced successfully', user);
+  }
+
+  /** @deprecated Use POST /user/sync */
+  @Public()
+  @Post('/clerk-login')
+  @HttpCode(HttpStatus.OK)
+  async clerkLogin(@Req() req: any, @Body() dto: SyncUserDto) {
+    return this.syncUser(req, dto);
+  }
   @Get(':id/login-method')
   async getLoginMethod(@Param('id', ParseIntPipe) userId: number) {
     return this.userService.getUserLoginMethod(userId);
@@ -110,6 +148,64 @@ export class UserController {
     return this.userService.updateKycDetails(req.user.id, dto);
   }
 
+  @Post('/kyc/verify-bvn')
+  async verifyBvn(@Req() req: any, @Body() dto: VerifyBvnDto) {
+    return this.userService.verifyBvnWithDidit(req.user.id, dto);
+  }
+
+  @Post('/kyc/verify-nin')
+  async verifyNin(@Req() req: any, @Body() dto: VerifyNinDto) {
+    return this.userService.verifyNinWithDidit(req.user.id, dto);
+  }
+
+  @Post('/kyc/verify-id')
+  @UseInterceptors(
+    FileFieldsInterceptor([
+      { name: 'front_image', maxCount: 1 },
+      { name: 'back_image', maxCount: 1 },
+    ]),
+  )
+  async verifyIdDocument(
+    @Req() req: any,
+    @Body() dto: VerifyIdDocumentDto,
+    @UploadedFiles()
+    files?: {
+      front_image?: Express.Multer.File[];
+      back_image?: Express.Multer.File[];
+    },
+  ) {
+    const frontImage = files?.front_image?.[0] || dto.frontImageBase64;
+    const backImage = files?.back_image?.[0] || dto.backImageBase64;
+    return this.userService.verifyIdWithDidit(
+      req.user.id,
+      frontImage as any,
+      backImage as any,
+    );
+  }
+
+  @Post('/kyc/initiate-didit')
+  async initiateDiditKyc(@Req() req: any, @Body() dto?: { callbackUrl?: string; workflowId?: string }) {
+    return this.userService.initiateDiditHostedSession(req.user.id, dto);
+  }
+
+  @Post('/kyc/initiate-session')
+  async initiateDiditSession(@Req() req: any, @Body() dto?: { callbackUrl?: string; workflowId?: string }) {
+    return this.userService.initiateDiditHostedSession(req.user.id, dto);
+  }
+
+  @Get('/kyc/session-decision/:sessionId')
+  async getDiditSessionDecision(
+    @Req() req: any,
+    @Param('sessionId') sessionId: string,
+  ) {
+    return this.userService.syncDiditSessionDecision(req.user.id, sessionId);
+  }
+
+  @Get('/kyc/sync-session')
+  async syncDiditSession(@Req() req: any) {
+    return this.userService.syncDiditSessionDecision(req.user.id);
+  }
+
   @Get('kyc-status')
   async checkKycStatus(@Req() req: any) {
     const userId = req.user.id; // assuming auth middleware
@@ -118,21 +214,21 @@ export class UserController {
   }
 
   @Post('/create-subscription')
-  createSubscription(@Body() dto: PaymentDto, @Req() req: any) {
+  createSubscription(@Req() req: any, @Body() dto: any) {
     return this.userService.createSubscription(req.user.id, dto);
   }
 
   @Post('/create-subscription-with-card')
   createSubscriptionWithCard(
     @Req() req: any,
-    @Body() dto: SubscriptionCardPaymentDto,
-  ) {
+    @Body() dto: any
+    ) {
     return this.userService.createSubscriptionWithCard(req.user.id, dto);
   }
 
   @Post('/create-card')
-  createUserCard(@Req() req: any, @Body() cardNumber: number) {
-    return this.userService.createCard(req.user.id, cardNumber);
+  createUserCard(@Req() req: any, @Body() dto: any) {
+    return this.userService.createCard(req.user.id, dto);
   }
 
   @Get('/get-card')
@@ -201,6 +297,13 @@ export class UserController {
       @Get('/user-badge/:userId')
   getUserBadge(@Param('userId', ParseIntPipe) userId: number): Promise<any> {
     return this.userService.getUserBadge(userId);
+  }
+
+  @Get('/top-earners')
+  getTopEarners(
+    @Query('limit', ParseIntPipe) limit: number = 10,
+  ): Promise<any> {
+    return this.userService.getTopEarners(limit);
   }
 
   @Get('/all-users')
