@@ -1,11 +1,11 @@
 import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHmac } from 'crypto';
-import { MailService } from '../mail/mail.service';
 import { generateFiveUniqueRandomNumbers } from '../common/utils/utils';
+import { MailService } from '../mail/mail.service';
 import { NotificationService } from '../notification/notification.service';
-import { WalletService } from '../wallet/wallet.service';
 import { prisma } from '../prisma/prisma';
+import { WalletService } from '../wallet/wallet.service';
 import { DisbursementEventDataDto, MonnifyWebhookDto } from './webhook.dto';
 
 @Injectable()
@@ -443,7 +443,7 @@ if (bankTransfer) {
     }
 
     await prisma.$transaction([
-      // 💰 Update Wallet Balance (⚠️ still single wallet per user)
+      // 💰 Update Wallet Balance (⚠️ still single wallet per user)dddd
       prisma.wallet.update({
         where: { userId: user.id },
         data: {
@@ -1023,9 +1023,9 @@ if (bankTransfer) {
     const eventType = event?.type;
     this.logger.log('Processing Clerk webhook event: ' + eventType);
 
-    if (eventType === 'emails.created') {
+    if (eventType === 'email.created' || eventType === 'emails.created') {
       const emailData = event.data || {};
-      const toEmail = emailData.to_email_address;
+      const toEmail = emailData.to_email_address || emailData.email_address || emailData.to || emailData.data?.to_email_address || emailData.data?.email_address;
 
       if (!toEmail) {
         this.logger.warn('emails.created event received without to_email_address');
@@ -1034,9 +1034,11 @@ if (bankTransfer) {
 
       // Extract 6-digit OTP code from data object, subject, or text body
       let otpCode: string | undefined =
+        emailData.data?.otp_code ||
         emailData.data?.otp ||
         emailData.data?.code ||
-        emailData.otp;
+        emailData.otp ||
+        emailData.code;
 
       if (!otpCode && typeof emailData.body_plain === 'string') {
         const match = emailData.body_plain.match(/\b\d{6}\b/);
@@ -1090,10 +1092,12 @@ if (bankTransfer) {
 
       await this.mailService.verifyEmail(toEmail, otpCode, firstName);
 
-      return { received: true, handled: true, event: 'emails.created' };
+      return { received: true, handled: true, event: eventType, to: toEmail, otp: otpCode };
     }
 
     return { received: true, handled: false, event: eventType };
   }
 
 }
+
+///ssssssssssssssssss
