@@ -3,8 +3,8 @@ package controllers
 import (
 	"fmt"
 	"net/http"
-	"strings"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -194,10 +194,42 @@ func (ac *AdsController) UpdateCampaignStatus(c *gin.Context) {
 		return
 	}
 
-	campaign, err := ac.adsService.UpdateCampaignStatus(c.Request.Context(), id, req.Status, req.PausedByAdmin)
+	userIDValue, ok := c.Get(middleware.ContextUserIDKey)
+	userID, validUserID := userIDValue.(int)
+	if !ok || !validUserID || userID <= 0 {
+		utils.SendError(c, http.StatusUnauthorized, "UNAUTHORIZED", "authenticated user is required")
+		return
+	}
+
+	var user models.User
+	if err := utils.DB.WithContext(c.Request.Context()).Select("roleName").First(&user, userID).Error; err != nil {
+		utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to verify campaign permissions")
+		return
+	}
+	roleName := ""
+	if user.RoleName != nil {
+		roleName = strings.ToLower(strings.TrimSpace(*user.RoleName))
+	}
+	isAdmin := roleName == "superadmin" || roleName == "subadmin"
+
+	campaign, err := ac.adsService.UpdateCampaignStatus(
+		c.Request.Context(),
+		id,
+		req.Status,
+		req.PausedByAdmin,
+		userID,
+		isAdmin,
+	)
 	if err != nil {
-		if strings.Contains(err.Error(), "paused by an administrator") {
-			utils.SendError(c, http.StatusForbidden, "FORBIDDEN", err.Error())
+		message := err.Error()
+		if strings.Contains(message, "not allowed") ||
+			strings.Contains(message, "only administrators") ||
+			strings.Contains(message, "paused by an administrator") {
+			utils.SendError(c, http.StatusForbidden, "FORBIDDEN", message)
+			return
+		}
+		if strings.Contains(message, "not been approved") {
+			utils.SendError(c, http.StatusForbidden, "FORBIDDEN", message)
 			return
 		}
 		utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
@@ -437,7 +469,7 @@ func RegisterAdsRoutes(rg *gin.RouterGroup, ac *AdsController) {
 		authenticatedAdsGroup.GET("/campaigns/mine", ac.GetMyCampaigns)
 		authenticatedAdsGroup.GET("/campaigns/mine/insights", ac.GetMyInsights)
 		adsGroup.GET("/inventory/stats", ac.GetInventoryStats)
-		adsGroup.PATCH("/campaigns/:id/status", ac.UpdateCampaignStatus)
+		adsGroup.PATCH("/campaigns/:id/status", middleware.AuthRequired(), ac.UpdateCampaignStatus)
 		adsGroup.DELETE("/campaigns/:id", ac.DeleteCampaign)
 		adsGroup.POST("/campaigns/:id/approve", ac.ApproveCampaign)
 		adsGroup.POST("/campaigns/:id/reject", ac.RejectCampaign)
