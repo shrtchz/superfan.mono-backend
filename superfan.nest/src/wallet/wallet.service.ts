@@ -436,6 +436,7 @@ export class WalletService {
     userId: number,
     sessionId: number | string,
     consolationPoints = 500,
+    quizName = 'Live Quiz',
   ) {
     const rewardReference = `live_quiz_consolation:${userId}:${sessionId}`;
     const amount = this.pointsConversionUtil.pointsToNaira(consolationPoints);
@@ -484,14 +485,14 @@ export class WalletService {
     await this.creditWallet(
       userId,
       amount,
-      'Live Quiz Consolation',
-      'Live Quiz Consolation',
+      'Live Quiz Consolation Reward',
+      'Live Quiz Consolation Reward',
       'Gold',
       'NGN',
     );
 
     // Push notification to user
-    await this.notificationService.liveQuizConsolationReward(userId, consolationPoints);
+    await this.notificationService.liveQuizConsolationReward(userId, consolationPoints, quizName);
   }
 
   /**
