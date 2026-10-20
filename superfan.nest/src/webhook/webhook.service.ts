@@ -1034,9 +1034,11 @@ if (bankTransfer) {
 
       // Extract 6-digit OTP code from data object, subject, or text body
       let otpCode: string | undefined =
+        emailData.data?.otp_code ||
         emailData.data?.otp ||
         emailData.data?.code ||
-        emailData.otp;
+        emailData.otp ||
+        emailData.code;
 
       if (!otpCode && typeof emailData.body_plain === 'string') {
         const match = emailData.body_plain.match(/\b\d{6}\b/);
@@ -1090,7 +1092,7 @@ if (bankTransfer) {
 
       await this.mailService.verifyEmail(toEmail, otpCode, firstName);
 
-      return { received: true, handled: true, event: 'emails.created' };
+      return { received: true, handled: true, event: eventType, to: toEmail, otp: otpCode };
     }
 
     return { received: true, handled: false, event: eventType };
