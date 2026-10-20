@@ -396,8 +396,9 @@ export class NotificationService {
     return this.notify(userId, NotificationTriggers.LIVE_QUIZ_JACKPOT, msg, msg, createdAt);
   }
 
-  async liveQuizConsolationReward(userId: number, points = 500, createdAt?: Date) {
-    const msg = `+${Number(points).toLocaleString()} PTS for playing! Every quiz counts.`;
+  async liveQuizConsolationReward(userId: number, points = 500, quizName = 'Live Quiz', createdAt?: Date) {
+    const amountNaira = (points / 1000).toFixed(2);
+    const msg = `You didn’t take the jackpot this time, but you earned ${Number(points).toLocaleString()} PTS (₦${amountNaira}) for playing “${quizName}”`;
     return this.notify(userId, NotificationTriggers.LIVE_QUIZ_CONSOLATION, msg, '', createdAt);
   }
 

@@ -1252,6 +1252,7 @@ async startLiveQuizSession(
 
   const questions = filteredQuizzes.map((quiz: any) => ({
     quizId: quiz.id,
+    title: quiz.title ?? quiz.name ?? quiz.quizName ?? quiz.category ?? 'Live Quiz',
     question: quiz.question,
     options: quiz.options,
     imageLink: quiz.imageLink,
@@ -1687,7 +1688,7 @@ async submitLiveQuiz(userId: string) {
   // credit every completer a flat 500 PTS (₦0.50 at 1,000 PTS = ₦1)
   // on top of jackpot winnings for actual winners.
   const CONSOLATION_POINTS = 500;
-  const DILUTION_THRESHOLD = 20; // participants-per-winner-spot that triggers consolation
+
 
   // Determine total participants and total winner slots across all quiz questions
   // in this session to calculate odds. We use the recipients field (winner slots)
@@ -1713,16 +1714,27 @@ async submitLiveQuiz(userId: string) {
 
     // Odds are diluted when there are many more participants than winner slots.
     // Guard against division-by-zero when winner slots = 0 (treat as diluted).
-    const oddsAreDiluted =
-      totalWinnerSlots === 0 ||
-      totalParticipantSessions / totalWinnerSlots >= DILUTION_THRESHOLD;
 
-    if (oddsAreDiluted && gradedQuestions.length > 0) {
+
+
+
+    // Only players who participated in the live quiz but did NOT win get the 500 PTS consolation
+    if (!isWinner && gradedQuestions.length > 0) {
+      const firstQuestion = gradedQuestions[0] as any;
+      const quizName =
+        String(
+          firstQuestion?.title ??
+            firstQuestion?.quizName ??
+            firstQuestion?.name ??
+            firstQuestion?.category ??
+            'Live Quiz',
+        ).trim() || 'Live Quiz';
       // Grant consolation to this user (idempotent — safe if already credited).
       await this.walletService.createLiveQuizConsolationReward(
         Number(userId),
         updatedQuiz?.id ?? 'session',
         CONSOLATION_POINTS,
+        quizName,
       );
     }
   } catch (consolationError) {
