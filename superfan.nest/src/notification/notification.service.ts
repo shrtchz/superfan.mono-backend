@@ -80,6 +80,10 @@ export const NotificationTriggers = {
   CHALLENGE_INVITE_SENT: 'challenge_invite_sent',
   CHALLENGE_INVITE_ACCEPTED: 'challenge_invite_accepted',
   CHALLENGE_INVITE_DECLINED: 'challenge_invite_declined',
+  VERSUS_REQUEST_SENT: 'versus_request_sent',
+  VERSUS_REQUEST_ACCEPTED: 'versus_request_accepted',
+  VERSUS_REQUEST_DECLINED: 'versus_request_declined',
+  VERSUS_REQUEST_EXPIRED: 'versus_request_expired',
 } as const;
 
 export type NotificationTrigger =
@@ -215,6 +219,59 @@ export class NotificationService {
       senderId,
       NotificationTriggers.CHALLENGE_INVITE_DECLINED,
       msg,
+      msg,
+    );
+  }
+
+  async versusRequestSent(
+    opponentId: number,
+    hostUsername: string,
+    mode: string,
+    jackpot: number,
+  ) {
+    const title = 'New Versus Request!';
+    const msg = `@${hostUsername} challenged you to a ${mode} Versus with a ₦${jackpot.toLocaleString()} jackpot.`;
+    return this.notify(
+      opponentId,
+      NotificationTriggers.VERSUS_REQUEST_SENT,
+      title,
+      msg,
+    );
+  }
+
+  async versusRequestAccepted(
+    hostId: number,
+    opponentUsername: string,
+    mode: string,
+  ) {
+    const title = 'Versus Request Accepted!';
+    const msg = `@${opponentUsername} accepted your ${mode} Versus challenge. Get ready!`;
+    return this.notify(
+      hostId,
+      NotificationTriggers.VERSUS_REQUEST_ACCEPTED,
+      title,
+      msg,
+    );
+  }
+
+  async versusRequestDeclined(hostId: number, opponentUsername: string) {
+    const title = 'Versus Request Declined';
+    const msg = `@${opponentUsername} declined your Versus challenge. Your escrowed funds have been refunded.`;
+    return this.notify(
+      hostId,
+      NotificationTriggers.VERSUS_REQUEST_DECLINED,
+      title,
+      msg,
+    );
+  }
+
+  async versusRequestExpired(hostId: number, opponentUsername: string) {
+    const title = 'Versus Request Expired';
+    const msg = `Your Versus challenge to @${opponentUsername} expired unstarted. Your escrowed funds have been refunded.`;
+    return this.notify(
+      hostId,
+      NotificationTriggers.VERSUS_REQUEST_EXPIRED,
+      title,
       msg,
     );
   }

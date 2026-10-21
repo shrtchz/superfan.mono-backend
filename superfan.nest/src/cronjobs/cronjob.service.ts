@@ -6,6 +6,7 @@ import { NotificationService } from "../notification/notification.service";
 import { prisma } from "../prisma/prisma";
 import { QuizService } from "../quiz/quiz.service";
 import { UserService } from "../user/user.service";
+import { VersusService } from "../versus/versus.service";
 
 @Injectable()
 export class CronJobService {
@@ -16,13 +17,18 @@ export class CronJobService {
         @Inject(forwardRef(() => UserService))
         private readonly userService: UserService,
         private readonly quizService: QuizService,
-        private readonly schedulerRegistry: SchedulerRegistry
+        private readonly schedulerRegistry: SchedulerRegistry,
+        private readonly versusService: VersusService,
     ) {}
 
-    // @Cron(CronExpression.EVERY_10_SECONDS)
-    // async handleSubScriptionDebit() {
-    //     console.log('Running subscription debit job at', new Date().toISOString());
-    // }
+    @Cron(CronExpression.EVERY_10_SECONDS)
+    async handleVersusExpirySweep() {
+        try {
+            await this.versusService.sweepExpiredRequests();
+        } catch (error: any) {
+            this.logger.error(`Error sweeping expired versus requests: ${error.message}`);
+        }
+    }
 
     @Cron(CronExpression.EVERY_DAY_AT_11AM)
     async sendDailyQuizNotification() {
