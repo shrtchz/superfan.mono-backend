@@ -43,6 +43,10 @@ describe('VersusService', () => {
         findUnique: jest.fn(),
         findMany: jest.fn(),
         update: jest.fn(),
+        aggregate: jest.fn(),
+      },
+      ongoingQuiz: {
+        findFirst: jest.fn(),
       },
       $transaction: jest.fn(async (cb) => {
         if (typeof cb === 'function') {
@@ -822,6 +826,218 @@ describe('VersusService', () => {
       // Match 15 is first match (not rematch)
       expect(res.items[1].isRematch).toBe(false);
       expect(res.items[1].title).toBe('@bob 1v1');
+    });
+  });
+
+  describe('getAdminVersusSummary', () => {
+    it('returns global summary where Live + Schedule === Total Versus and sums paid jackpots', async () => {
+      prismaMock.versusRequest.count.mockResolvedValueOnce(15); // totalVersus
+      prismaMock.versusRequest.count.mockResolvedValueOnce(6);  // totalScheduleH2H
+      prismaMock.versusRequest.aggregate.mockResolvedValueOnce({
+        _sum: { jackpotWon: 18500 },
+      });
+
+      const summary = await service.getAdminVersusSummary();
+      expect(summary.totalVersus).toBe(15);
+      expect(summary.totalScheduleH2H).toBe(6);
+      expect(summary.totalLive1v1).toBe(9);
+      expect(summary.totalLive1v1 + summary.totalScheduleH2H).toBe(summary.totalVersus);
+      expect(summary.totalJackpotsWon).toBe(18500);
+    });
+  });
+
+  describe('getAdminVersusLedger', () => {
+    it('returns formatted paginated ledger rows with correct status and badges', async () => {
+      // Setup total count and summary mocks
+      prismaMock.versusRequest.count.mockResolvedValueOnce(3); // total records
+      prismaMock.versusRequest.findMany.mockResolvedValueOnce([
+        // 1. Completed win
+        {
+          id: 101,
+          hostId: 1,
+          opponentId: 2,
+          status: 'COMPLETED',
+          outcome: 'HOST_WON',
+          winnerId: 1,
+          mode: 'LIVE_1V1',
+          questionsCount: 25,
+          hostScore: 22,
+          hostTimeSeconds: 79.2,
+          hostAccuracy: 88,
+          opponentScore: 18,
+          opponentTimeSeconds: 95.0,
+          opponentAccuracy: 72,
+          language: 'Yoruba',
+          subject: 'General',
+          level: 'Basic',
+          startedAt: new Date('2026-10-21T10:00:00Z'),
+          settledAt: new Date('2026-10-21T10:05:00Z'),
+          jackpotWon: 2000,
+          payoutStatus: 'PAID',
+          createdAt: new Date('2026-10-21T09:59:00Z'),
+          host: { id: 1, username: 'alice' },
+          opponent: { id: 2, username: 'bob' },
+        },
+        // 2. Completed draw with refund
+        {
+          id: 102,
+          hostId: 1,
+          opponentId: 2,
+          status: 'COMPLETED',
+          outcome: 'DRAW',
+          winnerId: null,
+          mode: 'SCHEDULE_H2H',
+          questionsCount: 30,
+          hostScore: 25,
+          hostTimeSeconds: 110.0,
+          hostAccuracy: 83.3,
+          opponentScore: 25,
+          opponentTimeSeconds: 110.0,
+          opponentAccuracy: 83.3,
+          language: 'Igbo',
+          subject: 'History',
+          level: 'Intermediate',
+          startedAt: new Date('2026-10-20T10:00:00Z'),
+          settledAt: new Date('2026-10-20T10:10:00Z'),
+          jackpotWon: 0,
+          payoutStatus: 'REFUNDED',
+          createdAt: new Date('2026-10-20T09:50:00Z'),
+          host: { id: 1, username: 'alice' },
+          opponent: { id: 2, username: 'bob' },
+        },
+        // 3. Pending match (not finished)
+        {
+          id: 103,
+          hostId: 1,
+          opponentId: 3,
+          status: 'STARTED',
+          outcome: null,
+          winnerId: null,
+          mode: 'LIVE_1V1',
+          questionsCount: 25,
+          hostScore: 12,
+          hostTimeSeconds: 40.0,
+          hostAccuracy: 80,
+          opponentScore: null,
+          opponentTimeSeconds: null,
+          opponentAccuracy: null,
+          language: 'Yoruba',
+          subject: 'General',
+          level: 'Basic',
+          startedAt: new Date('2026-10-21T11:00:00Z'),
+          settledAt: null,
+          jackpotWon: 0,
+          payoutStatus: 'UNPAID',
+          createdAt: new Date('2026-10-21T10:55:00Z'),
+          host: { id: 1, username: 'alice' },
+          opponent: { id: 3, username: 'charlie' },
+        },
+      ]);
+
+      // Summary sub-call mocks
+      prismaMock.versusRequest.count.mockResolvedValueOnce(3); // summary total
+      prismaMock.versusRequest.count.mockResolvedValueOnce(1); // summary schedule
+      prismaMock.versusRequest.aggregate.mockResolvedValueOnce({
+        _sum: { jackpotWon: 2000 },
+      });
+
+      const res = await service.getAdminVersusLedger(1, 10);
+      expect(res.total).toBe(3);
+      expect(res.items.length).toBe(3);
+
+      // Row 1 (Completed Win)
+      const row1 = res.items[0];
+      expect(row1.hostUsername).toBe('alice');
+      expect(row1.guestUsername).toBe('bob');
+      expect(row1.hostOutcome).toBe('W');
+      expect(row1.guestOutcome).toBe('L');
+      expect(row1.questionCount).toBe(25);
+      expect(row1.hostStats).toBe('22/25 · 1:19 · 88%');
+      expect(row1.guestStats).toBe('18/25 · 1:35 · 72%');
+      expect(row1.mode).toBe('Live');
+      expect(row1.versusStatus).toBe('Completed');
+      expect(row1.jackpotPaymentStatus).toBe('Paid');
+      expect(row1.jackpotWonAmount).toBe('NGN 2,000');
+
+      // Row 2 (Completed Draw with Refund)
+      const row2 = res.items[1];
+      expect(row2.hostOutcome).toBe('D');
+      expect(row2.guestOutcome).toBe('D');
+      expect(row2.versusStatus).toBe('Completed');
+      expect(row2.jackpotWonAmount).toBe('NGN 0');
+      expect(row2.jackpotPaymentStatus).toBe('Refunded');
+      expect(row2.mode).toBe('Schedule');
+
+      // Row 3 (Pending)
+      const row3 = res.items[2];
+      expect(row3.hostOutcome).toBeNull();
+      expect(row3.guestOutcome).toBeNull();
+      expect(row3.guestStats).toBe('—');
+      expect(row3.versusStatus).toBe('Pending');
+      expect(row3.jackpotPaymentStatus).toBe('Unpaid');
+      expect(row3.endDate).toBe('—');
+    });
+  });
+
+  describe('getAdminPlayerQuestions', () => {
+    it('returns answered questions for valid participant without per-question time', async () => {
+      prismaMock.versusRequest.findUnique.mockResolvedValueOnce({
+        id: 101,
+        hostId: 1,
+        opponentId: 2,
+        hostAnswers: [
+          {
+            quizId: 'q-1',
+            questionText: 'What is the capital of Lagos?',
+            selectedAnswer: 'Ikeja',
+            isCorrect: true,
+          },
+          {
+            quizId: 'q-2',
+            questionText: 'What is Yoruba word for Mother?',
+            selectedAnswer: 'Baba',
+            isCorrect: false,
+            correctAnswer: 'Iya',
+          },
+        ],
+        host: { id: 1, username: 'alice' },
+        opponent: { id: 2, username: 'bob' },
+      });
+
+      const res = await service.getAdminPlayerQuestions(101, 1);
+      expect(res.versusId).toBe(101);
+      expect(res.playerId).toBe(1);
+      expect(res.username).toBe('alice');
+      expect(res.totalQuestions).toBe(2);
+      expect(res.questions.length).toBe(2);
+
+      // Question 1
+      expect(res.questions[0].order).toBe(1);
+      expect(res.questions[0].questionText).toBe('What is the capital of Lagos?');
+      expect(res.questions[0].selectedAnswer).toBe('Ikeja');
+      expect(res.questions[0].isCorrect).toBe(true);
+      expect(res.questions[0].correctAnswer).toBeUndefined();
+      expect((res.questions[0] as any).timeSeconds).toBeUndefined(); // No per-question time!
+
+      // Question 2 (Wrong answer shows correctAnswer)
+      expect(res.questions[1].order).toBe(2);
+      expect(res.questions[1].selectedAnswer).toBe('Baba');
+      expect(res.questions[1].isCorrect).toBe(false);
+      expect(res.questions[1].correctAnswer).toBe('Iya');
+    });
+
+    it('throws ForbiddenException if player was not in the match', async () => {
+      prismaMock.versusRequest.findUnique.mockResolvedValueOnce({
+        id: 101,
+        hostId: 1,
+        opponentId: 2,
+        host: { id: 1, username: 'alice' },
+        opponent: { id: 2, username: 'bob' },
+      });
+
+      await expect(service.getAdminPlayerQuestions(101, 999)).rejects.toThrow(
+        'Player 999 is not a participant in versus match 101',
+      );
     });
   });
 });

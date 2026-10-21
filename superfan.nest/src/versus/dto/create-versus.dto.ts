@@ -76,4 +76,10 @@ export class SubmitVersusResultDto {
 
   @IsNumber()
   streak: number;
+
+  @IsOptional()
+  answers?: any[];
+
+  @IsOptional()
+  questions?: any[];
 }

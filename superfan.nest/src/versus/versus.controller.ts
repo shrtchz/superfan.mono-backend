@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Param,
   ParseIntPipe,
@@ -77,6 +78,52 @@ export class VersusController {
       Number(page) || 1,
       Number(limit) || 20,
     );
+  }
+
+  private ensureAdmin(req: any) {
+    const user = req.user;
+    if (!user || !user.id) {
+      throw new UnauthorizedException('User not authenticated');
+    }
+    const role = String(user.roleName || user.role || '').toLowerCase();
+    const isAdmin =
+      role === 'superadmin' ||
+      role === 'admin' ||
+      role === 'subadmin' ||
+      user.isAdmin === true;
+    if (!isAdmin) {
+      throw new ForbiddenException('Admin access required');
+    }
+    return user;
+  }
+
+  @Get('admin/ledger')
+  async getAdminVersusLedger(
+    @Req() req: any,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    this.ensureAdmin(req);
+    return this.versusService.getAdminVersusLedger(
+      Number(page) || 1,
+      Number(limit) || 10,
+    );
+  }
+
+  @Get('admin/summary')
+  async getAdminVersusSummary(@Req() req: any) {
+    this.ensureAdmin(req);
+    return this.versusService.getAdminVersusSummary();
+  }
+
+  @Get('admin/:id/questions/:playerId')
+  async getAdminPlayerQuestions(
+    @Req() req: any,
+    @Param('id', ParseIntPipe) id: number,
+    @Param('playerId', ParseIntPipe) playerId: number,
+  ) {
+    this.ensureAdmin(req);
+    return this.versusService.getAdminPlayerQuestions(id, playerId);
   }
 
   @Get(':id')

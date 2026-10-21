@@ -415,6 +415,9 @@ model VersusRequest {
   payoutStatus           String    @default("UNPAID")
   payoutTxRef            String?
   settledAt              DateTime?
+  questions              Json?
+  hostAnswers            Json?
+  opponentAnswers        Json?
   createdAt              DateTime  @default(now())
   updatedAt              DateTime  @updatedAt
 
