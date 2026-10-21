@@ -1015,40 +1015,206 @@ export class VersusService {
   }
 
   /**
-   * Get completed versus history for user / admin ledger.
+   * Get 30-day completed matches summary (Wins, Draws, Losses).
+   * Excludes non-completed, pending, cancelled, declined, or expired requests.
    */
-  async getVersusHistory(userId: number) {
+  async get30DaysSummary(userId: number) {
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+    const completedMatches = await this.prisma.versusRequest.findMany({
+      where: {
+        status: 'COMPLETED',
+        OR: [{ hostId: userId }, { opponentId: userId }],
+        settledAt: { gte: thirtyDaysAgo },
+      },
+      select: {
+        winnerId: true,
+        outcome: true,
+      },
+    });
+
+    let wins = 0;
+    let draws = 0;
+    let losses = 0;
+
+    for (const m of completedMatches) {
+      if (m.outcome === 'DRAW') {
+        draws++;
+      } else if (m.winnerId === userId) {
+        wins++;
+      } else {
+        losses++;
+      }
+    }
+
+    return { wins, draws, losses };
+  }
+
+  /**
+   * Head-to-Head summary between authenticated user and a specific opponent.
+   */
+  async getHeadToHeadSummary(userId: number, opponentId: number) {
+    const opponent = await this.prisma.user.findUnique({
+      where: { id: opponentId },
+      select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true },
+    });
+
+    if (!opponent) {
+      throw new NotFoundException(`Opponent with ID ${opponentId} not found`);
+    }
+
     const matches = await this.prisma.versusRequest.findMany({
       where: {
-        OR: [{ hostId: userId }, { opponentId: userId }],
+        status: 'COMPLETED',
+        OR: [
+          { hostId: userId, opponentId },
+          { hostId: opponentId, opponentId: userId },
+        ],
       },
       include: {
         host: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
         opponent: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
       },
-      orderBy: { createdAt: 'desc' },
-      take: 50,
+      orderBy: [{ settledAt: 'desc' }, { createdAt: 'desc' }],
     });
 
-    return matches.map((m) => {
-      const isHost = m.hostId === userId;
-      let state: 'won' | 'lost' | 'draw' | 'waiting' | 'cancelled' = 'waiting';
+    let wins = 0;
+    let draws = 0;
+    let losses = 0;
+    let cashWon = 0;
+    let personalBest: number | null = null;
+    let latestUserScore: number | null = null;
 
-      if (m.status === 'COMPLETED') {
-        if (m.outcome === 'DRAW') state = 'draw';
-        else if (m.winnerId === userId) state = 'won';
-        else state = 'lost';
-      } else if (['CANCELLED', 'DECLINED', 'EXPIRED'].includes(m.status)) {
-        state = 'cancelled';
-      } else if (isHost ? m.hostCompletedAt : m.opponentCompletedAt) {
-        state = 'waiting';
+    matches.forEach((m, idx) => {
+      const isHost = m.hostId === userId;
+      const userScore = isHost ? m.hostScore : m.opponentScore;
+
+      if (idx === 0) {
+        latestUserScore = userScore;
       }
 
-      return {
-        ...m,
-        userResultState: state,
-      };
+      if (userScore !== null && userScore !== undefined) {
+        if (personalBest === null || userScore > personalBest) {
+          personalBest = userScore;
+        }
+      }
+
+      if (m.outcome === 'DRAW') {
+        draws++;
+      } else if (m.winnerId === userId) {
+        wins++;
+        if (m.payoutStatus === 'PAID') {
+          cashWon += Number(m.jackpotWon || m.jackpot || 0);
+        }
+      } else {
+        losses++;
+      }
     });
+
+    const isNewBest = Boolean(personalBest !== null && latestUserScore !== null && latestUserScore >= personalBest);
+
+    return {
+      opponent,
+      wins,
+      draws,
+      losses,
+      cashWon,
+      personalBest,
+      isNewBest,
+      totalMatches: matches.length,
+      matches: matches.map((m) => {
+        const isHost = m.hostId === userId;
+        let state: 'won' | 'lost' | 'draw' = 'lost';
+        if (m.outcome === 'DRAW') state = 'draw';
+        else if (m.winnerId === userId) state = 'won';
+
+        return {
+          ...m,
+          userResultState: state,
+        };
+      }),
+    };
+  }
+
+  /**
+   * Get paginated completed versus history for user / admin ledger newest first.
+   * Derives rematch status strictly from authoritative persistence.
+   */
+  async getPaginatedVersusHistory(userId: number, page = 1, limit = 20) {
+    const pageNum = Math.max(1, Number(page) || 1);
+    const limitNum = Math.min(50, Math.max(1, Number(limit) || 20));
+    const skip = (pageNum - 1) * limitNum;
+
+    const where: Prisma.VersusRequestWhereInput = {
+      status: 'COMPLETED',
+      OR: [{ hostId: userId }, { opponentId: userId }],
+    };
+
+    const [total, matches] = await Promise.all([
+      this.prisma.versusRequest.count({ where }),
+      this.prisma.versusRequest.findMany({
+        where,
+        include: {
+          host: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
+          opponent: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
+        },
+        orderBy: [{ settledAt: 'desc' }, { createdAt: 'desc' }],
+        skip,
+        take: limitNum,
+      }),
+    ]);
+
+    const enriched = await Promise.all(
+      matches.map(async (m) => {
+        const isHost = m.hostId === userId;
+        const opponent = isHost ? m.opponent : m.host;
+        let state: 'won' | 'lost' | 'draw' = 'lost';
+        if (m.outcome === 'DRAW') state = 'draw';
+        else if (m.winnerId === userId) state = 'won';
+
+        // Check if there was an earlier completed match between these two users
+        const priorMatchCount = await this.prisma.versusRequest.count({
+          where: {
+            status: 'COMPLETED',
+            id: { not: m.id },
+            createdAt: { lt: m.createdAt },
+            OR: [
+              { hostId: m.hostId, opponentId: m.opponentId },
+              { hostId: m.opponentId, opponentId: m.hostId },
+            ],
+          },
+        });
+
+        const isRematch = priorMatchCount > 0;
+        const modeLabel = m.mode === 'SCHEDULE_H2H' ? 'Schedule H2H' : 'Live 1v1';
+        const title = `@${opponent.username} 1v1${isRematch ? ' Rematch' : ''}`;
+
+        return {
+          ...m,
+          userResultState: state,
+          isRematch,
+          modeLabel,
+          title,
+          opponent,
+        };
+      })
+    );
+
+    return {
+      items: enriched,
+      total,
+      page: pageNum,
+      limit: limitNum,
+      totalPages: Math.ceil(total / limitNum) || 1,
+    };
+  }
+
+  /**
+   * Get completed versus history for user / admin ledger (legacy/backward compatibility).
+   */
+  async getVersusHistory(userId: number) {
+    const paginated = await this.getPaginatedVersusHistory(userId, 1, 50);
+    return paginated.items;
   }
 
   async cancelRequest(userId: number, requestId: number) {

@@ -5,6 +5,7 @@ import {
   Param,
   ParseIntPipe,
   Post,
+  Query,
   Req,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -40,13 +41,42 @@ export class VersusController {
     return this.versusService.getActiveRequests(userId);
   }
 
-  @Get('history')
-  async getVersusHistory(@Req() req: any) {
+  @Get('stats/summary')
+  async get30DaysSummary(@Req() req: any) {
     const userId = Number(req.user?.id);
     if (!userId || isNaN(userId)) {
       throw new UnauthorizedException('User not authenticated');
     }
-    return this.versusService.getVersusHistory(userId);
+    return this.versusService.get30DaysSummary(userId);
+  }
+
+  @Get('h2h/:opponentId')
+  async getHeadToHeadSummary(
+    @Req() req: any,
+    @Param('opponentId', ParseIntPipe) opponentId: number,
+  ) {
+    const userId = Number(req.user?.id);
+    if (!userId || isNaN(userId)) {
+      throw new UnauthorizedException('User not authenticated');
+    }
+    return this.versusService.getHeadToHeadSummary(userId, opponentId);
+  }
+
+  @Get('history')
+  async getVersusHistory(
+    @Req() req: any,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const userId = Number(req.user?.id);
+    if (!userId || isNaN(userId)) {
+      throw new UnauthorizedException('User not authenticated');
+    }
+    return this.versusService.getPaginatedVersusHistory(
+      userId,
+      Number(page) || 1,
+      Number(limit) || 20,
+    );
   }
 
   @Get(':id')

@@ -38,6 +38,7 @@ describe('VersusService', () => {
         create: jest.fn(),
       },
       versusRequest: {
+        count: jest.fn(),
         create: jest.fn(),
         findUnique: jest.fn(),
         findMany: jest.fn(),
@@ -696,6 +697,131 @@ describe('VersusService', () => {
       expect(result.opponentTimeSeconds).toBeNull();
       expect(result.opponentAccuracy).toBeNull();
       expect(result.opponentStreak).toBeNull();
+    });
+  });
+
+  describe('get30DaysSummary', () => {
+    it('aggregates W/D/L strictly for completed matches in the last 30 days', async () => {
+      prismaMock.versusRequest.findMany.mockResolvedValue([
+        { winnerId: 1, outcome: 'HOST_WON' },
+        { winnerId: 2, outcome: 'OPPONENT_WON' },
+        { winnerId: null, outcome: 'DRAW' },
+        { winnerId: 1, outcome: 'OPPONENT_WON' }, // User 1 won as opponent
+      ]);
+
+      const summary = await service.get30DaysSummary(1);
+      expect(summary.wins).toBe(2);
+      expect(summary.draws).toBe(1);
+      expect(summary.losses).toBe(1);
+
+      expect(prismaMock.versusRequest.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            status: 'COMPLETED',
+            OR: [{ hostId: 1 }, { opponentId: 1 }],
+          }),
+        }),
+      );
+    });
+  });
+
+  describe('getHeadToHeadSummary', () => {
+    it('computes H2H stats, personal best, and cash won from confirmed payouts only', async () => {
+      prismaMock.user.findUnique.mockResolvedValue({
+        id: 2,
+        username: 'bob',
+      });
+
+      prismaMock.versusRequest.findMany.mockResolvedValue([
+        // Match 1: Most recent win (Score 26, confirmed payout 1500)
+        {
+          id: 10,
+          hostId: 1,
+          opponentId: 2,
+          winnerId: 1,
+          outcome: 'HOST_WON',
+          hostScore: 26,
+          jackpotWon: 1500,
+          payoutStatus: 'PAID',
+        },
+        // Match 2: Loss (Score 20)
+        {
+          id: 9,
+          hostId: 2,
+          opponentId: 1,
+          winnerId: 2,
+          outcome: 'HOST_WON',
+          opponentScore: 20,
+          jackpotWon: 2000,
+          payoutStatus: 'PAID',
+        },
+        // Match 3: Draw (Score 22, refund ignored for cash won)
+        {
+          id: 8,
+          hostId: 1,
+          opponentId: 2,
+          winnerId: null,
+          outcome: 'DRAW',
+          hostScore: 22,
+          jackpotWon: 0,
+          payoutStatus: 'REFUNDED',
+        },
+      ]);
+
+      const h2h = await service.getHeadToHeadSummary(1, 2);
+      expect(h2h.wins).toBe(1);
+      expect(h2h.losses).toBe(1);
+      expect(h2h.draws).toBe(1);
+      expect(h2h.cashWon).toBe(1500); // Only confirmed win jackpot, not opponent win or draw
+      expect(h2h.personalBest).toBe(26);
+      expect(h2h.isNewBest).toBe(true); // Latest match equaled personal best peak
+    });
+  });
+
+  describe('getPaginatedVersusHistory and rematch derivation', () => {
+    it('accurately derives rematch indicator based on earlier completed matches', async () => {
+      prismaMock.versusRequest.count.mockResolvedValueOnce(2); // total matches
+      prismaMock.versusRequest.findMany.mockResolvedValueOnce([
+        {
+          id: 20,
+          hostId: 1,
+          opponentId: 2,
+          winnerId: 1,
+          outcome: 'HOST_WON',
+          mode: 'LIVE_1V1',
+          createdAt: new Date('2026-10-21T12:00:00Z'),
+          host: { id: 1, username: 'alice' },
+          opponent: { id: 2, username: 'bob' },
+        },
+        {
+          id: 15,
+          hostId: 2,
+          opponentId: 1,
+          winnerId: 2,
+          outcome: 'HOST_WON',
+          mode: 'SCHEDULE_H2H',
+          createdAt: new Date('2026-10-20T10:00:00Z'),
+          host: { id: 2, username: 'bob' },
+          opponent: { id: 1, username: 'alice' },
+        },
+      ]);
+
+      // For Match 20: there was an earlier match (Match 15) -> count = 1
+      prismaMock.versusRequest.count.mockResolvedValueOnce(1);
+      // For Match 15: no earlier match -> count = 0
+      prismaMock.versusRequest.count.mockResolvedValueOnce(0);
+
+      const res = await service.getPaginatedVersusHistory(1, 1, 10);
+      expect(res.total).toBe(2);
+      expect(res.items.length).toBe(2);
+
+      // Match 20 is a rematch
+      expect(res.items[0].isRematch).toBe(true);
+      expect(res.items[0].title).toBe('@bob 1v1 Rematch');
+
+      // Match 15 is first match (not rematch)
+      expect(res.items[1].isRematch).toBe(false);
+      expect(res.items[1].title).toBe('@bob 1v1');
     });
   });
 });
