@@ -188,6 +188,9 @@ async handleBitnobWebhook(
         'svix-timestamp': svixTimestamp,
         'svix-signature': svixSignature,
       });
+      if (!event || typeof event !== 'object' || !event.type) {
+        event = typeof rawBody === 'string' ? JSON.parse(rawBody) : body;
+      }
       this.logger.log(`[Clerk Webhook] Signature verified. Event type: "${event?.type}"`);
     } catch (verifyErr: any) {
       this.logger.error(`[Clerk Webhook] Signature verification failed: ${verifyErr?.message}`);
