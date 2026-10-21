@@ -1021,14 +1021,19 @@ if (bankTransfer) {
    */
   async handleClerkWebhookEvent(event: any): Promise<any> {
     const eventType = event?.type;
-    this.logger.log('Processing Clerk webhook event: ' + eventType);
+    this.logger.log(`[Clerk Webhook] Processing event: "${eventType}"`);
 
     if (eventType === 'email.created' || eventType === 'emails.created') {
       const emailData = event.data || {};
-      const toEmail = emailData.to_email_address || emailData.email_address || emailData.to || emailData.data?.to_email_address || emailData.data?.email_address;
+      const toEmail =
+        emailData.to_email_address ||
+        emailData.email_address ||
+        emailData.to ||
+        emailData.data?.to_email_address ||
+        emailData.data?.email_address;
 
       if (!toEmail) {
-        this.logger.warn('emails.created event received without to_email_address');
+        this.logger.warn(`[Clerk Webhook] "${eventType}" received but no to_email_address found in payload: ${JSON.stringify(emailData)}`);
         return { received: true, handled: false, reason: 'missing_email' };
       }
 
@@ -1057,7 +1062,7 @@ if (bankTransfer) {
 
       if (!otpCode) {
         this.logger.warn(
-          'emails.created received for ' + toEmail + ' but could not extract OTP code',
+          `[Clerk Webhook] "${eventType}" for ${toEmail} could not extract OTP code. Payload: ${JSON.stringify(emailData)}`,
         );
         return { received: true, handled: false, reason: 'otp_not_found' };
       }
@@ -1087,14 +1092,17 @@ if (bankTransfer) {
       }
 
       this.logger.log(
-        'Queueing Superfan verification email for ' + toEmail + ' (OTP: ' + otpCode + ')',
+        `[Clerk Webhook] Extracted toEmail="${toEmail}", OTP="${otpCode}", firstName="${firstName}". Queueing email via mailService...`,
       );
 
-      await this.mailService.verifyEmail(toEmail, otpCode, firstName);
+      const job = await this.mailService.verifyEmail(toEmail, otpCode, firstName);
 
-      return { received: true, handled: true, event: eventType, to: toEmail, otp: otpCode };
+      this.logger.log(`[Clerk Webhook] mailService.verifyEmail completed. BullMQ Job ID: ${job?.id || 'queued'}`);
+
+      return { received: true, handled: true, event: eventType, to: toEmail, otp: otpCode, jobId: job?.id };
     }
 
+    this.logger.warn(`[Clerk Webhook] Ignored unhandled event type: "${eventType}"`);
     return { received: true, handled: false, event: eventType };
   }
 

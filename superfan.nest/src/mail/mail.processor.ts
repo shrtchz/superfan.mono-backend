@@ -45,7 +45,7 @@ export class Mailprocessor extends WorkerHost {
   }
 
   async process(job: Job<any>) {
-    this.logger.log(`Processing mail job ${job.id} (${job.name}) for ${job.data?.to}`);
+    this.logger.log(`[MailProcessor] >>> Worker picked up job ${job.id} (${job.name}) for ${job.data?.to}`);
 
     try {
       switch (job.name) {
@@ -104,12 +104,12 @@ export class Mailprocessor extends WorkerHost {
         htmlbody: htmlBody,
       });
 
-      this.logger.log(`Email sent via ZeptoMail to ${to}`);
+      this.logger.log(`[MailProcessor] SUCCESS: Email successfully delivered via ZeptoMail to ${to}`);
       return { success: true, method: 'zepto' };
     } catch (zeptoError: any) {
       const zeptoErrMsg = zeptoError?.error?.message || zeptoError?.message || JSON.stringify(zeptoError);
       this.logger.warn(
-        `ZeptoMail sending failed for ${to}. Falling back to MailerService (SMTP). Error: ${zeptoError?.message}`,
+        `ZeptoMail sending failed for ${to}. Falling back to MailerService (SMTP). Error: ${zeptoErrMsg}`,
         zeptoError?.stack,
       );
 
@@ -122,11 +122,11 @@ export class Mailprocessor extends WorkerHost {
           html: htmlBody,
         });
 
-        this.logger.log(`Email sent via SMTP fallback to ${to}`);
+        this.logger.log(`[MailProcessor] SUCCESS: Email successfully delivered via SMTP fallback to ${to}`);
         return { success: true, method: 'smtp' };
       } catch (smtpError) {
         this.logger.error(
-          `Both mail providers failed for recipient ${to}. ZeptoMail error: ${zeptoError?.message}, SMTP error: ${smtpError?.message}`,
+          `Both mail providers failed for recipient ${to}. ZeptoMail error: ${zeptoErrMsg}, SMTP error: ${smtpError?.message}`,
           {
             zeptoError: zeptoError?.stack,
             smtpError: smtpError?.stack,

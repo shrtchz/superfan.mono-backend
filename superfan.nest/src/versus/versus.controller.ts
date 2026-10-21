@@ -5,6 +5,7 @@ import {
   Param,
   ParseIntPipe,
   Post,
+  Query,
   Req,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -14,6 +15,7 @@ import {
   AcceptVersusDto,
   CreateVersusDto,
   FundVersusDto,
+  SubmitVersusResultDto,
   ToggleReadyDto,
 } from './dto/create-versus.dto';
 
@@ -39,6 +41,44 @@ export class VersusController {
     return this.versusService.getActiveRequests(userId);
   }
 
+  @Get('stats/summary')
+  async get30DaysSummary(@Req() req: any) {
+    const userId = Number(req.user?.id);
+    if (!userId || isNaN(userId)) {
+      throw new UnauthorizedException('User not authenticated');
+    }
+    return this.versusService.get30DaysSummary(userId);
+  }
+
+  @Get('h2h/:opponentId')
+  async getHeadToHeadSummary(
+    @Req() req: any,
+    @Param('opponentId', ParseIntPipe) opponentId: number,
+  ) {
+    const userId = Number(req.user?.id);
+    if (!userId || isNaN(userId)) {
+      throw new UnauthorizedException('User not authenticated');
+    }
+    return this.versusService.getHeadToHeadSummary(userId, opponentId);
+  }
+
+  @Get('history')
+  async getVersusHistory(
+    @Req() req: any,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const userId = Number(req.user?.id);
+    if (!userId || isNaN(userId)) {
+      throw new UnauthorizedException('User not authenticated');
+    }
+    return this.versusService.getPaginatedVersusHistory(
+      userId,
+      Number(page) || 1,
+      Number(limit) || 20,
+    );
+  }
+
   @Get(':id')
   async getSingleRequest(
     @Req() req: any,
@@ -49,6 +89,31 @@ export class VersusController {
       throw new UnauthorizedException('User not authenticated');
     }
     return this.versusService.getSingleRequest(userId, id);
+  }
+
+  @Get(':id/result')
+  async getMatchResult(
+    @Req() req: any,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    const userId = Number(req.user?.id);
+    if (!userId || isNaN(userId)) {
+      throw new UnauthorizedException('User not authenticated');
+    }
+    return this.versusService.getMatchResult(userId, id);
+  }
+
+  @Post(':id/submit-result')
+  async submitResult(
+    @Req() req: any,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: SubmitVersusResultDto,
+  ) {
+    const userId = Number(req.user?.id);
+    if (!userId || isNaN(userId)) {
+      throw new UnauthorizedException('User not authenticated');
+    }
+    return this.versusService.submitResult(userId, id, dto);
   }
 
   @Post(':id/fund')
