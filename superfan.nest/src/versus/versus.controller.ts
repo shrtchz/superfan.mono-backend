@@ -14,6 +14,7 @@ import {
   AcceptVersusDto,
   CreateVersusDto,
   FundVersusDto,
+  SubmitVersusResultDto,
   ToggleReadyDto,
 } from './dto/create-versus.dto';
 
@@ -39,6 +40,15 @@ export class VersusController {
     return this.versusService.getActiveRequests(userId);
   }
 
+  @Get('history')
+  async getVersusHistory(@Req() req: any) {
+    const userId = Number(req.user?.id);
+    if (!userId || isNaN(userId)) {
+      throw new UnauthorizedException('User not authenticated');
+    }
+    return this.versusService.getVersusHistory(userId);
+  }
+
   @Get(':id')
   async getSingleRequest(
     @Req() req: any,
@@ -49,6 +59,31 @@ export class VersusController {
       throw new UnauthorizedException('User not authenticated');
     }
     return this.versusService.getSingleRequest(userId, id);
+  }
+
+  @Get(':id/result')
+  async getMatchResult(
+    @Req() req: any,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    const userId = Number(req.user?.id);
+    if (!userId || isNaN(userId)) {
+      throw new UnauthorizedException('User not authenticated');
+    }
+    return this.versusService.getMatchResult(userId, id);
+  }
+
+  @Post(':id/submit-result')
+  async submitResult(
+    @Req() req: any,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: SubmitVersusResultDto,
+  ) {
+    const userId = Number(req.user?.id);
+    if (!userId || isNaN(userId)) {
+      throw new UnauthorizedException('User not authenticated');
+    }
+    return this.versusService.submitResult(userId, id, dto);
   }
 
   @Post(':id/fund')

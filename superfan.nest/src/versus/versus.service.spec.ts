@@ -3,7 +3,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { PrismaService } from '../config/database/prisma.service';
 import { NotificationService } from '../notification/notification.service';
 import { NotificationGateway } from '../notification/notification.gateway';
-import { VersusService } from './versus.service';
+import { determineVersusWinner, VersusService } from './versus.service';
 
 describe('VersusService', () => {
   let service: VersusService;
@@ -415,6 +415,287 @@ describe('VersusService', () => {
       await expect(service.toggleReady(2, 42, { ready: true })).rejects.toThrow(
         'You must fund your contribution before marking ready',
       );
+    });
+  });
+
+  describe('determineVersusWinner', () => {
+    it('Rule 1: Highest score wins', () => {
+      const resHost = determineVersusWinner(
+        { score: 25, timeSeconds: 60, accuracy: 80, streak: 2 },
+        { score: 20, timeSeconds: 30, accuracy: 90, streak: 5 },
+      );
+      expect(resHost.outcome).toBe('HOST_WON');
+
+      const resOpp = determineVersusWinner(
+        { score: 18, timeSeconds: 40, accuracy: 70, streak: 3 },
+        { score: 22, timeSeconds: 50, accuracy: 65, streak: 1 },
+      );
+      expect(resOpp.outcome).toBe('OPPONENT_WON');
+    });
+
+    it('Rule 2: Tied score -> fastest completion time wins', () => {
+      const resHost = determineVersusWinner(
+        { score: 25, timeSeconds: 45.2, accuracy: 80, streak: 1 },
+        { score: 25, timeSeconds: 50.8, accuracy: 95, streak: 10 },
+      );
+      expect(resHost.outcome).toBe('HOST_WON');
+
+      const resOpp = determineVersusWinner(
+        { score: 25, timeSeconds: 55.0, accuracy: 95, streak: 5 },
+        { score: 25, timeSeconds: 40.5, accuracy: 80, streak: 1 },
+      );
+      expect(resOpp.outcome).toBe('OPPONENT_WON');
+    });
+
+    it('Rule 3: Tied score and time -> highest accuracy wins', () => {
+      const resHost = determineVersusWinner(
+        { score: 25, timeSeconds: 45.0, accuracy: 92.5, streak: 0 },
+        { score: 25, timeSeconds: 45.0, accuracy: 88.0, streak: 8 },
+      );
+      expect(resHost.outcome).toBe('HOST_WON');
+
+      const resOpp = determineVersusWinner(
+        { score: 25, timeSeconds: 45.0, accuracy: 85.0, streak: 5 },
+        { score: 25, timeSeconds: 45.0, accuracy: 90.0, streak: 1 },
+      );
+      expect(resOpp.outcome).toBe('OPPONENT_WON');
+    });
+
+    it('Rule 4: Tied score, time, accuracy -> DRAW (streak is NOT a tie-breaker)', () => {
+      const resDraw = determineVersusWinner(
+        { score: 25, timeSeconds: 45.0, accuracy: 90.0, streak: 1 },
+        { score: 25, timeSeconds: 45.0, accuracy: 90.0, streak: 10 },
+      );
+      expect(resDraw.outcome).toBe('DRAW');
+    });
+  });
+
+  describe('submitResult and finalizeMatchAndPayout', () => {
+    it('rejects submission by non-participant', async () => {
+      prismaMock.versusRequest.findUnique.mockResolvedValue({
+        id: 99,
+        hostId: 1,
+        opponentId: 2,
+        status: 'STARTED',
+      });
+
+      await expect(
+        service.submitResult(3, 99, {
+          score: 20,
+          timeSeconds: 30,
+          accuracy: 80,
+          streak: 2,
+        }),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('prevents score modification if participant has already locked score (idempotent)', async () => {
+      prismaMock.versusRequest.findUnique.mockResolvedValue({
+        id: 99,
+        hostId: 1,
+        opponentId: 2,
+        status: 'STARTED',
+        hostCompletedAt: new Date(),
+        hostScore: 20,
+        hostTimeSeconds: 30,
+        hostAccuracy: 80,
+        hostStreak: 2,
+        opponentCompletedAt: null,
+      });
+
+      const res = await service.submitResult(1, 99, {
+        score: 25,
+        timeSeconds: 20,
+        accuracy: 90,
+        streak: 3,
+      });
+
+      expect(prismaMock.versusRequest.update).not.toHaveBeenCalled();
+      expect(res.hostScore).toBe(20);
+    });
+
+    it('credits full jackpot to winner Savings (goldBalance) ONLY on HOST_WON', async () => {
+      prismaMock.versusRequest.findUnique.mockResolvedValue({
+        id: 99,
+        hostId: 1,
+        opponentId: 2,
+        jackpot: 2000,
+        hostShare: 1000,
+        opponentShare: 1000,
+        hostFundingAccount: 'gold',
+        opponentFundingAccount: 'personal',
+        status: 'STARTED',
+        payoutStatus: 'PENDING',
+        hostScore: 25,
+        hostTimeSeconds: 40,
+        hostAccuracy: 90,
+        hostStreak: 3,
+        opponentScore: 20,
+        opponentTimeSeconds: 50,
+        opponentAccuracy: 80,
+        opponentStreak: 1,
+        host: { id: 1, username: 'alice' },
+        opponent: { id: 2, username: 'bob' },
+      });
+
+      prismaMock.versusRequest.update.mockResolvedValue({
+        id: 99,
+        status: 'COMPLETED',
+        outcome: 'HOST_WON',
+        winnerId: 1,
+        jackpotWon: 2000,
+        payoutStatus: 'PAID',
+        host: { id: 1, username: 'alice' },
+        opponent: { id: 2, username: 'bob' },
+      });
+
+      await service.finalizeMatchAndPayout(99);
+
+      // Verify winner (host userId: 1) Savings Account (goldBalance) is credited
+      expect(prismaMock.wallet.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { userId: 1 },
+          data: expect.objectContaining({
+            goldBalance: { increment: 2000 },
+          }),
+        }),
+      );
+
+      // Verify ledger transaction created with account_type gold
+      expect(prismaMock.walletTransaction.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            userId: 1,
+            amount: 2000,
+            account_type: 'gold',
+            transactionType: 'VERSUS_JACKPOT_PAYOUT',
+          }),
+        }),
+      );
+    });
+
+    it('refunds stakes to original source accounts on DRAW', async () => {
+      prismaMock.versusRequest.findUnique.mockResolvedValue({
+        id: 99,
+        hostId: 1,
+        opponentId: 2,
+        jackpot: 2000,
+        hostShare: 1200,
+        opponentShare: 800,
+        hostFundingAccount: 'gold',
+        opponentFundingAccount: 'personal',
+        status: 'STARTED',
+        payoutStatus: 'PENDING',
+        hostScore: 20,
+        hostTimeSeconds: 40,
+        hostAccuracy: 80,
+        hostStreak: 1,
+        opponentScore: 20,
+        opponentTimeSeconds: 40,
+        opponentAccuracy: 80,
+        opponentStreak: 5,
+        host: { id: 1, username: 'alice' },
+        opponent: { id: 2, username: 'bob' },
+      });
+
+      prismaMock.versusRequest.update.mockResolvedValue({
+        id: 99,
+        status: 'COMPLETED',
+        outcome: 'DRAW',
+        winnerId: null,
+        jackpotWon: 0,
+        payoutStatus: 'REFUNDED',
+        host: { id: 1, username: 'alice' },
+        opponent: { id: 2, username: 'bob' },
+      });
+
+      await service.finalizeMatchAndPayout(99);
+
+      // Host refunded to Savings (gold)
+      expect(prismaMock.wallet.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { userId: 1 },
+          data: expect.objectContaining({
+            goldBalance: { increment: 1200 },
+          }),
+        }),
+      );
+
+      // Opponent refunded to Checking (personal)
+      expect(prismaMock.wallet.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { userId: 2 },
+          data: expect.objectContaining({
+            personalBalance: { increment: 800 },
+          }),
+        }),
+      );
+
+      // Immutable refund transactions
+      expect(prismaMock.walletTransaction.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            userId: 1,
+            amount: 1200,
+            account_type: 'gold',
+            transactionType: 'VERSUS_DRAW_REFUND',
+          }),
+        }),
+      );
+
+      expect(prismaMock.walletTransaction.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            userId: 2,
+            amount: 800,
+            account_type: 'personal',
+            transactionType: 'VERSUS_DRAW_REFUND',
+          }),
+        }),
+      );
+    });
+
+    it('is idempotent and skips payout/refund if already settled', async () => {
+      prismaMock.versusRequest.findUnique.mockResolvedValue({
+        id: 99,
+        hostId: 1,
+        opponentId: 2,
+        status: 'COMPLETED',
+        payoutStatus: 'PAID',
+      });
+
+      await service.finalizeMatchAndPayout(99);
+
+      expect(prismaMock.wallet.update).not.toHaveBeenCalled();
+      expect(prismaMock.walletTransaction.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getMatchResult masking', () => {
+    it('masks opponent metrics as null when opponent has not finished', async () => {
+      prismaMock.versusRequest.findUnique.mockResolvedValue({
+        id: 101,
+        hostId: 1,
+        opponentId: 2,
+        status: 'STARTED',
+        hostScore: 25,
+        hostTimeSeconds: 40,
+        hostAccuracy: 90,
+        hostStreak: 2,
+        hostCompletedAt: new Date(),
+        opponentScore: 15,
+        opponentTimeSeconds: 60,
+        opponentAccuracy: 70,
+        opponentStreak: 1,
+        opponentCompletedAt: null,
+      });
+
+      const result = await service.getMatchResult(1, 101);
+      expect(result.hostScore).toBe(25);
+      expect(result.opponentScore).toBeNull();
+      expect(result.opponentTimeSeconds).toBeNull();
+      expect(result.opponentAccuracy).toBeNull();
+      expect(result.opponentStreak).toBeNull();
     });
   });
 });

@@ -63,3 +63,17 @@ export class ToggleReadyDto {
   @IsBoolean()
   ready: boolean;
 }
+
+export class SubmitVersusResultDto {
+  @IsNumber()
+  score: number;
+
+  @IsNumber()
+  timeSeconds: number;
+
+  @IsNumber()
+  accuracy: number;
+
+  @IsNumber()
+  streak: number;
+}

@@ -397,6 +397,24 @@ model VersusRequest {
   opponentReady          Boolean   @default(false)
   opponentFunded         Boolean   @default(false)
   matchReference         String?
+  hostScore              Int?
+  hostTimeSeconds        Float?
+  hostAccuracy           Float?
+  hostStreak             Int?
+  hostCompletedAt        DateTime?
+  hostOutcome            String?
+  opponentScore          Int?
+  opponentTimeSeconds    Float?
+  opponentAccuracy       Float?
+  opponentStreak         Int?
+  opponentCompletedAt    DateTime?
+  opponentOutcome        String?
+  winnerId               Int?
+  outcome                String?
+  jackpotWon             Float?    @default(0)
+  payoutStatus           String    @default("UNPAID")
+  payoutTxRef            String?
+  settledAt              DateTime?
   createdAt              DateTime  @default(now())
   updatedAt              DateTime  @updatedAt
 

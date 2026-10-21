@@ -14,8 +14,61 @@ import {
   AcceptVersusDto,
   CreateVersusDto,
   FundVersusDto,
+  SubmitVersusResultDto,
   ToggleReadyDto,
 } from './dto/create-versus.dto';
+
+export type VersusMatchOutcome = 'HOST_WON' | 'OPPONENT_WON' | 'DRAW';
+
+export interface ParticipantMetrics {
+  score: number;
+  timeSeconds: number;
+  accuracy: number;
+  streak: number;
+}
+
+/**
+ * Deterministic winner determination hierarchy:
+ * 1) Highest score wins
+ * 2) Tied score: fastest completion time wins
+ * 3) Tied score and time: highest accuracy wins
+ * 4) If score, time, and accuracy are equal, draw. Streak is displayed but is NOT a tie-breaker.
+ */
+export function determineVersusWinner(
+  host: ParticipantMetrics,
+  opponent: ParticipantMetrics,
+): { outcome: VersusMatchOutcome; reason: string } {
+  // 1) Highest score
+  if (host.score > opponent.score) {
+    return { outcome: 'HOST_WON', reason: 'Highest score' };
+  }
+  if (opponent.score > host.score) {
+    return { outcome: 'OPPONENT_WON', reason: 'Highest score' };
+  }
+
+  // 2) Tied score -> fastest completion time wins
+  const hostTime = Math.round(host.timeSeconds * 100) / 100;
+  const oppTime = Math.round(opponent.timeSeconds * 100) / 100;
+  if (hostTime < oppTime) {
+    return { outcome: 'HOST_WON', reason: 'Fastest completion time' };
+  }
+  if (oppTime < hostTime) {
+    return { outcome: 'OPPONENT_WON', reason: 'Fastest completion time' };
+  }
+
+  // 3) Tied score and time -> highest accuracy wins
+  const hostAcc = Math.round(host.accuracy * 100) / 100;
+  const oppAcc = Math.round(opponent.accuracy * 100) / 100;
+  if (hostAcc > oppAcc) {
+    return { outcome: 'HOST_WON', reason: 'Highest accuracy' };
+  }
+  if (oppAcc > hostAcc) {
+    return { outcome: 'OPPONENT_WON', reason: 'Highest accuracy' };
+  }
+
+  // 4) All three equal -> DRAW (Streak is NOT a tie-breaker)
+  return { outcome: 'DRAW', reason: 'Equal score, time, and accuracy' };
+}
 
 @Injectable()
 export class VersusService {
@@ -54,7 +107,7 @@ export class VersusService {
   /**
    * Helper to emit versus event to authorized participants
    */
-  private emitVersusEvent(hostId: number, opponentId: number, event: string, payload: any) {
+  public emitVersusEvent(hostId: number, opponentId: number, event: string, payload: any) {
     try {
       this.notificationGateway.sendVersusEvent([hostId, opponentId], event, payload);
     } catch (err: any) {
@@ -130,7 +183,6 @@ export class VersusService {
     const accountType = this.normalizeAccountType(dto.fundingAccount);
     const mode = this.normalizeMode(dto.mode);
 
-    // Metadata defaults
     const language = dto.language || host.languagePreference || 'Yoruba';
     const subject = dto.subject || host.subjectPreference || 'General';
     const level = dto.level || (host.testLevel as string) || 'Basic';
@@ -294,7 +346,6 @@ export class VersusService {
         return { refunded: false, request };
       }
 
-      // Update status
       const updated = await tx.versusRequest.update({
         where: { id: requestId },
         data: {
@@ -308,7 +359,6 @@ export class VersusService {
         },
       });
 
-      // Refund host
       if (request.hostFundingAccount === 'gold') {
         await tx.wallet.update({
           where: { userId: request.hostId },
@@ -343,7 +393,6 @@ export class VersusService {
         },
       });
 
-      // If opponent was also funded, refund opponent too!
       if (request.opponentFunded && request.opponentFundingAccount) {
         const oppRefundRef = `VERSUS_REFUND_OPP_${Date.now()}_${randomBytes(4).toString('hex').toUpperCase()}`;
         if (request.opponentFundingAccount === 'gold') {
@@ -396,7 +445,7 @@ export class VersusService {
   }
 
   /**
-   * Opponent funds their share using Superfan Vault picker without auto-starting match.
+   * Opponent funds their share using Superfan Vault picker.
    */
   async fundOpponentShare(opponentUserId: number, requestId: number, dto: FundVersusDto) {
     const accountType = this.normalizeAccountType(dto.fundingAccount);
@@ -533,15 +582,12 @@ export class VersusService {
     return updated;
   }
 
-  /**
-   * Opponent accepts request and funds their share (convenience wrapper around funding).
-   */
   async acceptRequest(opponentUserId: number, requestId: number, dto: AcceptVersusDto) {
     return this.fundOpponentShare(opponentUserId, requestId, dto);
   }
 
   /**
-   * Host starts the match once opponent is ready and funded.
+   * Host starts match once opponent is ready and funded.
    */
   async startRequest(hostUserId: number, requestId: number) {
     const now = new Date();
@@ -600,8 +646,411 @@ export class VersusService {
   }
 
   /**
-   * Either participant cancels the match before start. Triggers refunds.
+   * Submit participant quiz results. Server locks score and checks for match finalization.
    */
+  async submitResult(userId: number, requestId: number, dto: SubmitVersusResultDto) {
+    const request = await this.prisma.versusRequest.findUnique({
+      where: { id: requestId },
+      include: {
+        host: { select: { id: true, username: true } },
+        opponent: { select: { id: true, username: true } },
+      },
+    });
+
+    if (!request) {
+      throw new NotFoundException(`Versus match ${requestId} not found`);
+    }
+
+    if (request.hostId !== userId && request.opponentId !== userId) {
+      throw new ForbiddenException('You are not a participant in this versus match');
+    }
+
+    if (['CANCELLED', 'DECLINED', 'EXPIRED'].includes(request.status)) {
+      throw new BadRequestException(`Cannot submit results for ${request.status.toLowerCase()} match`);
+    }
+
+    const isHost = request.hostId === userId;
+    const now = new Date();
+
+    // Idempotent guard: if caller already submitted, return current state
+    if (isHost && request.hostCompletedAt) {
+      return this.getMatchResult(userId, requestId);
+    }
+    if (!isHost && request.opponentCompletedAt) {
+      return this.getMatchResult(userId, requestId);
+    }
+
+    // Lock caller's score
+    const updated = await this.prisma.versusRequest.update({
+      where: { id: requestId },
+      data: isHost
+        ? {
+            hostScore: dto.score,
+            hostTimeSeconds: dto.timeSeconds,
+            hostAccuracy: dto.accuracy,
+            hostStreak: dto.streak,
+            hostCompletedAt: now,
+          }
+        : {
+            opponentScore: dto.score,
+            opponentTimeSeconds: dto.timeSeconds,
+            opponentAccuracy: dto.accuracy,
+            opponentStreak: dto.streak,
+            opponentCompletedAt: now,
+          },
+      include: {
+        host: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
+        opponent: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
+      },
+    });
+
+    // Check if opponent is also completed
+    const bothFinished = Boolean(
+      (isHost ? updated.opponentCompletedAt : updated.hostCompletedAt) &&
+      (isHost ? updated.hostCompletedAt : updated.opponentCompletedAt),
+    );
+
+    if (bothFinished) {
+      return this.finalizeMatchAndPayout(requestId);
+    }
+
+    // First finisher: emit result_locked
+    this.emitVersusEvent(request.hostId, request.opponentId, 'versus:result_locked', {
+      requestId: updated.id,
+      completedUserId: userId,
+    });
+    this.emitVersusEvent(request.hostId, request.opponentId, 'versus:updated', updated);
+
+    return this.getMatchResult(userId, requestId);
+  }
+
+  /**
+   * Deterministic match settlement: winner payout to Savings only OR draw refund to original accounts.
+   */
+  async finalizeMatchAndPayout(requestId: number) {
+    const payoutTxRef = `VERSUS_PAYOUT_${Date.now()}_${randomBytes(4).toString('hex').toUpperCase()}`;
+
+    const finalized = await this.prisma.$transaction(async (tx) => {
+      const match = await tx.versusRequest.findUnique({
+        where: { id: requestId },
+        include: {
+          host: { select: { id: true, username: true } },
+          opponent: { select: { id: true, username: true } },
+        },
+      });
+
+      if (!match) {
+        throw new NotFoundException(`Versus match ${requestId} not found`);
+      }
+
+      // Idempotency: if already paid or refunded, do not double pay/refund
+      if (match.payoutStatus === 'PAID' || match.payoutStatus === 'REFUNDED') {
+        return match;
+      }
+
+      if (match.hostScore === null || match.opponentScore === null) {
+        throw new BadRequestException('Cannot finalize match: both players have not finished');
+      }
+
+      const hostMetrics: ParticipantMetrics = {
+        score: match.hostScore ?? 0,
+        timeSeconds: match.hostTimeSeconds ?? 0,
+        accuracy: match.hostAccuracy ?? 0,
+        streak: match.hostStreak ?? 0,
+      };
+
+      const oppMetrics: ParticipantMetrics = {
+        score: match.opponentScore ?? 0,
+        timeSeconds: match.opponentTimeSeconds ?? 0,
+        accuracy: match.opponentAccuracy ?? 0,
+        streak: match.opponentStreak ?? 0,
+      };
+
+      const { outcome } = determineVersusWinner(hostMetrics, oppMetrics);
+      const now = new Date();
+
+      if (outcome === 'HOST_WON') {
+        const winnerId = match.hostId;
+        const prize = match.jackpot;
+
+        // Credit full jackpot to winner's Savings Account (goldBalance) ONLY
+        await tx.wallet.update({
+          where: { userId: winnerId },
+          data: {
+            goldBalance: { increment: prize },
+            balance: { increment: prize },
+          },
+        });
+
+        // Record immutable ledger payout
+        await tx.walletTransaction.create({
+          data: {
+            userId: winnerId,
+            amount: prize,
+            type: 'credit',
+            currency: 'NGN',
+            status: 'SUCCESS',
+            payment_method: 'versus_jackpot',
+            account_type: 'gold',
+            transactionType: 'VERSUS_JACKPOT_PAYOUT',
+            trx_ref: payoutTxRef,
+            reference: payoutTxRef,
+            description: `Versus match jackpot win payout against @${match.opponent.username}`,
+          },
+        });
+
+        return tx.versusRequest.update({
+          where: { id: requestId },
+          data: {
+            status: 'COMPLETED',
+            outcome: 'HOST_WON',
+            winnerId,
+            jackpotWon: prize,
+            payoutStatus: 'PAID',
+            payoutTxRef,
+            hostOutcome: 'WON',
+            opponentOutcome: 'LOST',
+            settledAt: now,
+          },
+          include: {
+            host: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
+            opponent: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
+          },
+        });
+      } else if (outcome === 'OPPONENT_WON') {
+        const winnerId = match.opponentId;
+        const prize = match.jackpot;
+
+        // Credit full jackpot to winner's Savings Account (goldBalance) ONLY
+        await tx.wallet.update({
+          where: { userId: winnerId },
+          data: {
+            goldBalance: { increment: prize },
+            balance: { increment: prize },
+          },
+        });
+
+        // Record immutable ledger payout
+        await tx.walletTransaction.create({
+          data: {
+            userId: winnerId,
+            amount: prize,
+            type: 'credit',
+            currency: 'NGN',
+            status: 'SUCCESS',
+            payment_method: 'versus_jackpot',
+            account_type: 'gold',
+            transactionType: 'VERSUS_JACKPOT_PAYOUT',
+            trx_ref: payoutTxRef,
+            reference: payoutTxRef,
+            description: `Versus match jackpot win payout against @${match.host.username}`,
+          },
+        });
+
+        return tx.versusRequest.update({
+          where: { id: requestId },
+          data: {
+            status: 'COMPLETED',
+            outcome: 'OPPONENT_WON',
+            winnerId,
+            jackpotWon: prize,
+            payoutStatus: 'PAID',
+            payoutTxRef,
+            hostOutcome: 'LOST',
+            opponentOutcome: 'WON',
+            settledAt: now,
+          },
+          include: {
+            host: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
+            opponent: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
+          },
+        });
+      } else {
+        // DRAW: Zero jackpot won, refund original contributions to source accounts
+        const hostRefundRef = `VERSUS_DRAW_HOST_${Date.now()}_${randomBytes(3).toString('hex').toUpperCase()}`;
+        const oppRefundRef = `VERSUS_DRAW_OPP_${Date.now()}_${randomBytes(3).toString('hex').toUpperCase()}`;
+
+        // Host refund to original account
+        if (match.hostFundingAccount === 'gold') {
+          await tx.wallet.update({
+            where: { userId: match.hostId },
+            data: {
+              goldBalance: { increment: match.hostShare },
+              balance: { increment: match.hostShare },
+            },
+          });
+        } else {
+          await tx.wallet.update({
+            where: { userId: match.hostId },
+            data: {
+              personalBalance: { increment: match.hostShare },
+              balance: { increment: match.hostShare },
+            },
+          });
+        }
+
+        await tx.walletTransaction.create({
+          data: {
+            userId: match.hostId,
+            amount: match.hostShare,
+            type: 'credit',
+            currency: 'NGN',
+            status: 'SUCCESS',
+            payment_method: 'versus_escrow',
+            account_type: match.hostFundingAccount,
+            transactionType: 'VERSUS_DRAW_REFUND',
+            trx_ref: hostRefundRef,
+            reference: hostRefundRef,
+            description: `Versus match draw stake refund for challenge to @${match.opponent.username}`,
+          },
+        });
+
+        // Opponent refund to original account
+        const oppAccount = match.opponentFundingAccount || 'personal';
+        if (oppAccount === 'gold') {
+          await tx.wallet.update({
+            where: { userId: match.opponentId },
+            data: {
+              goldBalance: { increment: match.opponentShare },
+              balance: { increment: match.opponentShare },
+            },
+          });
+        } else {
+          await tx.wallet.update({
+            where: { userId: match.opponentId },
+            data: {
+              personalBalance: { increment: match.opponentShare },
+              balance: { increment: match.opponentShare },
+            },
+          });
+        }
+
+        await tx.walletTransaction.create({
+          data: {
+            userId: match.opponentId,
+            amount: match.opponentShare,
+            type: 'credit',
+            currency: 'NGN',
+            status: 'SUCCESS',
+            payment_method: 'versus_escrow',
+            account_type: oppAccount,
+            transactionType: 'VERSUS_DRAW_REFUND',
+            trx_ref: oppRefundRef,
+            reference: oppRefundRef,
+            description: `Versus match draw stake refund for challenge to @${match.host.username}`,
+          },
+        });
+
+        return tx.versusRequest.update({
+          where: { id: requestId },
+          data: {
+            status: 'COMPLETED',
+            outcome: 'DRAW',
+            winnerId: null,
+            jackpotWon: 0,
+            payoutStatus: 'REFUNDED',
+            payoutTxRef: `${hostRefundRef},${oppRefundRef}`,
+            hostOutcome: 'DRAW',
+            opponentOutcome: 'DRAW',
+            settledAt: now,
+          },
+          include: {
+            host: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
+            opponent: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
+          },
+        });
+      }
+    });
+
+    this.emitVersusEvent(finalized.hostId, finalized.opponentId, 'versus:completed', finalized);
+    this.emitVersusEvent(finalized.hostId, finalized.opponentId, 'versus:updated', finalized);
+
+    return finalized;
+  }
+
+  /**
+   * Get match result with unfinished opponent masking.
+   */
+  async getMatchResult(userId: number, requestId: number) {
+    const match = await this.prisma.versusRequest.findUnique({
+      where: { id: requestId },
+      include: {
+        host: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
+        opponent: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
+      },
+    });
+
+    if (!match) {
+      throw new NotFoundException(`Versus match ${requestId} not found`);
+    }
+
+    if (match.hostId !== userId && match.opponentId !== userId) {
+      throw new ForbiddenException('Not a participant');
+    }
+
+    const isHost = match.hostId === userId;
+    const opponentFinished = Boolean(isHost ? match.opponentCompletedAt : match.hostCompletedAt);
+
+    // Mask opponent metrics if opponent has not yet completed
+    if (!opponentFinished && match.status !== 'COMPLETED') {
+      return {
+        ...match,
+        ...(isHost
+          ? {
+              opponentScore: null,
+              opponentTimeSeconds: null,
+              opponentAccuracy: null,
+              opponentStreak: null,
+            }
+          : {
+              hostScore: null,
+              hostTimeSeconds: null,
+              hostAccuracy: null,
+              hostStreak: null,
+            }),
+      };
+    }
+
+    return match;
+  }
+
+  /**
+   * Get completed versus history for user / admin ledger.
+   */
+  async getVersusHistory(userId: number) {
+    const matches = await this.prisma.versusRequest.findMany({
+      where: {
+        OR: [{ hostId: userId }, { opponentId: userId }],
+      },
+      include: {
+        host: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
+        opponent: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+    });
+
+    return matches.map((m) => {
+      const isHost = m.hostId === userId;
+      let state: 'won' | 'lost' | 'draw' | 'waiting' | 'cancelled' = 'waiting';
+
+      if (m.status === 'COMPLETED') {
+        if (m.outcome === 'DRAW') state = 'draw';
+        else if (m.winnerId === userId) state = 'won';
+        else state = 'lost';
+      } else if (['CANCELLED', 'DECLINED', 'EXPIRED'].includes(m.status)) {
+        state = 'cancelled';
+      } else if (isHost ? m.hostCompletedAt : m.opponentCompletedAt) {
+        state = 'waiting';
+      }
+
+      return {
+        ...m,
+        userResultState: state,
+      };
+    });
+  }
+
   async cancelRequest(userId: number, requestId: number) {
     const request = await this.prisma.versusRequest.findUnique({
       where: { id: requestId },
@@ -615,8 +1064,8 @@ export class VersusService {
       throw new ForbiddenException('You are not authorized to cancel this challenge');
     }
 
-    if (request.status === 'STARTED') {
-      throw new BadRequestException('Cannot cancel a match that has already started');
+    if (request.status === 'STARTED' || request.status === 'COMPLETED') {
+      throw new BadRequestException('Cannot cancel a match that has already started or completed');
     }
 
     if (request.status === 'CANCELLED' || request.status === 'DECLINED' || request.status === 'EXPIRED') {
@@ -627,9 +1076,6 @@ export class VersusService {
     return updated;
   }
 
-  /**
-   * Opponent declines challenge before funding. Triggers host refund.
-   */
   async declineRequest(opponentUserId: number, requestId: number) {
     const request = await this.prisma.versusRequest.findUnique({
       where: { id: requestId },
@@ -657,9 +1103,6 @@ export class VersusService {
     return updated;
   }
 
-  /**
-   * Toggle opponent readiness (requires opponent to be funded).
-   */
   async toggleReady(userId: number, requestId: number, dto: ToggleReadyDto) {
     const request = await this.prisma.versusRequest.findUnique({
       where: { id: requestId },
@@ -693,9 +1136,6 @@ export class VersusService {
     return updated;
   }
 
-  /**
-   * Get single request detail with on-read passive expiry check.
-   */
   async getSingleRequest(userId: number, requestId: number) {
     const now = new Date();
     const request = await this.prisma.versusRequest.findUnique({
@@ -722,9 +1162,6 @@ export class VersusService {
     return request;
   }
 
-  /**
-   * Get active and pending requests for user with on-read expiry sweep.
-   */
   async getActiveRequests(userId: number) {
     const now = new Date();
 
@@ -761,9 +1198,6 @@ export class VersusService {
     });
   }
 
-  /**
-   * Sweep and refund all expired pending requests (used by cron job).
-   */
   async sweepExpiredRequests() {
     const now = new Date();
     const expiredList = await this.prisma.versusRequest.findMany({
