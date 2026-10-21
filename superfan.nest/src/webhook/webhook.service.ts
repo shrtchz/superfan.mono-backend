@@ -1005,11 +1005,14 @@ if (bankTransfer) {
     try {
       const { Webhook } = await import('svix');
       const wh = new Webhook(webhookSecret);
-      return wh.verify(rawBody, {
+      wh.verify(rawBody, {
         'svix-id': svixId,
         'svix-timestamp': svixTimestamp,
         'svix-signature': svixSignature,
       });
+
+      const parsed = typeof rawBody === 'string' ? JSON.parse(rawBody) : rawBody;
+      return parsed;
     } catch (err: any) {
       this.logger.warn('Clerk webhook signature verification failed: ' + err.message);
       throw new UnauthorizedException('Invalid Clerk webhook signature: ' + err.message);
