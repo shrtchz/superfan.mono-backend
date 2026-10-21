@@ -175,17 +175,30 @@ async handleBitnobWebhook(
     @Req() req: Request & { rawBody?: Buffer },
     @Body() body: any,
   ): Promise<any> {
+    this.logger.log(`[Clerk Webhook] >>> Incoming POST to /webhooks/clerk (svix-id: ${svixId}, svix-timestamp: ${svixTimestamp})`);
+
     const rawBody =
       req.rawBody?.toString('utf-8') ||
       (typeof body === 'string' ? body : JSON.stringify(body));
 
-    const event = await this.webhookService.verifyClerkWebhook(rawBody, {
-      'svix-id': svixId,
-      'svix-timestamp': svixTimestamp,
-      'svix-signature': svixSignature,
-    });
+    let event: any;
+    try {
+      event = await this.webhookService.verifyClerkWebhook(rawBody, {
+        'svix-id': svixId,
+        'svix-timestamp': svixTimestamp,
+        'svix-signature': svixSignature,
+      });
+      if (!event || typeof event !== 'object' || !event.type) {
+        event = typeof rawBody === 'string' ? JSON.parse(rawBody) : body;
+      }
+      this.logger.log(`[Clerk Webhook] Signature verified. Event type: "${event?.type}"`);
+    } catch (verifyErr: any) {
+      this.logger.error(`[Clerk Webhook] Signature verification failed: ${verifyErr?.message}`);
+      throw verifyErr;
+    }
 
     const result = await this.webhookService.handleClerkWebhookEvent(event);
+    this.logger.log(`[Clerk Webhook] <<< Result: ${JSON.stringify(result)}`);
     return result;
   }
 

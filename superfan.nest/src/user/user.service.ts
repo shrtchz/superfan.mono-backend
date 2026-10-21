@@ -271,12 +271,14 @@ export class UserService {
         role: user.roleName,
       });
 
-      const magicLink = await this.generateMagicLink(user);
+      const magicLink = await this.generateMagicLink(user).catch(() => null);
+      const frontendUrl = process.env.FRONTEND_URL || 'https://superfan.ng';
+      const startQuizUrl = magicLink?.magicLinkURI || `${frontendUrl}/get-started`;
 
       await this.mail.welcomeUserEmail(
         dto.email,
-        user.firstName,
-        magicLink.magicLinkURI,
+        user.firstName || 'Superfan',
+        startQuizUrl,
       );
 
       return { message: 'Email verified successfully', id: user.id };
@@ -461,6 +463,42 @@ export class UserService {
         await this.flagNewLoginDevice(user, userAgent);
       } catch {
         // notifications must never break login flow
+      }
+
+      // Automatically send welcome email once OTP / email is verified if not already sent
+      const isEmailVerified = Boolean(
+        clerkUser.emailAddresses?.some(
+          (e: any) => e.verification?.status === 'verified',
+        ),
+      );
+
+      if (isEmailVerified && !clerkUser.publicMetadata?.welcomeEmailSent) {
+        try {
+          const magicLink = await this.generateMagicLink(user).catch(() => null);
+          const frontendUrl = process.env.FRONTEND_URL || 'https://superfan.ng';
+          const startQuizUrl = magicLink?.magicLinkURI || `${frontendUrl}/get-started`;
+          await this.mail.welcomeUserEmail(
+            user.email,
+            user.firstName || clerkUser.firstName || 'Superfan',
+            startQuizUrl,
+          );
+          await this.clerkService
+            .getClient()
+            .users.updateUser(clerkUserId, {
+              publicMetadata: {
+                ...(clerkUser.publicMetadata || {}),
+                welcomeEmailSent: true,
+              },
+            })
+            .catch((err) => {
+              console.warn(
+                'Failed to update Clerk publicMetadata with welcomeEmailSent:',
+                err?.message,
+              );
+            });
+        } catch (welcomeErr) {
+          console.warn('Failed to send welcome email in syncFromClerk:', welcomeErr);
+        }
       }
 
       return this.formatSyncUser(user);
@@ -3190,19 +3228,7 @@ async findUserByEmail(email: string): Promise<any> {
       await this.processReferralSignup(user, data.referralCode);
     }
 
-    // Send welcome email asynchronously
-    try {
-      const magicLink = await this.generateMagicLink(user).catch(() => null);
-      const frontendUrl = process.env.FRONTEND_URL || 'https://superfan.ng';
-      const startQuizUrl = magicLink?.magicLinkURI || `${frontendUrl}/get-started`;
-      await this.mail.welcomeUserEmail(
-        user.email,
-        user.firstName || 'Superfan',
-        startQuizUrl,
-      );
-    } catch (welcomeErr) {
-      console.warn('Failed to queue welcome email for Clerk registered user:', welcomeErr);
-    }
+    // Welcome email is triggered automatically once user email/OTP is verified
 
     return user;
   }
