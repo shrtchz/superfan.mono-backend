@@ -123,21 +123,43 @@ export class MailService implements OnModuleInit {
   }
 
   async welcomeUserEmail(email: string, firstName: string, magicLink: string) {
-  try {
-    await this.mailQueue.add('send_email', {
-      to: email,
-      from: `Superfan <${
+    try {
+      const senderEmail =
         this.configService.get<string>('LOCAL_SENDER_EMAIL') ||
-        this.configService.get<string>('PROD_SENDER_EMAIL')
-      }>`,
-      subject: 'Welcome to superfan!',
-      template: './welcome-superfan',
-      context: { email, firstName, start_quiz_url: magicLink },
-    });
-  } catch (error) {
-    throw failureResponse(error);
+        this.configService.get<string>('PROD_SENDER_EMAIL') ||
+        'admin@superfan.ng';
+      const senderName =
+        this.configService.get<string>('LOCAL_SENDER_NAME') ||
+        this.configService.get<string>('PROD_SENDER_NAME') ||
+        'Superfan';
+
+      this.logger.log(`[MailService] Adding 'send_email' (welcome) job to BullMQ queue "mail" for ${email}...`);
+
+      const job = await this.mailQueue.add(
+        'send_email',
+        {
+          to: email,
+          from: `"${senderName}" <${senderEmail}>`,
+          subject: 'Welcome to Superfan!',
+          template: './welcome-superfan',
+          context: { email, firstName, start_quiz_url: magicLink },
+        },
+        {
+          attempts: 5,
+          backoff: {
+            type: 'exponential',
+            delay: 10000,
+          },
+        },
+      );
+
+      this.logger.log(`[MailService] Successfully queued welcome email job with ID: ${job?.id}`);
+      return job;
+    } catch (error: any) {
+      this.logger.error(`[MailService] Failed to queue welcomeUserEmail for ${email}: ${error?.message}`, error?.stack);
+      throw failureResponse(error);
+    }
   }
-}
 
   // in email, figure out which details should be used for the link.
   // check the link in the frontend and make sure it works with the details sent in the email.
