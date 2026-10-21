@@ -95,7 +95,7 @@ export class ElasticsearchService implements OnModuleInit {
 
 
   /** Upsert a user document into ES when created/updated via Prisma */
-  async indexUser(user: { id: number; username: string; email?: string; createdAt?: Date }) {
+  async indexUser(user: { id: number; username: string; email?: string; createdAt?: Date; profilePicture?: string | null }) {
     if (!this.client) return;
     await this.client.index({
       index: 'users',

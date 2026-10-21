@@ -1280,8 +1280,39 @@ async getCard(userId: number): Promise<any> {
     if (!results.length) {
       return prisma.user.findMany({
         where: { username: { contains: query, mode: 'insensitive' } },
-        select: { id: true, username: true },
+        select: {
+          id: true,
+          username: true,
+          profilePicture: true,
+          firstName: true,
+          lastName: true,
+        },
         take: limit,
+      });
+    }
+
+    // Enrich ES results with profilePicture and names from Prisma
+    const userIds = results.map((r: any) => Number(r.id)).filter(Boolean);
+    if (userIds.length > 0) {
+      const users = await prisma.user.findMany({
+        where: { id: { in: userIds } },
+        select: {
+          id: true,
+          username: true,
+          profilePicture: true,
+          firstName: true,
+          lastName: true,
+        },
+      });
+      const userMap = new Map(users.map((u) => [u.id, u]));
+      return results.map((r: any) => {
+        const u = userMap.get(Number(r.id));
+        return {
+          ...r,
+          profilePicture: u?.profilePicture ?? null,
+          firstName: u?.firstName ?? null,
+          lastName: u?.lastName ?? null,
+        };
       });
     }
 
@@ -1292,9 +1323,9 @@ async getCard(userId: number): Promise<any> {
   async indexUser(userId: number) {
     const user = await prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, username: true, email: true, createdAt: true },
+      select: { id: true, username: true, email: true, createdAt: true, profilePicture: true },
     });
-    if (user) await this.es.indexUser({id: user.id, username: user.username, email: user.email, createdAt: user.createdAt });
+    if (user) await this.es.indexUser({id: user.id, username: user.username, email: user.email, createdAt: user.createdAt, profilePicture: user.profilePicture });
   }
 
   async findUserByUsername(username: string): Promise<any> {
