@@ -388,6 +388,15 @@ model VersusRequest {
   refundTxRef            String?   @unique
   expiresAt              DateTime
   startedAt              DateTime?
+  language               String    @default("Yoruba")
+  subject                String    @default("General")
+  level                  String    @default("Basic")
+  questionsCount         Int       @default(25)
+  durationMinutes        Int       @default(5)
+  hostReady              Boolean   @default(true)
+  opponentReady          Boolean   @default(false)
+  opponentFunded         Boolean   @default(false)
+  matchReference         String?
   createdAt              DateTime  @default(now())
   updatedAt              DateTime  @updatedAt
 

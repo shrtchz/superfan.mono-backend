@@ -1,4 +1,4 @@
-import { IsNotEmpty, IsNumber, IsPositive, IsString, IsIn } from 'class-validator';
+import { IsNotEmpty, IsNumber, IsPositive, IsString, IsIn, IsOptional, IsBoolean } from 'class-validator';
 
 export class CreateVersusDto {
   @IsString()
@@ -25,10 +25,41 @@ export class CreateVersusDto {
   @IsString()
   @IsIn(['gold', 'personal', 'savings', 'checking', 'Savings', 'Checking'])
   fundingAccount: string;
+
+  @IsOptional()
+  @IsString()
+  language?: string;
+
+  @IsOptional()
+  @IsString()
+  subject?: string;
+
+  @IsOptional()
+  @IsString()
+  level?: string;
+
+  @IsOptional()
+  @IsNumber()
+  questionsCount?: number;
+
+  @IsOptional()
+  @IsNumber()
+  durationMinutes?: number;
 }
 
 export class AcceptVersusDto {
   @IsString()
   @IsIn(['gold', 'personal', 'savings', 'checking', 'Savings', 'Checking'])
   fundingAccount: string;
+}
+
+export class FundVersusDto {
+  @IsString()
+  @IsIn(['gold', 'personal', 'savings', 'checking', 'Savings', 'Checking'])
+  fundingAccount: string;
+}
+
+export class ToggleReadyDto {
+  @IsBoolean()
+  ready: boolean;
 }

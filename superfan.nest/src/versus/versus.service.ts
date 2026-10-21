@@ -9,7 +9,13 @@ import { randomBytes } from 'crypto';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../config/database/prisma.service';
 import { NotificationService } from '../notification/notification.service';
-import { AcceptVersusDto, CreateVersusDto } from './dto/create-versus.dto';
+import { NotificationGateway } from '../notification/notification.gateway';
+import {
+  AcceptVersusDto,
+  CreateVersusDto,
+  FundVersusDto,
+  ToggleReadyDto,
+} from './dto/create-versus.dto';
 
 @Injectable()
 export class VersusService {
@@ -18,12 +24,13 @@ export class VersusService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly notificationService: NotificationService,
+    private readonly notificationGateway: NotificationGateway,
   ) {}
 
   /**
    * Helper to normalize account type string to standard 'gold' (Savings) or 'personal' (Checking)
    */
-  private normalizeAccountType(acc: string): 'gold' | 'personal' {
+  public normalizeAccountType(acc: string): 'gold' | 'personal' {
     const lower = (acc || '').toLowerCase().trim();
     if (lower === 'gold' || lower === 'savings') return 'gold';
     if (lower === 'personal' || lower === 'checking') return 'personal';
@@ -35,13 +42,24 @@ export class VersusService {
   /**
    * Helper to normalize mode to 'LIVE_1V1' or 'SCHEDULE_H2H'
    */
-  private normalizeMode(mode: string): 'LIVE_1V1' | 'SCHEDULE_H2H' {
+  public normalizeMode(mode: string): 'LIVE_1V1' | 'SCHEDULE_H2H' {
     const lower = (mode || '').toLowerCase();
     if (lower.includes('live') || lower.includes('1v1')) return 'LIVE_1V1';
     if (lower.includes('schedule') || lower.includes('h2h')) return 'SCHEDULE_H2H';
     throw new BadRequestException(
       `Invalid versus mode: '${mode}'. Must be Live 1v1 or Schedule H2H.`,
     );
+  }
+
+  /**
+   * Helper to emit versus event to authorized participants
+   */
+  private emitVersusEvent(hostId: number, opponentId: number, event: string, payload: any) {
+    try {
+      this.notificationGateway.sendVersusEvent([hostId, opponentId], event, payload);
+    } catch (err: any) {
+      this.logger.warn(`Failed to emit socket event ${event}: ${err.message}`);
+    }
   }
 
   /**
@@ -52,7 +70,6 @@ export class VersusService {
       throw new ForbiddenException('User not authenticated');
     }
 
-    // 1. Clean opponent username and prevent self-challenge
     const cleanOpponent = (dto.opponent || '').replace(/^@/, '').trim();
     if (!cleanOpponent) {
       throw new BadRequestException('Opponent username is required');
@@ -71,7 +88,6 @@ export class VersusService {
       throw new BadRequestException('You cannot challenge yourself to a Versus');
     }
 
-    // 2. Fetch opponent
     const opponent = await this.prisma.user.findFirst({
       where: {
         username: {
@@ -89,7 +105,6 @@ export class VersusService {
       throw new BadRequestException(`User @${cleanOpponent} is currently unable to accept challenges`);
     }
 
-    // 3. Monetary and Split Validations
     const jackpot = Number(dto.jackpot);
     const hostShare = Number(dto.hostShare);
     const opponentShare = Number(dto.opponentShare);
@@ -104,7 +119,6 @@ export class VersusService {
       throw new BadRequestException("Opponent's contribution must be a positive number");
     }
 
-    // Ensure sum matches jackpot within 2 decimal points
     const sum = Math.round((hostShare + opponentShare) * 100) / 100;
     const roundedJackpot = Math.round(jackpot * 100) / 100;
     if (Math.abs(sum - roundedJackpot) > 0.01) {
@@ -116,7 +130,13 @@ export class VersusService {
     const accountType = this.normalizeAccountType(dto.fundingAccount);
     const mode = this.normalizeMode(dto.mode);
 
-    // 4. Calculate server-side expiry: Live 1v1 = 60s, Schedule H2H = 48h
+    // Metadata defaults
+    const language = dto.language || host.languagePreference || 'Yoruba';
+    const subject = dto.subject || host.subjectPreference || 'General';
+    const level = dto.level || (host.testLevel as string) || 'Basic';
+    const questionsCount = dto.questionsCount || 25;
+    const durationMinutes = dto.durationMinutes || 5;
+
     const now = new Date();
     const expiresAt =
       mode === 'LIVE_1V1'
@@ -125,9 +145,7 @@ export class VersusService {
 
     const escrowTxRef = `VERSUS_ESCROW_${Date.now()}_${randomBytes(4).toString('hex').toUpperCase()}`;
 
-    // 5. Execute atomic database transaction
     const createdRequest = await this.prisma.$transaction(async (tx) => {
-      // Fetch fresh host wallet within transaction
       let wallet = await tx.wallet.findUnique({
         where: { userId: hostUserId },
       });
@@ -143,13 +161,11 @@ export class VersusService {
         });
       }
 
-      // Check balance on selected account only (never combine)
       let availableBalance = 0;
       if (accountType === 'gold') {
         availableBalance = Number(wallet.goldBalance) || 0;
       } else {
         availableBalance = Number(wallet.personalBalance) || 0;
-        // Factor in holds if applicable
         const held = await tx.walletTransaction.aggregate({
           _sum: { amount: true },
           where: {
@@ -168,7 +184,6 @@ export class VersusService {
         );
       }
 
-      // Decrement the selected account balance
       if (accountType === 'gold') {
         await tx.wallet.update({
           where: { userId: hostUserId },
@@ -187,7 +202,6 @@ export class VersusService {
         });
       }
 
-      // Record immutable ledger entry for host escrow
       await tx.walletTransaction.create({
         data: {
           userId: hostUserId,
@@ -204,7 +218,6 @@ export class VersusService {
         },
       });
 
-      // Persist the versus request
       return tx.versusRequest.create({
         data: {
           hostId: hostUserId,
@@ -214,6 +227,14 @@ export class VersusService {
           hostShare,
           opponentShare,
           hostFundingAccount: accountType,
+          language,
+          subject,
+          level,
+          questionsCount,
+          durationMinutes,
+          hostReady: true,
+          opponentReady: false,
+          opponentFunded: false,
           status: 'PENDING',
           escrowStatus: 'HELD',
           escrowTxRef,
@@ -221,28 +242,15 @@ export class VersusService {
         },
         include: {
           host: {
-            select: {
-              id: true,
-              username: true,
-              profilePicture: true,
-              firstName: true,
-              lastName: true,
-            },
+            select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true },
           },
           opponent: {
-            select: {
-              id: true,
-              username: true,
-              profilePicture: true,
-              firstName: true,
-              lastName: true,
-            },
+            select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true },
           },
         },
       });
     });
 
-    // 6. Notify opponent post-commit
     try {
       await this.notificationService.versusRequestSent(
         opponent.id,
@@ -250,10 +258,9 @@ export class VersusService {
         mode === 'LIVE_1V1' ? 'Live 1v1' : 'Schedule H2H',
         jackpot,
       );
-    } catch (notifErr: any) {
-      this.logger.warn(`Failed to dispatch versus notification to user ${opponent.id}: ${notifErr.message}`);
-    }
+    } catch (_) {}
 
+    this.emitVersusEvent(hostUserId, opponent.id, 'versus:updated', createdRequest);
     return createdRequest;
   }
 
@@ -266,7 +273,7 @@ export class VersusService {
   ): Promise<{ refunded: boolean; request: any }> {
     const refundRef = `VERSUS_REFUND_${Date.now()}_${randomBytes(4).toString('hex').toUpperCase()}`;
 
-    return this.prisma.$transaction(async (tx) => {
+    const res = await this.prisma.$transaction(async (tx) => {
       const request = await tx.versusRequest.findUnique({
         where: { id: requestId },
         include: {
@@ -279,12 +286,15 @@ export class VersusService {
         throw new NotFoundException(`Versus request ${requestId} not found`);
       }
 
-      // Idempotency check: only refund if still PENDING and escrow is HELD
-      if (request.status !== 'PENDING' || request.escrowStatus !== 'HELD') {
+      if (request.status !== 'PENDING' && request.status !== 'ACCEPTED') {
         return { refunded: false, request };
       }
 
-      // 1. Transition state
+      if (request.escrowStatus !== 'HELD') {
+        return { refunded: false, request };
+      }
+
+      // Update status
       const updated = await tx.versusRequest.update({
         where: { id: requestId },
         data: {
@@ -293,12 +303,12 @@ export class VersusService {
           refundTxRef: refundRef,
         },
         include: {
-          host: { select: { id: true, username: true } },
-          opponent: { select: { id: true, username: true } },
+          host: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
+          opponent: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
         },
       });
 
-      // 2. Increment host's designated account balance
+      // Refund host
       if (request.hostFundingAccount === 'gold') {
         await tx.wallet.update({
           where: { userId: request.hostId },
@@ -317,7 +327,6 @@ export class VersusService {
         });
       }
 
-      // 3. Record credit refund in ledger
       await tx.walletTransaction.create({
         data: {
           userId: request.hostId,
@@ -334,14 +343,62 @@ export class VersusService {
         },
       });
 
+      // If opponent was also funded, refund opponent too!
+      if (request.opponentFunded && request.opponentFundingAccount) {
+        const oppRefundRef = `VERSUS_REFUND_OPP_${Date.now()}_${randomBytes(4).toString('hex').toUpperCase()}`;
+        if (request.opponentFundingAccount === 'gold') {
+          await tx.wallet.update({
+            where: { userId: request.opponentId },
+            data: {
+              goldBalance: { increment: request.opponentShare },
+              balance: { increment: request.opponentShare },
+            },
+          });
+        } else {
+          await tx.wallet.update({
+            where: { userId: request.opponentId },
+            data: {
+              personalBalance: { increment: request.opponentShare },
+              balance: { increment: request.opponentShare },
+            },
+          });
+        }
+
+        await tx.walletTransaction.create({
+          data: {
+            userId: request.opponentId,
+            amount: request.opponentShare,
+            type: 'credit',
+            currency: 'NGN',
+            status: 'SUCCESS',
+            payment_method: 'versus_escrow',
+            account_type: request.opponentFundingAccount,
+            transactionType: 'VERSUS_ESCROW_REFUND',
+            trx_ref: oppRefundRef,
+            reference: oppRefundRef,
+            description: `Versus challenge ${newStatus.toLowerCase()} escrow refund for match against @${request.host.username}`,
+          },
+        });
+      }
+
       return { refunded: true, request: updated };
     });
+
+    if (res.refunded && res.request) {
+      const hId = res.request.hostId;
+      const oId = res.request.opponentId;
+      if (hId && oId) {
+        this.emitVersusEvent(hId, oId, 'versus:updated', res.request);
+      }
+    }
+
+    return res;
   }
 
   /**
-   * Opponent accepts request and funds their share using Superfan Vault picker.
+   * Opponent funds their share using Superfan Vault picker without auto-starting match.
    */
-  async acceptRequest(opponentUserId: number, requestId: number, dto: AcceptVersusDto) {
+  async fundOpponentShare(opponentUserId: number, requestId: number, dto: FundVersusDto) {
     const accountType = this.normalizeAccountType(dto.fundingAccount);
     const now = new Date();
 
@@ -358,25 +415,24 @@ export class VersusService {
     }
 
     if (request.opponentId !== opponentUserId) {
-      throw new ForbiddenException('You are not authorized to accept this challenge');
+      throw new ForbiddenException('You are not authorized to fund this challenge');
     }
 
-    if (request.status !== 'PENDING') {
-      throw new BadRequestException(`Cannot accept request in status '${request.status}'`);
+    if (request.status !== 'PENDING' && request.status !== 'ACCEPTED') {
+      throw new BadRequestException(`Cannot fund request in status '${request.status}'`);
     }
 
-    // Passive expiry check
     if (request.expiresAt <= now) {
       await this.refundEscrow(requestId, 'EXPIRED');
-      try {
-        await this.notificationService.versusRequestExpired(request.hostId, request.opponent.username);
-      } catch (_) {}
       throw new BadRequestException('This versus request has expired');
+    }
+
+    if (request.opponentFunded) {
+      return request;
     }
 
     const opponentTxRef = `VERSUS_ESCROW_OPP_${Date.now()}_${randomBytes(4).toString('hex').toUpperCase()}`;
 
-    // Execute atomic acceptance & opponent funding
     const updated = await this.prisma.$transaction(async (tx) => {
       let wallet = await tx.wallet.findUnique({
         where: { userId: opponentUserId },
@@ -416,7 +472,6 @@ export class VersusService {
         );
       }
 
-      // Deduct opponent's share
       if (accountType === 'gold') {
         await tx.wallet.update({
           where: { userId: opponentUserId },
@@ -435,7 +490,6 @@ export class VersusService {
         });
       }
 
-      // Record opponent escrow debit
       await tx.walletTransaction.create({
         data: {
           userId: opponentUserId,
@@ -452,22 +506,21 @@ export class VersusService {
         },
       });
 
-      // Mark request ACCEPTED and STARTED
       return tx.versusRequest.update({
         where: { id: requestId },
         data: {
-          status: 'ACCEPTED',
           opponentFundingAccount: accountType,
-          startedAt: now,
+          opponentFunded: true,
+          opponentReady: true,
+          status: 'ACCEPTED',
         },
         include: {
-          host: { select: { id: true, username: true, profilePicture: true } },
-          opponent: { select: { id: true, username: true, profilePicture: true } },
+          host: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
+          opponent: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
         },
       });
     });
 
-    // Notify host
     try {
       await this.notificationService.versusRequestAccepted(
         request.hostId,
@@ -476,11 +529,106 @@ export class VersusService {
       );
     } catch (_) {}
 
+    this.emitVersusEvent(request.hostId, request.opponentId, 'versus:updated', updated);
     return updated;
   }
 
   /**
-   * Opponent declines a versus challenge. Triggers host escrow refund.
+   * Opponent accepts request and funds their share (convenience wrapper around funding).
+   */
+  async acceptRequest(opponentUserId: number, requestId: number, dto: AcceptVersusDto) {
+    return this.fundOpponentShare(opponentUserId, requestId, dto);
+  }
+
+  /**
+   * Host starts the match once opponent is ready and funded.
+   */
+  async startRequest(hostUserId: number, requestId: number) {
+    const now = new Date();
+
+    const request = await this.prisma.versusRequest.findUnique({
+      where: { id: requestId },
+      include: {
+        host: { select: { id: true, username: true } },
+        opponent: { select: { id: true, username: true } },
+      },
+    });
+
+    if (!request) {
+      throw new NotFoundException(`Versus request ${requestId} not found`);
+    }
+
+    if (request.hostId !== hostUserId) {
+      throw new ForbiddenException('Only the host can start this match');
+    }
+
+    if (request.status === 'STARTED') {
+      return request;
+    }
+
+    if (request.status !== 'PENDING' && request.status !== 'ACCEPTED') {
+      throw new BadRequestException(`Cannot start match in status '${request.status}'`);
+    }
+
+    if (request.expiresAt <= now) {
+      await this.refundEscrow(requestId, 'EXPIRED');
+      throw new BadRequestException('This versus match has expired');
+    }
+
+    if (!request.opponentFunded || !request.opponentReady) {
+      throw new BadRequestException('Cannot start: opponent has not funded or is not ready');
+    }
+
+    const matchRef = `MATCH_${Date.now()}_${randomBytes(4).toString('hex').toUpperCase()}`;
+
+    const updated = await this.prisma.versusRequest.update({
+      where: { id: requestId },
+      data: {
+        status: 'STARTED',
+        startedAt: now,
+        matchReference: matchRef,
+      },
+      include: {
+        host: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
+        opponent: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
+      },
+    });
+
+    this.emitVersusEvent(request.hostId, request.opponentId, 'versus:started', updated);
+    this.emitVersusEvent(request.hostId, request.opponentId, 'versus:updated', updated);
+    return updated;
+  }
+
+  /**
+   * Either participant cancels the match before start. Triggers refunds.
+   */
+  async cancelRequest(userId: number, requestId: number) {
+    const request = await this.prisma.versusRequest.findUnique({
+      where: { id: requestId },
+    });
+
+    if (!request) {
+      throw new NotFoundException(`Versus request ${requestId} not found`);
+    }
+
+    if (request.hostId !== userId && request.opponentId !== userId) {
+      throw new ForbiddenException('You are not authorized to cancel this challenge');
+    }
+
+    if (request.status === 'STARTED') {
+      throw new BadRequestException('Cannot cancel a match that has already started');
+    }
+
+    if (request.status === 'CANCELLED' || request.status === 'DECLINED' || request.status === 'EXPIRED') {
+      return request;
+    }
+
+    const { request: updated } = await this.refundEscrow(requestId, 'CANCELLED');
+    return updated;
+  }
+
+  /**
+   * Opponent declines challenge before funding. Triggers host refund.
    */
   async declineRequest(opponentUserId: number, requestId: number) {
     const request = await this.prisma.versusRequest.findUnique({
@@ -510,9 +658,9 @@ export class VersusService {
   }
 
   /**
-   * Host cancels an unaccepted versus challenge. Triggers host escrow refund.
+   * Toggle opponent readiness (requires opponent to be funded).
    */
-  async cancelRequest(hostUserId: number, requestId: number) {
+  async toggleReady(userId: number, requestId: number, dto: ToggleReadyDto) {
     const request = await this.prisma.versusRequest.findUnique({
       where: { id: requestId },
     });
@@ -521,43 +669,78 @@ export class VersusService {
       throw new NotFoundException(`Versus request ${requestId} not found`);
     }
 
-    if (request.hostId !== hostUserId) {
-      throw new ForbiddenException('You are not authorized to cancel this challenge');
+    if (request.hostId !== userId && request.opponentId !== userId) {
+      throw new ForbiddenException('Not authorized');
     }
 
-    if (request.status !== 'PENDING') {
-      throw new BadRequestException(`Cannot cancel request in status '${request.status}'`);
+    if (userId === request.opponentId && !request.opponentFunded && dto.ready) {
+      throw new BadRequestException('You must fund your contribution before marking ready');
     }
 
-    const { request: updated } = await this.refundEscrow(requestId, 'CANCELLED');
+    const updated = await this.prisma.versusRequest.update({
+      where: { id: requestId },
+      data: {
+        opponentReady: userId === request.opponentId ? dto.ready : request.opponentReady,
+        hostReady: userId === request.hostId ? dto.ready : request.hostReady,
+      },
+      include: {
+        host: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
+        opponent: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
+      },
+    });
+
+    this.emitVersusEvent(request.hostId, request.opponentId, 'versus:updated', updated);
     return updated;
   }
 
   /**
-   * Get active and pending requests for user, with on-read expiry sweep.
+   * Get single request detail with on-read passive expiry check.
+   */
+  async getSingleRequest(userId: number, requestId: number) {
+    const now = new Date();
+    const request = await this.prisma.versusRequest.findUnique({
+      where: { id: requestId },
+      include: {
+        host: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
+        opponent: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
+      },
+    });
+
+    if (!request) {
+      throw new NotFoundException(`Versus request ${requestId} not found`);
+    }
+
+    if (request.hostId !== userId && request.opponentId !== userId) {
+      throw new ForbiddenException('You are not a participant in this versus match');
+    }
+
+    if (request.status === 'PENDING' && request.expiresAt <= now) {
+      const { request: expired } = await this.refundEscrow(requestId, 'EXPIRED');
+      return expired;
+    }
+
+    return request;
+  }
+
+  /**
+   * Get active and pending requests for user with on-read expiry sweep.
    */
   async getActiveRequests(userId: number) {
     const now = new Date();
 
-    // 1. Fetch pending requests involving this user
     const pending = await this.prisma.versusRequest.findMany({
       where: {
-        status: 'PENDING',
+        status: { in: ['PENDING', 'ACCEPTED'] },
         OR: [{ hostId: userId }, { opponentId: userId }],
       },
       include: {
-        host: {
-          select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true },
-        },
-        opponent: {
-          select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true },
-        },
+        host: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
+        opponent: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
       },
     });
 
-    // 2. Check for expired requests and refund them
     for (const req of pending) {
-      if (req.expiresAt <= now) {
+      if (req.status === 'PENDING' && req.expiresAt <= now) {
         await this.refundEscrow(req.id, 'EXPIRED');
         try {
           await this.notificationService.versusRequestExpired(req.hostId, req.opponent.username);
@@ -565,18 +748,13 @@ export class VersusService {
       }
     }
 
-    // 3. Return fresh status
     return this.prisma.versusRequest.findMany({
       where: {
         OR: [{ hostId: userId }, { opponentId: userId }],
       },
       include: {
-        host: {
-          select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true },
-        },
-        opponent: {
-          select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true },
-        },
+        host: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
+        opponent: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
       },
       orderBy: { createdAt: 'desc' },
       take: 50,

@@ -10,7 +10,12 @@ import {
 } from '@nestjs/common';
 import { ApiRoutes } from '../common/enums/routes.enum';
 import { VersusService } from './versus.service';
-import { AcceptVersusDto, CreateVersusDto } from './dto/create-versus.dto';
+import {
+  AcceptVersusDto,
+  CreateVersusDto,
+  FundVersusDto,
+  ToggleReadyDto,
+} from './dto/create-versus.dto';
 
 @Controller(ApiRoutes.VERSUS)
 export class VersusController {
@@ -32,6 +37,56 @@ export class VersusController {
       throw new UnauthorizedException('User not authenticated');
     }
     return this.versusService.getActiveRequests(userId);
+  }
+
+  @Get(':id')
+  async getSingleRequest(
+    @Req() req: any,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    const userId = Number(req.user?.id);
+    if (!userId || isNaN(userId)) {
+      throw new UnauthorizedException('User not authenticated');
+    }
+    return this.versusService.getSingleRequest(userId, id);
+  }
+
+  @Post(':id/fund')
+  async fundOpponentShare(
+    @Req() req: any,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: FundVersusDto,
+  ) {
+    const userId = Number(req.user?.id);
+    if (!userId || isNaN(userId)) {
+      throw new UnauthorizedException('User not authenticated');
+    }
+    return this.versusService.fundOpponentShare(userId, id, dto);
+  }
+
+  @Post(':id/start')
+  async startRequest(
+    @Req() req: any,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    const userId = Number(req.user?.id);
+    if (!userId || isNaN(userId)) {
+      throw new UnauthorizedException('User not authenticated');
+    }
+    return this.versusService.startRequest(userId, id);
+  }
+
+  @Post(':id/ready')
+  async toggleReady(
+    @Req() req: any,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: ToggleReadyDto,
+  ) {
+    const userId = Number(req.user?.id);
+    if (!userId || isNaN(userId)) {
+      throw new UnauthorizedException('User not authenticated');
+    }
+    return this.versusService.toggleReady(userId, id, dto);
   }
 
   @Post(':id/accept')
