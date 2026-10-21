@@ -1272,9 +1272,14 @@ async getCard(userId: number): Promise<any> {
   }
 
 
-  /** New: full-text / prefix search via Elasticsearch */
+  /** New: full-text / prefix search via Elasticsearch with database fallback */
   async searchUsersByUsername(query: string, limit = 10) {
-    const results = await this.es.searchUsers(query, limit);
+    let results: any[] = [];
+    try {
+      results = await this.es.searchUsers(query, limit);
+    } catch {
+      results = [];
+    }
 
     // Optional: fall back to Prisma ILIKE if ES returns nothing
     if (!results.length) {
