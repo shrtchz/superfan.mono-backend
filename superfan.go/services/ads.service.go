@@ -27,7 +27,7 @@ type AdsService interface {
 	GetCampaigns(ctx context.Context, query *CampaignListQuery) (*CampaignListResponse, error)
 	GetMyInsights(ctx context.Context, query *AdInsightsQuery) (*AdInsightsResponse, error)
 	GetInventoryStats(ctx context.Context) (*InventoryStatsResponse, error)
-	UpdateCampaignStatus(ctx context.Context, id int, status models.AdStatus, pausedByAdmin *bool) (*models.AdCampaign, error)
+	UpdateCampaignStatus(ctx context.Context, id int, status models.AdStatus, pausedByAdmin *bool, userID int, isAdmin bool) (*models.AdCampaign, error)
 	DeleteCampaign(ctx context.Context, id int) error
 	ApproveCampaign(ctx context.Context, id int) (*models.AdCampaign, error)
 	RejectAndRefundCampaign(ctx context.Context, id int, req *RejectCampaignRequest) (*models.AdCampaign, error)
@@ -273,25 +273,25 @@ type RewardAdQuotaResponse struct {
 }
 
 type CreateCampaignRequest struct {
-	UserID          *int     `json:"userId"`
-	Username        *string  `json:"username"`
-	Headline        string   `json:"headline"`
-	Description     *string  `json:"description"`
-	ButtonLabel     *string  `json:"buttonLabel"`
-	WebsiteURL      *string  `json:"websiteUrl"`
-	MediaURLs       []string `json:"mediaUrls"`
-	MediaType       *string  `json:"mediaType"`
-	DailyFee        int      `json:"dailyFee"`
-	TotalFee        int      `json:"totalFee"`
-	Days            int      `json:"days"`
-	StartDate       string   `json:"startDate"`
-	StartTime       string   `json:"startTime"`
-	EndDate         *string  `json:"endDate"`
-	RunContinuously bool     `json:"runContinuously"`
-	AgeRange        *string  `json:"ageRange"`
-	PaymentMethod   *string  `json:"paymentMethod"`
-	PaymentRef      *string  `json:"paymentRef"`
-	PlacementKey    *string  `json:"placementKey"` // e.g. "QUIZ_AD_Q1", "MID_QUIZ_AD", "POST_QUIZ_AD", "PRE_QUIZ_AD", "SPONSORED_QUESTIONS"
+	UserID               *int     `json:"userId"`
+	Username             *string  `json:"username"`
+	Headline             string   `json:"headline"`
+	Description          *string  `json:"description"`
+	ButtonLabel          *string  `json:"buttonLabel"`
+	WebsiteURL           *string  `json:"websiteUrl"`
+	MediaURLs            []string `json:"mediaUrls"`
+	MediaType            *string  `json:"mediaType"`
+	DailyFee             int      `json:"dailyFee"`
+	TotalFee             int      `json:"totalFee"`
+	Days                 int      `json:"days"`
+	StartDate            string   `json:"startDate"`
+	StartTime            string   `json:"startTime"`
+	EndDate              *string  `json:"endDate"`
+	RunContinuously      bool     `json:"runContinuously"`
+	AgeRange             *string  `json:"ageRange"`
+	PaymentMethod        *string  `json:"paymentMethod"`
+	PaymentRef           *string  `json:"paymentRef"`
+	PlacementKey         *string  `json:"placementKey"` // e.g. "QUIZ_AD_Q1", "MID_QUIZ_AD", "POST_QUIZ_AD", "PRE_QUIZ_AD", "SPONSORED_QUESTIONS"
 	PlacementType        *string  `json:"placementType"`
 	QuestionBlocks       *int     `json:"questionBlocks"`
 	GuaranteedDailyViews *int     `json:"guaranteedDailyViews"`
@@ -1270,17 +1270,27 @@ func (s *adsServiceImpl) GetInventoryStats(ctx context.Context) (*InventoryStats
 	}, nil
 }
 
-func (s *adsServiceImpl) UpdateCampaignStatus(ctx context.Context, id int, status models.AdStatus, pausedByAdmin *bool) (*models.AdCampaign, error) {
+func (s *adsServiceImpl) UpdateCampaignStatus(ctx context.Context, id int, status models.AdStatus, pausedByAdmin *bool, userID int, isAdmin bool) (*models.AdCampaign, error) {
 	var campaign models.AdCampaign
 	if err := s.db.WithContext(ctx).First(&campaign, id).Error; err != nil {
 		return nil, fmt.Errorf("campaign not found: %w", err)
 	}
 
-	// If this ad was paused by an admin, regular users cannot unpause it.
-	if campaign.PausedByAdmin && status != models.AdStatusPaused {
-		if pausedByAdmin == nil || *pausedByAdmin {
-			return nil, errors.New("this ad was paused by an administrator and cannot be unpaused by the user")
+	if userID <= 0 {
+		return nil, errors.New("authenticated user is required to update a campaign")
+	}
+	if !isAdmin {
+		if campaign.UserID == nil || *campaign.UserID != userID {
+			return nil, errors.New("user is not allowed to update this campaign")
 		}
+		if pausedByAdmin != nil {
+			return nil, errors.New("only administrators can change the admin pause flag")
+		}
+		if campaign.PausedByAdmin {
+			return nil, errors.New("this ad was paused by an administrator and cannot be changed by the user")
+		}
+	} else if pausedByAdmin != nil && *pausedByAdmin && status != models.AdStatusPaused {
+		return nil, errors.New("an ad paused by an administrator must have PAUSED status")
 	}
 
 	// An ad cannot be set to active if it was not approved by an admin
@@ -1294,7 +1304,7 @@ func (s *adsServiceImpl) UpdateCampaignStatus(ctx context.Context, id int, statu
 		"status":    status,
 		"updatedAt": time.Now(),
 	}
-	if pausedByAdmin != nil {
+	if isAdmin && pausedByAdmin != nil {
 		updates["pausedByAdmin"] = *pausedByAdmin
 	}
 

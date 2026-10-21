@@ -2096,6 +2096,9 @@ async hasSubmittedLiveQuizForStream(
       where: {
         isCompleted: true,
       },
+      orderBy: {
+        createdAt: 'desc',
+      },
       include: {
         user: {
           select: {
