@@ -690,6 +690,8 @@ export class VersusService {
             hostAccuracy: dto.accuracy,
             hostStreak: dto.streak,
             hostCompletedAt: now,
+            ...(dto.answers ? { hostAnswers: dto.answers } : {}),
+            ...(dto.questions ? { questions: dto.questions } : {}),
           }
         : {
             opponentScore: dto.score,
@@ -697,6 +699,8 @@ export class VersusService {
             opponentAccuracy: dto.accuracy,
             opponentStreak: dto.streak,
             opponentCompletedAt: now,
+            ...(dto.answers ? { opponentAnswers: dto.answers } : {}),
+            ...(dto.questions ? { questions: dto.questions } : {}),
           },
       include: {
         host: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
@@ -1398,5 +1402,255 @@ export class VersusService {
     }
 
     return count;
+  }
+
+  /* ==========================================================================
+     Admin Endpoints: Ledger, Summary, and Player Questions
+     ========================================================================== */
+
+  /**
+   * Helper to format score, elapsed time, and accuracy.
+   * e.g. "4/25 · 1:19 · 84%" or "—" if not completed.
+   */
+  private formatStatsMetric(
+    score: number | null | undefined,
+    timeSeconds: number | null | undefined,
+    accuracy: number | null | undefined,
+    questionsCount: number,
+  ): string {
+    if (score === null || score === undefined) return '—';
+    const total = questionsCount || 25;
+    const mins = Math.floor((timeSeconds || 0) / 60);
+    const secs = Math.floor((timeSeconds || 0) % 60);
+    const timeStr = `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+    const accStr = accuracy !== null && accuracy !== undefined ? `${Math.round(accuracy)}%` : '0%';
+    return `${score}/${total} · ${timeStr} · ${accStr}`;
+  }
+
+  /**
+   * Helper to format timestamps e.g. "10/2/26" or "—".
+   */
+  private formatLedgerDate(d: Date | string | null | undefined): string {
+    if (!d) return '—';
+    const date = new Date(d);
+    if (isNaN(date.getTime())) return '—';
+    const day = date.getDate();
+    const month = date.getMonth() + 1;
+    const year = String(date.getFullYear()).slice(-2);
+    return `${day}/${month}/${year}`;
+  }
+
+  /**
+   * Global summary metrics for Admin Versus cards.
+   * Invariant: totalLive1v1 + totalScheduleH2H === totalVersus.
+   * totalJackpotsWon sums confirmed paid jackpots only.
+   */
+  async getAdminVersusSummary() {
+    const [totalVersus, scheduleMatches, paidAggregate] = await Promise.all([
+      this.prisma.versusRequest.count(),
+      this.prisma.versusRequest.count({
+        where: {
+          mode: { in: ['SCHEDULE_H2H', 'Schedule H2H', 'schedule', 'Schedule'] },
+        },
+      }),
+      this.prisma.versusRequest.aggregate({
+        _sum: { jackpotWon: true },
+        where: { payoutStatus: 'PAID' },
+      }),
+    ]);
+
+    const totalScheduleH2H = scheduleMatches;
+    const totalLive1v1 = Math.max(0, totalVersus - totalScheduleH2H);
+    const totalJackpotsWon = Number(paidAggregate._sum.jackpotWon || 0);
+
+    return {
+      totalVersus,
+      totalLive1v1,
+      totalScheduleH2H,
+      totalJackpotsWon,
+    };
+  }
+
+  /**
+   * Paginated Versus Ledger for Admin Quiz page.
+   * Stable newest-first ordering (createdAt desc).
+   */
+  async getAdminVersusLedger(page = 1, limit = 10) {
+    const validPage = Math.max(1, Number(page) || 1);
+    const validLimit = Math.min(100, Math.max(1, Number(limit) || 10));
+    const skip = (validPage - 1) * validLimit;
+
+    const [total, records, summary] = await Promise.all([
+      this.prisma.versusRequest.count(),
+      this.prisma.versusRequest.findMany({
+        skip,
+        take: validLimit,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          host: { select: { id: true, username: true } },
+          opponent: { select: { id: true, username: true } },
+        },
+      }),
+      this.getAdminVersusSummary(),
+    ]);
+
+    const items = records.map((r) => {
+      const isCompleted = r.status === 'COMPLETED';
+      const isCancelled = ['CANCELLED', 'DECLINED', 'EXPIRED'].includes(r.status);
+      const isDraw = r.outcome === 'DRAW';
+
+      // Badges: W/L/D only for finalized outcomes
+      let hostOutcome: 'W' | 'L' | 'D' | null = null;
+      let guestOutcome: 'W' | 'L' | 'D' | null = null;
+      if (isCompleted) {
+        if (isDraw) {
+          hostOutcome = 'D';
+          guestOutcome = 'D';
+        } else if (r.winnerId === r.hostId || r.outcome === 'HOST_WON') {
+          hostOutcome = 'W';
+          guestOutcome = 'L';
+        } else {
+          hostOutcome = 'L';
+          guestOutcome = 'W';
+        }
+      }
+
+      // Versus Status: exactly Completed, Pending, or Cancelled
+      const versusStatus: 'Completed' | 'Pending' | 'Cancelled' = isCompleted
+        ? 'Completed'
+        : isCancelled
+        ? 'Cancelled'
+        : 'Pending';
+
+      // Payout Display: Paid, Unpaid, Refunded
+      let jackpotPaymentStatus: 'Paid' | 'Unpaid' | 'Refunded' = 'Unpaid';
+      if (r.payoutStatus === 'PAID') {
+        jackpotPaymentStatus = 'Paid';
+      } else if (r.payoutStatus === 'REFUNDED') {
+        jackpotPaymentStatus = 'Refunded';
+      }
+
+      // Jackpot Won Amount: draws show NGN 0, winner shows won amount
+      const jackpotAmount = isDraw ? 0 : Number(r.jackpotWon || (r.status === 'COMPLETED' ? r.jackpot : 0));
+      const jackpotWonAmount = `NGN ${jackpotAmount.toLocaleString()}`;
+
+      // Mode: Live or Schedule
+      const mode: 'Live' | 'Schedule' = ['SCHEDULE_H2H', 'Schedule H2H', 'schedule', 'Schedule'].includes(r.mode)
+        ? 'Schedule'
+        : 'Live';
+
+      return {
+        id: String(r.id),
+        hostId: r.hostId,
+        hostUsername: r.host?.username || `user_${r.hostId}`,
+        hostOutcome,
+        guestId: r.opponentId,
+        guestUsername: r.opponent?.username || `user_${r.opponentId}`,
+        guestOutcome,
+        questionCount: r.questionsCount || 25,
+        hostStats: this.formatStatsMetric(r.hostScore, r.hostTimeSeconds, r.hostAccuracy, r.questionsCount),
+        guestStats: this.formatStatsMetric(r.opponentScore, r.opponentTimeSeconds, r.opponentAccuracy, r.questionsCount),
+        language: r.language || 'Yoruba',
+        subject: r.subject || 'General',
+        testLevel: r.level || 'Basic',
+        mode,
+        startDate: this.formatLedgerDate(r.startedAt || (r.status !== 'PENDING' ? r.createdAt : null)),
+        endDate: this.formatLedgerDate(r.settledAt),
+        jackpotWonAmount,
+        jackpotPaymentStatus,
+        versusStatus,
+      };
+    });
+
+    return {
+      items,
+      total,
+      page: validPage,
+      limit: validLimit,
+      totalPages: Math.ceil(total / validLimit) || 1,
+      summary,
+    };
+  }
+
+  /**
+   * Retrieve answered questions for a participant in a Versus match.
+   * Verifies participant access and returns question text, selected answer,
+   * correctness, and correct answer when wrong. Excludes per-question time.
+   */
+  async getAdminPlayerQuestions(versusId: number, playerId: number) {
+    const request = await this.prisma.versusRequest.findUnique({
+      where: { id: versusId },
+      include: {
+        host: { select: { id: true, username: true } },
+        opponent: { select: { id: true, username: true } },
+      },
+    });
+
+    if (!request) {
+      throw new NotFoundException(`Versus match ${versusId} not found`);
+    }
+
+    if (request.hostId !== playerId && request.opponentId !== playerId) {
+      throw new ForbiddenException(`Player ${playerId} is not a participant in versus match ${versusId}`);
+    }
+
+    const isHost = request.hostId === playerId;
+    let answers: any[] = Array.isArray((request as any).hostAnswers) && isHost
+      ? (request as any).hostAnswers
+      : Array.isArray((request as any).opponentAnswers) && !isHost
+      ? (request as any).opponentAnswers
+      : [];
+
+    let questions: any[] = Array.isArray((request as any).questions) ? (request as any).questions : [];
+
+    // Fallback: search OngoingQuiz for this participant if answers were not stored directly on VersusRequest
+    if (answers.length === 0) {
+      const ongoing = await this.prisma.ongoingQuiz.findFirst({
+        where: {
+          userId: playerId,
+          ...(request.language ? { testQuiz: request.language.toLowerCase() } : {}),
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      if (ongoing) {
+        if (Array.isArray(ongoing.answers) && (ongoing.answers as any[]).length > 0) {
+          answers = ongoing.answers as any[];
+        }
+        if (Array.isArray(ongoing.questions) && (ongoing.questions as any[]).length > 0) {
+          questions = ongoing.questions as any[];
+        }
+      }
+    }
+
+    const questionsMap = new Map<string, any>();
+    questions.forEach((q: any) => {
+      if (q && q.id) questionsMap.set(String(q.id), q);
+    });
+
+    const formattedQuestions = answers.map((ans: any, index: number) => {
+      const qObj = ans.quizId ? questionsMap.get(String(ans.quizId)) : questions[index];
+      const questionText = ans.questionText || qObj?.question || `Question ${index + 1}`;
+      const selectedAnswer = ans.selectedAnswer || '—';
+      const isCorrect = Boolean(ans.isCorrect);
+      const correctAnswer = !isCorrect ? (ans.correctAnswer || qObj?.answer || undefined) : undefined;
+
+      return {
+        questionId: ans.quizId || qObj?.id || String(index + 1),
+        order: index + 1,
+        questionText,
+        selectedAnswer,
+        isCorrect,
+        ...(correctAnswer ? { correctAnswer } : {}),
+      };
+    });
+
+    return {
+      versusId,
+      playerId,
+      username: isHost ? request.host.username : request.opponent.username,
+      totalQuestions: formattedQuestions.length,
+      questions: formattedQuestions,
+    };
   }
 }
