@@ -17,5 +17,6 @@ export enum ApiRoutes {
     WAITLIST = 'api/v1/waitlist',
 SHOP = 'api/v1/shop',
     PODCAST = 'api/v1/podcasts',
-    FRIEND_INVITE = 'api/v1/challenge-invite'
+    FRIEND_INVITE = 'api/v1/challenge-invite',
+    VERSUS = 'api/v1/versus',
 }

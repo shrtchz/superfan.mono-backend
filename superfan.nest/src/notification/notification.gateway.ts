@@ -56,6 +56,16 @@ export class NotificationGateway
     }
   }
 
+  sendVersusEvent(userIds: (number | string)[], event: string, payload: any) {
+    if (!this.server) return;
+    for (const uid of userIds) {
+      const socketId = this.clients.get(String(uid));
+      if (socketId) {
+        this.server.to(socketId).emit(event, payload);
+      }
+    }
+  }
+
   broadcastNotification(notification: any) {
     this.server.emit('notification', notification);
   }

@@ -87,6 +87,8 @@ model User {
   subAdminInvites        SubAdminInvite[]
   sentChallenges         ChallengeInvite[]  @relation("ChallengeInviteSender")
   receivedChallenges     ChallengeInvite[]  @relation("ChallengeInviteReceiver")
+  sentVersusRequests     VersusRequest[]    @relation("VersusHost")
+  receivedVersusRequests VersusRequest[]    @relation("VersusOpponent")
   friendships            Friend[]           @relation("FriendUser")
   friendOf               Friend[]           @relation("FriendTarget")
   wallet                 Wallet?
@@ -368,6 +370,42 @@ model ChallengeInvite {
   receiver User @relation("ChallengeInviteReceiver", fields: [receiverId], references: [id], onDelete: Cascade)
 
   @@unique([senderId, receiverId])
+}
+
+model VersusRequest {
+  id                     Int       @id @default(autoincrement())
+  hostId                 Int
+  opponentId             Int
+  mode                   String
+  jackpot                Float
+  hostShare              Float
+  opponentShare          Float
+  hostFundingAccount     String
+  opponentFundingAccount String?
+  status                 String    @default("PENDING")
+  escrowStatus           String    @default("HELD")
+  escrowTxRef            String    @unique
+  refundTxRef            String?   @unique
+  expiresAt              DateTime
+  startedAt              DateTime?
+  language               String    @default("Yoruba")
+  subject                String    @default("General")
+  level                  String    @default("Basic")
+  questionsCount         Int       @default(25)
+  durationMinutes        Int       @default(5)
+  hostReady              Boolean   @default(true)
+  opponentReady          Boolean   @default(false)
+  opponentFunded         Boolean   @default(false)
+  matchReference         String?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  host     User @relation("VersusHost", fields: [hostId], references: [id], onDelete: Cascade)
+  opponent User @relation("VersusOpponent", fields: [opponentId], references: [id], onDelete: Cascade)
+
+  @@index([hostId])
+  @@index([opponentId])
+  @@index([status, expiresAt])
 }
 
 model Friend {
