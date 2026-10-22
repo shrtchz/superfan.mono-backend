@@ -551,7 +551,7 @@ export class VersusService {
           transactionType: 'VERSUS_ESCROW_DEBIT',
           trx_ref: opponentTxRef,
           reference: opponentTxRef,
-          description: `Versus Live 1v1 for challenge to @${request.host.username}`,
+          description: `Versus ${request.mode === 'LIVE_1V1' ? 'Live 1v1' : 'Schedule H2H'} for challenge to @${request.host.username}`,
         },
       });
 
@@ -849,7 +849,7 @@ export class VersusService {
             transactionType: 'VERSUS_JACKPOT_PAYOUT',
             trx_ref: payoutTxRef,
             reference: payoutTxRef,
-            description: `Versus match jackpot win payout against @${match.opponent.username}`,
+            description: `Versus ${match.mode === 'LIVE_1V1' ? 'Live 1v1' : 'Schedule H2H'} jackpot win`,
           },
         });
 
@@ -897,7 +897,7 @@ export class VersusService {
             transactionType: 'VERSUS_JACKPOT_PAYOUT',
             trx_ref: payoutTxRef,
             reference: payoutTxRef,
-            description: `Versus match jackpot win payout against @${match.host.username}`,
+            description: `Versus ${match.mode === 'LIVE_1V1' ? 'Live 1v1' : 'Schedule H2H'} jackpot win`,
           },
         });
 
