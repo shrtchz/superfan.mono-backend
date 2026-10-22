@@ -267,7 +267,7 @@ export class NotificationService {
 
   async versusRequestExpired(hostId: number, opponentUsername: string) {
     const title = 'Versus Request Expired';
-    const msg = `Your Versus challenge to @${opponentUsername} expired unstarted. Your escrowed funds have been refunded.`;
+    const msg = `Your Versus challenge to @${opponentUsername} expired unstarted. Your funds have been refunded.`;
     return this.notify(
       hostId,
       NotificationTriggers.VERSUS_REQUEST_EXPIRED,

@@ -266,7 +266,7 @@ export class VersusService {
           transactionType: 'VERSUS_ESCROW_DEBIT',
           trx_ref: escrowTxRef,
           reference: escrowTxRef,
-          description: `Versus ${mode === 'LIVE_1V1' ? 'Live 1v1' : 'Schedule H2H'} escrow hold for challenge to @${opponent.username}`,
+          description: `Versus ${mode === 'LIVE_1V1' ? 'Live 1v1' : 'Schedule H2H'} for challenge to @${opponent.username}`,
         },
       });
 
@@ -389,7 +389,7 @@ export class VersusService {
           transactionType: 'VERSUS_ESCROW_REFUND',
           trx_ref: refundRef,
           reference: refundRef,
-          description: `Versus challenge ${newStatus.toLowerCase()} escrow refund for challenge to @${request.opponent.username}`,
+          description: `Versus Challenge - Refund for @${request.opponent.username}`,
         },
       });
 
@@ -425,7 +425,7 @@ export class VersusService {
             transactionType: 'VERSUS_ESCROW_REFUND',
             trx_ref: oppRefundRef,
             reference: oppRefundRef,
-            description: `Versus challenge ${newStatus.toLowerCase()} escrow refund for match against @${request.host.username}`,
+            description: `Versus Challenge - Refund for @${request.host.username}`,
           },
         });
       }
