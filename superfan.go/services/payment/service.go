@@ -463,7 +463,7 @@ func (s *PaymentService) GetWalletByUserID(ctx context.Context, userID int) (*mo
 	err := s.db.WithContext(ctx).Where("\"userId\" = ?", userID).First(&wallet).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return &models.Wallet{UserID: userID, Balance: 0, GoldBalance: 0, PersonalBalance: 0, UsdcBalance: 0, UsdtBalance: 0, TotalBalance: 0, HoldBalance: 0, AvailablePersonalBalance: 0, AvailableBalance: 0}, nil
+			return &models.Wallet{UserID: userID, Balance: 0, SavingsBalance: 0, CheckingBalance: 0, GoldBalance: 0, PersonalBalance: 0, UsdcBalance: 0, UsdtBalance: 0, TotalBalance: 0, HoldBalance: 0, AvailablePersonalBalance: 0, AvailableCheckingBalance: 0, AvailableBalance: 0}, nil
 		}
 		return nil, err
 	}
@@ -473,6 +473,7 @@ func (s *PaymentService) GetWalletByUserID(ctx context.Context, userID int) (*mo
 	}
 	wallet.HoldBalance = heldBalance
 	wallet.AvailablePersonalBalance = availablePersonal
+	wallet.AvailableCheckingBalance = availablePersonal
 	wallet.TotalBalance = wallet.PersonalBalance + wallet.GoldBalance
 	wallet.AvailableBalance = wallet.GoldBalance + availablePersonal
 	return &wallet, nil
@@ -488,7 +489,7 @@ func (s *PaymentService) getPersonalBalanceBreakdown(ctx context.Context, userID
 	err := s.db.WithContext(ctx).
 		Table("WalletTransaction").
 		Select("COALESCE(SUM(amount), 0)").
-		Where(`"userId" = ? AND LOWER(COALESCE("account_type", '')) = 'personal' AND "holdUntil" > ?`, userID, time.Now()).
+		Where(`"userId" = ? AND LOWER(COALESCE("account_type", '')) IN ('checking') AND "holdUntil" > ?`, userID, time.Now()).
 		Scan(&held).Error
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to calculate available wallet balance: %w", err)
@@ -621,7 +622,7 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 		db = db.Where("\"account_type\" = ?", filter.AccountType)
 	} else if filter.AccountType == "" {
 		// Default to Personal Wallet deposits/withdrawals; exclude quiz rewards, gold credits, and referral bonuses
-		db = db.Where("(\"account_type\" IS NULL OR \"account_type\" = '' OR LOWER(\"account_type\") = 'personal') AND (\"rewardType\" IS NULL OR \"rewardType\" = '') AND (\"description\" IS NULL OR (LOWER(\"description\") NOT LIKE '%quiz%' AND LOWER(\"description\") NOT LIKE '%reward%' AND LOWER(\"description\") NOT LIKE '%referral%' AND LOWER(\"description\") NOT LIKE '%bonus%'))")
+		db = db.Where("(\"account_type\" IS NULL OR \"account_type\" = '' OR LOWER(\"account_type\") IN ('checking')) AND (\"rewardType\" IS NULL OR \"rewardType\" = '') AND (\"description\" IS NULL OR (LOWER(\"description\") NOT LIKE '%quiz%' AND LOWER(\"description\") NOT LIKE '%reward%' AND LOWER(\"description\") NOT LIKE '%referral%' AND LOWER(\"description\") NOT LIKE '%bonus%'))")
 	}
 	if filter.Type != "" {
 		db = db.Where("\"type\" ILIKE ?", filter.Type)
@@ -732,7 +733,7 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 		if err := s.db.WithContext(ctx).Model(&models.WalletTransaction{}).
 			Select("\"userId\", SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as total").
 			Where("\"userId\" IN ?", userIDs).
-			Where("(LOWER(COALESCE(\"account_type\", '')) = 'gold' OR \"rewardType\" IS NOT NULL OR LOWER(COALESCE(\"description\", '')) LIKE '%quiz%' OR LOWER(COALESCE(\"description\", '')) LIKE '%reward%' OR LOWER(COALESCE(\"description\", '')) LIKE '%bonus%' OR LOWER(COALESCE(\"description\", '')) LIKE '%referral%')").
+			Where("(LOWER(COALESCE(\"account_type\", '')) IN ('savings') OR \"rewardType\" IS NOT NULL OR LOWER(COALESCE(\"description\", '')) LIKE '%quiz%' OR LOWER(COALESCE(\"description\", '')) LIKE '%reward%' OR LOWER(COALESCE(\"description\", '')) LIKE '%bonus%' OR LOWER(COALESCE(\"description\", '')) LIKE '%referral%')").
 			Where("(status IS NULL OR UPPER(status) IN ('SUCCESS', 'PAID', 'COMPLETED'))").
 			Group("\"userId\"").
 			Scan(&earningsList).Error; err == nil {
@@ -776,7 +777,7 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 		if err := s.db.WithContext(ctx).Model(&models.WalletTransaction{}).
 			Select("\"userId\", COUNT(*) as count").
 			Where("\"userId\" IN ?", userIDs).
-			Where("(LOWER(COALESCE(\"account_type\", '')) = 'gold' AND (LOWER(COALESCE(type, '')) = 'debit' OR LOWER(COALESCE(\"description\", '')) LIKE '%withdraw%'))").
+			Where("(LOWER(COALESCE(\"account_type\", '')) IN ('savings') AND (LOWER(COALESCE(type, '')) = 'debit' OR LOWER(COALESCE(\"description\", '')) LIKE '%withdraw%'))").
 			Group("\"userId\"").
 			Scan(&txPayoutCountList).Error; err == nil {
 			for _, res := range txPayoutCountList {
@@ -809,7 +810,7 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 		var goldTxList []models.WalletTransaction
 		if err := s.db.WithContext(ctx).Model(&models.WalletTransaction{}).
 			Where("\"userId\" IN ?", userIDs).
-			Where("(LOWER(COALESCE(\"account_type\", '')) = 'gold' OR \"rewardType\" IS NOT NULL OR LOWER(COALESCE(\"description\", '')) LIKE '%quiz%' OR LOWER(COALESCE(\"description\", '')) LIKE '%reward%')").
+			Where("(LOWER(COALESCE(\"account_type\", '')) IN ('savings') OR \"rewardType\" IS NOT NULL OR LOWER(COALESCE(\"description\", '')) LIKE '%quiz%' OR LOWER(COALESCE(\"description\", '')) LIKE '%reward%')").
 			Order("\"createdAt\" DESC").
 			Find(&goldTxList).Error; err == nil {
 			for _, gtx := range goldTxList {
@@ -916,7 +917,7 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 			status = *tx.Status
 		}
 
-		accType := "Personal"
+		accType := "Checking"
 		if tx.AccountType != nil && *tx.AccountType != "" {
 			accType = *tx.AccountType
 		}
@@ -1094,6 +1095,10 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 		isInternalTransfer := txTypeLowerForTransfer == "transfer" ||
 			strings.Contains(descLowerForTransfer, "transfer from") ||
 			strings.Contains(descLowerForTransfer, "transfer to") ||
+			strings.Contains(descLowerForTransfer, "between checking") ||
+			strings.Contains(descLowerForTransfer, "between savings") ||
+			strings.Contains(descLowerForTransfer, "savings to checking") ||
+			strings.Contains(descLowerForTransfer, "checking to savings") ||
 			strings.Contains(descLowerForTransfer, "between personal") ||
 			strings.Contains(descLowerForTransfer, "between gold") ||
 			strings.Contains(descLowerForTransfer, "gold to personal") ||
@@ -1302,6 +1307,8 @@ func (s *PaymentService) ChargeCardAndCreditWallet(ctx context.Context, userID i
 				"id":              wallet.ID,
 				"userId":          wallet.UserID,
 				"balance":         wallet.Balance,
+				"savingsBalance":  wallet.SavingsBalance,
+				"checkingBalance": wallet.CheckingBalance,
 				"personalBalance": wallet.PersonalBalance,
 				"goldBalance":     wallet.GoldBalance,
 				"usdcBalance":     wallet.UsdcBalance,
@@ -1362,7 +1369,7 @@ func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amoun
 		wallet.Balance += amount
 		wallet.PersonalBalance += amount
 		holdUntil := time.Now().Add(personalDepositHold)
-		accountType := "Personal"
+		accountType := "Checking"
 		switch currency {
 		case "USDC":
 			wallet.UsdcBalance += amount
@@ -1527,8 +1534,8 @@ func (s *PaymentService) TransferBetweenWallets(ctx context.Context, userID int,
 	}
 
 	fromType := strings.ToLower(strings.TrimSpace(fromAccountType))
-	if fromType != "gold" && fromType != "personal" {
-		return nil, fmt.Errorf("invalid fromAccountType: '%s' (must be 'gold' or 'personal')", fromAccountType)
+	if fromType != "savings" && fromType != "checking" {
+		return nil, fmt.Errorf("invalid fromAccountType: '%s' (must be 'savings' or 'checking')", fromAccountType)
 	}
 
 	log.Printf("[PaymentService] TransferBetweenWallets - userID=%d amount=%.2f from=%s", userID, amount, fromType)
@@ -1548,22 +1555,27 @@ func (s *PaymentService) TransferBetweenWallets(ctx context.Context, userID int,
 		var activityType string
 		txRef := fmt.Sprintf("TRF-%s-%d", strings.ToUpper(fromType), time.Now().UnixNano())
 
-		if fromType == "gold" {
+		if fromType == "savings" {
 			if wallet.GoldBalance < amount {
-				return fmt.Errorf("insufficient gold wallet balance (available: %.2f, required: %.2f)", wallet.GoldBalance, amount)
+				return fmt.Errorf("insufficient savings wallet balance (available: %.2f, required: %.2f)", wallet.SavingsBalance, amount)
 			}
 			wallet.GoldBalance -= amount
 			wallet.PersonalBalance += amount
 			wallet.Balance = wallet.PersonalBalance
+			wallet.SavingsBalance = wallet.GoldBalance
+			wallet.CheckingBalance = wallet.PersonalBalance
 			description = labels.Wallet("transferGoldToPersonal", nil)
 			activityType = "credit"
 		} else {
 			if wallet.PersonalBalance < amount {
-				return fmt.Errorf("insufficient personal wallet balance (available: %.2f, required: %.2f)", wallet.PersonalBalance, amount)
+				return fmt.Errorf("insufficient checking wallet balance (available: %.2f, required: %.2f)", wallet.CheckingBalance, amount)
 			}
 			wallet.PersonalBalance -= amount
+		wallet.CheckingBalance = wallet.PersonalBalance
 			wallet.GoldBalance += amount
 			wallet.Balance = wallet.PersonalBalance
+			wallet.SavingsBalance = wallet.GoldBalance
+			wallet.CheckingBalance = wallet.PersonalBalance
 			description = labels.Wallet("transferPersonalToGold", nil)
 			activityType = "debit"
 		}
@@ -1734,9 +1746,9 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 		return v
 	}()))
 	if sourceAccountType == "" {
-		sourceAccountType = "personal"
+		sourceAccountType = "checking"
 	}
-	isSavings := sourceAccountType == "gold" || sourceAccountType == "savings"
+	isSavings := sourceAccountType == "savings"
 	var wallet models.Wallet
 	if err := s.db.WithContext(ctx).Where("\"userId\" = ?", userID).First(&wallet).Error; err != nil {
 		return nil, fmt.Errorf("wallet not found for user: %w", err)
@@ -1771,7 +1783,7 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 	paymentMethod := "bankTransfer"
 	transactionType := "WITHDRAWAL"
 	txStatus := "Pending"
-	accountType := "Personal"
+	accountType := "Checking"
 
 	// Step 1: Verify user wallet balance and debit in DB transaction
 	var updatedWallet models.Wallet
@@ -1791,6 +1803,7 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 
 		// Debit personal balance
 		wallet.PersonalBalance -= amount
+		wallet.CheckingBalance = wallet.PersonalBalance
 		wallet.Balance = wallet.PersonalBalance
 
 		if err := tx.Save(&wallet).Error; err != nil {
@@ -1861,6 +1874,8 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 				"amount":    amount,
 				"wallet": map[string]interface{}{
 					"balance":         updatedWallet.Balance,
+					"checkingBalance": updatedWallet.CheckingBalance,
+					"savingsBalance":  updatedWallet.SavingsBalance,
 					"personalBalance": updatedWallet.PersonalBalance,
 				},
 			},
@@ -1908,6 +1923,7 @@ func (s *PaymentService) DebitUserWallet(ctx context.Context, userID int, amount
 
 		// Debit personal balance
 		wallet.PersonalBalance -= amount
+		wallet.CheckingBalance = wallet.PersonalBalance
 		wallet.Balance = wallet.PersonalBalance
 
 		if err := tx.Save(&wallet).Error; err != nil {

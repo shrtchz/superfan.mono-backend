@@ -461,7 +461,7 @@ func (pc *PaymentController) GetPaymentHistory(c *gin.Context) {
 }
 
 // TransferBetweenWallets handles POST /v1/payment/trf-btw-wallets/:userId
-// Accepts body: { amount: number, fromAccountType: "gold" | "personal" }
+// Accepts body: { amount: number, fromAccountType: "savings" | "checking" }
 func (pc *PaymentController) TransferBetweenWallets(c *gin.Context) {
 	userIdStr := c.Param("userId")
 	userId := 0
@@ -494,7 +494,7 @@ func (pc *PaymentController) TransferBetweenWallets(c *gin.Context) {
 
 	fromAccountType, _ := req["fromAccountType"].(string)
 	if fromAccountType == "" {
-		sendDetailedError(c, http.StatusBadRequest, "BAD_REQUEST", "fromAccountType is required ('gold' or 'personal')", nil)
+		sendDetailedError(c, http.StatusBadRequest, "BAD_REQUEST", "fromAccountType is required ('savings' or 'checking')", nil)
 		return
 	}
 
@@ -506,7 +506,7 @@ func (pc *PaymentController) TransferBetweenWallets(c *gin.Context) {
 		return
 	}
 
-	log.Printf("[PaymentController] TransferBetweenWallets success - userId=%d newPersonal=%.2f newGold=%.2f", userId, wallet.PersonalBalance, wallet.GoldBalance)
+	log.Printf("[PaymentController] TransferBetweenWallets success - userId=%d newChecking=%.2f newSavings=%.2f", userId, wallet.CheckingBalance, wallet.SavingsBalance)
 
 	c.JSON(http.StatusOK, map[string]interface{}{
 		"requestSuccessful": true,
@@ -521,6 +521,8 @@ func (pc *PaymentController) TransferBetweenWallets(c *gin.Context) {
 				"id":              wallet.ID,
 				"userId":          wallet.UserID,
 				"balance":         wallet.Balance,
+				"savingsBalance":  wallet.SavingsBalance,
+				"checkingBalance": wallet.CheckingBalance,
 				"personalBalance": wallet.PersonalBalance,
 				"goldBalance":     wallet.GoldBalance,
 				"usdcBalance":     wallet.UsdcBalance,

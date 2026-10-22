@@ -2190,27 +2190,27 @@ async getCard(userId: number): Promise<any> {
       dto.paymentMethod === 'wallet' ||
       dto.paymentMethod === 'WALLET' ||
       !dto.paymentMethod;
-    const subWallet = (dto.subWallet || 'personal').toLowerCase();
+    const subWallet = (dto.subWallet || 'checking').toLowerCase();
 
     if (isWalletPayment) {
       let wallet = await prisma.wallet.findUnique({ where: { userId } });
       if (!wallet) {
         wallet = await prisma.wallet.create({
-          data: { userId, balance: 0, personalBalance: 0, goldBalance: 0 },
+          data: { userId, balance: 0, checkingBalance: 0, savingsBalance: 0 },
         });
       }
 
-      const isGold = subWallet === 'gold';
-      let availableBalance = isGold
-        ? Number(wallet.goldBalance) || 0
-        : Number(wallet.personalBalance) || 0;
+      const isSavings = subWallet === 'savings';
+      let availableBalance = isSavings
+        ? Number(wallet.savingsBalance) || 0
+        : Number(wallet.checkingBalance) || 0;
 
-      if (!isGold) {
+      if (!isSavings) {
         const held = await prisma.walletTransaction.aggregate({
           _sum: { amount: true },
           where: {
             userId,
-            account_type: 'Personal',
+            account_type: { in: ['Checking', 'checking'] },
             holdUntil: { gt: new Date() },
           },
         });
@@ -2219,16 +2219,16 @@ async getCard(userId: number): Promise<any> {
 
       if (availableBalance < amount) {
         throw new BadRequestException(
-          `Insufficient ${isGold ? 'Gold' : 'Personal'} wallet balance. Required: ₦${amount.toFixed(2)}, Available: ₦${availableBalance.toFixed(2)}`,
+          `Insufficient ${isSavings ? 'Savings' : 'Checking'} wallet balance. Required: ₦${amount.toFixed(2)}, Available: ₦${availableBalance.toFixed(2)}`,
         );
       }
 
       // Deduct from wallet
-      if (isGold) {
+      if (isSavings) {
         await prisma.wallet.update({
           where: { userId },
           data: {
-            goldBalance: { decrement: amount },
+            savingsBalance: { decrement: amount },
             balance: { decrement: amount },
           },
         });
@@ -2236,7 +2236,7 @@ async getCard(userId: number): Promise<any> {
         await prisma.wallet.update({
           where: { userId },
           data: {
-            personalBalance: { decrement: amount },
+            checkingBalance: { decrement: amount },
             balance: { decrement: amount },
           },
         });
@@ -2250,7 +2250,7 @@ async getCard(userId: number): Promise<any> {
           type: 'debit',
           currency: 'NGN',
           payment_method: 'subscription',
-          account_type: isGold ? 'Gold' : 'Personal',
+          account_type: isSavings ? 'Savings' : 'Checking',
           reference: `SUB-${Date.now()}`,
           status: 'SUCCESS',
           account_name: `Subscription (${subscriptionPlan})`,
@@ -3305,7 +3305,7 @@ async findUserByEmail(email: string): Promise<any> {
         where: {
           userId: referrer.id,
           type: 'credit',
-          account_type: 'Gold',
+          account_type: 'Savings',
           description: 'Referral Bonus - Sign up',
           createdAt: {
             gte: referralRecord.createdAt,
@@ -3365,7 +3365,7 @@ async findUserByEmail(email: string): Promise<any> {
           points: 20000,
           reference: `POINTS_REFERRAL_SIGNUP_${referralRecord.id}`,
           type: 'referral_signup',
-          accountType: 'Gold',
+          accountType: 'Savings',
         },
       });
 
@@ -3375,7 +3375,7 @@ async findUserByEmail(email: string): Promise<any> {
           points: 20000,
           reference: `POINTS_REFERRAL_SIGNUP_REFEREE_${referralRecord.id}`,
           type: 'referee_signup_bonus',
-          accountType: 'Gold',
+          accountType: 'Savings',
         },
       });
 
@@ -3455,13 +3455,13 @@ async findUserByEmail(email: string): Promise<any> {
       where: { userId: referrerId },
       update: {
         balance: { increment: amount },
-        goldBalance: { increment: amount },
-      },
+        savingsBalance: { increment: amount },
+              },
       create: {
         userId: referrerId,
         balance: amount,
-        goldBalance: amount,
-      },
+        savingsBalance: amount,
+              },
     });
 
     await tx.walletTransaction.create({
@@ -3472,7 +3472,7 @@ async findUserByEmail(email: string): Promise<any> {
         currency: 'NGN',
         status: 'SUCCESS',
         description,
-        account_type: 'Gold',
+        account_type: 'Savings',
         transactionType: 'Reward',
         reference,
         trx_ref: `REFERRAL_${generateFiveUniqueRandomNumbers()}`,
@@ -3514,7 +3514,7 @@ async findUserByEmail(email: string): Promise<any> {
           points: 20000,
           reference: pointReference,
           type: 'referee_signup_bonus',
-          accountType: 'Gold',
+          accountType: 'Savings',
         },
       });
       await tx.user.update({

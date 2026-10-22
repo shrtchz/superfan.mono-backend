@@ -23,7 +23,7 @@ export class CreateVersusDto {
   opponentShare: number;
 
   @IsString()
-  @IsIn(['gold', 'personal', 'savings', 'checking', 'Savings', 'Checking'])
+  @IsIn(['savings', 'checking', 'Savings', 'Checking'])
   fundingAccount: string;
 
   @IsOptional()
@@ -49,13 +49,13 @@ export class CreateVersusDto {
 
 export class AcceptVersusDto {
   @IsString()
-  @IsIn(['gold', 'personal', 'savings', 'checking', 'Savings', 'Checking'])
+  @IsIn(['savings', 'checking', 'Savings', 'Checking'])
   fundingAccount: string;
 }
 
 export class FundVersusDto {
   @IsString()
-  @IsIn(['gold', 'personal', 'savings', 'checking', 'Savings', 'Checking'])
+  @IsIn(['savings', 'checking', 'Savings', 'Checking'])
   fundingAccount: string;
 }
 

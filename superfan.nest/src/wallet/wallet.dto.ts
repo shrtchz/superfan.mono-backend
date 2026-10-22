@@ -42,7 +42,7 @@ export class WalletTransactionFilterDto {
 
     @IsOptional()
     @IsString()
-    accountType?: string; // 'Gold' | 'Personal'
+    accountType?: string; // 'Savings' | 'Checking'
 
     @IsOptional()
     @IsString()

@@ -49,7 +49,7 @@ export const NotificationTriggers = {
   PAYMENT_METHOD_REMOVED: 'payment_method_removed',
   DEFAULT_PAYMENT_METHOD_CHANGED: 'default_payment_method_changed',
   MINIMUM_WITHDRAWAL_NOT_MET: 'minimum_withdrawal_not_met',
-  GOLD_PERSONAL_TRANSFER: 'gold_personal_transfer',
+  SAVINGS_CHECKING_TRANSFER: 'savings_checking_transfer',
   KYC_SUBMITTED: 'kyc_in_progress',
   KYC_APPROVED: 'kyc_approved',
   KYC_REJECTED: 'kyc_failed',
@@ -448,7 +448,7 @@ export class NotificationService {
   }
 
   async liveQuizJackpot(userId: number, amountNaira: number, createdAt?: Date) {
-    const msg = `Jackpot! ₦${Number(amountNaira).toLocaleString()} credited to your Gold Account.`;
+    const msg = `Jackpot! ₦${Number(amountNaira).toLocaleString()} credited to your Savings Account.`;
     return this.notify(userId, NotificationTriggers.LIVE_QUIZ_JACKPOT, msg, msg, createdAt);
   }
 
@@ -636,9 +636,9 @@ export class NotificationService {
     return this.notify(userId, NotificationTriggers.MINIMUM_WITHDRAWAL_NOT_MET, msg, msg);
   }
 
-  async goldPersonalTransfer(userId: number, amountNaira: number, from: string, to: string) {
-    const msg = `₦${amountNaira.toLocaleString()} moved from ${from} to ${to} account.`;
-    return this.notify(userId, NotificationTriggers.GOLD_PERSONAL_TRANSFER, msg, msg);
+  async savingsCheckingTransfer(userId: number, amountNaira: number, from: string, to: string) {
+    const msg = `Transferred ₦${amountNaira.toLocaleString()} from ${from} to ${to}`;
+    return this.notify(userId, NotificationTriggers.SAVINGS_CHECKING_TRANSFER, msg, msg);
   }
 
   async streamCommentLiked(ownerUserId: number, likerName: string, commentPreview: string) {

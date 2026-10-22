@@ -272,23 +272,21 @@ export class ShopService {
             data: {
               userId,
               balance: 0,
-              personalBalance: 0,
-              goldBalance: 0,
-            },
+                                        },
           });
         }
 
-        const isGold = dto.subWallet?.toLowerCase() === 'gold';
-        let availableBalance = isGold
-          ? Number(wallet.goldBalance) || 0
-          : Number(wallet.personalBalance) || 0;
+        const isSavings = dto.subWallet?.toLowerCase() === 'savings';
+        let availableBalance = isSavings
+          ? Number(wallet.savingsBalance) || 0
+          : Number(wallet.checkingBalance) || 0;
 
-        if (!isGold) {
+        if (!isSavings) {
           const held = await tx.walletTransaction.aggregate({
             _sum: { amount: true },
             where: {
               userId,
-              account_type: 'Personal',
+              account_type: { in: ['Checking', 'checking'] },
               holdUntil: { gt: new Date() },
             },
           });
@@ -297,16 +295,16 @@ export class ShopService {
 
         if (availableBalance < totalAmount) {
           throw new BadRequestException(
-            `Insufficient ${isGold ? 'Gold' : 'Personal'} wallet balance. Required: ₦${totalAmount.toFixed(2)}, Available: ₦${availableBalance.toFixed(2)}`,
+            `Insufficient ${isSavings ? 'Savings' : 'Checking'} wallet balance. Required: ₦${totalAmount.toFixed(2)}, Available: ₦${availableBalance.toFixed(2)}`,
           );
         }
 
         // Deduct from wallet balance
-        if (isGold) {
+        if (isSavings) {
           await tx.wallet.update({
             where: { userId },
             data: {
-              goldBalance: { decrement: totalAmount },
+              savingsBalance: { decrement: totalAmount },
               balance: { decrement: totalAmount },
             },
           });
@@ -314,7 +312,7 @@ export class ShopService {
           await tx.wallet.update({
             where: { userId },
             data: {
-              personalBalance: { decrement: totalAmount },
+              checkingBalance: { decrement: totalAmount },
               balance: { decrement: totalAmount },
             },
           });
@@ -330,7 +328,7 @@ export class ShopService {
             payment_method: 'shop',
             reference: `SHOP-${Date.now()}`,
             status: 'SUCCESS',
-            account_name: `Shop Purchase (${dto.subWallet || 'Personal'})`,
+            account_name: `Shop Purchase (${dto.subWallet || 'Checking'})`,
             description: 'Shop Merch Payment',
           },
         });

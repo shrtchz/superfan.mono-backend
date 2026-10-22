@@ -332,10 +332,10 @@ export class NotificationController {
   }
 
   @Public()
-  @Post('/triggers/gold-personal-transfer')
+  @Post('/triggers/savings-checking-transfer')
   @HttpCode(HttpStatus.OK)
-  triggerGoldPersonalTransfer(@Body() body: { userId: number; amountNaira: number; from: string; to: string }) {
-    return this.notificationService.goldPersonalTransfer(body.userId, body.amountNaira, body.from, body.to);
+  triggerSavingsCheckingTransfer(@Body() body: { userId: number; amountNaira: number; from: string; to: string }) {
+    return this.notificationService.savingsCheckingTransfer(body.userId, body.amountNaira, body.from, body.to);
   }
 
   @Public()
