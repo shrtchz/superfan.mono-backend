@@ -2423,6 +2423,64 @@ async getQuizWithPreferences(dto: GetQuizWithPreferencesDto, userId: number) {
   }
 }
 
+async getVersusQuestionPack(
+  preferences: {
+    languagePreference: string;
+    subjectPreference: string;
+    testLevel: string;
+    questionCount: number;
+    timePreference: number;
+  },
+) {
+  const response = await firstValueFrom(
+    this.httpService.get(`${this.baseUrl}/quick-start`, {
+      params: {
+        languagePreference: preferences.languagePreference,
+        subjectPreference: preferences.subjectPreference,
+        testLevel: preferences.testLevel,
+        questionPreference: preferences.questionCount,
+        timePreference: preferences.timePreference,
+        isRandom: 'false',
+      },
+    }),
+  );
+
+  const pack = (response.data?.data || response.data || {}) as Record<
+    string,
+    unknown
+  >;
+  const rawQuizzes = Array.isArray(pack.quizzes) ? pack.quizzes : [];
+  if (rawQuizzes.length === 0) {
+    throw new NotFoundException('No questions found for this Versus match');
+  }
+
+  const quizzes = rawQuizzes
+    .slice(0, preferences.questionCount)
+    .map((rawQuestion: unknown) => {
+      if (
+        typeof rawQuestion !== 'object' ||
+        rawQuestion === null ||
+        Array.isArray(rawQuestion)
+      ) {
+        throw new BadRequestException(
+          'The quiz API returned an invalid question for this Versus match',
+        );
+      }
+      const {
+        answer: _answer,
+        correctAnswer: _correctAnswer,
+        ...publicQuestion
+      } = rawQuestion as Record<string, unknown>;
+      return publicQuestion;
+    });
+
+  return {
+    ...pack,
+    quizzes,
+    totalQuestions: quizzes.length,
+  };
+}
+
 async getOngoingQuiz (userId: number) {
     const ongoingQuiz = await prisma.ongoingQuiz.findFirst({
     where: {

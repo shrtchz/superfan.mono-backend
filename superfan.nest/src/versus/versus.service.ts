@@ -10,6 +10,7 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../config/database/prisma.service';
 import { NotificationService } from '../notification/notification.service';
 import { NotificationGateway } from '../notification/notification.gateway';
+import { QuizService } from '../quiz/quiz.service';
 import {
   AcceptVersusDto,
   CreateVersusDto,
@@ -78,6 +79,7 @@ export class VersusService {
     private readonly prisma: PrismaService,
     private readonly notificationService: NotificationService,
     private readonly notificationGateway: NotificationGateway,
+    private readonly quizService: QuizService,
   ) {}
 
   /**
@@ -623,6 +625,13 @@ export class VersusService {
       throw new BadRequestException('Cannot start: opponent has not funded or is not ready');
     }
 
+    const questionPack = await this.quizService.getVersusQuestionPack({
+      languagePreference: request.language,
+      subjectPreference: request.subject,
+      testLevel: request.level,
+      questionCount: request.questionsCount,
+      timePreference: request.durationMinutes,
+    });
     const matchRef = `MATCH_${Date.now()}_${randomBytes(4).toString('hex').toUpperCase()}`;
 
     const updated = await this.prisma.versusRequest.update({
@@ -631,6 +640,7 @@ export class VersusService {
         status: 'STARTED',
         startedAt: now,
         matchReference: matchRef,
+        questions: JSON.parse(JSON.stringify(questionPack.quizzes)) as Prisma.InputJsonValue,
       },
       include: {
         host: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
@@ -641,6 +651,48 @@ export class VersusService {
     this.emitVersusEvent(request.hostId, request.opponentId, 'versus:started', updated);
     this.emitVersusEvent(request.hostId, request.opponentId, 'versus:updated', updated);
     return updated;
+  }
+
+  async getMatchQuestions(userId: number, requestId: number) {
+    const request = await this.prisma.versusRequest.findUnique({
+      where: { id: requestId },
+    });
+
+    if (!request) {
+      throw new NotFoundException(`Versus request ${requestId} not found`);
+    }
+    if (request.hostId !== userId && request.opponentId !== userId) {
+      throw new ForbiddenException('You are not a participant in this versus match');
+    }
+    if (request.status !== 'STARTED') {
+      throw new BadRequestException('Questions are available once the match has started');
+    }
+
+    const questions = Array.isArray(request.questions)
+      ? request.questions.map((question) => {
+          if (!question || typeof question !== 'object' || Array.isArray(question)) {
+            return question;
+          }
+          const { answer: _answer, correctAnswer: _correctAnswer, ...publicQuestion } =
+            question as Record<string, unknown>;
+          return publicQuestion;
+        })
+      : [];
+
+    if (questions.length === 0) {
+      throw new NotFoundException('Questions have not been assigned to this Versus match');
+    }
+
+    return {
+      id: request.id,
+      startedAt: request.startedAt,
+      durationMinutes: request.durationMinutes,
+      language: request.language,
+      subject: request.subject,
+      level: request.level,
+      questionsCount: questions.length,
+      questions,
+    };
   }
 
   /**
