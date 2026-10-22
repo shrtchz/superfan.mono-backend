@@ -23,6 +23,29 @@ import (
 const defaultPointsToNairaRate = 1000
 
 func getPointsToNairaRate() int {
+	if utils.DB != nil {
+		var setting struct {
+			Value string
+		}
+		err := utils.DB.Raw(
+			`SELECT "value" FROM "platform_settings" WHERE "key" = ? LIMIT 1`,
+			"pointsToNairaRate",
+		).Scan(&setting).Error
+		if err != nil {
+			log.Printf("failed to load points conversion rate from platform settings: %v", err)
+		} else if setting.Value != "" {
+			rate, parseErr := strconv.Atoi(setting.Value)
+			if parseErr == nil && rate > 0 {
+				return rate
+			}
+			log.Printf("stored points conversion rate is invalid; falling back to environment configuration")
+		}
+	}
+
+	return getEnvironmentPointsToNairaRate()
+}
+
+func getEnvironmentPointsToNairaRate() int {
 	value := strings.TrimSpace(os.Getenv("POINTS_TO_NAIRA_RATE"))
 	if value == "" {
 		return defaultPointsToNairaRate

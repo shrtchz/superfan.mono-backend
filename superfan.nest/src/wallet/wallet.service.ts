@@ -321,8 +321,8 @@ export class WalletService {
   }
 
 
-  createReward(userId: number, points: number, type: string, status: EarningStatus) {
-    const amount = this.pointsConversionUtil.pointsToNaira(points);
+  async createReward(userId: number, points: number, type: string, status: EarningStatus) {
+    const amount = await this.pointsConversionUtil.pointsToNaira(points);
     return this.createRewardWithAmount(userId, amount, 'NGN', type, status);
   }
 
@@ -363,7 +363,7 @@ export class WalletService {
   }
 
   async createQuizReward(userId: number, points: number, subject: string, status: EarningStatus, reference?: string) {
-    const amount = this.pointsConversionUtil.pointsToNaira(points);
+    const amount = await this.pointsConversionUtil.pointsToNaira(points);
     // Key on the quiz session ID (passed as reference) — NOT on points/subject,
     // because totalPoints can differ between retries (streak variance) and would
     // defeat the idempotency guard, creating duplicate wallet credits.
@@ -442,7 +442,7 @@ export class WalletService {
     quizName = 'Live Quiz',
   ) {
     const rewardReference = `live_quiz_consolation:${userId}:${sessionId}`;
-    const amount = this.pointsConversionUtil.pointsToNaira(consolationPoints);
+    const amount = await this.pointsConversionUtil.pointsToNaira(consolationPoints);
 
     // Idempotency guard — do not double-credit the same session
     const existingReward = await this.prisma.reward.findFirst({

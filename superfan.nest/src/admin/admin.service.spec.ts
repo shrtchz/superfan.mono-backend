@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { AdminService } from './admin.service';
 import { MailService } from '../mail/mail.service';
 import { TaskService } from '../tasks/tasks.service';
+import { PointsConversionUtil } from '../common/utils/points-conversion.util';
 import { prisma } from '../prisma/prisma';
 
 // Mock dependencies
@@ -50,6 +51,7 @@ describe('AdminService - inviteAdmin & access levels', () => {
   let mailService: Partial<MailService>;
   let configService: Partial<ConfigService>;
   let taskService: Partial<TaskService>;
+  let pointsConversionUtil: Partial<PointsConversionUtil>;
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -63,12 +65,48 @@ describe('AdminService - inviteAdmin & access levels', () => {
     taskService = {
       subadminRegistered: jest.fn().mockResolvedValue(true),
     };
+    pointsConversionUtil = {
+      getConversionRateDetails: jest.fn(),
+      setConversionRate: jest.fn(),
+    };
 
     service = new AdminService(
       mailService as MailService,
       configService as ConfigService,
       taskService as TaskService,
+      pointsConversionUtil as PointsConversionUtil,
     );
+  });
+
+  describe('points conversion rate', () => {
+    it('returns the persisted conversion rate details', async () => {
+      const details = { rate: 2500, updatedAt: new Date('2026-10-22T12:00:00Z') };
+      (pointsConversionUtil.getConversionRateDetails as jest.Mock).mockResolvedValue(
+        details,
+      );
+
+      await expect(service.getPointsConversionRate()).resolves.toEqual(details);
+      expect(pointsConversionUtil.getConversionRateDetails).toHaveBeenCalled();
+    });
+
+    it('persists a valid whole-number conversion rate', async () => {
+      const result = { rate: 2500, updatedAt: new Date('2026-10-22T12:00:00Z') };
+      (pointsConversionUtil.setConversionRate as jest.Mock).mockResolvedValue(
+        result,
+      );
+
+      await expect(service.updatePointsConversionRate(2500)).resolves.toEqual(
+        result,
+      );
+      expect(pointsConversionUtil.setConversionRate).toHaveBeenCalledWith(2500);
+    });
+
+    it('rejects a non-positive conversion rate', async () => {
+      await expect(service.updatePointsConversionRate(0)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(pointsConversionUtil.setConversionRate).not.toHaveBeenCalled();
+    });
   });
 
   describe('1. Owner / Super Admin Access Level', () => {
