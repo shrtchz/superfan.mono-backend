@@ -3,6 +3,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { PrismaService } from '../config/database/prisma.service';
 import { NotificationService } from '../notification/notification.service';
 import { NotificationGateway } from '../notification/notification.gateway';
+import { QuizService } from '../quiz/quiz.service';
 import { determineVersusWinner, VersusService } from './versus.service';
 
 describe('VersusService', () => {
@@ -10,6 +11,7 @@ describe('VersusService', () => {
   let prismaMock: any;
   let notificationMock: any;
   let gatewayMock: any;
+  let quizMock: any;
 
   beforeEach(async () => {
     notificationMock = {
@@ -21,6 +23,11 @@ describe('VersusService', () => {
 
     gatewayMock = {
       sendVersusEvent: jest.fn(),
+    };
+    quizMock = {
+      getVersusQuestionPack: jest.fn().mockResolvedValue({
+        quizzes: [{ id: 'quiz-1', question: 'Question', options: ['A', 'B'] }],
+      }),
     };
 
     prismaMock = {
@@ -62,6 +69,7 @@ describe('VersusService', () => {
         { provide: PrismaService, useValue: prismaMock },
         { provide: NotificationService, useValue: notificationMock },
         { provide: NotificationGateway, useValue: gatewayMock },
+        { provide: QuizService, useValue: quizMock },
       ],
     }).compile();
 
@@ -273,15 +281,53 @@ describe('VersusService', () => {
           data: expect.objectContaining({
             status: 'STARTED',
             matchReference: expect.stringContaining('MATCH_'),
+            questions: [{ id: 'quiz-1', question: 'Question', options: ['A', 'B'] }],
           }),
         }),
       );
+      expect(quizMock.getVersusQuestionPack).toHaveBeenCalledWith({
+        languagePreference: undefined,
+        subjectPreference: undefined,
+        testLevel: undefined,
+        questionCount: undefined,
+        timePreference: undefined,
+      });
 
       expect(gatewayMock.sendVersusEvent).toHaveBeenCalledWith(
         [1, 2],
         'versus:started',
         expect.anything(),
       );
+    });
+
+    it('returns the assigned question pack only to a participant and hides answer keys', async () => {
+      prismaMock.versusRequest.findUnique.mockResolvedValue({
+        id: 42,
+        hostId: 1,
+        opponentId: 2,
+        status: 'STARTED',
+        startedAt: new Date(),
+        durationMinutes: 5,
+        language: 'Yoruba',
+        subject: 'General',
+        level: 'Basic',
+        questions: [
+          {
+            id: 'quiz-1',
+            question: 'Question',
+            options: ['A', 'B'],
+            answer: 'A',
+          },
+        ],
+      });
+
+      await expect(service.getMatchQuestions(2, 42)).resolves.toEqual(
+        expect.objectContaining({
+          id: 42,
+          questions: [{ id: 'quiz-1', question: 'Question', options: ['A', 'B'] }],
+        }),
+      );
+      await expect(service.getMatchQuestions(3, 42)).rejects.toThrow(ForbiddenException);
     });
   });
 

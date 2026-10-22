@@ -293,12 +293,57 @@ export class TaskService {
   }
 
   async getRecentActivities(limit = 20) {
-    return prisma.activityMonitor.findMany({
+    const activities = await prisma.activityMonitor.findMany({
       take: limit,
       orderBy: {
         createdAt: 'desc',
       },
     });
+
+    // If no activities recorded yet, populate from recent registered users
+    if (activities.length === 0) {
+      try {
+        const recentUsers = await prisma.user.findMany({
+          take: limit,
+          orderBy: { createdAt: 'desc' },
+          select: {
+            id: true,
+            username: true,
+            firstName: true,
+            email: true,
+            roleName: true,
+            createdAt: true,
+          },
+        });
+
+        if (recentUsers.length > 0) {
+          await prisma.activityMonitor.createMany({
+            data: recentUsers.map((u) => ({
+              type: ActivityType.user_registered,
+              actorId: u.id,
+              actorName: u.username || u.firstName || 'User',
+              actorEmail: u.email || '',
+              metadata: {
+                role: u.roleName || 'client',
+                label: `New ${(u.roleName || 'client').toLowerCase()} registered`,
+              },
+              createdAt: u.createdAt,
+            })),
+          });
+
+          return prisma.activityMonitor.findMany({
+            take: limit,
+            orderBy: {
+              createdAt: 'desc',
+            },
+          });
+        }
+      } catch (backfillErr) {
+        console.error('[TasksService] Failed to backfill recent activities:', backfillErr);
+      }
+    }
+
+    return activities;
   }
 
   async userRegistered(user: {
@@ -307,34 +352,41 @@ export class TaskService {
     email: string;
     role: string;
   }) {
+    const actorName = user.name || 'User';
+    const actorEmail = user.email || '';
+    const role = user.role || 'client';
     const activity = await this.logActivity({
       type: ActivityType.user_registered,
       actorId: user.id,
-      actorName: user.name,
-      actorEmail: user.email,
+      actorName,
+      actorEmail,
       metadata: {
-        role: user.role, // ✅ store role here
-        label: `New ${user.role.toLowerCase()} registered`, // optional readable text
+        role, // ✅ store role here
+        label: `New ${role.toLowerCase()} registered`, // optional readable text
       },
     });
 
     // Notify all superadmin and subadmin users
-    const admins = await prisma.user.findMany({
-      where: {
-        roleName: { in: ['superadmin', 'subadmin'] },
-      },
-      select: { id: true, username: true },
-    });
+    try {
+      const admins = await prisma.user.findMany({
+        where: {
+          roleName: { in: ['superadmin', 'subadmin'] },
+        },
+        select: { id: true, username: true },
+      });
 
-    await Promise.all(
-      admins.map((admin) =>
-        this.notificationService.createNotification(
-          admin.id,
-          `New user Signup`,
-          `${user.role} account. @${user.name}`,
+      await Promise.all(
+        admins.map((admin) =>
+          this.notificationService.createNotification(
+            admin.id,
+            `New user Signup`,
+            `${role} account. @${actorName}`,
+          ),
         ),
-      ),
-    );
+      );
+    } catch (notifErr) {
+      console.error('[TasksService] Failed to notify admins of registration:', notifErr);
+    }
 
     return activity;
   }
@@ -378,10 +430,10 @@ export class TaskService {
     return activity;
   }
 
-  async deleteActivity(id: number) {
+  async deleteActivity(id: number | string) {
     return prisma.activityMonitor.delete({
       where: {
-        id,
+        id: Number(id),
       },
     });
   }

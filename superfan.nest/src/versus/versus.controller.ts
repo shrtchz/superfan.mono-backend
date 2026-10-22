@@ -150,6 +150,18 @@ export class VersusController {
     return this.versusService.getMatchResult(userId, id);
   }
 
+  @Get(':id/questions')
+  async getMatchQuestions(
+    @Req() req: any,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    const userId = Number(req.user?.id);
+    if (!userId || isNaN(userId)) {
+      throw new UnauthorizedException('User not authenticated');
+    }
+    return this.versusService.getMatchQuestions(userId, id);
+  }
+
   @Post(':id/submit-result')
   async submitResult(
     @Req() req: any,

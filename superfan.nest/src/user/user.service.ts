@@ -924,6 +924,18 @@ export class UserService {
         if (dto.referralCode) {
           await this.processReferralSignup(user, dto.referralCode);
         }
+
+        // Log user registration activity for platform updates
+        try {
+          await this.taskService.userRegistered({
+            id: user.id,
+            name: user.username || user.firstName || 'User',
+            email: user.email,
+            role: user.roleName || 'client',
+          });
+        } catch (activityErr) {
+          console.error('[UserService] Failed to log userRegistered activity:', activityErr);
+        }
       }
 
       // 4️⃣ Update last login timestamp
@@ -3226,6 +3238,18 @@ async findUserByEmail(email: string): Promise<any> {
     // Handle referral bonuses
     if (data.referralCode) {
       await this.processReferralSignup(user, data.referralCode);
+    }
+
+    // Log user registration activity for platform updates
+    try {
+      await this.taskService.userRegistered({
+        id: user.id,
+        name: user.username || user.firstName || 'User',
+        email: user.email,
+        role: user.roleName || 'client',
+      });
+    } catch (activityErr) {
+      console.error('[UserService] Failed to log userRegistered activity:', activityErr);
     }
 
     // Welcome email is triggered automatically once user email/OTP is verified
