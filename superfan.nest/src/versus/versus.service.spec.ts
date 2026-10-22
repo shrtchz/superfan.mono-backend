@@ -879,8 +879,8 @@ describe('VersusService', () => {
     it('returns global summary where Live + Schedule === Total Versus and sums paid jackpots', async () => {
       prismaMock.versusRequest.count.mockResolvedValueOnce(15); // totalVersus
       prismaMock.versusRequest.count.mockResolvedValueOnce(6);  // totalScheduleH2H
-      prismaMock.versusRequest.aggregate.mockResolvedValueOnce({
-        _sum: { jackpotWon: 18500 },
+      prismaMock.walletTransaction.aggregate.mockResolvedValueOnce({
+        _sum: { amount: 18500 },
       });
 
       const summary = await service.getAdminVersusSummary();
@@ -889,6 +889,13 @@ describe('VersusService', () => {
       expect(summary.totalLive1v1).toBe(9);
       expect(summary.totalLive1v1 + summary.totalScheduleH2H).toBe(summary.totalVersus);
       expect(summary.totalJackpotsWon).toBe(18500);
+      expect(prismaMock.walletTransaction.aggregate).toHaveBeenCalledWith({
+        _sum: { amount: true },
+        where: {
+          transactionType: 'VERSUS_JACKPOT_PAYOUT',
+          status: 'SUCCESS',
+        },
+      });
     });
   });
 
@@ -983,8 +990,8 @@ describe('VersusService', () => {
       // Summary sub-call mocks
       prismaMock.versusRequest.count.mockResolvedValueOnce(3); // summary total
       prismaMock.versusRequest.count.mockResolvedValueOnce(1); // summary schedule
-      prismaMock.versusRequest.aggregate.mockResolvedValueOnce({
-        _sum: { jackpotWon: 2000 },
+      prismaMock.walletTransaction.aggregate.mockResolvedValueOnce({
+        _sum: { amount: 2000 },
       });
 
       const res = await service.getAdminVersusLedger(1, 10);
@@ -1000,7 +1007,7 @@ describe('VersusService', () => {
       expect(row1.questionCount).toBe(25);
       expect(row1.hostStats).toBe('22/25 · 1:19 · 88%');
       expect(row1.guestStats).toBe('18/25 · 1:35 · 72%');
-      expect(row1.mode).toBe('Live');
+      expect(row1.mode).toBe('Versus');
       expect(row1.versusStatus).toBe('Completed');
       expect(row1.jackpotPaymentStatus).toBe('Paid');
       expect(row1.jackpotWonAmount).toBe('NGN 2,000');
@@ -1012,7 +1019,7 @@ describe('VersusService', () => {
       expect(row2.versusStatus).toBe('Completed');
       expect(row2.jackpotWonAmount).toBe('NGN 0');
       expect(row2.jackpotPaymentStatus).toBe('Refunded');
-      expect(row2.mode).toBe('Schedule');
+      expect(row2.mode).toBe('Versus');
 
       // Row 3 (Pending)
       const row3 = res.items[2];
