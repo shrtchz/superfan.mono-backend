@@ -72,8 +72,10 @@ func (s *ledgerServiceImpl) GetLedgerEntries(page, limit int, filters map[string
 			`COALESCE(SUM(CASE WHEN status = 'PENDING' AND currency = 'NGN' THEN amount ELSE 0 END), 0) as pending_settlement, ` +
 			`COALESCE(SUM(CASE WHEN status = 'PENDING' THEN 1 ELSE 0 END), 0) as pending_count, ` +
 			`COALESCE(SUM(CASE WHEN "transactionType" IN ('Deposit', 'FUNDING') AND status IN ('SUCCESS', 'Completed') AND currency = 'NGN' THEN amount ELSE 0 END), 0) as cash_bank, ` +
-			`COALESCE(SUM(CASE WHEN "type" IN ('Credit', 'credit', 'CREDIT') AND status IN ('SUCCESS', 'Completed') AND currency = 'NGN' AND LOWER(account_type) = 'personal' THEN amount ELSE 0 END), 0) as personal_wallet_liab, ` +
-			`COALESCE(SUM(CASE WHEN "type" IN ('Credit', 'credit', 'CREDIT') AND status IN ('SUCCESS', 'Completed') AND currency = 'NGN' AND LOWER(account_type) = 'gold' THEN amount ELSE 0 END), 0) as gold_wallet_liab, ` +
+			`COALESCE(SUM(CASE WHEN "type" IN ('Credit', 'credit', 'CREDIT') AND status IN ('SUCCESS', 'Completed') AND currency = 'NGN' AND LOWER(account_type) IN ('checking') THEN amount ELSE 0 END), 0) as checking_wallet_liab, ` +
+			`COALESCE(SUM(CASE WHEN "type" IN ('Credit', 'credit', 'CREDIT') AND status IN ('SUCCESS', 'Completed') AND currency = 'NGN' AND LOWER(account_type) IN ('checking') THEN amount ELSE 0 END), 0) as personal_wallet_liab, ` +
+			`COALESCE(SUM(CASE WHEN "type" IN ('Credit', 'credit', 'CREDIT') AND status IN ('SUCCESS', 'Completed') AND currency = 'NGN' AND LOWER(account_type) IN ('savings') THEN amount ELSE 0 END), 0) as savings_wallet_liab, ` +
+			`COALESCE(SUM(CASE WHEN "type" IN ('Credit', 'credit', 'CREDIT') AND status IN ('SUCCESS', 'Completed') AND currency = 'NGN' AND LOWER(account_type) IN ('savings') THEN amount ELSE 0 END), 0) as gold_wallet_liab, ` +
 			`COALESCE(SUM(CASE WHEN "transactionType" = 'Fee' AND status IN ('SUCCESS', 'Completed') AND currency = 'NGN' THEN amount ELSE 0 END), 0) as platform_revenue`,
 	).Scan(&summary).Error; err != nil {
 		return nil, 0, nil, fmt.Errorf("summary query failed: %w", err)

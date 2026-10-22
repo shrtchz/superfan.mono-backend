@@ -216,8 +216,11 @@ export class WalletService {
       currency,
     });
 
-    const isGold = accountType === 'Savings' || accountType === 'Gold';
-    const balanceField = isGold ? 'goldBalance' : 'personalBalance';
+    const normalizedAccountType =
+      accountType === 'Savings' || accountType === 'savings'
+        ? 'Savings'
+        : 'Checking';
+    const balanceField = normalizedAccountType === 'Savings' ? 'savingsBalance' : 'checkingBalance';
 
     // Use transaction to ensure atomicity - all or nothing
     await prisma.$transaction(async (tx) => {
@@ -248,7 +251,7 @@ export class WalletService {
           currency,
           status: 'SUCCESS',
           description,
-          account_type: accountType,
+          account_type: normalizedAccountType,
           trx_ref: `${generateFiveUniqueRandomNumbers()}`,
           ...(createdAt ? { createdAt } : {}),
         },
@@ -334,7 +337,7 @@ export class WalletService {
       },
     });
 
-    // Credit the wallet - system rewards always go to Gold Account
+    // Credit the wallet - system rewards always go to Savings Account
     const rewardLabel = type.toLowerCase().includes('ad') ? 'Ads Reward' : 'Test Quiz Earning';
     await this.creditWallet(userId, amount, rewardLabel, rewardLabel, 'Savings', currency);
 
@@ -390,7 +393,7 @@ export class WalletService {
       },
     });
 
-    // Credit the wallet — test quiz rewards go to Savings (Gold) Account
+    // Credit the wallet — test quiz rewards go to Savings Account
     await this.creditWallet(userId, amount, 'Test Quiz Earning', 'Test Quiz Earning', 'Savings', 'NGN');
 
     // Guard point record with same reference to prevent double-counting
@@ -481,13 +484,13 @@ export class WalletService {
       data: { lifetimePoints: { increment: consolationPoints } },
     });
 
-    // Credit the Gold Account wallet
+    // Credit the Savings Account wallet
     await this.creditWallet(
       userId,
       amount,
       'Live Quiz Consolation Reward',
       'Live Quiz Consolation Reward',
-      'Gold',
+      'Savings',
       'NGN',
     );
 
@@ -537,14 +540,14 @@ export class WalletService {
       },
     });
 
-    // Credit the Gold Account wallet with the raw Naira amount,
+    // Credit the Savings Account wallet with the raw Naira amount,
     // stamped at quiz finish time so wallet history shows the correct time.
     await this.creditWallet(
       userId,
       amountNaira,
       'Live Quiz',
       'Live Quiz Earning',
-      'Gold',
+      'Savings',
       'NGN',
       undefined,
       ts,
@@ -650,20 +653,24 @@ async getUserWalletTransactions(filters: WalletTransactionFilterDto) {
       (acc: any) => acc.accountNumber === accountNumber,
     );
 
-    const accountType = matchedAccount?.accountType || 'Personal';
+    const accountType = matchedAccount?.accountType || 'Checking';
+    const normalizedAccountType =
+      accountType === 'Savings' || accountType === 'savings'
+        ? 'Savings'
+        : 'Checking';
 
-    // ✅ Reject deposits into Gold Account
-    if (accountType === 'Savings' || accountType === 'Gold') {
-      throw new Error('Deposits into Gold Account are not allowed');
+    // ✅ Reject deposits into Savings Account
+    if (accountType === 'Savings' || accountType === 'savings') {
+      throw new Error('Deposits into Savings Account are not allowed');
     }
 
-    // ✅ Block Free-tier users from Personal Account deposits
-    if (accountType === 'Personal' && user.subscriptionPlan === 'FREE') {
-      throw new Error('Free tier users cannot deposit into Personal Account. Please upgrade to Pro or Pro Max.');
+    // ✅ Block Free-tier users from Checking Account deposits
+    if ((accountType === 'Checking' || accountType === 'checking') && user.subscriptionPlan === 'FREE') {
+      throw new Error('Free tier users cannot deposit into Checking Account. Please upgrade to Pro or Pro Max.');
     }
 
     // Determine which balance to increment
-    const balanceField = accountType === 'Savings' ? 'goldBalance' : 'personalBalance';
+    const balanceField = (accountType === 'Savings' || accountType === 'savings') ? 'savingsBalance' : 'checkingBalance';
 
     await this.prisma.$transaction([
       // Update wallet balances
@@ -689,7 +696,7 @@ async getUserWalletTransactions(filters: WalletTransactionFilterDto) {
           account_name: customerName,
           bank_name: bankName,
           account_no: accountNumber,
-          account_type: accountType,
+          account_type: normalizedAccountType,
           description: 'Deposit - Debit Card',
           holdUntil: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000),
           trx_ref: `${generateFiveUniqueRandomNumbers()}`
@@ -727,7 +734,7 @@ async getUserWalletTransactions(filters: WalletTransactionFilterDto) {
     return { message: 'Wallet funded successfully', amount };
   }
 
-  async transferbtwPersonalandGoldAccount(userId: number, amount: number, fromAccountType: 'Checking' | 'Savings') {
+  async transferBtwCheckingAndSavingsAccount(userId: number, amount: number, fromAccountType: 'Checking' | 'Savings') {
     // Validate amount
     if (amount <= 0) {
       throw new Error('Amount must be greater than 0');
@@ -759,16 +766,16 @@ async getUserWalletTransactions(filters: WalletTransactionFilterDto) {
 
     // Get accounts
     const accounts = (user.accounts as any[]) || [];
-    const personalAccount = accounts.find((acc: any) => acc.accountType === 'Checking');
-    const goldAccount = accounts.find((acc: any) => acc.accountType === 'Savings');
+    const checkingAccount = accounts.find((acc: any) => acc.accountType === 'Checking');
+    const savingsAccount = accounts.find((acc: any) => acc.accountType === 'Savings');
 
-    if (!personalAccount || !goldAccount) {
+    if (!checkingAccount || !savingsAccount) {
       throw new Error('Checking or Savings account not found');
     }
 
     // Determine source and destination based on fromAccountType
-    const sourceAccount = fromAccountType === 'Checking' ? personalAccount : goldAccount;
-    const destinationAccount = fromAccountType === 'Checking' ? goldAccount : personalAccount;
+    const sourceAccount = fromAccountType === 'Checking' ? checkingAccount : savingsAccount;
+    const destinationAccount = fromAccountType === 'Checking' ? savingsAccount : checkingAccount;
     const destinationAccountType = fromAccountType === 'Checking' ? 'Savings' : 'Checking';
 const trf_reference = `TRANSFER_${Date.now()}`;
     // Perform transfer in a transaction
@@ -842,7 +849,7 @@ const trf_reference = `TRANSFER_${Date.now()}`;
 
     // Send notification
     await this.notificationService
-      .goldPersonalTransfer(userId, amount, fromAccountType, destinationAccountType)
+      .savingsCheckingTransfer(userId, amount, fromAccountType, destinationAccountType)
       .catch(() => undefined);
 
     // Fire socket events for live update

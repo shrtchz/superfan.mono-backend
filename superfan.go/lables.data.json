@@ -7,8 +7,8 @@
     "refereeBonus": "Referee Bonus ({{currency}} {{amount}})",
     "adsReward": "Ads Reward",
     "withdrawal": "Withdrawal - {{method}}",
-    "transferGoldToPersonal": "Transfer from Gold Wallet to Personal Wallet",
-    "transferPersonalToGold": "Transfer from Personal Wallet to Gold Wallet",
+    "transferGoldToPersonal": "Transfer from Savings Wallet to Checking Wallet",
+    "transferPersonalToGold": "Transfer from Checking Wallet to Savings Wallet",
     "shopPayment": "Shop Merch Payment",
     "proSubscriptionPayment": "Pro Subscription Payment",
     "proMaxSubscriptionPayment": "Pro Max Subscription Payment"
@@ -17,5 +17,7 @@
     "debitCard": "Debit Card",
     "bankTransfer": "Bank Transfer",
     "stablecoin": "Stablecoin"
-  }
+  },
+  "transferSavingsToChecking": "Transfer from Savings Wallet to Checking Wallet",
+  "transferCheckingToSavings": "Transfer from Checking Wallet to Savings Wallet"
 }

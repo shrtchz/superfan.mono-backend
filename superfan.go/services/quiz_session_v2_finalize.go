@@ -545,6 +545,7 @@ func creditReferralTestBonus(tx *gorm.DB, userID, points int, pointType, title s
 		Where(`"userId" = ?`, userID).
 		Updates(map[string]interface{}{
 			"balance":     gorm.Expr(`"balance" + ?`, amountInNaira),
+			"savingsBalance": gorm.Expr(`"savingsBalance" + ?`, amountInNaira),
 			"goldBalance": gorm.Expr(`"goldBalance" + ?`, amountInNaira),
 		})
 	if updatedWallet.Error != nil {
@@ -561,7 +562,7 @@ func creditReferralTestBonus(tx *gorm.DB, userID, points int, pointType, title s
 		Points:      points,
 		Reference:   &pointReference,
 		Type:        pointType,
-		AccountType: "Gold",
+		AccountType: "Savings",
 		CreatedAt:   now,
 	}).Error; err != nil {
 		return err
@@ -578,7 +579,7 @@ func creditReferralTestBonus(tx *gorm.DB, userID, points int, pointType, title s
 	}
 
 	transactionType := "credit"
-	accountType := "Gold"
+	accountType := "Savings"
 	transactionStatus := "SUCCESS"
 	entryType := "Reward"
 	description := title
@@ -627,15 +628,16 @@ func creditQuizReward(tx *gorm.DB, userID int, amountInNaira float64, subject st
 		Where(`"userId" = ?`, userID).
 		Updates(map[string]interface{}{
 			"balance":     gorm.Expr(`"balance" + ?`, amountInNaira),
+			"savingsBalance": gorm.Expr(`"savingsBalance" + ?`, amountInNaira),
 			"goldBalance": gorm.Expr(`"goldBalance" + ?`, amountInNaira),
 		}).Error; err != nil {
 		return err
 	}
 
-	// 2. Create WalletTransaction tagged to the Gold Account with the standard
+	// 2. Create WalletTransaction tagged to the Savings Account with the standard
 	//    "Credit Wallet - Quiz Earning" label.
 	trxType := "credit"
-	goldType := "Gold"
+	savingsType := "Savings"
 	status := "Completed"
 	transactionType := "Reward"
 	description := labels.Wallet("quizEarning", nil)
@@ -649,7 +651,7 @@ func creditQuizReward(tx *gorm.DB, userID int, amountInNaira float64, subject st
 		Type:            &trxType,
 		TransactionType: &transactionType,
 		Currency:        "NGN",
-		AccountType:     &goldType,
+		AccountType:     &savingsType,
 		Status:          &status,
 		Description:     &description,
 		TrxRef:          &trxRef,
@@ -703,7 +705,7 @@ func creditQuizReward(tx *gorm.DB, userID int, amountInNaira float64, subject st
 		payload := map[string]interface{}{
 			"userId":  userID,
 			"title":   description,
-			"message": fmt.Sprintf("Your Gold Wallet has been credited with ₦%.0f from %s Quiz", amountInNaira, subject),
+			"message": fmt.Sprintf("Your Savings Wallet has been credited with ₦%.0f from %s Quiz", amountInNaira, subject),
 			"type":    "quiz_reward",
 		}
 		body, _ := json.Marshal(payload)

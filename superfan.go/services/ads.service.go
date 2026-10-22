@@ -718,7 +718,7 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 		}, nil
 	}
 
-	// 4. Award 200 PTS as NGN 0.20 in the Gold Wallet.
+	// 4. Award 200 PTS as NGN 0.20 in the Savings Wallet.
 	const rewardPoints = 200
 	const rewardNaira = float64(rewardPoints) / 1000.0
 	var newBalance float64
@@ -731,7 +731,7 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 				wallet = models.Wallet{
 					UserID:      req.UserID,
 					Balance:     rewardNaira,
-					GoldBalance: rewardNaira,
+					SavingsBalance: rewardNaira,
 				}
 				if err := tx.Create(&wallet).Error; err != nil {
 					return err
@@ -741,22 +741,22 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 			}
 		} else {
 			if err := tx.Model(&wallet).Updates(map[string]interface{}{
-				"balance":     gorm.Expr(`"balance" + ?`, rewardNaira),
-				"goldBalance": gorm.Expr(`"goldBalance" + ?`, rewardNaira),
+				"balance":        gorm.Expr(`"balance" + ?`, rewardNaira),
+				"savingsBalance": gorm.Expr(`"savingsBalance" + ?`, rewardNaira),
 			}).Error; err != nil {
 				return err
 			}
 			wallet.Balance += rewardNaira
-			wallet.GoldBalance += rewardNaira
+			wallet.SavingsBalance += rewardNaira
 		}
 
-		newBalance = wallet.GoldBalance
+		newBalance = wallet.SavingsBalance
 
 		txType := "CREDIT"
 		transactionType := "Deposit"
 		rewardType := labels.Wallet("adsReward", nil)
 		description := rewardType
-		goldAccount := "Gold"
+		savingsAccount := "Savings"
 		currency := "NGN"
 		txRef := fmt.Sprintf("ADREW-%d-%d", req.UserID, time.Now().UnixNano())
 
@@ -768,7 +768,7 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 			Currency:        currency,
 			Status:          &status,
 			TransactionType: &transactionType,
-			AccountType:     &goldAccount,
+			AccountType:     &savingsAccount,
 			RewardType:      &rewardType,
 			Description:     &description,
 			TrxRef:          &txRef,
@@ -1413,7 +1413,7 @@ func (s *adsServiceImpl) RejectAndRefundCampaign(ctx context.Context, id int, re
 			if err := s.db.WithContext(ctx).Model(&models.Wallet{}).
 				Where("id = ?", wallet.ID).
 				Updates(map[string]interface{}{
-					"personalBalance": gorm.Expr(`"personalBalance" + ?`, refundAmount),
+					"checkingBalance": gorm.Expr(`"checkingBalance" + ?`, refundAmount),
 					"balance":         gorm.Expr(`"balance" + ?`, refundAmount),
 				}).Error; err != nil {
 				fmt.Printf("Warning: failed to credit wallet %d: %v\n", wallet.ID, err)
@@ -1422,7 +1422,7 @@ func (s *adsServiceImpl) RejectAndRefundCampaign(ctx context.Context, id int, re
 			// Create wallet with credited amount
 			newWallet := models.Wallet{
 				UserID:          userID,
-				PersonalBalance: refundAmount,
+				CheckingBalance: refundAmount,
 				Balance:         refundAmount,
 			}
 			_ = s.db.WithContext(ctx).Create(&newWallet).Error

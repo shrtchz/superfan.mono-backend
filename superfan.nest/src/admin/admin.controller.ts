@@ -18,6 +18,7 @@ import { ApiRoutes } from '../common/enums/routes.enum';
 import { JwtGuard } from '../common/guards';
 import { PermissionGuard } from '../common/guards/permission.guard';
 import { SubAdminDto } from '../user/dto/auth.dto';
+import { VersusService } from '../versus/versus.service';
 import { AdminService } from './admin.service';
 
 // DTO for the new invite-admin endpoint
@@ -44,7 +45,34 @@ class InviteAdminDto {
 @Controller(ApiRoutes.ADMIN)
 @UseGuards(JwtGuard, PermissionGuard)
 export class AdminController {
-  constructor(private adminService: AdminService) {}
+  constructor(
+    private adminService: AdminService,
+    private readonly versusService: VersusService,
+  ) {}
+
+  @Get('versus/ledger')
+  async getVersusLedger(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.versusService.getAdminVersusLedger(
+      Number(page) || 1,
+      Number(limit) || 10,
+    );
+  }
+
+  @Get('versus/summary')
+  async getVersusSummary() {
+    return this.versusService.getAdminVersusSummary();
+  }
+
+  @Get('versus/:id/questions/:playerId')
+  async getVersusPlayerQuestions(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('playerId', ParseIntPipe) playerId: number,
+  ) {
+    return this.versusService.getAdminPlayerQuestions(id, playerId);
+  }
 
   /**
    * POST /api/v1/admin/invite-admin

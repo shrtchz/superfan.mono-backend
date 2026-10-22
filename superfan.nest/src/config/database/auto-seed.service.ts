@@ -340,7 +340,7 @@ export class AutoSeedService implements OnApplicationBootstrap {
         "points" INTEGER NOT NULL,
         "reference" TEXT,
         "type" TEXT NOT NULL,
-        "accountType" TEXT NOT NULL DEFAULT 'Gold',
+        "accountType" TEXT NOT NULL DEFAULT 'Savings',
         "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
       )`,
 
