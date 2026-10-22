@@ -419,7 +419,7 @@ export class TaskService {
 
     // Referrer Bonus: 10,000 PTS into Savings Account
     const referrerPoints = 10000;
-    const referrerNaira = this.pointsConversionUtil.pointsToNaira(referrerPoints);
+    const referrerNaira = await this.pointsConversionUtil.pointsToNaira(referrerPoints);
     await prisma.point.create({
       data: {
         userId: referral.referrerId,

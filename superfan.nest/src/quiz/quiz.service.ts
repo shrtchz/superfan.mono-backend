@@ -9,6 +9,7 @@ import { firstValueFrom } from 'rxjs';
 import { EarningStatus } from '../common/enums/task.enum';
 import { QuizQuestion, UserAnswer } from '../common/utils/types';
 import { getAccuracyBonus, getSpeedBonus, getStreakBonus, formatSecondsToMMSS } from '../common/utils/utils';
+import { PointsConversionUtil } from '../common/utils/points-conversion.util';
 import { prisma } from '../prisma/prisma';
 import { UserService } from '../user/user.service';
 import { WalletService } from '../wallet/wallet.service';
@@ -449,6 +450,7 @@ export class QuizService {
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService,
     private readonly exchangeRateService: ExchangeRateService,
+    private readonly pointsConversionUtil: PointsConversionUtil,
     @Inject(forwardRef(() => UserService))
     private readonly userService: UserService,
     @Inject(forwardRef(() => TaskService))
@@ -882,10 +884,7 @@ async submitQuiz(
   }
 
   const totalPoints = baseScore + accuracyGain + speedGain + adBonusPoints + streakBonus;
-  const pointsToNairaRate = (() => {
-    const v = parseInt(this.configService.get<string>('POINTS_TO_NAIRA_RATE'), 10);
-    return Number.isFinite(v) && v > 0 ? v : 1000; // default 1000 PTS = ₦1
-  })();
+  const pointsToNairaRate = await this.pointsConversionUtil.getConversionRate();
   const amountInNaira = totalPoints / pointsToNairaRate;
   
   // Calculate currency equivalents using exchange rate service
@@ -2235,7 +2234,7 @@ async hasSubmittedLiveQuizForStream(
             0,
           );
 
-        const pointsToNairaRate = parseInt(this.configService.get<string>('POINTS_TO_NAIRA_RATE'), 10);
+        const pointsToNairaRate = await this.pointsConversionUtil.getConversionRate();
         const amountInNaira = totalEarning / pointsToNairaRate;
 
         // Fetch exchange rates from real API
@@ -2280,7 +2279,7 @@ async hasSubmittedLiveQuizForStream(
         0,
       );
 
-    const pointsToNairaRate = parseInt(this.configService.get<string>('POINTS_TO_NAIRA_RATE'), 10);
+    const pointsToNairaRate = await this.pointsConversionUtil.getConversionRate();
     const amountInNaira = totalEarning / pointsToNairaRate;
 
     // Fetch exchange rates from real API
@@ -2706,14 +2705,7 @@ async getQuizleaderboard(
   try {
     const timeRange = normalizeLeaderboardTimeRange(options.timeRange ?? filter);
     const view = normalizeLeaderboardView(options.view);
-    const configuredPointsToNairaRate = Number(
-      this.configService.get<string>('POINTS_TO_NAIRA_RATE'),
-    );
-    const pointsToNairaRate =
-      Number.isFinite(configuredPointsToNairaRate) &&
-      configuredPointsToNairaRate > 0
-        ? configuredPointsToNairaRate
-        : 1000;
+    const pointsToNairaRate = await this.pointsConversionUtil.getConversionRate();
 
     const now = new Date(
       new Date().toLocaleString('en-US', {

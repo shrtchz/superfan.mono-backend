@@ -549,7 +549,7 @@ export class VersusService {
           transactionType: 'VERSUS_ESCROW_DEBIT',
           trx_ref: opponentTxRef,
           reference: opponentTxRef,
-          description: `Versus escrow funding for match against @${request.host.username}`,
+          description: `Versus Live 1v1 for challenge to @${request.host.username}`,
         },
       });
 

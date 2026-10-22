@@ -3298,7 +3298,7 @@ async findUserByEmail(email: string): Promise<any> {
 
     const signupReference = `REFERRAL_SIGNUP_${referralRecord.id}`;
     const refereeSignupReference = `REFERRAL_SIGNUP_REFEREE_${referralRecord.id}`;
-    const nairaAmount = this.pointsConversionUtil.pointsToNaira(20000);
+    const nairaAmount = await this.pointsConversionUtil.pointsToNaira(20000);
 
     if (referralRecord.signupRewardGiven) {
       const legacyCredit = await prisma.walletTransaction.findFirst({
@@ -3537,4 +3537,3 @@ async findUserByEmail(email: string): Promise<any> {
     this.eventEmitter.emit('user.payment.history', { userId });
   }
 }
-

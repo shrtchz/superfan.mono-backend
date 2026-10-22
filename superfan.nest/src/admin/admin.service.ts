@@ -8,6 +8,7 @@ import { ConfigService } from '@nestjs/config';
 import * as argon from 'argon2';
 import { v4 as uuidv4 } from 'uuid';
 import { failureResponse } from '../common/interceptors/response.interceptor';
+import { PointsConversionUtil } from '../common/utils/points-conversion.util';
 import { MailService } from '../mail/mail.service';
 import { prisma } from '../prisma/prisma';
 import { TaskService } from "../tasks/tasks.service";
@@ -64,7 +65,20 @@ export class AdminService {
     private mail: MailService,
     private configService: ConfigService,
     private taskService: TaskService,
+    private pointsConversionUtil: PointsConversionUtil,
   ) {}
+
+  getPointsConversionRate() {
+    return this.pointsConversionUtil.getConversionRateDetails();
+  }
+
+  async updatePointsConversionRate(rate: number) {
+    if (!Number.isSafeInteger(rate) || rate <= 0) {
+      throw new BadRequestException('Rate must be a positive whole number');
+    }
+
+    return this.pointsConversionUtil.setConversionRate(rate);
+  }
 
   /**
    * POST /api/v1/admin/invite-admin
