@@ -268,6 +268,14 @@ model Permission {
   subAdminPermissions SubAdminPermission[]
 }
 
+model PlatformSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("platform_settings")
+}
+
 model Role {
   id          Int              @id @default(autoincrement())
   name        String

@@ -551,7 +551,7 @@ export class VersusService {
           transactionType: 'VERSUS_ESCROW_DEBIT',
           trx_ref: opponentTxRef,
           reference: opponentTxRef,
-          description: `Versus escrow funding for match against @${request.host.username}`,
+          description: `Versus Live 1v1 for challenge to @${request.host.username}`,
         },
       });
 
@@ -1500,22 +1500,25 @@ export class VersusService {
    * totalJackpotsWon sums confirmed paid jackpots only.
    */
   async getAdminVersusSummary() {
-    const [totalVersus, scheduleMatches, paidAggregate] = await Promise.all([
+    const [totalVersus, scheduleMatches, paidJackpotTransactions] = await Promise.all([
       this.prisma.versusRequest.count(),
       this.prisma.versusRequest.count({
         where: {
           mode: { in: ['SCHEDULE_H2H', 'Schedule H2H', 'schedule', 'Schedule'] },
         },
       }),
-      this.prisma.versusRequest.aggregate({
-        _sum: { jackpotWon: true },
-        where: { payoutStatus: 'PAID' },
+      this.prisma.walletTransaction.aggregate({
+        _sum: { amount: true },
+        where: {
+          transactionType: 'VERSUS_JACKPOT_PAYOUT',
+          status: 'SUCCESS',
+        },
       }),
     ]);
 
     const totalScheduleH2H = scheduleMatches;
     const totalLive1v1 = Math.max(0, totalVersus - totalScheduleH2H);
-    const totalJackpotsWon = Number(paidAggregate._sum.jackpotWon || 0);
+    const totalJackpotsWon = Number(paidJackpotTransactions._sum.amount || 0);
 
     return {
       totalVersus,
@@ -1588,11 +1591,6 @@ export class VersusService {
       const jackpotAmount = isDraw ? 0 : Number(r.jackpotWon || (r.status === 'COMPLETED' ? r.jackpot : 0));
       const jackpotWonAmount = `NGN ${jackpotAmount.toLocaleString()}`;
 
-      // Mode: Live or Schedule
-      const mode: 'Live' | 'Schedule' = ['SCHEDULE_H2H', 'Schedule H2H', 'schedule', 'Schedule'].includes(r.mode)
-        ? 'Schedule'
-        : 'Live';
-
       return {
         id: String(r.id),
         hostId: r.hostId,
@@ -1607,7 +1605,7 @@ export class VersusService {
         language: r.language || 'Yoruba',
         subject: r.subject || 'General',
         testLevel: r.level || 'Basic',
-        mode,
+        mode: 'Versus' as const,
         startDate: this.formatLedgerDate(r.startedAt || (r.status !== 'PENDING' ? r.createdAt : null)),
         endDate: this.formatLedgerDate(r.settledAt),
         jackpotWonAmount,

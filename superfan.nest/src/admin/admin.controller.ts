@@ -2,17 +2,19 @@ import {
   Body,
   Controller,
   Delete,
+  ForbiddenException,
   Get,
   HttpCode,
   HttpStatus,
   Param,
   ParseIntPipe,
   Post,
+  Put,
   Query,
   Req,
   UseGuards
 } from '@nestjs/common';
-import { IsArray, IsBoolean, IsEmail, IsIn, IsOptional, IsNumber } from 'class-validator';
+import { IsArray, IsBoolean, IsEmail, IsIn, IsInt, IsOptional, IsNumber, Min } from 'class-validator';
 import { Public } from '../common/decorators';
 import { ApiRoutes } from '../common/enums/routes.enum';
 import { JwtGuard } from '../common/guards';
@@ -40,6 +42,12 @@ class InviteAdminDto {
   @IsArray()
   @IsNumber({}, { each: true })
   permissionIds?: number[];
+}
+
+class UpdatePointsConversionRateDto {
+  @IsInt()
+  @Min(1)
+  rate: number;
 }
 
 @Controller(ApiRoutes.ADMIN)
@@ -201,6 +209,21 @@ export class AdminController {
     return this.adminService.getPendingInviteCount();
   }
 
+  @Get('/dashboard/points-conversion-rate')
+  async getPointsConversionRate(@Req() req: any) {
+    this.ensureOwner(req.user);
+    return this.adminService.getPointsConversionRate();
+  }
+
+  @Put('/dashboard/points-conversion-rate')
+  async updatePointsConversionRate(
+    @Body() body: UpdatePointsConversionRateDto,
+    @Req() req: any,
+  ) {
+    this.ensureOwner(req.user);
+    return this.adminService.updatePointsConversionRate(body.rate);
+  }
+
   @Public()
   @Get('/dashboard/pending-invites-count')
   @HttpCode(HttpStatus.OK)
@@ -240,6 +263,12 @@ export class AdminController {
       perPage: Number(perPage) || 10,
       status,
     });
+  }
+
+  private ensureOwner(user: { roleName?: string } | undefined): void {
+    if (user?.roleName !== 'superadmin') {
+      throw new ForbiddenException('Only the platform owner can change the points conversion rate');
+    }
   }
 
   /**
