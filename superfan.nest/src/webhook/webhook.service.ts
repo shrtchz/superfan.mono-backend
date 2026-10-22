@@ -278,7 +278,7 @@ if (bankTransfer) {
         account_name: bankTransfer.accountName,
         bank_name: bankTransfer.bankName,
         account_no: bankTransfer.accountNumber,
-        account_type: 'personal',
+        account_type: 'checking',
         trx_ref: `${generateFiveUniqueRandomNumbers()}`
       },
     }),
@@ -1005,6 +1005,7 @@ if (bankTransfer) {
     }
 
     try {
+      // @ts-ignore
       const { Webhook } = await import('svix');
       const wh = new Webhook(webhookSecret);
       wh.verify(rawBody, {

@@ -141,8 +141,8 @@ describe('VersusService', () => {
       });
       prismaMock.wallet.findUnique.mockResolvedValue({
         userId: 1,
-        goldBalance: 200,
-        personalBalance: 5000,
+        savingsBalance: 200,
+          checkingBalance: 5000,
       });
 
       await expect(
@@ -169,8 +169,8 @@ describe('VersusService', () => {
       });
       prismaMock.wallet.findUnique.mockResolvedValue({
         userId: 1,
-        goldBalance: 1000,
-        personalBalance: 500,
+        savingsBalance: 1000,
+          checkingBalance: 500,
       });
       prismaMock.versusRequest.create.mockImplementation(({ data }: any) => ({
         id: 42,
@@ -190,7 +190,7 @@ describe('VersusService', () => {
         expect.objectContaining({
           where: { userId: 1 },
           data: expect.objectContaining({
-            goldBalance: { decrement: 600 },
+            savingsBalance: { decrement: 600 },
           }),
         }),
       );
@@ -202,7 +202,7 @@ describe('VersusService', () => {
             amount: 600,
             type: 'debit',
             status: 'HELD',
-            account_type: 'gold',
+            account_type: 'savings',
             transactionType: 'VERSUS_ESCROW_DEBIT',
           }),
         }),
@@ -300,8 +300,8 @@ describe('VersusService', () => {
       });
       prismaMock.wallet.findUnique.mockResolvedValue({
         userId: 2,
-        personalBalance: 1000,
-        goldBalance: 100,
+        checkingBalance: 1000,
+          savingsBalance: 100,
       });
       prismaMock.versusRequest.update.mockResolvedValue({
         id: 42,
@@ -316,7 +316,7 @@ describe('VersusService', () => {
         expect.objectContaining({
           where: { userId: 2 },
           data: expect.objectContaining({
-            personalBalance: { decrement: 400 },
+            checkingBalance: { decrement: 400 },
           }),
         }),
       );
@@ -327,7 +327,7 @@ describe('VersusService', () => {
             userId: 2,
             amount: 400,
             type: 'debit',
-            account_type: 'personal',
+            account_type: 'checking',
           }),
         }),
       );
@@ -347,9 +347,9 @@ describe('VersusService', () => {
         hostId: 1,
         opponentId: 2,
         hostShare: 600,
-        hostFundingAccount: 'gold',
+        hostFundingAccount: 'savings',
         opponentShare: 400,
-        opponentFundingAccount: 'personal',
+        opponentFundingAccount: 'checking',
         opponentFunded: true,
         status: 'PENDING',
         escrowStatus: 'HELD',
@@ -372,7 +372,7 @@ describe('VersusService', () => {
         expect.objectContaining({
           where: { userId: 1 },
           data: expect.objectContaining({
-            goldBalance: { increment: 600 },
+            savingsBalance: { increment: 600 },
           }),
         }),
       );
@@ -382,7 +382,7 @@ describe('VersusService', () => {
         expect.objectContaining({
           where: { userId: 2 },
           data: expect.objectContaining({
-            personalBalance: { increment: 400 },
+            checkingBalance: { increment: 400 },
           }),
         }),
       );
@@ -519,7 +519,7 @@ describe('VersusService', () => {
       expect(res.hostScore).toBe(20);
     });
 
-    it('credits full jackpot to winner Savings (goldBalance) ONLY on HOST_WON', async () => {
+    it('credits full jackpot to winner Savings ONLY on HOST_WON', async () => {
       prismaMock.versusRequest.findUnique.mockResolvedValue({
         id: 99,
         hostId: 1,
@@ -527,8 +527,8 @@ describe('VersusService', () => {
         jackpot: 2000,
         hostShare: 1000,
         opponentShare: 1000,
-        hostFundingAccount: 'gold',
-        opponentFundingAccount: 'personal',
+        hostFundingAccount: 'savings',
+        opponentFundingAccount: 'checking',
         status: 'STARTED',
         payoutStatus: 'PENDING',
         hostScore: 25,
@@ -556,23 +556,23 @@ describe('VersusService', () => {
 
       await service.finalizeMatchAndPayout(99);
 
-      // Verify winner (host userId: 1) Savings Account (goldBalance) is credited
+      // Verify winner (host userId: 1) Savings Account is credited
       expect(prismaMock.wallet.update).toHaveBeenCalledWith(
         expect.objectContaining({
           where: { userId: 1 },
           data: expect.objectContaining({
-            goldBalance: { increment: 2000 },
+            savingsBalance: { increment: 2000 },
           }),
         }),
       );
 
-      // Verify ledger transaction created with account_type gold
+      // Verify ledger transaction created with account_type savings
       expect(prismaMock.walletTransaction.create).toHaveBeenCalledWith(
         expect.objectContaining({
           data: expect.objectContaining({
             userId: 1,
             amount: 2000,
-            account_type: 'gold',
+            account_type: 'savings',
             transactionType: 'VERSUS_JACKPOT_PAYOUT',
           }),
         }),
@@ -587,8 +587,8 @@ describe('VersusService', () => {
         jackpot: 2000,
         hostShare: 1200,
         opponentShare: 800,
-        hostFundingAccount: 'gold',
-        opponentFundingAccount: 'personal',
+        hostFundingAccount: 'savings',
+        opponentFundingAccount: 'checking',
         status: 'STARTED',
         payoutStatus: 'PENDING',
         hostScore: 20,
@@ -616,22 +616,22 @@ describe('VersusService', () => {
 
       await service.finalizeMatchAndPayout(99);
 
-      // Host refunded to Savings (gold)
+      // Host refunded to Savings
       expect(prismaMock.wallet.update).toHaveBeenCalledWith(
         expect.objectContaining({
           where: { userId: 1 },
           data: expect.objectContaining({
-            goldBalance: { increment: 1200 },
+            savingsBalance: { increment: 1200 },
           }),
         }),
       );
 
-      // Opponent refunded to Checking (personal)
+      // Opponent refunded to Checking
       expect(prismaMock.wallet.update).toHaveBeenCalledWith(
         expect.objectContaining({
           where: { userId: 2 },
           data: expect.objectContaining({
-            personalBalance: { increment: 800 },
+            checkingBalance: { increment: 800 },
           }),
         }),
       );
@@ -642,7 +642,7 @@ describe('VersusService', () => {
           data: expect.objectContaining({
             userId: 1,
             amount: 1200,
-            account_type: 'gold',
+            account_type: 'savings',
             transactionType: 'VERSUS_DRAW_REFUND',
           }),
         }),
@@ -653,7 +653,7 @@ describe('VersusService', () => {
           data: expect.objectContaining({
             userId: 2,
             amount: 800,
-            account_type: 'personal',
+            account_type: 'checking',
             transactionType: 'VERSUS_DRAW_REFUND',
           }),
         }),

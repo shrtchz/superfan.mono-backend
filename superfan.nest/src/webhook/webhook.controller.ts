@@ -491,7 +491,7 @@ private async handleCardCharge(payload: any) {
         status: 'SUCCESS',
         reference,
         payment_method: 'CARD',
-        account_type: 'Personal',
+        account_type: 'Checking',
         description: 'Deposit - Debit Card',
         trx_ref: `${generateFiveUniqueRandomNumbers()}`
       },

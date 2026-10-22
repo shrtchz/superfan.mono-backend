@@ -417,7 +417,7 @@ export class TaskService {
 
     if (claimedReferral.count === 0) return;
 
-    // Referrer Bonus: 10,000 PTS into Gold Account
+    // Referrer Bonus: 10,000 PTS into Savings Account
     const referrerPoints = 10000;
     const referrerNaira = this.pointsConversionUtil.pointsToNaira(referrerPoints);
     await prisma.point.create({
@@ -426,7 +426,7 @@ export class TaskService {
         points: referrerPoints,
         reference: `POINTS_${generateFiveUniqueRandomNumbers()}`,
         type: 'referral_first_test_referrer',
-        accountType: 'Gold',
+        accountType: 'Savings',
       },
     });
     await this.walletService.creditWallet(
@@ -434,7 +434,7 @@ export class TaskService {
       referrerNaira,
       'Referral Bonus - First Test',
       'Referral Bonus - First Test',
-      'Gold'
+      'Savings'
     );
 
     await prisma.user.update({
@@ -789,12 +789,12 @@ async getUserPayoutDetail(userId: number) {
     throw new NotFoundException('User not found');
   }
 
-  // Fetch Gold wallet transactions (quiz rewards, live quiz, referrals, ad bonuses, gold transfers/payouts)
-  const goldTransactions = await prisma.walletTransaction.findMany({
+  // Fetch Savings wallet transactions (quiz rewards, live quiz, referrals, ad bonuses, savings transfers/payouts)
+  const savingsTransactions = await prisma.walletTransaction.findMany({
     where: {
       userId,
       OR: [
-        { account_type: { equals: 'Gold', mode: 'insensitive' } },
+        { account_type: { equals: 'Savings', mode: 'insensitive' } },
         { rewardType: { not: null } },
         { description: { contains: 'Quiz', mode: 'insensitive' } },
         { description: { contains: 'Reward', mode: 'insensitive' } },
@@ -833,26 +833,26 @@ async getUserPayoutDetail(userId: number) {
     },
   });
 
-  // Calculate total earnings from Gold transactions
-  const goldEarningsSum = goldTransactions
+  // Calculate total earnings from Savings transactions
+  const savingsEarningsSum = savingsTransactions
     .filter(tx => {
       const type = (tx.type || '').toLowerCase();
       return (type === 'credit' || !type.includes('debit')) && tx.amount > 0;
     })
     .reduce((sum, tx) => sum + tx.amount, 0);
 
-  const totalEarnings = goldEarningsSum > 0 ? goldEarningsSum : (aggregates._sum.amount || 0);
+  const totalEarnings = savingsEarningsSum > 0 ? savingsEarningsSum : (aggregates._sum.amount || 0);
 
   // Total payouts count
-  const goldPayoutsCount = goldTransactions.filter(tx => {
+  const savingsPayoutsCount = savingsTransactions.filter(tx => {
     const type = (tx.type || '').toLowerCase();
     const desc = (tx.description || '').toLowerCase();
     return type === 'debit' || desc.includes('withdraw') || tx.amount < 0;
   }).length;
 
-  const totalPayouts = aggregates._count.id > 0 ? aggregates._count.id : goldPayoutsCount;
+  const totalPayouts = aggregates._count.id > 0 ? aggregates._count.id : savingsPayoutsCount;
 
-  // Combine Payout records and Gold Wallet Transactions
+  // Combine Payout records and Savings Wallet Transactions
   const mappedPayouts = payouts.map(p => ({
     id: p.id,
     date: p.processedAt || p.createdAt,
@@ -866,7 +866,7 @@ async getUserPayoutDetail(userId: number) {
     createdAt: p.createdAt,
   }));
 
-  const mappedGoldTransactions = goldTransactions.map(tx => {
+  const mappedSavingsTransactions = savingsTransactions.map(tx => {
     const isDebit = (tx.type || '').toLowerCase() === 'debit' || (tx.description || '').toLowerCase().includes('withdraw') || tx.amount < 0;
     return {
       id: tx.id,
@@ -875,14 +875,14 @@ async getUserPayoutDetail(userId: number) {
       type: isDebit ? 'DEBIT' : 'CREDIT',
       rawType: isDebit ? 'DEBIT' : 'CREDIT',
       method: isDebit ? 'Wallet Debit' : 'Wallet Credit',
-      ref: tx.reference || tx.trx_ref || tx.description || 'Gold Wallet Earning',
-      description: tx.description || tx.rewardType || 'Gold Wallet Earning',
+      ref: tx.reference || tx.trx_ref || tx.description || 'Savings Wallet Earning',
+      description: tx.description || tx.rewardType || 'Savings Wallet Earning',
       status: tx.status || 'SUCCESS',
       createdAt: tx.createdAt,
     };
   });
 
-  const combinedHistory = [...mappedPayouts, ...mappedGoldTransactions].sort(
+  const combinedHistory = [...mappedPayouts, ...mappedSavingsTransactions].sort(
     (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
   );
 

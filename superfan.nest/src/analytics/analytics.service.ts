@@ -427,17 +427,17 @@ export class AnalyticsService {
       });
 
       // Calculate balances
-      const gold_balance = transactions
-        .filter(tx => tx.type === 'credit' && (tx.account_type === 'Gold' || tx.account_type == null))
+      const savings_balance = transactions
+        .filter(tx => tx.type === 'credit' && (tx.account_type === 'Savings' || tx.account_type == null))
         .reduce((sum, tx) => sum + tx.amount, 0);
 
-      const personal_balance = transactions
-        .filter(tx => tx.type === 'credit' && tx.account_type === 'Personal')
+      const checking_balance = transactions
+        .filter(tx => tx.type === 'credit' && tx.account_type === 'Checking')
         .reduce((sum, tx) => sum + tx.amount, 0);
 
-      const wallet_balance = gold_balance + personal_balance;
+      const wallet_balance = savings_balance + checking_balance;
 
-      // Total deposits: sum of deposit credits into personal wallet (excluding quiz/reward earnings)
+      // Total deposits: sum of deposit credits into checking wallet (excluding quiz/reward earnings)
       const total_deposits = transactions
         .filter(tx => {
           const typeLower = (tx.type || '').toLowerCase();
@@ -445,26 +445,26 @@ export class AnalyticsService {
           const accLower = (tx.account_type || '').toLowerCase();
           const isDeposit = typeLower === 'credit' || typeLower === 'deposit';
           const isNotReward = !descLower.includes('quiz') && !descLower.includes('reward') && !descLower.includes('bonus') && !descLower.includes('referral');
-          const isPersonal = accLower === 'personal' || accLower === '' || accLower == null;
-          return isDeposit && isNotReward && isPersonal;
+          const isChecking = accLower === 'checking' || accLower === '' || accLower == null;
+          return isDeposit && isNotReward && isChecking;
         })
         .reduce((sum, tx) => sum + Math.abs(tx.amount), 0);
 
-      // Total earnings: sum of gold account credits that are rewards/bonuses/quiz earnings
+      // Total earnings: sum of savings account credits that are rewards/bonuses/quiz earnings)
       const total_earnings = transactions
         .filter(tx => {
           const typeUpper = (tx.type || '').toUpperCase();
           const accLower = (tx.account_type || '').toLowerCase();
-          const isGold = accLower === 'gold' || accLower === '' || accLower == null;
+          const isSavings = accLower === 'savings' || accLower === '' || accLower == null;
           const isReward = tx.description?.toLowerCase().includes('reward') ||
                            tx.description?.toLowerCase().includes('earned') ||
                            tx.description?.toLowerCase().includes('quiz') ||
                            tx.description?.toLowerCase().includes('bonus');
-          return typeUpper === 'CREDIT' && isGold && isReward;
+          return typeUpper === 'CREDIT' && isSavings && isReward;
         })
         .reduce((sum, tx) => sum + Math.abs(tx.amount), 0);
 
-      // Total withdrawals: sum of debits from personal wallet
+      // Total withdrawals: sum of debits from checking wallet
       const total_withdrawals = transactions
         .filter(tx => {
           const typeLower = (tx.type || '').toLowerCase();
@@ -483,10 +483,10 @@ export class AnalyticsService {
         : null;
 
       return {
-        gold_balance,
-        personal_balance,
+        savings_balance,
+        checking_balance,
         wallet_balance,
-        account_type: 'Gold', // Assuming this summary is for Gold account as per platform-earned
+        account_type: 'Savings', // Assuming this summary is for Savings account as per platform-earned
         total_deposits,
         total_earnings,
         total_withdrawals,

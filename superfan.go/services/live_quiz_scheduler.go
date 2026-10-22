@@ -302,10 +302,10 @@ func (f *LiveQuizFinaliser) finaliseQuiz(raw bson.M, quizID string) {
 			continue
 		}
 
-		// Credit gold wallet for winners
+		// Credit savings wallet for winners
 		if isWinner && rewardPoints > 0 {
-			if err := f.creditGoldWallet(p.UserID, rewardAmount, rewardPoints, quizID, question, now); err != nil {
-				log.Printf("[LiveQuizFinaliser] failed to credit gold wallet for user %s: %v", p.UserID, err)
+			if err := f.creditSavingsWallet(p.UserID, rewardAmount, rewardPoints, quizID, question, now); err != nil {
+				log.Printf("[LiveQuizFinaliser] failed to credit savings wallet for user %s: %v", p.UserID, err)
 			}
 
 			// Send notification via NestJS at the exact credit time
@@ -381,7 +381,7 @@ func (f *LiveQuizFinaliser) fetchParticipants(quizID string) ([]participantRespo
 	return results, nil
 }
 
-func (f *LiveQuizFinaliser) creditGoldWallet(userID string, amount float64, points int, quizID, question string, now time.Time) error {
+func (f *LiveQuizFinaliser) creditSavingsWallet(userID string, amount float64, points int, quizID, question string, now time.Time) error {
 	userIDInt, err := parseInt(userID)
 	if err != nil {
 		return fmt.Errorf("invalid user ID: %w", err)
@@ -411,8 +411,8 @@ func (f *LiveQuizFinaliser) creditGoldWallet(userID string, amount float64, poin
 		result := tx.Model(&models.Wallet{}).
 			Where(`"userId" = ?`, userIDInt).
 			Updates(map[string]interface{}{
-				"balance":     gorm.Expr(`"balance" + ?`, amount),
-				"goldBalance": gorm.Expr(`"goldBalance" + ?`, amount),
+				"balance":        gorm.Expr(`"balance" + ?`, amount),
+				"savingsBalance": gorm.Expr(`"savingsBalance" + ?`, amount),
 			})
 		if result.Error != nil {
 			return fmt.Errorf("update wallet: %w", result.Error)
@@ -432,7 +432,7 @@ func (f *LiveQuizFinaliser) creditGoldWallet(userID string, amount float64, poin
 		}
 
 		trxType := "credit"
-		goldType := "Gold"
+		savingsType := "Savings"
 		description := "Live Quiz Earning"
 		status := "Completed"
 		txnType := "Reward"
@@ -440,7 +440,7 @@ func (f *LiveQuizFinaliser) creditGoldWallet(userID string, amount float64, poin
 			UserID:          userIDInt,
 			Amount:          float64(amount),
 			Type:            &trxType,
-			AccountType:     &goldType,
+			AccountType:     &savingsType,
 			Description:     &description,
 			TrxRef:          &trxRef,
 			Status:          &status,

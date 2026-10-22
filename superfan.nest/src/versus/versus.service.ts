@@ -81,14 +81,14 @@ export class VersusService {
   ) {}
 
   /**
-   * Helper to normalize account type string to standard 'gold' (Savings) or 'personal' (Checking)
+   * Helper to normalize account type string to standard 'savings' or 'checking'
    */
-  public normalizeAccountType(acc: string): 'gold' | 'personal' {
+  public normalizeAccountType(acc: string): 'savings' | 'checking' {
     const lower = (acc || '').toLowerCase().trim();
-    if (lower === 'gold' || lower === 'savings') return 'gold';
-    if (lower === 'personal' || lower === 'checking') return 'personal';
+    if (lower === 'savings') return 'savings';
+    if (lower === 'checking') return 'checking';
     throw new BadRequestException(
-      `Invalid funding account: '${acc}'. Must be Savings ('gold') or Checking ('personal').`,
+      `Invalid funding account: '${acc}'. Must be Savings ('savings') or Checking ('checking').`,
     );
   }
 
@@ -207,22 +207,20 @@ export class VersusService {
           data: {
             userId: hostUserId,
             balance: 0,
-            goldBalance: 0,
-            personalBalance: 0,
-          },
+                                  },
         });
       }
 
       let availableBalance = 0;
-      if (accountType === 'gold') {
-        availableBalance = Number(wallet.goldBalance) || 0;
+      if (accountType === 'savings') {
+        availableBalance = Number(wallet.savingsBalance) || 0;
       } else {
-        availableBalance = Number(wallet.personalBalance) || 0;
+        availableBalance = Number(wallet.checkingBalance) || 0;
         const held = await tx.walletTransaction.aggregate({
           _sum: { amount: true },
           where: {
             userId: hostUserId,
-            account_type: 'personal',
+            account_type: { in: ['checking'] },
             holdUntil: { gt: now },
           },
         });
@@ -230,26 +228,26 @@ export class VersusService {
       }
 
       if (availableBalance < hostShare) {
-        const accountLabel = accountType === 'gold' ? 'Savings' : 'Checking';
+        const accountLabel = accountType === 'savings' ? 'Savings' : 'Checking';
         throw new BadRequestException(
           `Insufficient ${accountLabel} balance. Required: ₦${hostShare.toLocaleString()}, Available: ₦${availableBalance.toLocaleString()}`,
         );
       }
 
-      if (accountType === 'gold') {
+      if (accountType === 'savings') {
         await tx.wallet.update({
           where: { userId: hostUserId },
           data: {
-            goldBalance: { decrement: hostShare },
-            balance: { decrement: hostShare },
+            savingsBalance: { decrement: hostShare },
+                        balance: { decrement: hostShare },
           },
         });
       } else {
         await tx.wallet.update({
           where: { userId: hostUserId },
           data: {
-            personalBalance: { decrement: hostShare },
-            balance: { decrement: hostShare },
+            checkingBalance: { decrement: hostShare },
+                        balance: { decrement: hostShare },
           },
         });
       }
@@ -359,20 +357,21 @@ export class VersusService {
         },
       });
 
-      if (request.hostFundingAccount === 'gold') {
+      const isHostSavings = request.hostFundingAccount === 'savings';
+      if (isHostSavings) {
         await tx.wallet.update({
           where: { userId: request.hostId },
           data: {
-            goldBalance: { increment: request.hostShare },
-            balance: { increment: request.hostShare },
+            savingsBalance: { increment: request.hostShare },
+                        balance: { increment: request.hostShare },
           },
         });
       } else {
         await tx.wallet.update({
           where: { userId: request.hostId },
           data: {
-            personalBalance: { increment: request.hostShare },
-            balance: { increment: request.hostShare },
+            checkingBalance: { increment: request.hostShare },
+                        balance: { increment: request.hostShare },
           },
         });
       }
@@ -385,7 +384,7 @@ export class VersusService {
           currency: 'NGN',
           status: 'SUCCESS',
           payment_method: 'versus_escrow',
-          account_type: request.hostFundingAccount,
+          account_type: isHostSavings ? 'savings' : 'checking',
           transactionType: 'VERSUS_ESCROW_REFUND',
           trx_ref: refundRef,
           reference: refundRef,
@@ -395,20 +394,21 @@ export class VersusService {
 
       if (request.opponentFunded && request.opponentFundingAccount) {
         const oppRefundRef = `VERSUS_REFUND_OPP_${Date.now()}_${randomBytes(4).toString('hex').toUpperCase()}`;
-        if (request.opponentFundingAccount === 'gold') {
+        const isOppSavings = request.opponentFundingAccount === 'savings';
+        if (isOppSavings) {
           await tx.wallet.update({
             where: { userId: request.opponentId },
             data: {
-              goldBalance: { increment: request.opponentShare },
-              balance: { increment: request.opponentShare },
+              savingsBalance: { increment: request.opponentShare },
+                            balance: { increment: request.opponentShare },
             },
           });
         } else {
           await tx.wallet.update({
             where: { userId: request.opponentId },
             data: {
-              personalBalance: { increment: request.opponentShare },
-              balance: { increment: request.opponentShare },
+              checkingBalance: { increment: request.opponentShare },
+                            balance: { increment: request.opponentShare },
             },
           });
         }
@@ -421,7 +421,7 @@ export class VersusService {
             currency: 'NGN',
             status: 'SUCCESS',
             payment_method: 'versus_escrow',
-            account_type: request.opponentFundingAccount,
+            account_type: isOppSavings ? 'savings' : 'checking',
             transactionType: 'VERSUS_ESCROW_REFUND',
             trx_ref: oppRefundRef,
             reference: oppRefundRef,
@@ -492,22 +492,20 @@ export class VersusService {
           data: {
             userId: opponentUserId,
             balance: 0,
-            goldBalance: 0,
-            personalBalance: 0,
-          },
+                                  },
         });
       }
 
       let availableBalance = 0;
-      if (accountType === 'gold') {
-        availableBalance = Number(wallet.goldBalance) || 0;
+      if (accountType === 'savings') {
+        availableBalance = Number(wallet.savingsBalance) || 0;
       } else {
-        availableBalance = Number(wallet.personalBalance) || 0;
+        availableBalance = Number(wallet.checkingBalance) || 0;
         const held = await tx.walletTransaction.aggregate({
           _sum: { amount: true },
           where: {
             userId: opponentUserId,
-            account_type: 'personal',
+            account_type: { in: ['checking'] },
             holdUntil: { gt: now },
           },
         });
@@ -515,26 +513,26 @@ export class VersusService {
       }
 
       if (availableBalance < request.opponentShare) {
-        const accountLabel = accountType === 'gold' ? 'Savings' : 'Checking';
+        const accountLabel = accountType === 'savings' ? 'Savings' : 'Checking';
         throw new BadRequestException(
           `Insufficient ${accountLabel} balance. Required: ₦${request.opponentShare.toLocaleString()}, Available: ₦${availableBalance.toLocaleString()}`,
         );
       }
 
-      if (accountType === 'gold') {
+      if (accountType === 'savings') {
         await tx.wallet.update({
           where: { userId: opponentUserId },
           data: {
-            goldBalance: { decrement: request.opponentShare },
-            balance: { decrement: request.opponentShare },
+            savingsBalance: { decrement: request.opponentShare },
+                        balance: { decrement: request.opponentShare },
           },
         });
       } else {
         await tx.wallet.update({
           where: { userId: opponentUserId },
           data: {
-            personalBalance: { decrement: request.opponentShare },
-            balance: { decrement: request.opponentShare },
+            checkingBalance: { decrement: request.opponentShare },
+                        balance: { decrement: request.opponentShare },
           },
         });
       }
@@ -777,12 +775,12 @@ export class VersusService {
         const winnerId = match.hostId;
         const prize = match.jackpot;
 
-        // Credit full jackpot to winner's Savings Account (goldBalance) ONLY
+        // Credit full jackpot to winner's Savings Account (savingsBalance)
         await tx.wallet.update({
           where: { userId: winnerId },
           data: {
-            goldBalance: { increment: prize },
-            balance: { increment: prize },
+            savingsBalance: { increment: prize },
+                        balance: { increment: prize },
           },
         });
 
@@ -795,7 +793,7 @@ export class VersusService {
             currency: 'NGN',
             status: 'SUCCESS',
             payment_method: 'versus_jackpot',
-            account_type: 'gold',
+            account_type: 'savings',
             transactionType: 'VERSUS_JACKPOT_PAYOUT',
             trx_ref: payoutTxRef,
             reference: payoutTxRef,
@@ -825,12 +823,12 @@ export class VersusService {
         const winnerId = match.opponentId;
         const prize = match.jackpot;
 
-        // Credit full jackpot to winner's Savings Account (goldBalance) ONLY
+        // Credit full jackpot to winner's Savings Account (savingsBalance)
         await tx.wallet.update({
           where: { userId: winnerId },
           data: {
-            goldBalance: { increment: prize },
-            balance: { increment: prize },
+            savingsBalance: { increment: prize },
+                        balance: { increment: prize },
           },
         });
 
@@ -843,7 +841,7 @@ export class VersusService {
             currency: 'NGN',
             status: 'SUCCESS',
             payment_method: 'versus_jackpot',
-            account_type: 'gold',
+            account_type: 'savings',
             transactionType: 'VERSUS_JACKPOT_PAYOUT',
             trx_ref: payoutTxRef,
             reference: payoutTxRef,
@@ -875,20 +873,22 @@ export class VersusService {
         const oppRefundRef = `VERSUS_DRAW_OPP_${Date.now()}_${randomBytes(3).toString('hex').toUpperCase()}`;
 
         // Host refund to original account
-        if (match.hostFundingAccount === 'gold') {
+        const isHostSavings = match.hostFundingAccount === 'savings';
+        const hostRefundAccount = isHostSavings ? 'savings' : 'checking';
+        if (isHostSavings) {
           await tx.wallet.update({
             where: { userId: match.hostId },
             data: {
-              goldBalance: { increment: match.hostShare },
-              balance: { increment: match.hostShare },
+              savingsBalance: { increment: match.hostShare },
+                            balance: { increment: match.hostShare },
             },
           });
         } else {
           await tx.wallet.update({
             where: { userId: match.hostId },
             data: {
-              personalBalance: { increment: match.hostShare },
-              balance: { increment: match.hostShare },
+              checkingBalance: { increment: match.hostShare },
+                            balance: { increment: match.hostShare },
             },
           });
         }
@@ -901,7 +901,7 @@ export class VersusService {
             currency: 'NGN',
             status: 'SUCCESS',
             payment_method: 'versus_escrow',
-            account_type: match.hostFundingAccount,
+            account_type: hostRefundAccount,
             transactionType: 'VERSUS_DRAW_REFUND',
             trx_ref: hostRefundRef,
             reference: hostRefundRef,
@@ -910,21 +910,23 @@ export class VersusService {
         });
 
         // Opponent refund to original account
-        const oppAccount = match.opponentFundingAccount || 'personal';
-        if (oppAccount === 'gold') {
+        const oppAccount = match.opponentFundingAccount || 'checking';
+        const isOppSavings = oppAccount === 'savings';
+        const oppRefundAccount = isOppSavings ? 'savings' : 'checking';
+        if (isOppSavings) {
           await tx.wallet.update({
             where: { userId: match.opponentId },
             data: {
-              goldBalance: { increment: match.opponentShare },
-              balance: { increment: match.opponentShare },
+              savingsBalance: { increment: match.opponentShare },
+                            balance: { increment: match.opponentShare },
             },
           });
         } else {
           await tx.wallet.update({
             where: { userId: match.opponentId },
             data: {
-              personalBalance: { increment: match.opponentShare },
-              balance: { increment: match.opponentShare },
+              checkingBalance: { increment: match.opponentShare },
+                            balance: { increment: match.opponentShare },
             },
           });
         }
@@ -937,7 +939,7 @@ export class VersusService {
             currency: 'NGN',
             status: 'SUCCESS',
             payment_method: 'versus_escrow',
-            account_type: oppAccount,
+            account_type: oppRefundAccount,
             transactionType: 'VERSUS_DRAW_REFUND',
             trx_ref: oppRefundRef,
             reference: oppRefundRef,
