@@ -1,6 +1,7 @@
 import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AdminService } from './admin.service';
+import { ClerkService } from '../common/clerk/clerk.service';
 import { MailService } from '../mail/mail.service';
 import { TaskService } from '../tasks/tasks.service';
 import { PointsConversionUtil } from '../common/utils/points-conversion.util';
@@ -50,6 +51,7 @@ describe('AdminService - inviteAdmin & access levels', () => {
   let service: AdminService;
   let mailService: Partial<MailService>;
   let configService: Partial<ConfigService>;
+  let clerkService: Partial<ClerkService>;
   let taskService: Partial<TaskService>;
   let pointsConversionUtil: Partial<PointsConversionUtil>;
 
@@ -62,6 +64,20 @@ describe('AdminService - inviteAdmin & access levels', () => {
     configService = {
       get: jest.fn().mockReturnValue('http://localhost:9050'),
     };
+    clerkService = {
+      getClient: jest.fn().mockReturnValue({
+        users: {
+          createUser: jest.fn().mockResolvedValue({
+            id: 'clerk_user_123',
+            emailAddresses: [{ id: 'email_id_1', emailAddress: 'invitee@test.com' }],
+          }),
+          emailAddresses: {
+            updateEmailAddress: jest.fn().mockResolvedValue({}),
+          },
+        },
+      }),
+      findByEmail: jest.fn().mockResolvedValue(null),
+    };
     taskService = {
       subadminRegistered: jest.fn().mockResolvedValue(true),
     };
@@ -73,6 +89,7 @@ describe('AdminService - inviteAdmin & access levels', () => {
     service = new AdminService(
       mailService as MailService,
       configService as ConfigService,
+      clerkService as ClerkService,
       taskService as TaskService,
       pointsConversionUtil as PointsConversionUtil,
     );
