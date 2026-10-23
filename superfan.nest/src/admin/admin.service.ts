@@ -19,7 +19,7 @@ import { SubAdminDto } from '../user/dto/auth.dto';
 // ─── Canonical permission sets ──────────────────────────────────────────────
 
 /** All feature / content permission IDs (excludes "admins" ID 10) */
-const ALL_FEATURE_PERMISSION_IDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 13, 14, 30, 31];
+const ALL_FEATURE_PERMISSION_IDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 13, 14, 30];
 /** "Manage admins" permission ID */
 const MANAGE_ADMINS_PERMISSION_ID = 10;
 /** Full set: every feature + manage-admins */

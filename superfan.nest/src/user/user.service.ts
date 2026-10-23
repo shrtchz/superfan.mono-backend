@@ -861,7 +861,9 @@ export class UserService {
       });
 
       permissions =
-        subAdmin?.subAdminPermissions.map((p) => p.permission.name) || [];
+        subAdmin?.subAdminPermissions
+          .map((p) => p.permission.name)
+          .filter((name) => name !== 'home') || [];
     }
 
     await prisma.user.update({
@@ -2737,7 +2739,9 @@ async checkSubscriptionStatusbyUserId(userId: number): Promise<{
           if (!acc[item.subAdminId]) {
             acc[item.subAdminId] = [];
           }
-          acc[item.subAdminId].push(item.permission);
+          if (item.permission?.name !== 'home' && item.permission?.id !== 31) {
+            acc[item.subAdminId].push(item.permission);
+          }
           return acc;
         },
         {} as Record<number, any[]>,
