@@ -84,6 +84,9 @@ export const NotificationTriggers = {
   VERSUS_REQUEST_ACCEPTED: 'versus_request_accepted',
   VERSUS_REQUEST_DECLINED: 'versus_request_declined',
   VERSUS_REQUEST_EXPIRED: 'versus_request_expired',
+  VERSUS_MATCH_WIN: 'versus_match_win',
+  VERSUS_MATCH_DRAW: 'versus_match_draw',
+  VERSUS_MATCH_LOSS: 'versus_match_loss',
 } as const;
 
 export type NotificationTrigger =
@@ -223,34 +226,83 @@ export class NotificationService {
     );
   }
 
+  private versusIdempotencyKeys = new Set<string>();
+
+  async createVersusNotification(
+    userId: number,
+    title: string,
+    message: string,
+    type: string,
+    idempotencyKey: string,
+  ) {
+    if (this.versusIdempotencyKeys.has(idempotencyKey)) {
+      return null;
+    }
+
+    const sanitizedMessage = this.sanitizeText(message);
+    const existing = await prisma.notification.findFirst({
+      where: {
+        userId,
+        type,
+        message: sanitizedMessage,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (existing) {
+      this.versusIdempotencyKeys.add(idempotencyKey);
+      return existing;
+    }
+
+    this.versusIdempotencyKeys.add(idempotencyKey);
+    return this.createNotification(userId, title, message, type);
+  }
+
   async versusRequestSent(
     opponentId: number,
     hostUsername: string,
     mode: string,
     jackpot: number,
+    versusId: number = 0,
   ) {
+    const formattedMode = String(mode || '').toLowerCase().includes('schedule')
+      ? 'Schedule H2H'
+      : 'Live 1v1';
+    const cleanHost = String(hostUsername || '').replace(/^@/, '').trim();
+    const formattedJackpot = Number(jackpot).toLocaleString();
+
     const title = 'New Versus Request!';
-    const msg = `@${hostUsername} challenged you to a ${mode} Versus with a ₦${jackpot.toLocaleString()} jackpot.`;
-    return this.notify(
+    const msg =
+      formattedMode === 'Schedule H2H'
+        ? `New Versus request! ${cleanHost} challenged you to a Schedule H2H for a ₦${formattedJackpot} jackpot. It starts in 48hrs. Tap to respond.`
+        : `New Versus request! ${cleanHost} challenged you to a Live 1v1 for a ₦${formattedJackpot} jackpot. Tap to respond.`;
+
+    const idempotencyKey = `versus_${versusId}_request_received_${opponentId}`;
+    return this.createVersusNotification(
       opponentId,
-      NotificationTriggers.VERSUS_REQUEST_SENT,
       title,
       msg,
+      NotificationTriggers.VERSUS_REQUEST_SENT,
+      idempotencyKey,
     );
   }
 
   async versusRequestAccepted(
     hostId: number,
     opponentUsername: string,
-    mode: string,
+    versusId: number = 0,
   ) {
+    const cleanOpponent = String(opponentUsername || '').replace(/^@/, '').trim();
     const title = 'Versus Request Accepted!';
-    const msg = `@${opponentUsername} accepted your ${mode} Versus challenge. Get ready!`;
-    return this.notify(
+    const msg = `${cleanOpponent} accepted your Versus request. Start the match when you're ready.`;
+
+    const idempotencyKey = `versus_${versusId}_request_accepted_${hostId}`;
+    return this.createVersusNotification(
       hostId,
-      NotificationTriggers.VERSUS_REQUEST_ACCEPTED,
       title,
       msg,
+      NotificationTriggers.VERSUS_REQUEST_ACCEPTED,
+      idempotencyKey,
     );
   }
 
@@ -265,15 +317,137 @@ export class NotificationService {
     );
   }
 
-  async versusRequestExpired(hostId: number, opponentUsername: string) {
-    const title = 'Versus Request Expired';
-    const msg = `Your Versus challenge to @${opponentUsername} expired unstarted. Your funds have been refunded.`;
-    return this.notify(
-      hostId,
-      NotificationTriggers.VERSUS_REQUEST_EXPIRED,
-      title,
-      msg,
-    );
+  async versusRequestExpired(
+    versusId: number,
+    hostId: number,
+    opponentId: number,
+    hostUsername: string,
+    opponentUsername: string,
+    mode: string,
+  ) {
+    const formattedMode = String(mode || '').toLowerCase().includes('schedule')
+      ? 'Schedule H2H'
+      : 'Live 1v1';
+    const cleanHost = String(hostUsername || '').replace(/^@/, '').trim();
+    const cleanOpponent = String(opponentUsername || '').replace(/^@/, '').trim();
+
+    const hostTitle = 'Versus Request Expired';
+    const hostMessage = `Your ${formattedMode} with ${cleanOpponent} expired because it was not started in time.`;
+    const hostKey = `versus_${versusId}_request_expired_${hostId}`;
+
+    const oppTitle = 'Versus Request Expired';
+    const oppMessage = `The ${formattedMode} request from ${cleanHost} expired.`;
+    const oppKey = `versus_${versusId}_request_expired_${opponentId}`;
+
+    const [hostNotif, oppNotif] = await Promise.all([
+      this.createVersusNotification(
+        hostId,
+        hostTitle,
+        hostMessage,
+        NotificationTriggers.VERSUS_REQUEST_EXPIRED,
+        hostKey,
+      ),
+      this.createVersusNotification(
+        opponentId,
+        oppTitle,
+        oppMessage,
+        NotificationTriggers.VERSUS_REQUEST_EXPIRED,
+        oppKey,
+      ),
+    ]);
+
+    return { hostNotif, oppNotif };
+  }
+
+  async versusMatchResult(match: {
+    id: number;
+    outcome: string;
+    hostId: number;
+    opponentId: number;
+    host: { username: string };
+    opponent: { username: string };
+    jackpot: number;
+    payoutStatus?: string;
+  }) {
+    if (!match.outcome || (match.outcome !== 'DRAW' && match.payoutStatus !== 'PAID')) {
+      return null;
+    }
+
+    const cleanHost = String(match.host?.username || '').replace(/^@/, '').trim();
+    const cleanOpponent = String(match.opponent?.username || '').replace(/^@/, '').trim();
+    const formattedJackpot = Number(match.jackpot).toLocaleString();
+
+    if (match.outcome === 'HOST_WON') {
+      const winMessage = `You won ₦${formattedJackpot} in your Versus against ${cleanOpponent}! It has been credited to your Savings Account.`;
+      const lossMessage = `${cleanHost} won this Versus. Want a rematch?`;
+
+      const hostKey = `versus_${match.id}_match_result_${match.hostId}`;
+      const oppKey = `versus_${match.id}_match_result_${match.opponentId}`;
+
+      return Promise.all([
+        this.createVersusNotification(
+          match.hostId,
+          'Versus Match Won!',
+          winMessage,
+          NotificationTriggers.VERSUS_MATCH_WIN,
+          hostKey,
+        ),
+        this.createVersusNotification(
+          match.opponentId,
+          'Versus Match Lost',
+          lossMessage,
+          NotificationTriggers.VERSUS_MATCH_LOSS,
+          oppKey,
+        ),
+      ]);
+    } else if (match.outcome === 'OPPONENT_WON') {
+      const winMessage = `You won ₦${formattedJackpot} in your Versus against ${cleanHost}! It has been credited to your Savings Account.`;
+      const lossMessage = `${cleanOpponent} won this Versus. Want a rematch?`;
+
+      const hostKey = `versus_${match.id}_match_result_${match.hostId}`;
+      const oppKey = `versus_${match.id}_match_result_${match.opponentId}`;
+
+      return Promise.all([
+        this.createVersusNotification(
+          match.hostId,
+          'Versus Match Lost',
+          lossMessage,
+          NotificationTriggers.VERSUS_MATCH_LOSS,
+          hostKey,
+        ),
+        this.createVersusNotification(
+          match.opponentId,
+          'Versus Match Won!',
+          winMessage,
+          NotificationTriggers.VERSUS_MATCH_WIN,
+          oppKey,
+        ),
+      ]);
+    } else if (match.outcome === 'DRAW') {
+      const hostMessage = `It's a draw! You and ${cleanOpponent} finished level.`;
+      const oppMessage = `It's a draw! You and ${cleanHost} finished level.`;
+
+      const hostKey = `versus_${match.id}_match_result_${match.hostId}`;
+      const oppKey = `versus_${match.id}_match_result_${match.opponentId}`;
+
+      return Promise.all([
+        this.createVersusNotification(
+          match.hostId,
+          'Versus Match Draw',
+          hostMessage,
+          NotificationTriggers.VERSUS_MATCH_DRAW,
+          hostKey,
+        ),
+        this.createVersusNotification(
+          match.opponentId,
+          'Versus Match Draw',
+          oppMessage,
+          NotificationTriggers.VERSUS_MATCH_DRAW,
+          oppKey,
+        ),
+      ]);
+    }
+    return null;
   }
 
   async streakMilestone(userId: number, days: number) {
