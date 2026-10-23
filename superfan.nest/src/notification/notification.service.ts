@@ -174,7 +174,7 @@ export class NotificationService {
       referrerId,
       NotificationTriggers.REFERRAL_SIGNUP_BONUS,
       'Referral Bonus - Sign up',
-      `₦20 Earned! ${refereeUsername} signed up with your referral code.`,
+      `₦20 Earned! @${String(refereeUsername || "").replace(/^@/, "").trim()} signed up with your referral code.`,
     );
   }
 
@@ -183,7 +183,7 @@ export class NotificationService {
       referrerId,
       NotificationTriggers.REFERRAL_FIRST_TEST_BONUS,
       'Referral Bonus - First Test',
-      `₦10 More! ${refereeUsername} completed their first test.`,
+      `₦10 More! @${String(refereeUsername || "").replace(/^@/, "").trim()} completed their first test.`,
     );
   }
 
@@ -197,7 +197,7 @@ export class NotificationService {
   }
 
   async challengeInviteSent(receiverId: number, senderUsername: string) {
-    const msg = `New Challenge! ${senderUsername} just challenged you to a quiz.`;
+    const msg = `New Challenge! @${String(senderUsername || "").replace(/^@/, "").trim()} just challenged you to a quiz.`;
     return this.notify(
       receiverId,
       NotificationTriggers.CHALLENGE_INVITE_SENT,
@@ -207,7 +207,7 @@ export class NotificationService {
   }
 
   async challengeInviteAccepted(senderId: number, receiverUsername: string) {
-    const msg = `Challenge Accepted! ${receiverUsername} accepted your challenge.`;
+    const msg = `Challenge Accepted! @${String(receiverUsername || "").replace(/^@/, "").trim()} accepted your challenge.`;
     return this.notify(
       senderId,
       NotificationTriggers.CHALLENGE_INVITE_ACCEPTED,
@@ -217,7 +217,7 @@ export class NotificationService {
   }
 
   async challengeInviteDeclined(senderId: number, receiverUsername: string) {
-    const msg = `${receiverUsername} can't take on your challenge right now.`;
+    const msg = `@${String(receiverUsername || "").replace(/^@/, "").trim()} can't take on your challenge right now.`;
     return this.notify(
       senderId,
       NotificationTriggers.CHALLENGE_INVITE_DECLINED,
@@ -274,8 +274,8 @@ export class NotificationService {
     const title = 'New Versus Request!';
     const msg =
       formattedMode === 'Schedule H2H'
-        ? `New Versus request! ${cleanHost} challenged you to a Schedule H2H for a ₦${formattedJackpot} jackpot. It starts in 48hrs. Tap to respond.`
-        : `New Versus request! ${cleanHost} challenged you to a Live 1v1 for a ₦${formattedJackpot} jackpot. Tap to respond.`;
+        ? `New Versus request! @${cleanHost} challenged you to a Schedule H2H for a ₦${formattedJackpot} jackpot. It starts in 48hrs. Tap to respond.`
+        : `New Versus request! @${cleanHost} challenged you to a Live 1v1 for a ₦${formattedJackpot} jackpot. Tap to respond.`;
 
     const idempotencyKey = `versus_${versusId}_request_received_${opponentId}`;
     return this.createVersusNotification(
@@ -294,7 +294,7 @@ export class NotificationService {
   ) {
     const cleanOpponent = String(opponentUsername || '').replace(/^@/, '').trim();
     const title = 'Versus Request Accepted!';
-    const msg = `${cleanOpponent} accepted your Versus request. Start the match when you're ready.`;
+    const msg = `@${cleanOpponent} accepted your Versus request. Start the match when you're ready.`;
 
     const idempotencyKey = `versus_${versusId}_request_accepted_${hostId}`;
     return this.createVersusNotification(
@@ -307,8 +307,9 @@ export class NotificationService {
   }
 
   async versusRequestDeclined(hostId: number, opponentUsername: string) {
+    const cleanOpponent = String(opponentUsername || '').replace(/^@/, '').trim();
     const title = 'Versus Request Declined';
-    const msg = `@${opponentUsername} declined your Versus challenge. Your escrowed funds have been refunded.`;
+    const msg = `@${cleanOpponent} declined your Versus challenge. Your escrowed funds have been refunded.`;
     return this.notify(
       hostId,
       NotificationTriggers.VERSUS_REQUEST_DECLINED,
@@ -332,11 +333,11 @@ export class NotificationService {
     const cleanOpponent = String(opponentUsername || '').replace(/^@/, '').trim();
 
     const hostTitle = 'Versus Request Expired';
-    const hostMessage = `Your ${formattedMode} with ${cleanOpponent} expired because it was not started in time.`;
+    const hostMessage = `Your ${formattedMode} with @${cleanOpponent} expired because it was not started in time.`;
     const hostKey = `versus_${versusId}_request_expired_${hostId}`;
 
     const oppTitle = 'Versus Request Expired';
-    const oppMessage = `The ${formattedMode} request from ${cleanHost} expired.`;
+    const oppMessage = `The ${formattedMode} request from @${cleanHost} expired.`;
     const oppKey = `versus_${versusId}_request_expired_${opponentId}`;
 
     const [hostNotif, oppNotif] = await Promise.all([
@@ -378,8 +379,8 @@ export class NotificationService {
     const formattedJackpot = Number(match.jackpot).toLocaleString();
 
     if (match.outcome === 'HOST_WON') {
-      const winMessage = `You won ₦${formattedJackpot} in your Versus against ${cleanOpponent}! It has been credited to your Savings Account.`;
-      const lossMessage = `${cleanHost} won this Versus. Want a rematch?`;
+      const winMessage = `You won ₦${formattedJackpot} in your Versus against @${cleanOpponent}! It has been credited to your Savings Account.`;
+      const lossMessage = `@${cleanHost} won this Versus. Want a rematch?`;
 
       const hostKey = `versus_${match.id}_match_result_${match.hostId}`;
       const oppKey = `versus_${match.id}_match_result_${match.opponentId}`;
@@ -401,8 +402,8 @@ export class NotificationService {
         ),
       ]);
     } else if (match.outcome === 'OPPONENT_WON') {
-      const winMessage = `You won ₦${formattedJackpot} in your Versus against ${cleanHost}! It has been credited to your Savings Account.`;
-      const lossMessage = `${cleanOpponent} won this Versus. Want a rematch?`;
+      const winMessage = `You won ₦${formattedJackpot} in your Versus against @${cleanHost}! It has been credited to your Savings Account.`;
+      const lossMessage = `@${cleanOpponent} won this Versus. Want a rematch?`;
 
       const hostKey = `versus_${match.id}_match_result_${match.hostId}`;
       const oppKey = `versus_${match.id}_match_result_${match.opponentId}`;
@@ -424,8 +425,8 @@ export class NotificationService {
         ),
       ]);
     } else if (match.outcome === 'DRAW') {
-      const hostMessage = `It's a draw! You and ${cleanOpponent} finished level.`;
-      const oppMessage = `It's a draw! You and ${cleanHost} finished level.`;
+      const hostMessage = `It's a draw! You and @${cleanOpponent} finished level.`;
+      const oppMessage = `It's a draw! You and @${cleanHost} finished level.`;
 
       const hostKey = `versus_${match.id}_match_result_${match.hostId}`;
       const oppKey = `versus_${match.id}_match_result_${match.opponentId}`;

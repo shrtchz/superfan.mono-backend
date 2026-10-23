@@ -121,6 +121,20 @@ export class VersusService {
   }
 
   /**
+   * Helper to emit wallet_updated event to users to synchronize balances in real-time
+   */
+  public emitWalletUpdated(...userIds: (number | undefined)[]) {
+    try {
+      const validIds = userIds.filter((id): id is number => typeof id === 'number' && !isNaN(id));
+      if (validIds.length > 0) {
+        this.notificationGateway.sendVersusEvent(validIds, 'wallet_updated', { updated: true });
+      }
+    } catch (err: any) {
+      this.logger.warn(`Failed to emit wallet_updated socket event: ${err.message}`);
+    }
+  }
+
+  /**
    * Create a new versus request with atomic host escrow debit.
    */
   async createRequest(hostUserId: number, dto: CreateVersusDto) {
@@ -317,6 +331,7 @@ export class VersusService {
     } catch (_) {}
 
     this.emitVersusEvent(hostUserId, opponent.id, 'versus:updated', createdRequest);
+    this.emitWalletUpdated(hostUserId);
     return createdRequest;
   }
 
@@ -444,6 +459,7 @@ export class VersusService {
       const oId = res.request.opponentId;
       if (hId && oId) {
         this.emitVersusEvent(hId, oId, 'versus:updated', res.request);
+        this.emitWalletUpdated(hId, oId);
       }
       if (newStatus === 'EXPIRED') {
         try {
@@ -601,8 +617,6 @@ export class VersusService {
         data: {
           opponentFundingAccount: accountType,
           opponentFunded: true,
-          opponentReady: true,
-          status: 'ACCEPTED',
         },
         include: {
           host: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
@@ -614,22 +628,78 @@ export class VersusService {
     });
 
     if (!alreadyFunded) {
-      try {
-        await this.notificationService.versusRequestAccepted(
-          updated.hostId,
-          updated.opponent.username,
-          updated.id,
-        );
-      } catch (_) {}
-
       this.emitVersusEvent(updated.hostId, updated.opponentId, 'versus:updated', updated);
+      this.emitWalletUpdated(updated.hostId, updated.opponentId);
     }
 
     return updated;
   }
 
-  async acceptRequest(opponentUserId: number, requestId: number, dto: AcceptVersusDto) {
-    return this.fundOpponentShare(opponentUserId, requestId, dto);
+  /**
+   * Opponent accepts a versus challenge once funded. Marks opponent READY and updates host screen in real-time.
+   */
+  async acceptRequest(opponentUserId: number, requestId: number, dto?: AcceptVersusDto) {
+    const now = new Date();
+
+    const request = await this.prisma.versusRequest.findUnique({
+      where: { id: requestId },
+      include: {
+        host: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
+        opponent: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
+      },
+    });
+
+    if (!request) {
+      throw new NotFoundException(`Versus request ${requestId} not found`);
+    }
+
+    if (request.opponentId !== opponentUserId) {
+      throw new ForbiddenException('You are not authorized to accept this challenge');
+    }
+
+    if (request.status === 'STARTED' || request.status === 'COMPLETED') {
+      return request;
+    }
+
+    if (request.expiresAt <= now) {
+      await this.refundEscrow(requestId, 'EXPIRED');
+      throw new BadRequestException('This versus request has expired');
+    }
+
+    if (request.opponentFunded && request.opponentReady && request.status === 'ACCEPTED') {
+      return request;
+    }
+
+    if (!request.opponentFunded) {
+      if (dto?.fundingAccount) {
+        await this.fundOpponentShare(opponentUserId, requestId, { fundingAccount: dto.fundingAccount });
+      } else {
+        throw new BadRequestException('You must fund your jackpot share before accepting this challenge');
+      }
+    }
+
+    const updated = await this.prisma.versusRequest.update({
+      where: { id: requestId },
+      data: {
+        opponentReady: true,
+        status: 'ACCEPTED',
+      },
+      include: {
+        host: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
+        opponent: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
+      },
+    });
+
+    try {
+      await this.notificationService.versusRequestAccepted(
+        updated.hostId,
+        updated.opponent.username,
+        updated.id,
+      );
+    } catch (_) {}
+
+    this.emitVersusEvent(updated.hostId, updated.opponentId, 'versus:updated', updated);
+    return updated;
   }
 
   /**
@@ -1068,6 +1138,7 @@ export class VersusService {
 
     this.emitVersusEvent(finalized.hostId, finalized.opponentId, 'versus:completed', finalized);
     this.emitVersusEvent(finalized.hostId, finalized.opponentId, 'versus:updated', finalized);
+    this.emitWalletUpdated(finalized.hostId, finalized.opponentId);
 
     try {
       await this.notificationService.versusMatchResult(finalized);
@@ -1351,6 +1422,7 @@ export class VersusService {
   }
 
   async declineRequest(opponentUserId: number, requestId: number) {
+    const now = new Date();
     const request = await this.prisma.versusRequest.findUnique({
       where: { id: requestId },
       include: { opponent: true },
@@ -1364,8 +1436,21 @@ export class VersusService {
       throw new ForbiddenException('You are not authorized to decline this challenge');
     }
 
-    if (request.status !== 'PENDING') {
+    if (request.status === 'STARTED' || request.status === 'COMPLETED') {
+      throw new BadRequestException('Cannot decline a match that has already started or completed');
+    }
+
+    if (request.status === 'CANCELLED' || request.status === 'DECLINED' || request.status === 'EXPIRED') {
+      return request;
+    }
+
+    if (request.status !== 'PENDING' && request.status !== 'ACCEPTED') {
       throw new BadRequestException(`Cannot decline request in status '${request.status}'`);
+    }
+
+    if (request.expiresAt <= now) {
+      await this.refundEscrow(requestId, 'EXPIRED');
+      throw new BadRequestException('This versus request has expired');
     }
 
     const { request: updated } = await this.refundEscrow(requestId, 'DECLINED');
@@ -1451,7 +1536,7 @@ export class VersusService {
     });
 
     for (const req of pending) {
-      if (req.status === 'PENDING' && req.expiresAt <= now) {
+      if ((req.status === 'PENDING' || req.status === 'ACCEPTED') && req.expiresAt <= now) {
         await this.refundEscrow(req.id, 'EXPIRED');
       }
     }
@@ -1473,7 +1558,7 @@ export class VersusService {
     const now = new Date();
     const expiredList = await this.prisma.versusRequest.findMany({
       where: {
-        status: 'PENDING',
+        status: { in: ['PENDING', 'ACCEPTED'] },
         expiresAt: { lte: now },
       },
       include: {
