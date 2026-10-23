@@ -452,7 +452,10 @@ export class AdminService {
           lastName: dto.lastName || '',
           skipPasswordChecks: true,
           skipPasswordRequirement: false,
-          ...(dto.phone ? { phoneNumber: [dto.phone] } : {}),
+          // NOTE: phoneNumber is intentionally NOT passed here. Clerk does not
+          // support Nigerian (+234) phone numbers, which throws
+          // unsupported_country_code. The phone is stored only in the local DB;
+          // admin sign-in uses email/username + password, so Clerk does not need it.
         });
         clerkUserId = clerkUser.id;
 
