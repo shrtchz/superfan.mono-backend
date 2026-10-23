@@ -19,7 +19,7 @@ import { SubAdminDto } from '../user/dto/auth.dto';
 // ─── Canonical permission sets ──────────────────────────────────────────────
 
 /** All feature / content permission IDs (excludes "admins" ID 10) */
-const ALL_FEATURE_PERMISSION_IDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 13, 14];
+const ALL_FEATURE_PERMISSION_IDS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 13, 14, 30];
 /** "Manage admins" permission ID */
 const MANAGE_ADMINS_PERMISSION_ID = 10;
 /** Full set: every feature + manage-admins */
@@ -452,7 +452,10 @@ export class AdminService {
           lastName: dto.lastName || '',
           skipPasswordChecks: true,
           skipPasswordRequirement: false,
-          ...(dto.phone ? { phoneNumber: [dto.phone] } : {}),
+          // NOTE: phoneNumber is intentionally NOT passed here. Clerk does not
+          // support Nigerian (+234) phone numbers, which throws
+          // unsupported_country_code. The phone is stored only in the local DB;
+          // admin sign-in uses email/username + password, so Clerk does not need it.
         });
         clerkUserId = clerkUser.id;
 
@@ -464,13 +467,25 @@ export class AdminService {
             .catch(() => undefined);
         }
       } catch (clerkError: any) {
+        // Log the actual Clerk error for debugging (email already exists,
+        // username conflict, phone issue, etc.).
+        console.error(
+          '[AdminService] Clerk user creation failed:',
+          clerkError?.message ?? clerkError,
+          clerkError?.errors ?? '',
+        );
+
         // Clerk user may already exist (e.g. re-invite). Resolve it instead of
         // failing the signup.
-        const existing = await this.clerkService.findByEmail(dto.email);
+        let existing: any = null;
+        try {
+          existing = await this.clerkService.findByEmail(dto.email);
+        } catch {
+          // ignore lookup failures
+        }
         if (existing?.id) {
           clerkUserId = existing.id;
         } else {
-          console.error('[AdminService] Clerk user creation failed:', clerkError);
           throw new InternalServerErrorException(
             'Could not create Clerk account for this admin. Please contact support.',
           );
