@@ -331,28 +331,33 @@ describe('VersusService', () => {
     });
   });
 
-  describe('fundOpponentShare', () => {
-    it('debits opponent account and marks opponentFunded and opponentReady', async () => {
-      prismaMock.versusRequest.findUnique.mockResolvedValue({
-        id: 42,
-        hostId: 1,
-        opponentId: 2,
-        opponentShare: 400,
-        status: 'PENDING',
-        expiresAt: new Date(Date.now() + 60000),
-        opponentFunded: false,
-        host: { id: 1, username: 'alice' },
-        opponent: { id: 2, username: 'bob' },
-      });
+  describe('fundOpponentShare and acceptRequest', () => {
+    const baseRequest = {
+      id: 42,
+      hostId: 1,
+      opponentId: 2,
+      hostShare: 600,
+      opponentShare: 400,
+      jackpot: 1000,
+      status: 'PENDING',
+      expiresAt: new Date(Date.now() + 60000),
+      opponentFunded: false,
+      host: { id: 1, username: 'alice', profilePicture: null, firstName: 'Alice', lastName: 'A' },
+      opponent: { id: 2, username: 'bob', profilePicture: null, firstName: 'Bob', lastName: 'B' },
+    };
+
+    it('funds full share using Checking account without splitting', async () => {
+      prismaMock.versusRequest.findUnique.mockResolvedValue({ ...baseRequest });
       prismaMock.wallet.findUnique.mockResolvedValue({
         userId: 2,
         checkingBalance: 1000,
-          savingsBalance: 100,
+        savingsBalance: 100,
       });
       prismaMock.versusRequest.update.mockResolvedValue({
-        id: 42,
+        ...baseRequest,
         opponentFunded: true,
         opponentReady: true,
+        opponentFundingAccount: 'checking',
         status: 'ACCEPTED',
       });
 
@@ -363,6 +368,7 @@ describe('VersusService', () => {
           where: { userId: 2 },
           data: expect.objectContaining({
             checkingBalance: { decrement: 400 },
+            balance: { decrement: 400 },
           }),
         }),
       );
@@ -374,6 +380,8 @@ describe('VersusService', () => {
             amount: 400,
             type: 'debit',
             account_type: 'checking',
+            transactionType: 'VERSUS_ESCROW_DEBIT',
+            status: 'HELD',
           }),
         }),
       );
@@ -383,6 +391,187 @@ describe('VersusService', () => {
         'versus:updated',
         expect.anything(),
       );
+    });
+
+    it('funds full share using Savings account without splitting', async () => {
+      prismaMock.versusRequest.findUnique.mockResolvedValue({ ...baseRequest });
+      prismaMock.wallet.findUnique.mockResolvedValue({
+        userId: 2,
+        checkingBalance: 50,
+        savingsBalance: 800,
+      });
+      prismaMock.versusRequest.update.mockResolvedValue({
+        ...baseRequest,
+        opponentFunded: true,
+        opponentReady: true,
+        opponentFundingAccount: 'savings',
+        status: 'ACCEPTED',
+      });
+
+      const res = await service.fundOpponentShare(2, 42, { fundingAccount: 'savings' });
+
+      expect(prismaMock.wallet.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { userId: 2 },
+          data: expect.objectContaining({
+            savingsBalance: { decrement: 400 },
+            balance: { decrement: 400 },
+          }),
+        }),
+      );
+
+      expect(prismaMock.walletTransaction.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            userId: 2,
+            amount: 400,
+            type: 'debit',
+            account_type: 'savings',
+            transactionType: 'VERSUS_ESCROW_DEBIT',
+            status: 'HELD',
+          }),
+        }),
+      );
+    });
+
+    it('rejects funding when savings balance is insufficient without debiting any amount', async () => {
+      prismaMock.versusRequest.findUnique.mockResolvedValue({ ...baseRequest });
+      prismaMock.wallet.findUnique.mockResolvedValue({
+        userId: 2,
+        savingsBalance: 150,
+        checkingBalance: 5000,
+      });
+
+      await expect(
+        service.fundOpponentShare(2, 42, { fundingAccount: 'savings' }),
+      ).rejects.toThrow(BadRequestException);
+
+      expect(prismaMock.wallet.update).not.toHaveBeenCalled();
+      expect(prismaMock.walletTransaction.create).not.toHaveBeenCalled();
+    });
+
+    it('rejects funding when checking balance is insufficient considering held amounts', async () => {
+      prismaMock.versusRequest.findUnique.mockResolvedValue({ ...baseRequest });
+      prismaMock.wallet.findUnique.mockResolvedValue({
+        userId: 2,
+        checkingBalance: 600,
+        savingsBalance: 0,
+      });
+      prismaMock.walletTransaction.aggregate.mockResolvedValue({
+        _sum: { amount: 300 }, // 600 - 300 = 300 available < 400 required
+      });
+
+      await expect(
+        service.fundOpponentShare(2, 42, { fundingAccount: 'checking' }),
+      ).rejects.toThrow(BadRequestException);
+
+      expect(prismaMock.wallet.update).not.toHaveBeenCalled();
+      expect(prismaMock.walletTransaction.create).not.toHaveBeenCalled();
+    });
+
+    it('prevents duplicate deductions when request is already funded', async () => {
+      const alreadyFundedRequest = {
+        ...baseRequest,
+        opponentFunded: true,
+        opponentReady: true,
+        status: 'ACCEPTED',
+      };
+      prismaMock.versusRequest.findUnique.mockResolvedValue(alreadyFundedRequest);
+
+      const res = await service.fundOpponentShare(2, 42, { fundingAccount: 'savings' });
+
+      expect(res.opponentFunded).toBe(true);
+      expect(prismaMock.wallet.update).not.toHaveBeenCalled();
+      expect(prismaMock.walletTransaction.create).not.toHaveBeenCalled();
+    });
+
+    it('prevents race conditions if funded concurrently inside transaction', async () => {
+      // First call outside transaction: not funded
+      // Inside transaction: freshly funded by concurrent worker
+      let callCount = 0;
+      prismaMock.versusRequest.findUnique.mockImplementation(async () => {
+        callCount++;
+        if (callCount === 1) {
+          return { ...baseRequest, opponentFunded: false };
+        }
+        return { ...baseRequest, opponentFunded: true, status: 'ACCEPTED' };
+      });
+
+      const res = await service.fundOpponentShare(2, 42, { fundingAccount: 'checking' });
+
+      expect(res.opponentFunded).toBe(true);
+      expect(prismaMock.wallet.update).not.toHaveBeenCalled();
+      expect(prismaMock.walletTransaction.create).not.toHaveBeenCalled();
+      expect(notificationMock.versusRequestAccepted).not.toHaveBeenCalled();
+    });
+
+    it('acceptRequest allows already funded match without needing fundingAccount', async () => {
+      const alreadyFundedRequest = {
+        ...baseRequest,
+        opponentFunded: true,
+        opponentReady: true,
+        status: 'ACCEPTED',
+      };
+      prismaMock.versusRequest.findUnique.mockResolvedValue(alreadyFundedRequest);
+
+      const res = await service.acceptRequest(2, 42, {} as any);
+      expect(res.opponentFunded).toBe(true);
+    });
+
+    it('acceptRequest fails when match is not funded and no fundingAccount is supplied', async () => {
+      prismaMock.versusRequest.findUnique.mockResolvedValue({ ...baseRequest });
+
+      await expect(
+        service.acceptRequest(2, 42, {} as any),
+      ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('declineRequest', () => {
+    it('declines pending challenge, refunds escrow, and notifies host', async () => {
+      prismaMock.versusRequest.findUnique.mockResolvedValue({
+        id: 42,
+        hostId: 1,
+        opponentId: 2,
+        hostShare: 600,
+        hostFundingAccount: 'savings',
+        opponentShare: 400,
+        status: 'PENDING',
+        escrowStatus: 'HELD',
+        opponentFunded: false,
+        host: { id: 1, username: 'alice' },
+        opponent: { id: 2, username: 'bob' },
+      });
+
+      prismaMock.versusRequest.update.mockResolvedValue({
+        id: 42,
+        status: 'DECLINED',
+        escrowStatus: 'REFUNDED',
+      });
+
+      await service.declineRequest(2, 42);
+
+      expect(prismaMock.wallet.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { userId: 1 },
+          data: expect.objectContaining({
+            savingsBalance: { increment: 600 },
+          }),
+        }),
+      );
+
+      expect(notificationMock.versusRequestDeclined).toHaveBeenCalledWith(1, 'bob');
+    });
+
+    it('rejects decline from non-opponent', async () => {
+      prismaMock.versusRequest.findUnique.mockResolvedValue({
+        id: 42,
+        hostId: 1,
+        opponentId: 2,
+        status: 'PENDING',
+      });
+
+      await expect(service.declineRequest(3, 42)).rejects.toThrow(ForbiddenException);
     });
   });
 

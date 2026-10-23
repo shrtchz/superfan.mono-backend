@@ -466,14 +466,13 @@ export class VersusService {
    * Opponent funds their share using Superfan Vault picker.
    */
   async fundOpponentShare(opponentUserId: number, requestId: number, dto: FundVersusDto) {
-    const accountType = this.normalizeAccountType(dto.fundingAccount);
     const now = new Date();
 
     const request = await this.prisma.versusRequest.findUnique({
       where: { id: requestId },
       include: {
-        host: { select: { id: true, username: true } },
-        opponent: { select: { id: true, username: true } },
+        host: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
+        opponent: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
       },
     });
 
@@ -498,9 +497,35 @@ export class VersusService {
       return request;
     }
 
+    const accountType = this.normalizeAccountType(dto?.fundingAccount);
     const opponentTxRef = `VERSUS_ESCROW_OPP_${Date.now()}_${randomBytes(4).toString('hex').toUpperCase()}`;
 
-    const updated = await this.prisma.$transaction(async (tx) => {
+    const { updated, alreadyFunded } = await this.prisma.$transaction(async (tx) => {
+      // Re-query within transaction lock to prevent concurrent double-deductions
+      const freshRequest = await tx.versusRequest.findUnique({
+        where: { id: requestId },
+        include: {
+          host: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
+          opponent: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
+        },
+      });
+
+      if (!freshRequest) {
+        throw new NotFoundException(`Versus request ${requestId} not found`);
+      }
+
+      if (freshRequest.opponentFunded) {
+        return { updated: freshRequest, alreadyFunded: true };
+      }
+
+      if (freshRequest.status !== 'PENDING' && freshRequest.status !== 'ACCEPTED') {
+        throw new BadRequestException(`Cannot fund request in status '${freshRequest.status}'`);
+      }
+
+      if (freshRequest.expiresAt <= now) {
+        throw new BadRequestException('This versus request has expired');
+      }
+
       let wallet = await tx.wallet.findUnique({
         where: { userId: opponentUserId },
       });
@@ -510,7 +535,7 @@ export class VersusService {
           data: {
             userId: opponentUserId,
             balance: 0,
-                                  },
+          },
         });
       }
 
@@ -530,10 +555,10 @@ export class VersusService {
         availableBalance = Math.max(0, availableBalance - Number(held._sum.amount || 0));
       }
 
-      if (availableBalance < request.opponentShare) {
+      if (availableBalance < freshRequest.opponentShare) {
         const accountLabel = accountType === 'savings' ? 'Savings' : 'Checking';
         throw new BadRequestException(
-          `Insufficient ${accountLabel} balance. Required: ₦${request.opponentShare.toLocaleString()}, Available: ₦${availableBalance.toLocaleString()}`,
+          `Insufficient ${accountLabel} balance. Required: ₦${freshRequest.opponentShare.toLocaleString()}, Available: ₦${availableBalance.toLocaleString()}`,
         );
       }
 
@@ -541,16 +566,16 @@ export class VersusService {
         await tx.wallet.update({
           where: { userId: opponentUserId },
           data: {
-            savingsBalance: { decrement: request.opponentShare },
-                        balance: { decrement: request.opponentShare },
+            savingsBalance: { decrement: freshRequest.opponentShare },
+            balance: { decrement: freshRequest.opponentShare },
           },
         });
       } else {
         await tx.wallet.update({
           where: { userId: opponentUserId },
           data: {
-            checkingBalance: { decrement: request.opponentShare },
-                        balance: { decrement: request.opponentShare },
+            checkingBalance: { decrement: freshRequest.opponentShare },
+            balance: { decrement: freshRequest.opponentShare },
           },
         });
       }
@@ -558,7 +583,7 @@ export class VersusService {
       await tx.walletTransaction.create({
         data: {
           userId: opponentUserId,
-          amount: request.opponentShare,
+          amount: freshRequest.opponentShare,
           type: 'debit',
           currency: 'NGN',
           status: 'HELD',
@@ -567,11 +592,11 @@ export class VersusService {
           transactionType: 'VERSUS_ESCROW_DEBIT',
           trx_ref: opponentTxRef,
           reference: opponentTxRef,
-          description: `Versus ${request.mode === 'LIVE_1V1' ? 'Live 1v1' : 'Schedule H2H'} for challenge to @${request.host.username}`,
+          description: `Versus ${freshRequest.mode === 'LIVE_1V1' ? 'Live 1v1' : 'Schedule H2H'} for challenge to @${freshRequest.host.username}`,
         },
       });
 
-      return tx.versusRequest.update({
+      const updatedRecord = await tx.versusRequest.update({
         where: { id: requestId },
         data: {
           opponentFundingAccount: accountType,
@@ -584,17 +609,22 @@ export class VersusService {
           opponent: { select: { id: true, username: true, profilePicture: true, firstName: true, lastName: true } },
         },
       });
+
+      return { updated: updatedRecord, alreadyFunded: false };
     });
 
-    try {
-      await this.notificationService.versusRequestAccepted(
-        request.hostId,
-        request.opponent.username,
-        request.id,
-      );
-    } catch (_) {}
+    if (!alreadyFunded) {
+      try {
+        await this.notificationService.versusRequestAccepted(
+          updated.hostId,
+          updated.opponent.username,
+          updated.id,
+        );
+      } catch (_) {}
 
-    this.emitVersusEvent(request.hostId, request.opponentId, 'versus:updated', updated);
+      this.emitVersusEvent(updated.hostId, updated.opponentId, 'versus:updated', updated);
+    }
+
     return updated;
   }
 
