@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  InternalServerErrorException,
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -9,6 +10,7 @@ import * as argon from 'argon2';
 import { v4 as uuidv4 } from 'uuid';
 import { failureResponse } from '../common/interceptors/response.interceptor';
 import { PointsConversionUtil } from '../common/utils/points-conversion.util';
+import { ClerkService } from '../common/clerk/clerk.service';
 import { MailService } from '../mail/mail.service';
 import { prisma } from '../prisma/prisma';
 import { TaskService } from "../tasks/tasks.service";
@@ -64,6 +66,7 @@ export class AdminService {
   constructor(
     private mail: MailService,
     private configService: ConfigService,
+    private clerkService: ClerkService,
     private taskService: TaskService,
     private pointsConversionUtil: PointsConversionUtil,
   ) {}
@@ -398,6 +401,7 @@ export class AdminService {
 
   async acceptInvitedSubAdmin(dto: SubAdminDto): Promise<any> {
     try {
+      const plainPassword = dto.password;
       const password = await argon.hash(dto.password);
 
       // confirm username does not exist
@@ -436,7 +440,44 @@ export class AdminService {
         });
       }
 
-      // create user
+      // Create the Clerk user first so the admin record is synced to Clerk
+      // immediately at signup (not lazily on first login).
+      let clerkUserId: string | null = null;
+      try {
+        const clerkUser = await this.clerkService.getClient().users.createUser({
+          emailAddress: [dto.email],
+          password: plainPassword,
+          username: dto.username,
+          firstName: dto.firstName,
+          lastName: dto.lastName || '',
+          skipPasswordChecks: true,
+          skipPasswordRequirement: false,
+          ...(dto.phone ? { phoneNumber: [dto.phone] } : {}),
+        });
+        clerkUserId = clerkUser.id;
+
+        // Mark the email as verified in Clerk so password login works outright.
+        const emailId = clerkUser.emailAddresses?.[0]?.id;
+        if (emailId) {
+          await this.clerkService.getClient().emailAddresses
+            .updateEmailAddress(emailId, { verified: true })
+            .catch(() => undefined);
+        }
+      } catch (clerkError: any) {
+        // Clerk user may already exist (e.g. re-invite). Resolve it instead of
+        // failing the signup.
+        const existing = await this.clerkService.findByEmail(dto.email);
+        if (existing?.id) {
+          clerkUserId = existing.id;
+        } else {
+          console.error('[AdminService] Clerk user creation failed:', clerkError);
+          throw new InternalServerErrorException(
+            'Could not create Clerk account for this admin. Please contact support.',
+          );
+        }
+      }
+
+      // create local user linked to the Clerk account
       const user = await prisma.user.create({
         data: {
           email: dto.email,
@@ -445,6 +486,7 @@ export class AdminService {
           username: dto.username,
           password,
           phone: dto.phone,
+          clerkUserId,
           active: true,
           roleName: effectiveRoleName,
         },
