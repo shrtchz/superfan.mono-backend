@@ -104,7 +104,7 @@ describe('Versus Notifications End-to-End', () => {
       expect(notif?.userId).toBe(2);
       expect(notif?.type).toBe(NotificationTriggers.VERSUS_REQUEST_SENT);
       expect(notif?.message).toBe(
-        'New Versus request! alice challenged you to a Live 1v1 for a ₦1,000 jackpot. Tap to respond.',
+        'New Versus request! @alice challenged you to a Live 1v1 for a ₦1,000 jackpot. Tap to respond.',
       );
       // Ensure no leading emoji on backend
       expect(notif?.message.startsWith('⚔️')).toBe(false);
@@ -123,7 +123,7 @@ describe('Versus Notifications End-to-End', () => {
       expect(notif?.userId).toBe(2);
       expect(notif?.type).toBe(NotificationTriggers.VERSUS_REQUEST_SENT);
       expect(notif?.message).toBe(
-        'New Versus request! alice challenged you to a Schedule H2H for a ₦5,000 jackpot. It starts in 48hrs. Tap to respond.',
+        'New Versus request! @alice challenged you to a Schedule H2H for a ₦5,000 jackpot. It starts in 48hrs. Tap to respond.',
       );
       expect(notif?.message.startsWith('⚔️')).toBe(false);
     });
@@ -139,7 +139,7 @@ describe('Versus Notifications End-to-End', () => {
       expect(notif?.userId).toBe(1);
       expect(notif?.type).toBe(NotificationTriggers.VERSUS_REQUEST_ACCEPTED);
       expect(notif?.message).toBe(
-        "bob accepted your Versus request. Start the match when you're ready.",
+        "@bob accepted your Versus request. Start the match when you're ready.",
       );
       expect(notif?.message.startsWith('✅')).toBe(false);
     });
@@ -156,13 +156,13 @@ describe('Versus Notifications End-to-End', () => {
 
       expect(res.hostNotif?.userId).toBe(1);
       expect(res.hostNotif?.message).toBe(
-        'Your Live 1v1 with bob expired because it was not started in time.',
+        'Your Live 1v1 with @bob expired because it was not started in time.',
       );
       expect(res.hostNotif?.message.startsWith('⏰')).toBe(false);
 
       expect(res.oppNotif?.userId).toBe(2);
       expect(res.oppNotif?.message).toBe(
-        'The Live 1v1 request from alice expired.',
+        'The Live 1v1 request from @alice expired.',
       );
       expect(res.oppNotif?.message.startsWith('⏰')).toBe(false);
     });
@@ -186,14 +186,14 @@ describe('Versus Notifications End-to-End', () => {
       expect(winnerNotif.userId).toBe(1);
       expect(winnerNotif.type).toBe(NotificationTriggers.VERSUS_MATCH_WIN);
       expect(winnerNotif.message).toBe(
-        'You won ₦2,000 in your Versus against bob! It has been credited to your Savings Account.',
+        'You won ₦2,000 in your Versus against @bob! It has been credited to your Savings Account.',
       );
       expect(winnerNotif.message.startsWith('🏆')).toBe(false);
 
       expect(loserNotif.userId).toBe(2);
       expect(loserNotif.type).toBe(NotificationTriggers.VERSUS_MATCH_LOSS);
       expect(loserNotif.message).toBe(
-        'alice won this Versus. Want a rematch?',
+        '@alice won this Versus. Want a rematch?',
       );
 
       // DRAW
@@ -211,12 +211,12 @@ describe('Versus Notifications End-to-End', () => {
       expect(drawResults).toHaveLength(2);
       expect(drawResults[0].userId).toBe(1);
       expect(drawResults[0].type).toBe(NotificationTriggers.VERSUS_MATCH_DRAW);
-      expect(drawResults[0].message).toBe("It's a draw! You and bob finished level.");
+      expect(drawResults[0].message).toBe("It's a draw! You and @bob finished level.");
       expect(drawResults[0].message.startsWith('🤝')).toBe(false);
 
       expect(drawResults[1].userId).toBe(2);
       expect(drawResults[1].type).toBe(NotificationTriggers.VERSUS_MATCH_DRAW);
-      expect(drawResults[1].message).toBe("It's a draw! You and alice finished level.");
+      expect(drawResults[1].message).toBe("It's a draw! You and @alice finished level.");
     });
   });
 
@@ -288,7 +288,7 @@ describe('Versus Notifications End-to-End', () => {
     });
 
     it('notifies host only upon opponent acceptance', async () => {
-      prismaMock.versusRequest.findUnique.mockResolvedValueOnce({
+      const req = {
         id: 42,
         hostId: 1,
         opponentId: 2,
@@ -299,18 +299,19 @@ describe('Versus Notifications End-to-End', () => {
         mode: 'LIVE_1V1',
         host: { id: 1, username: 'alice' },
         opponent: { id: 2, username: 'bob' },
-      });
-      prismaMock.wallet.findUnique.mockResolvedValueOnce({ userId: 2, savingsBalance: 1000 });
-      prismaMock.versusRequest.update.mockResolvedValueOnce({
-        id: 42,
-        hostId: 1,
-        opponentId: 2,
+      };
+      prismaMock.versusRequest.findUnique.mockResolvedValue(req);
+      prismaMock.wallet.findUnique.mockResolvedValue({ userId: 2, savingsBalance: 1000 });
+      prismaMock.versusRequest.update.mockResolvedValue({
+        ...req,
+        opponentFunded: true,
+        opponentReady: true,
         status: 'ACCEPTED',
       });
 
       const spyAccepted = jest.spyOn(notificationService, 'versusRequestAccepted');
 
-      await versusService.fundOpponentShare(2, 42, { fundingAccount: 'savings' });
+      await versusService.acceptRequest(2, 42, { fundingAccount: 'savings' });
 
       expect(spyAccepted).toHaveBeenCalledWith(1, 'bob', 42);
       expect(spyAccepted).not.toHaveBeenCalledWith(2, expect.anything(), expect.anything());

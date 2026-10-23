@@ -100,6 +100,7 @@ export async function seedAll(client: any = prisma) {
     { id: 13, name: "payment", description: "Manage payments" },
     { id: 14, name: "analytics", description: "Manage analytics" },
     { id: 30, name: "ledger", description: "Manage ledger" },
+    { id: 31, name: "home", description: "Access home dashboard" },
     { id: 29, name: "more", description: "Manage more" },
   ];
 

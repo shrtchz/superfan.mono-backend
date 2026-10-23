@@ -573,6 +573,136 @@ describe('VersusService', () => {
 
       await expect(service.declineRequest(3, 42)).rejects.toThrow(ForbiddenException);
     });
+
+    it('declines accepted (funded) challenge, refunds both host and opponent, and notifies host', async () => {
+      prismaMock.versusRequest.findUnique.mockResolvedValue({
+        id: 42,
+        hostId: 1,
+        opponentId: 2,
+        hostShare: 600,
+        hostFundingAccount: 'savings',
+        opponentShare: 400,
+        opponentFundingAccount: 'checking',
+        status: 'ACCEPTED',
+        escrowStatus: 'HELD',
+        opponentFunded: true,
+        opponentReady: true,
+        host: { id: 1, username: 'alice' },
+        opponent: { id: 2, username: 'bob' },
+        expiresAt: new Date(Date.now() + 60000),
+      });
+
+      prismaMock.versusRequest.update.mockResolvedValue({
+        id: 42,
+        status: 'DECLINED',
+        escrowStatus: 'REFUNDED',
+      });
+
+      await service.declineRequest(2, 42);
+
+      // Host refunded to savings
+      expect(prismaMock.wallet.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { userId: 1 },
+          data: expect.objectContaining({
+            savingsBalance: { increment: 600 },
+          }),
+        }),
+      );
+
+      // Opponent refunded to checking
+      expect(prismaMock.wallet.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { userId: 2 },
+          data: expect.objectContaining({
+            checkingBalance: { increment: 400 },
+          }),
+        }),
+      );
+
+      expect(notificationMock.versusRequestDeclined).toHaveBeenCalledWith(1, 'bob');
+    });
+  });
+
+  describe('sweepExpiredRequests', () => {
+    it('sweeps both PENDING and ACCEPTED expired requests and refunds escrow', async () => {
+      prismaMock.versusRequest.findMany.mockResolvedValue([
+        {
+          id: 101,
+          status: 'PENDING',
+          hostId: 1,
+          opponentId: 2,
+          hostShare: 500,
+          hostFundingAccount: 'savings',
+          opponentShare: 500,
+          opponentFunded: false,
+          host: { id: 1, username: 'alice' },
+          opponent: { id: 2, username: 'bob' },
+        },
+        {
+          id: 102,
+          status: 'ACCEPTED',
+          hostId: 3,
+          opponentId: 4,
+          hostShare: 1000,
+          hostFundingAccount: 'checking',
+          opponentShare: 1000,
+          opponentFundingAccount: 'savings',
+          opponentFunded: true,
+          host: { id: 3, username: 'charlie' },
+          opponent: { id: 4, username: 'dave' },
+        },
+      ]);
+
+      prismaMock.versusRequest.findUnique.mockImplementation(async ({ where }) => {
+        if (where.id === 101) {
+          return {
+            id: 101,
+            hostId: 1,
+            opponentId: 2,
+            hostShare: 500,
+            hostFundingAccount: 'savings',
+            opponentShare: 500,
+            opponentFunded: false,
+            status: 'PENDING',
+            escrowStatus: 'HELD',
+            host: { id: 1, username: 'alice' },
+            opponent: { id: 2, username: 'bob' },
+          };
+        }
+        return {
+          id: 102,
+          hostId: 3,
+          opponentId: 4,
+          hostShare: 1000,
+          hostFundingAccount: 'checking',
+          opponentShare: 1000,
+          opponentFundingAccount: 'savings',
+          opponentFunded: true,
+          status: 'ACCEPTED',
+          escrowStatus: 'HELD',
+          host: { id: 3, username: 'charlie' },
+          opponent: { id: 4, username: 'dave' },
+        };
+      });
+
+      prismaMock.versusRequest.update.mockImplementation(async ({ where }) => ({
+        id: where.id,
+        status: 'EXPIRED',
+        escrowStatus: 'REFUNDED',
+      }));
+
+      const count = await service.sweepExpiredRequests();
+      expect(count).toBe(2);
+
+      expect(prismaMock.versusRequest.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            status: { in: ['PENDING', 'ACCEPTED'] },
+          }),
+        }),
+      );
+    });
   });
 
   describe('cancelRequest', () => {
