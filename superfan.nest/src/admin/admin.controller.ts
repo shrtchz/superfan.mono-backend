@@ -210,8 +210,7 @@ export class AdminController {
   }
 
   @Get('/dashboard/points-conversion-rate')
-  async getPointsConversionRate(@Req() req: any) {
-    this.ensureOwner(req.user);
+  async getPointsConversionRate() {
     return this.adminService.getPointsConversionRate();
   }
 
