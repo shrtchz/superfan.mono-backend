@@ -16,12 +16,11 @@
           <tr>
             <td align="center" style="padding: 10px; border-bottom: 1px solid #e8ddd2;">
               <img
-                                            src="https://cloudflare-b2.shrtchz.workers.dev/image3.png"
-
-                      alt="Superfan"
-                      width="150"
-                      style="display:block; margin:0 ; max-width:150px; height:auto; border: 0;"
-                    />
+                src="https://cloudflare-b2.shrtchz.workers.dev/image3.png"
+                alt="Superfan"
+                width="150"
+                style="display:block; margin:0 ; max-width:150px; height:auto; border: 0;"
+              />
               <h1 style="margin: 0; font-family: 'Rubik', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; font-size: 18px; line-height: 1.1; font-weight: 700; color: #000000;">Verify your email</h1>
             </td>
           </tr>
@@ -31,19 +30,35 @@
                 Hello {{firstName}}
               </div>
               <div style="font-size: 13px; line-height: 1.45; color: #000000; margin: 0 0 18px;">
-                Thanks for joining Superfan NG. Before we unlock the full experience for you, we just need to confirm this is really your email address. One click and you're verified.
+                Thanks for joining Superfan NG. Before we unlock the full experience for you, we just need to confirm your email address. Enter the code below or click the button.
               </div>
-              <table width="100%" cellpadding="0" cellspacing="0" style="border: 1px solid #d8cdbf; margin: 0 0 24px;">
+              <table width="100%" cellpadding="0" cellspacing="0" style="border: 1px solid #d8cdbf; margin: 0 0 24px; background-color: #fbf9f6;">
                 <tr>
-                  <td align="center" style="padding: 14px 12px 12px;">
-                    <div style="font-size: 7px; line-height: 1; color: #111111; letter-spacing: 2px; text-transform: uppercase; font-weight: 700; margin-bottom: 10px;">
+                  <td align="center" style="padding: 20px 16px;">
+                    {{#if code}}
+                    <div style="font-size: 10px; line-height: 1; color: #555555; letter-spacing: 2px; text-transform: uppercase; font-weight: 700; margin-bottom: 10px;">
+                      Your Verification Code
+                    </div>
+                    <div style="display: inline-block; background-color: #ffffff; border: 2px solid #000000; padding: 10px 24px; font-family: 'Rubik', -apple-system, BlinkMacSystemFont, monospace; font-size: 32px; letter-spacing: 8px; font-weight: 700; color: #000000; margin-bottom: 14px; box-shadow: 4px 4px 0px #000000;">
+                      {{code}}
+                    </div>
+                    <div style="font-size: 13px; line-height: 1.4; color: #333333; margin-bottom: 12px;">
+                      Enter this 6-digit code on the verification screen to continue.
+                    </div>
+                    {{else}}
+                    <div style="font-size: 10px; line-height: 1; color: #111111; letter-spacing: 2px; text-transform: uppercase; font-weight: 700; margin-bottom: 10px;">
                       Confirm Your Email Address
                     </div>
-                    <a href="{{verify_url}}" style="display: inline-block; background-color: #000000; color: #ffffff; text-decoration: none; font-size: 13px; line-height: 1; font-weight: 700; padding: 12px 30px; border-radius: 999px; margin-bottom: 10px;">
-                      Verify My Email
-                    </a>
-                    <div style="font-size: 13px; line-height: 1.35; color: #000000;">
-                      This link expires in 10 minutes. Don't share it with anyone.
+                    {{/if}}
+                    {{#if verify_url}}
+                    <div style="margin-top: 4px; margin-bottom: 10px;">
+                      <a href="{{verify_url}}" style="display: inline-block; background-color: #000000; color: #ffffff; text-decoration: none; font-size: 13px; line-height: 1; font-weight: 700; padding: 12px 30px; border-radius: 999px;">
+                        Verify My Email
+                      </a>
+                    </div>
+                    {{/if}}
+                    <div style="font-size: 12px; line-height: 1.35; color: #666666;">
+                      This code expires in 10 minutes. Don't share it with anyone.
                     </div>
                   </td>
                 </tr>

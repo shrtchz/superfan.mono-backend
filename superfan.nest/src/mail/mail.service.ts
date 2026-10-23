@@ -1,14 +1,16 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable, OnModuleInit, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Queue } from 'bullmq';
 import * as fs from 'fs';
 import * as handlebars from 'handlebars';
-import path from 'path';
+import * as path from 'path';
 import { failureResponse } from '../common/interceptors/response.interceptor';
+import { resolveTemplatesDir } from './mail.utils';
 
 @Injectable()
 export class MailService implements OnModuleInit {
+  private readonly logger = new Logger(MailService.name);
   constructor(
     @InjectQueue('mail') private readonly mailQueue: Queue,
     private readonly configService: ConfigService,
@@ -19,7 +21,7 @@ export class MailService implements OnModuleInit {
   }
 
   private registerPartials() {
-    const partialsDir = this.resolveTemplatesDir();
+    const partialsDir = resolveTemplatesDir(__dirname);
 
     if (fs.existsSync(partialsDir)) {
       const files = this.findHbsFiles(partialsDir);
@@ -61,20 +63,6 @@ export class MailService implements OnModuleInit {
     return results;
   }
 
-  private resolveTemplatesDir(): string {
-    const localDir = path.join(__dirname, 'templates');
-    const distAlternative = path.join(__dirname, '..', '..', 'mail', 'templates');
-
-    if (fs.existsSync(localDir)) {
-      return localDir;
-    }
-
-    if (fs.existsSync(distAlternative)) {
-      return distAlternative;
-    }
-
-    return localDir;
-  }
 
   async sendTestEmail(to: string, subject: string, context: any) {
     try {
@@ -95,47 +83,83 @@ export class MailService implements OnModuleInit {
   }
 
   async verifyEmail(email: string, code: string, firstName: string): Promise<any> {
+    this.logger.log(`[MailService] verifyEmail called for: ${email}, code: ${code}, firstName: ${firstName}`);
     try {
-      const verify_url = `${process.env.FRONTEND_URL}/verify/${email}?token=${code}`
-      let send_text = await this.mailQueue.add('send_email', {
-        to: email,
-        from: `Superfan <${
-          this.configService.get<string>('LOCAL_SENDER_EMAIL') ||
-          this.configService.get<string>('PROD_SENDER_EMAIL')
-        }>`,
-        subject: 'Verify your email',
-        template: './verify-email',
-        context: { email, verify_url, firstName },
-      },
+      const frontendUrl =
+        this.configService.get<string>('FRONTEND_URL') ||
+        process.env.FRONTEND_URL ||
+        'https://superfan.ng';
+      const verify_url = `${frontendUrl}/verify-email?email=${encodeURIComponent(email)}&token=${code}`;
+      const sender = `Superfan <${
+        this.configService.get<string>('LOCAL_SENDER_EMAIL') ||
+        this.configService.get<string>('PROD_SENDER_EMAIL') ||
+        'admin@superfan.ng'
+      }>`;
+
+      this.logger.log(`[MailService] Adding 'send_email' job to BullMQ queue "mail" for ${email}...`);
+      const job = await this.mailQueue.add(
+        'send_email',
         {
-    attempts: 5,
-    backoff: {
-      type: 'exponential',
-      delay: 10000,
-    },
-  },
-    );
-    } catch (error) {
+          to: email,
+          from: sender,
+          subject: 'Verify your email',
+          template: './verify-email',
+          context: { email, verify_url, firstName, code },
+        },
+        {
+          attempts: 5,
+          backoff: {
+            type: 'exponential',
+            delay: 10000,
+          },
+        },
+      );
+      this.logger.log(`[MailService] Successfully queued 'send_email' job with ID: ${job?.id}`);
+      return job;
+    } catch (error: any) {
+      this.logger.error(`[MailService] Failed to queue verifyEmail for ${email}: ${error?.message}`, error?.stack);
       throw failureResponse(error);
     }
   }
 
   async welcomeUserEmail(email: string, firstName: string, magicLink: string) {
-  try {
-    await this.mailQueue.add('send_email', {
-      to: email,
-      from: `Superfan <${
+    try {
+      const senderEmail =
         this.configService.get<string>('LOCAL_SENDER_EMAIL') ||
-        this.configService.get<string>('PROD_SENDER_EMAIL')
-      }>`,
-      subject: 'Welcome to superfan!',
-      template: './welcome-superfan',
-      context: { email, firstName, start_quiz_url: magicLink },
-    });
-  } catch (error) {
-    throw failureResponse(error);
+        this.configService.get<string>('PROD_SENDER_EMAIL') ||
+        'admin@superfan.ng';
+      const senderName =
+        this.configService.get<string>('LOCAL_SENDER_NAME') ||
+        this.configService.get<string>('PROD_SENDER_NAME') ||
+        'Superfan';
+
+      this.logger.log(`[MailService] Adding 'send_email' (welcome) job to BullMQ queue "mail" for ${email}...`);
+
+      const job = await this.mailQueue.add(
+        'send_email',
+        {
+          to: email,
+          from: `"${senderName}" <${senderEmail}>`,
+          subject: 'Welcome to Superfan!',
+          template: './welcome-superfan',
+          context: { email, firstName, start_quiz_url: magicLink },
+        },
+        {
+          attempts: 5,
+          backoff: {
+            type: 'exponential',
+            delay: 10000,
+          },
+        },
+      );
+
+      this.logger.log(`[MailService] Successfully queued welcome email job with ID: ${job?.id}`);
+      return job;
+    } catch (error: any) {
+      this.logger.error(`[MailService] Failed to queue welcomeUserEmail for ${email}: ${error?.message}`, error?.stack);
+      throw failureResponse(error);
+    }
   }
-}
 
   // in email, figure out which details should be used for the link.
   // check the link in the frontend and make sure it works with the details sent in the email.
@@ -144,28 +168,39 @@ export class MailService implements OnModuleInit {
     email: string,
     inviterName: string,
     inviteUrl: string,
-    role,
-    expiryDays,
-    expiryDate,
+    role: string,
+    expiryDays: number,
+    expiryDate: Date | string,
   ): Promise<any> {
     try {
+      const formattedExpiryDate =
+        expiryDate instanceof Date
+          ? expiryDate.toLocaleDateString('en-US', {
+              month: 'short',
+              day: 'numeric',
+              year: 'numeric',
+            })
+          : String(expiryDate);
+
       let send_text = await this.mailQueue.add('send_email', {
         to: email,
         from: `Superfan <${
           this.configService.get<string>('LOCAL_SENDER_EMAIL') ||
-          this.configService.get<string>('PROD_SENDER_EMAIL')
+          this.configService.get<string>('PROD_SENDER_EMAIL') ||
+          'admin@superfan.ng'
         }>`,
         subject: `You have been invited to be a ${role}`,
-        template: './subadmin-invitation',
+        template: 'subadmin-invitation',
         context: {
           email,
           inviterName,
           inviteUrl,
           role,
           expiryDays,
-          expiryDate,
+          expiryDate: formattedExpiryDate,
         },
       });
+      return send_text;
     } catch (error) {
       throw failureResponse(error);
     }
