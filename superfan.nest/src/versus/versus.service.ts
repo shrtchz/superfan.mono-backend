@@ -1,6 +1,8 @@
 import {
   BadRequestException,
   ForbiddenException,
+  Inject,
+  forwardRef,
   Injectable,
   Logger,
   NotFoundException,
@@ -11,6 +13,7 @@ import { PrismaService } from '../config/database/prisma.service';
 import { NotificationService } from '../notification/notification.service';
 import { NotificationGateway } from '../notification/notification.gateway';
 import { QuizService } from '../quiz/quiz.service';
+
 import {
   AcceptVersusDto,
   CreateVersusDto,
@@ -79,7 +82,7 @@ export class VersusService {
     private readonly prisma: PrismaService,
     private readonly notificationService: NotificationService,
     private readonly notificationGateway: NotificationGateway,
-    private readonly quizService: QuizService,
+    @Inject(forwardRef(() => QuizService)) private readonly quizService: QuizService,
   ) {}
 
   /**
@@ -307,8 +310,9 @@ export class VersusService {
       await this.notificationService.versusRequestSent(
         opponent.id,
         host.username,
-        mode === 'LIVE_1V1' ? 'Live 1v1' : 'Schedule H2H',
+        createdRequest.mode,
         jackpot,
+        createdRequest.id,
       );
     } catch (_) {}
 
@@ -440,6 +444,18 @@ export class VersusService {
       const oId = res.request.opponentId;
       if (hId && oId) {
         this.emitVersusEvent(hId, oId, 'versus:updated', res.request);
+      }
+      if (newStatus === 'EXPIRED') {
+        try {
+          await this.notificationService.versusRequestExpired(
+            res.request.id,
+            res.request.hostId,
+            res.request.opponentId,
+            res.request.host?.username || '',
+            res.request.opponent?.username || '',
+            res.request.mode,
+          );
+        } catch (_) {}
       }
     }
 
@@ -574,7 +590,7 @@ export class VersusService {
       await this.notificationService.versusRequestAccepted(
         request.hostId,
         request.opponent.username,
-        request.mode === 'LIVE_1V1' ? 'Live 1v1' : 'Schedule H2H',
+        request.id,
       );
     } catch (_) {}
 
@@ -1023,6 +1039,10 @@ export class VersusService {
     this.emitVersusEvent(finalized.hostId, finalized.opponentId, 'versus:completed', finalized);
     this.emitVersusEvent(finalized.hostId, finalized.opponentId, 'versus:updated', finalized);
 
+    try {
+      await this.notificationService.versusMatchResult(finalized);
+    } catch (_) {}
+
     return finalized;
   }
 
@@ -1403,9 +1423,6 @@ export class VersusService {
     for (const req of pending) {
       if (req.status === 'PENDING' && req.expiresAt <= now) {
         await this.refundEscrow(req.id, 'EXPIRED');
-        try {
-          await this.notificationService.versusRequestExpired(req.hostId, req.opponent.username);
-        } catch (_) {}
       }
     }
 
@@ -1442,9 +1459,6 @@ export class VersusService {
         const { refunded } = await this.refundEscrow(req.id, 'EXPIRED');
         if (refunded) {
           count++;
-          try {
-            await this.notificationService.versusRequestExpired(req.hostId, req.opponent.username);
-          } catch (_) {}
         }
       } catch (err: any) {
         this.logger.error(`Error refunding expired versus request ${req.id}: ${err.message}`);
