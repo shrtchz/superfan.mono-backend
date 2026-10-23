@@ -464,13 +464,25 @@ export class AdminService {
             .catch(() => undefined);
         }
       } catch (clerkError: any) {
+        // Log the actual Clerk error for debugging (email already exists,
+        // username conflict, phone issue, etc.).
+        console.error(
+          '[AdminService] Clerk user creation failed:',
+          clerkError?.message ?? clerkError,
+          clerkError?.errors ?? '',
+        );
+
         // Clerk user may already exist (e.g. re-invite). Resolve it instead of
         // failing the signup.
-        const existing = await this.clerkService.findByEmail(dto.email);
+        let existing: any = null;
+        try {
+          existing = await this.clerkService.findByEmail(dto.email);
+        } catch {
+          // ignore lookup failures
+        }
         if (existing?.id) {
           clerkUserId = existing.id;
         } else {
-          console.error('[AdminService] Clerk user creation failed:', clerkError);
           throw new InternalServerErrorException(
             'Could not create Clerk account for this admin. Please contact support.',
           );
