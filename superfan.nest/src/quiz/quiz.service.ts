@@ -254,12 +254,15 @@ export function buildLeaderboardEntryFromCompletedQuiz(
     earning?: number | null;
   }> = [],
 ) {
+  const totalPoints = calculateCompletedQuizTotalPoints(quiz);
   return {
     userId: String(quiz.userId),
     submittedAt: quiz.completedAt ?? quiz.createdAt,
     totalScore: quiz.correctAnswers,
-    totalEarning: 0,
-    totalPoints: calculateCompletedQuizTotalPoints(quiz),
+    totalEarning: totalPoints ?? 0,
+    totalPoints,
+    reward: totalPoints ?? 0,
+    earning: totalPoints ?? 0,
     amountInNaira: quiz.totalEarninginNaira ?? null,
     totalQuestions: quiz.totalQuestions,
     accuracy: calculateCompletedQuizAccuracy(quiz, leaderboardRows),
@@ -274,16 +277,17 @@ export function buildLeaderboardEntryFromCompletedQuiz(
 }
 
 function calculateCompletedQuizTotalPoints(quiz: Record<string, any>): number | null {
-  const components = [
-    quiz.baseScore,
-    quiz.accuracyBonus,
-    quiz.speedBonus,
-    quiz.streakMultiplier,
-    quiz.adBonuses,
-  ];
+  if (!quiz) return null;
+  const base = typeof quiz.baseScore === 'number' ? quiz.baseScore : (Number(quiz.baseScore) || 0);
+  const streak = typeof quiz.streakMultiplier === 'number' ? quiz.streakMultiplier : (Number(quiz.streakMultiplier) || 0);
+  const accuracy = typeof quiz.accuracyBonus === 'number' ? quiz.accuracyBonus : (Number(quiz.accuracyBonus) || 0);
+  const speed = typeof quiz.speedBonus === 'number' ? quiz.speedBonus : (Number(quiz.speedBonus) || 0);
+  const ads = typeof quiz.adBonuses === 'number' ? quiz.adBonuses : (Number(quiz.adBonuses) || 0);
 
-  if (components.some((value) => typeof value !== 'number')) return null;
-  return components.reduce((total, value) => total + value, 0);
+  const total = base + streak + accuracy + speed + ads;
+  if (total > 0) return total;
+  if (quiz.baseScore != null || quiz.streakMultiplier != null) return total;
+  return null;
 }
 
 export function calculatePointsAmountInNaira(
@@ -896,7 +900,7 @@ async submitQuiz(
   const accuracyPercent = totalQuestions > 0 ? Math.round((correctAnswers / totalQuestions) * 100) : 0;
 
   const leaderboardRows = (submissionResponses || [])
-    .map((item: any) => ({
+    .map((item: any, index: number) => ({
       userId: String(userId),
       quizId: item.quizId,
       subject: item.subject ?? subject,
@@ -905,7 +909,7 @@ async submitQuiz(
       accuracyBonus: `${accuracy_bonus}%`,
       selectedAnswer: item.selectedAnswer ?? null,
       correctAnswer: item.correctAnswer ?? null,
-      earning: Number(item.earning ?? 0),
+      earning: Number(item.earning ?? 0) + (index === 0 ? streakBonus : 0),
       quizTimeSeconds,
       quizTime: formattedQuizTime,
       submittedAt: submittedAt ? new Date(submittedAt) : new Date(),
@@ -2820,6 +2824,8 @@ async getQuizleaderboard(
         totalScore: number | null;
         totalEarning: number;
         totalPoints: number | null;
+        reward?: number | null;
+        earning?: number | null;
         amountInNaira: number | null;
         totalQuestions: number | null;
         accuracy: number | null;
@@ -2897,7 +2903,13 @@ async getQuizleaderboard(
     }
 
     grouped.forEach((entry) => {
-      if (entry.totalPoints === null) entry.totalPoints = entry.totalEarning;
+      if (entry.totalPoints != null && entry.totalPoints > 0) {
+        entry.totalEarning = entry.totalPoints;
+      } else if (entry.totalPoints === null) {
+        entry.totalPoints = entry.totalEarning;
+      }
+      entry.reward = entry.totalPoints ?? entry.totalEarning;
+      entry.earning = entry.totalPoints ?? entry.totalEarning;
       entry.amountInNaira =
         calculatePointsAmountInNaira(entry.totalPoints, pointsToNairaRate) ??
         entry.amountInNaira;
@@ -3102,7 +3114,10 @@ async getQuizleaderboard(
       }
       entry.time = firstRow.quizTime ?? entry.quizTime ?? null;
       entry.testLevel = firstRow.testLevel ?? entry.testLevel ?? null;
-      entry.reward = entry.totalEarning;
+      const definitivePoints = entry.totalPoints ?? entry.totalEarning ?? entry.reward;
+      entry.reward = definitivePoints;
+      entry.totalEarning = definitivePoints;
+      entry.earning = definitivePoints;
     }
 
     leaderboard.forEach((entry) => {
