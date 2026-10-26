@@ -17,6 +17,7 @@ import { PostHog } from 'posthog-node';
 import { ClerkService } from '../common/clerk/clerk.service';
 import { generateReferralCode } from '../common/shared/lib';
 import { PointsConversionUtil } from '../common/utils/points-conversion.util';
+import { ExchangeRateService } from '../common/services/exchange-rate.service';
 import { generateFiveUniqueRandomNumbers } from '../common/utils/utils';
 import { ElasticsearchService } from '../elasticsearch/elasticsearch.service';
 import { ImageService } from '../image/image.service';
@@ -68,6 +69,7 @@ export class UserService {
     private readonly diditService: DiditService,
     private readonly imageService: ImageService,
     private readonly rateLimiter: AccountCreationRateLimiterService,
+    private readonly exchangeRateService: ExchangeRateService,
   ) {}
 
   async signupUser(dto: AuthDto, ip?: string): Promise<any> {
@@ -1541,9 +1543,22 @@ async getCard(userId: number): Promise<any> {
       // 2. Cash converted exclusively from quiz points to Naira (NGN)
       const totalCash = await this.pointsConversionUtil.pointsToNaira(totalPoints);
 
+      // 3. Stablecoin converted directly from cash via backend exchange rate
+      let totalStablecoin = 0;
+      try {
+        const usdtRate = await this.exchangeRateService.getNairaToUSDTRate();
+        if (totalCash > 0 && usdtRate > 0) {
+          totalStablecoin = totalCash / usdtRate;
+        }
+      } catch (err) {
+        this.logger.warn(`Failed to fetch USDT rate in getQuizEarnings: ${err?.message}`);
+        totalStablecoin = totalCash > 0 ? totalCash / 1600 : 0;
+      }
+
       return {
         points: totalPoints,
         cash: totalCash,
+        stablecoin: totalStablecoin,
       };
     } catch (error) {
       this.logger.error(`Failed to calculate quiz earnings for user ${userId}:`, error);

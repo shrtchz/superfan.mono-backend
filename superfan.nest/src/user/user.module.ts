@@ -20,6 +20,7 @@ import { TwilioService } from "./two-factor/twilio.service";
 import { OtpRateLimiterService } from "./two-factor/otp-rate-limiter.service";
 import { ImageModule } from "../image/image.module";
 import { AccountCreationRateLimiterService } from "./account-creation-rate-limiter.service";
+import { ExchangeRateService } from "../common/services/exchange-rate.service";
 
 @Global()
 @Module({
@@ -46,6 +47,7 @@ import { AccountCreationRateLimiterService } from "./account-creation-rate-limit
         TwilioService,
         OtpRateLimiterService,
         AccountCreationRateLimiterService,
+        ExchangeRateService,
     ],
     exports: [UserService, PresenceGateway, DiditService, TwoFactorService, TalkingDrumService, TwilioService, OtpRateLimiterService, AccountCreationRateLimiterService],
 })
