@@ -336,6 +336,11 @@ export class UserController {
     return this.userService.getUserBadge(userId);
   }
 
+  @Get('/quiz-earnings/:userId')
+  getQuizEarnings(@Param('userId', ParseIntPipe) userId: number): Promise<any> {
+    return this.userService.getQuizEarnings(userId);
+  }
+
   @Get('/top-earners')
   getTopEarners(
     @Query('limit', ParseIntPipe) limit: number = 10,

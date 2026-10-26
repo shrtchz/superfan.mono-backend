@@ -1316,10 +1316,14 @@ async getCard(userId: number): Promise<any> {
       throw new NotFoundException('User not found');
     }
 
-    const badgeInfo = await this.getUserBadge(userId);
+    const [badgeInfo, quizEarnings] = await Promise.all([
+      this.getUserBadge(userId),
+      this.getQuizEarnings(userId),
+    ]);
     return {
       ...user,
       ...badgeInfo,
+      quizEarnings,
     };
   }
 
@@ -1457,6 +1461,98 @@ async getCard(userId: number): Promise<any> {
             .find((b) => b.required > points) || null,
   };
 }
+
+  async getQuizEarnings(userId: number) {
+    try {
+      // 1. Points exclusively earned from regular and live quiz
+      const pointsAgg = await prisma.point.aggregate({
+        where: {
+          userId,
+          type: {
+            in: ['quiz_reward', 'live_quiz_consolation'],
+          },
+        },
+        _sum: {
+          points: true,
+        },
+      });
+
+      const ongoingQuizzes = await prisma.ongoingQuiz.findMany({
+        where: {
+          userId,
+          isCompleted: true,
+        },
+        select: {
+          baseScore: true,
+          accuracyBonus: true,
+          speedBonus: true,
+          streakMultiplier: true,
+          adBonuses: true,
+          totalEarninginNaira: true,
+          totalEarning: true,
+        },
+      });
+
+      const ongoingQuizPoints = ongoingQuizzes.reduce((sum, q) => {
+        const pts =
+          (q.baseScore || 0) +
+          (q.accuracyBonus || 0) +
+          (q.speedBonus || 0) +
+          (q.streakMultiplier || 0) +
+          (q.adBonuses || 0);
+        return sum + pts;
+      }, 0);
+
+      const quizLeaderboardAgg = await prisma.quizLeaderboard.aggregate({
+        where: {
+          userId: String(userId),
+        },
+        _sum: {
+          earning: true,
+        },
+      });
+      const leaderboardPoints = quizLeaderboardAgg._sum.earning || 0;
+
+      const liveWinnerRewards = await prisma.reward.findMany({
+        where: {
+          userId,
+          type: 'live_quiz_winner',
+        },
+        select: {
+          amount: true,
+        },
+      });
+
+      const pointsToNairaRate = await this.pointsConversionUtil.getConversionRate();
+      const liveWinCash = liveWinnerRewards.reduce(
+        (sum, r) => sum + (Number(r.amount) || 0),
+        0,
+      );
+      const liveWinPoints = Math.round(liveWinCash * pointsToNairaRate);
+
+      const regularQuizPoints = Math.max(
+        pointsAgg._sum.points || 0,
+        ongoingQuizPoints,
+        leaderboardPoints,
+      );
+
+      const totalPoints = regularQuizPoints + liveWinPoints;
+
+      // 2. Cash converted exclusively from quiz points to Naira (NGN)
+      const totalCash = await this.pointsConversionUtil.pointsToNaira(totalPoints);
+
+      return {
+        points: totalPoints,
+        cash: totalCash,
+      };
+    } catch (error) {
+      this.logger.error(`Failed to calculate quiz earnings for user ${userId}:`, error);
+      return {
+        points: 0,
+        cash: 0,
+      };
+    }
+  }
 
   async updateKycDetails(userId: number, dto: KycDto) {
     try {
