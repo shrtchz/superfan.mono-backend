@@ -48,9 +48,10 @@ export class CreateVersusDto {
 }
 
 export class AcceptVersusDto {
+  @IsOptional()
   @IsString()
   @IsIn(['savings', 'checking', 'Savings', 'Checking'])
-  fundingAccount: string;
+  fundingAccount?: string;
 }
 
 export class FundVersusDto {
