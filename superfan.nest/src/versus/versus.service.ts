@@ -205,7 +205,7 @@ export class VersusService {
     const language = dto.language || host.languagePreference || 'Yoruba';
     const subject = dto.subject || host.subjectPreference || 'General';
     const level = dto.level || (host.testLevel as string) || 'Basic';
-    const questionsCount = dto.questionsCount || 25;
+    const questionsCount = dto.questionsCount || 5;
     const durationMinutes = dto.durationMinutes || 5;
 
     const now = new Date();
@@ -745,7 +745,7 @@ export class VersusService {
       languagePreference: request.language,
       subjectPreference: request.subject,
       testLevel: request.level,
-      questionCount: request.questionsCount,
+      questionCount: (request.questionsCount && request.questionsCount !== 25) ? request.questionsCount : 5,
       timePreference: request.durationMinutes,
     });
     const matchRef = `MATCH_${Date.now()}_${randomBytes(4).toString('hex').toUpperCase()}`;
@@ -1602,7 +1602,7 @@ export class VersusService {
     questionsCount: number,
   ): string {
     if (score === null || score === undefined) return '—';
-    const total = questionsCount || 25;
+    const total = questionsCount || 5;
     const mins = Math.floor((timeSeconds || 0) / 60);
     const secs = Math.floor((timeSeconds || 0) % 60);
     const timeStr = `${mins}:${secs < 10 ? '0' : ''}${secs}`;
@@ -1760,6 +1760,16 @@ export class VersusService {
         ? `${hostTimeStr} vs. ${oppTimeStr}`
         : '—';
 
+      const actualQuestions = Array.isArray(r.questions) ? r.questions : [];
+      const hostAnswers = Array.isArray(r.hostAnswers) ? r.hostAnswers : [];
+      const oppAnswers = Array.isArray(r.opponentAnswers) ? r.opponentAnswers : [];
+      const answeredCount = Math.max(hostAnswers.length, oppAnswers.length);
+      const computedQuestionCount = answeredCount > 0
+        ? answeredCount
+        : (actualQuestions.length > 0 && actualQuestions.length !== 25
+            ? actualQuestions.length
+            : (r.questionsCount && r.questionsCount !== 25 ? r.questionsCount : 5));
+
       return {
         id: String(r.id),
         hostId: r.hostId,
@@ -1768,7 +1778,7 @@ export class VersusService {
         guestId: r.opponentId,
         guestUsername: r.opponent?.username || `user_${r.opponentId}`,
         guestOutcome,
-        questionCount: r.questionsCount || 25,
+        questionCount: computedQuestionCount,
         score: scoreDisplay,
         accuracy: accuracyDisplay,
         timeSpent: timeSpentDisplay,
@@ -1778,8 +1788,8 @@ export class VersusService {
         guestAccuracy: r.opponentAccuracy,
         hostTimeSeconds: r.hostTimeSeconds,
         guestTimeSeconds: r.opponentTimeSeconds,
-        hostStats: this.formatStatsMetric(r.hostScore, r.hostTimeSeconds, r.hostAccuracy, r.questionsCount),
-        guestStats: this.formatStatsMetric(r.opponentScore, r.opponentTimeSeconds, r.opponentAccuracy, r.questionsCount),
+        hostStats: this.formatStatsMetric(r.hostScore, r.hostTimeSeconds, r.hostAccuracy, computedQuestionCount),
+        guestStats: this.formatStatsMetric(r.opponentScore, r.opponentTimeSeconds, r.opponentAccuracy, computedQuestionCount),
         language: r.language || 'Yoruba',
         subject: r.subject || 'General',
         testLevel: r.level || 'Basic',
@@ -1858,7 +1868,9 @@ export class VersusService {
       if (q && q.id) questionsMap.set(String(q.id), q);
     });
 
-    const sourceList = answers.length > 0 ? answers : questions;
+    const targetCount = answers.length > 0 ? answers.length : (questions.length > 0 && questions.length <= 5 ? questions.length : 5);
+    const slicedQuestions = questions.slice(0, targetCount);
+    const sourceList = answers.length > 0 ? answers : slicedQuestions;
     const formattedQuestions = sourceList.map((item: any, index: number) => {
       const isAnswerItem = answers.length > 0;
       const ansObj = isAnswerItem ? item : null;
