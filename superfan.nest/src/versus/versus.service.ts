@@ -1629,31 +1629,42 @@ export class VersusService {
    * totalJackpotsWon sums confirmed paid jackpots only.
    */
   async getAdminVersusSummary() {
-    const [totalVersus, scheduleMatches, paidJackpotTransactions] = await Promise.all([
+    const [totalVersus, scheduleMatches, paidJackpotTransactions, completedMatchesAggregate] = await Promise.all([
       this.prisma.versusRequest.count(),
       this.prisma.versusRequest.count({
         where: {
-          mode: { in: ['SCHEDULE_H2H', 'Schedule H2H', 'schedule', 'Schedule'] },
+          mode: { in: ['SCHEDULE_H2H', 'Schedule H2H', 'schedule', 'Schedule', 'H2H'] },
         },
       }),
       this.prisma.walletTransaction.aggregate({
         _sum: { amount: true },
         where: {
           transactionType: 'VERSUS_JACKPOT_PAYOUT',
-          status: 'SUCCESS',
+          status: { in: ['SUCCESS', 'success', 'COMPLETED', 'completed'] },
+        },
+      }),
+      this.prisma.versusRequest.aggregate({
+        _sum: { jackpotWon: true },
+        where: {
+          status: 'COMPLETED',
+          outcome: { in: ['HOST_WON', 'OPPONENT_WON'] },
         },
       }),
     ]);
 
     const totalScheduleH2H = scheduleMatches;
     const totalLive1v1 = Math.max(0, totalVersus - totalScheduleH2H);
-    const totalJackpotsWon = Number(paidJackpotTransactions._sum.amount || 0);
+    const txTotal = Number(paidJackpotTransactions._sum.amount || 0);
+    const reqTotal = Number(completedMatchesAggregate._sum.jackpotWon || 0);
+    const totalJackpotsWon = Math.max(txTotal, reqTotal);
+    const formattedTotalJackpotsWon = `NGN ${totalJackpotsWon.toLocaleString()}`;
 
     return {
       totalVersus,
       totalLive1v1,
       totalScheduleH2H,
       totalJackpotsWon,
+      formattedTotalJackpotsWon,
     };
   }
 
@@ -1710,15 +1721,44 @@ export class VersusService {
 
       // Payout Display: Paid, Unpaid, Refunded
       let jackpotPaymentStatus: 'Paid' | 'Unpaid' | 'Refunded' = 'Unpaid';
-      if (r.payoutStatus === 'PAID') {
+      if (r.payoutStatus === 'PAID' || (isCompleted && !isDraw)) {
         jackpotPaymentStatus = 'Paid';
-      } else if (r.payoutStatus === 'REFUNDED') {
+      } else if (r.payoutStatus === 'REFUNDED' || isDraw || isCancelled) {
         jackpotPaymentStatus = 'Refunded';
       }
 
-      // Jackpot Won Amount: draws show NGN 0, winner shows won amount
-      const jackpotAmount = isDraw ? 0 : Number(r.jackpotWon || (r.status === 'COMPLETED' ? r.jackpot : 0));
+      // Jackpot Won Amount: draws or cancelled show NGN 0, active or completed show total jackpot at stake/won
+      const jackpotAmount = (isDraw || isCancelled)
+        ? 0
+        : Number(r.jackpotWon || r.jackpot || 0);
       const jackpotWonAmount = `NGN ${jackpotAmount.toLocaleString()}`;
+
+      // Mode: format as Live 1v1 or H2H
+      const isSchedule = ['SCHEDULE_H2H', 'Schedule H2H', 'schedule', 'Schedule', 'H2H'].includes(r.mode);
+      const formattedMode = isSchedule ? 'H2H' : 'Live 1v1';
+
+      // Format time spent e.g. 192s -> "3m12s"
+      const formatTimeSpent = (secs: number | null | undefined) => {
+        if (secs == null || isNaN(secs)) return null;
+        const total = Math.round(secs);
+        const mins = Math.floor(total / 60);
+        const s = total % 60;
+        return mins > 0 ? `${mins}m${s}s` : `${s}s`;
+      };
+
+      const scoreDisplay = r.hostScore != null && r.opponentScore != null
+        ? `${r.hostScore} vs. ${r.opponentScore}`
+        : '—';
+
+      const accuracyDisplay = r.hostAccuracy != null && r.opponentAccuracy != null
+        ? `${Math.round(r.hostAccuracy)}% vs. ${Math.round(r.opponentAccuracy)}%`
+        : '—';
+
+      const hostTimeStr = formatTimeSpent(r.hostTimeSeconds);
+      const oppTimeStr = formatTimeSpent(r.opponentTimeSeconds);
+      const timeSpentDisplay = hostTimeStr && oppTimeStr
+        ? `${hostTimeStr} vs. ${oppTimeStr}`
+        : '—';
 
       return {
         id: String(r.id),
@@ -1729,12 +1769,21 @@ export class VersusService {
         guestUsername: r.opponent?.username || `user_${r.opponentId}`,
         guestOutcome,
         questionCount: r.questionsCount || 25,
+        score: scoreDisplay,
+        accuracy: accuracyDisplay,
+        timeSpent: timeSpentDisplay,
+        hostScore: r.hostScore,
+        guestScore: r.opponentScore,
+        hostAccuracy: r.hostAccuracy,
+        guestAccuracy: r.opponentAccuracy,
+        hostTimeSeconds: r.hostTimeSeconds,
+        guestTimeSeconds: r.opponentTimeSeconds,
         hostStats: this.formatStatsMetric(r.hostScore, r.hostTimeSeconds, r.hostAccuracy, r.questionsCount),
         guestStats: this.formatStatsMetric(r.opponentScore, r.opponentTimeSeconds, r.opponentAccuracy, r.questionsCount),
         language: r.language || 'Yoruba',
         subject: r.subject || 'General',
         testLevel: r.level || 'Basic',
-        mode: 'Versus' as const,
+        mode: formattedMode,
         startDate: this.formatLedgerDate(r.startedAt || (r.status !== 'PENDING' ? r.createdAt : null)),
         endDate: this.formatLedgerDate(r.settledAt),
         jackpotWonAmount,
