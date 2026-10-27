@@ -369,9 +369,12 @@ export class UserService {
   async syncFromClerk(clerkUser: any, metadata: SyncUserMetadata = {}, userAgent?: string, ip?: string) {
     try {
       const clerkUserId = clerkUser.id as string;
+      const loginMethod =
+        clerkUser.externalAccounts?.[0]?.provider?.replace(/^oauth_/, '') || 'clerk';
+      const rawEmail = clerkUser.emailAddresses?.[0]?.emailAddress as string | undefined;
       const email =
-        (clerkUser.emailAddresses?.[0]?.emailAddress as string | undefined) ||
-        `${clerkUserId}@snapchat.superfan.app`;
+        rawEmail ||
+        `${clerkUserId}@${loginMethod}.superfan.app`;
 
       const phone =
         (clerkUser.unsafeMetadata?.phone as string) ||
@@ -380,8 +383,6 @@ export class UserService {
       const referralCode =
         metadata.referralCode ||
         (clerkUser.unsafeMetadata?.referralCode as string | undefined);
-      const loginMethod =
-        clerkUser.externalAccounts?.[0]?.provider || 'clerk';
 
       let user = await this.findUserByClerkId(clerkUserId);
 

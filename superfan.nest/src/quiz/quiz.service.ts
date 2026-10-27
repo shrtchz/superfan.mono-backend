@@ -2993,7 +2993,7 @@ async getQuizleaderboard(
       const endTime = attempt.completedAt || liveLead?.quizDate || questionMeta?.quizFinishDate || attempt.createdAt;
       const formattedDuration = formatDurationWindow(startTime, endTime);
       const diffSec = Math.max(1, Math.round(Math.abs(new Date(endTime).getTime() - new Date(startTime).getTime()) / 1000));
-      const submittedAt = attempt.completedAt || liveLead?.quizDate || attempt.createdAt;
+      const submittedAt = liveLead?.quizDate || attempt.completedAt || attempt.createdAt;
 
       const liveEntry: Record<string, any> = {
         userId: String(attempt.userId),

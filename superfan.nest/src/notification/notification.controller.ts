@@ -3,21 +3,56 @@ import { ApiRoutes } from '../common/enums/routes.enum';
 import { Public } from '../common/decorators';
 import { NotificationService } from './notification.service';
 
-@Controller(ApiRoutes.NOTIFICATION)
+@Controller([ApiRoutes.NOTIFICATION, 'api/v1/notifications', 'notifications', 'notification'])
 export class NotificationController {
   constructor(private notificationService: NotificationService) {}
 
   @Public()
   @Post('/create')
   async createNotification(
-    @Body() body: { userId: number; title: string; message: string; type?: string; createdAt?: string; data?: any },
+    @Body()
+    body: {
+      userId: number | string;
+      title?: string;
+      message?: string;
+      type?: string;
+      amount?: number;
+      createdAt?: string;
+      data?: any;
+    },
   ) {
+    const resolvedUserId = Number(body.userId);
+    if (!resolvedUserId || isNaN(resolvedUserId)) {
+      return null;
+    }
+
+    const type = body.type || 'live_quiz_reward';
+    let title = body.title?.trim();
+    let message = body.message?.trim();
+
+    if (!title && !message) {
+      const amt = body.amount ?? body.data?.amount ?? 0;
+      if (type === 'live_quiz_reward') {
+        title = `You earned ₦${Number(amt).toLocaleString()} from today's live quiz.`;
+        message = title;
+      } else if (type === 'live_quiz_consolation') {
+        title = `You didn’t take the jackpot this time, but you earned 500 PTS (₦0.50) for playing.`;
+        message = title;
+      } else if (type === 'live_quiz_jackpot') {
+        title = `Jackpot! ₦${Number(amt).toLocaleString()} credited to your Savings Account.`;
+        message = title;
+      } else {
+        title = 'Live Quiz Notification';
+        message = title;
+      }
+    }
+
     const createdAtDate = body.createdAt ? new Date(body.createdAt) : undefined;
     return this.notificationService.createNotification(
-      body.userId,
-      body.title,
-      body.message,
-      body.type || 'live_quiz_reward',
+      resolvedUserId,
+      title || message || '',
+      message || title || '',
+      type,
       createdAtDate,
     );
   }
