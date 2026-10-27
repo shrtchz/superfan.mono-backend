@@ -283,7 +283,7 @@ export class VersusService {
           transactionType: 'VERSUS_ESCROW_DEBIT',
           trx_ref: escrowTxRef,
           reference: escrowTxRef,
-          description: `Versus ${mode === 'LIVE_1V1' ? 'Live 1v1' : 'Schedule H2H'} for challenge to @${opponent.username}`,
+          description: `Versus ${mode === 'LIVE_1V1' ? 'Live 1v1' : 'H2H'} for challenge with @${opponent.username}`,
         },
       });
 
@@ -608,7 +608,7 @@ export class VersusService {
           transactionType: 'VERSUS_ESCROW_DEBIT',
           trx_ref: opponentTxRef,
           reference: opponentTxRef,
-          description: `Versus ${freshRequest.mode === 'LIVE_1V1' ? 'Live 1v1' : 'Schedule H2H'} for challenge to @${freshRequest.host.username}`,
+          description: `Versus ${freshRequest.mode === 'LIVE_1V1' ? 'Live 1v1' : 'H2H'} for challenge with @${freshRequest.host.username}`,
         },
       });
 
@@ -965,7 +965,7 @@ export class VersusService {
             transactionType: 'VERSUS_JACKPOT_PAYOUT',
             trx_ref: payoutTxRef,
             reference: payoutTxRef,
-            description: `Versus ${match.mode === 'LIVE_1V1' ? 'Live 1v1' : 'Schedule H2H'} jackpot win`,
+            description: `Versus ${match.mode === 'LIVE_1V1' ? 'Live 1v1' : 'H2H'} jackpot win`,
           },
         });
 
@@ -1013,7 +1013,7 @@ export class VersusService {
             transactionType: 'VERSUS_JACKPOT_PAYOUT',
             trx_ref: payoutTxRef,
             reference: payoutTxRef,
-            description: `Versus ${match.mode === 'LIVE_1V1' ? 'Live 1v1' : 'Schedule H2H'} jackpot win`,
+            description: `Versus ${match.mode === 'LIVE_1V1' ? 'Live 1v1' : 'H2H'} jackpot win`,
           },
         });
 
@@ -1073,7 +1073,7 @@ export class VersusService {
             transactionType: 'VERSUS_DRAW_REFUND',
             trx_ref: hostRefundRef,
             reference: hostRefundRef,
-            description: `Versus match draw stake refund for challenge to @${match.opponent.username}`,
+            description: `Versus match draw stake refund for challenge with @${match.opponent.username}`,
           },
         });
 
@@ -1111,7 +1111,7 @@ export class VersusService {
             transactionType: 'VERSUS_DRAW_REFUND',
             trx_ref: oppRefundRef,
             reference: oppRefundRef,
-            description: `Versus match draw stake refund for challenge to @${match.host.username}`,
+            description: `Versus match draw stake refund for challenge with @${match.host.username}`,
           },
         });
 
@@ -1858,20 +1858,26 @@ export class VersusService {
       if (q && q.id) questionsMap.set(String(q.id), q);
     });
 
-    const formattedQuestions = answers.map((ans: any, index: number) => {
-      const qObj = ans.quizId ? questionsMap.get(String(ans.quizId)) : questions[index];
-      const questionText = ans.questionText || qObj?.question || `Question ${index + 1}`;
-      const selectedAnswer = ans.selectedAnswer || '—';
-      const isCorrect = Boolean(ans.isCorrect);
-      const correctAnswer = !isCorrect ? (ans.correctAnswer || qObj?.answer || undefined) : undefined;
+    const sourceList = answers.length > 0 ? answers : questions;
+    const formattedQuestions = sourceList.map((item: any, index: number) => {
+      const isAnswerItem = answers.length > 0;
+      const ansObj = isAnswerItem ? item : null;
+      const qObj = isAnswerItem
+        ? (item.quizId ? questionsMap.get(String(item.quizId)) : questions[index])
+        : item;
+
+      const questionText = ansObj?.questionText || qObj?.question || qObj?.text || `Question ${index + 1}`;
+      const selectedAnswer = ansObj?.selectedAnswer || '—';
+      const isCorrect = ansObj ? Boolean(ansObj.isCorrect) : false;
+      const correctAnswer = qObj?.answer || qObj?.correctAnswer || undefined;
 
       return {
-        questionId: ans.quizId || qObj?.id || String(index + 1),
+        questionId: ansObj?.quizId || qObj?.id || String(index + 1),
         order: index + 1,
         questionText,
         selectedAnswer,
         isCorrect,
-        ...(correctAnswer ? { correctAnswer } : {}),
+        ...((!isCorrect && correctAnswer) ? { correctAnswer } : {}),
       };
     });
 
