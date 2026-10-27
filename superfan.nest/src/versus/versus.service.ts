@@ -1773,10 +1773,10 @@ export class VersusService {
       return {
         id: String(r.id),
         hostId: r.hostId,
-        hostUsername: r.host?.username || user_,
+        hostUsername: r.host?.username || `user_${r.hostId}`,
         hostOutcome,
         guestId: r.opponentId,
-        guestUsername: r.opponent?.username || user_,
+        guestUsername: r.opponent?.username || `user_${r.opponentId}`,
         guestOutcome,
         questionCount: computedQuestionCount,
         score: scoreDisplay,
