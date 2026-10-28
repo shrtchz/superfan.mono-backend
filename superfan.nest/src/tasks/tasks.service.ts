@@ -292,8 +292,17 @@ export class TaskService {
     });
   }
 
+  private maskEmail(email: string): string {
+    if (!email || !email.includes('@')) return '[redacted]';
+    const [local, domain] = email.split('@');
+    if (local.length <= 2) {
+      return `${local[0]}***@${domain}`;
+    }
+    return `${local[0]}***${local[local.length - 1]}@${domain}`;
+  }
+
   async getRecentActivities(limit = 20) {
-    const activities = await prisma.activityMonitor.findMany({
+    let activities = await prisma.activityMonitor.findMany({
       take: limit,
       orderBy: {
         createdAt: 'desc',
@@ -304,6 +313,7 @@ export class TaskService {
     if (activities.length === 0) {
       try {
         const recentUsers = await prisma.user.findMany({
+          where: { isDeleted: false },
           take: limit,
           orderBy: { createdAt: 'desc' },
           select: {
@@ -331,7 +341,7 @@ export class TaskService {
             })),
           });
 
-          return prisma.activityMonitor.findMany({
+          activities = await prisma.activityMonitor.findMany({
             take: limit,
             orderBy: {
               createdAt: 'desc',
@@ -340,6 +350,42 @@ export class TaskService {
         }
       } catch (backfillErr) {
         console.error('[TasksService] Failed to backfill recent activities:', backfillErr);
+      }
+    }
+
+    if (!activities || activities.length === 0) {
+      return [];
+    }
+
+    // Mask deleted actors for UI display while preserving raw forensic logs in database
+    const actorIds = activities
+      .map((a) => a.actorId)
+      .filter((id): id is number => typeof id === 'number');
+
+    if (actorIds.length > 0) {
+      try {
+        const users = await prisma.user.findMany({
+          where: { id: { in: actorIds } },
+          select: { id: true, isDeleted: true },
+        });
+        const userMap = new Map(users.map((u) => [u.id, u]));
+
+        return activities.map((activity) => {
+          if (!activity.actorId) return activity;
+          const user = userMap.get(activity.actorId);
+          // If actor is soft-deleted or completely removed from User table
+          if (!user || user.isDeleted) {
+            return {
+              ...activity,
+              actorName: '[Closed Account]',
+              actorEmail: activity.actorEmail ? this.maskEmail(activity.actorEmail) : '',
+              isActorDeleted: true,
+            };
+          }
+          return activity;
+        });
+      } catch (err) {
+        console.error('[TasksService] Failed to check user deletion status for activities:', err);
       }
     }
 

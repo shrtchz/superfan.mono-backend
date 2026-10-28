@@ -39,6 +39,8 @@ model User {
   banCategory            String?
   userCode               String?
   isBanned               Boolean             @default(false)
+  isDeleted              Boolean             @default(false)
+  deletedAt              DateTime?
   createdAt              DateTime            @default(now())
   state                  String?
   referredByCode         String?
@@ -85,12 +87,12 @@ model User {
   referralsMade          Referral[]          @relation("Referrer")
   subAdmin               SubAdmin?
   subAdminInvites        SubAdminInvite[]
-  sentChallenges         ChallengeInvite[]  @relation("ChallengeInviteSender")
-  receivedChallenges     ChallengeInvite[]  @relation("ChallengeInviteReceiver")
-  sentVersusRequests     VersusRequest[]    @relation("VersusHost")
-  receivedVersusRequests VersusRequest[]    @relation("VersusOpponent")
-  friendships            Friend[]           @relation("FriendUser")
-  friendOf               Friend[]           @relation("FriendTarget")
+  sentChallenges         ChallengeInvite[]   @relation("ChallengeInviteSender")
+  receivedChallenges     ChallengeInvite[]   @relation("ChallengeInviteReceiver")
+  sentVersusRequests     VersusRequest[]     @relation("VersusHost")
+  receivedVersusRequests VersusRequest[]     @relation("VersusOpponent")
+  friendships            Friend[]            @relation("FriendUser")
+  friendOf               Friend[]            @relation("FriendTarget")
   wallet                 Wallet?
   WalletTransaction      WalletTransaction[]
   activityWallets        ActivityWallet[]
@@ -256,7 +258,7 @@ model SubAdminInvite {
   createdAt           DateTime             @default(now())
   adminType           String               @default("subadmin")
   invitedById         Int?
-  invitedBy           User?                @relation(fields: [invitedById], references: [id])
+  invitedBy           User?                @relation(fields: [invitedById], references: [id], onDelete: Cascade)
   subAdminPermissions SubAdminPermission[]
 }
 
@@ -299,7 +301,7 @@ model SubAdminPermission {
   subAdminId   Int?
   permissionId Int
   inviteId     Int?
-  invite       SubAdminInvite? @relation(fields: [inviteId], references: [id])
+  invite       SubAdminInvite? @relation(fields: [inviteId], references: [id], onDelete: Cascade)
   permission   Permission      @relation(fields: [permissionId], references: [id], onDelete: Cascade)
   subAdmin     SubAdmin?       @relation(fields: [subAdminId], references: [id], onDelete: Cascade)
 
@@ -367,12 +369,12 @@ model Referral {
 }
 
 model ChallengeInvite {
-  id         Int         @id @default(autoincrement())
+  id         Int      @id @default(autoincrement())
   senderId   Int
   receiverId Int
-  status     String      @default("pending")
-  createdAt  DateTime    @default(now())
-  updatedAt  DateTime    @updatedAt
+  status     String   @default("pending")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
   sender   User @relation("ChallengeInviteSender", fields: [senderId], references: [id], onDelete: Cascade)
   receiver User @relation("ChallengeInviteReceiver", fields: [receiverId], references: [id], onDelete: Cascade)
@@ -498,7 +500,7 @@ model UserCard {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  user User @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
 }
@@ -522,7 +524,7 @@ model OngoingQuiz {
   correctAnswers      Int? // exact number of correct answers
   attemptedAnswers    Int? // exact number of submitted answers
   isRandom            Boolean @default(false)
-  submissionMode     String  @default("interval")
+  submissionMode      String  @default("interval")
   accuracyBonus       Int? // bonus points for accuracy
   speedBonus          Int? // bonus points for speed
   streakMultiplier    Int? // multiplier for consecutive correct answers
@@ -641,22 +643,22 @@ model LiveQuizLeaderboard {
 }
 
 model QuizLeaderboard {
-  id             Int      @id @default(autoincrement())
-  userId         String
-  quizId         String
-  subject        String
-  testLevel      String
-  score          Int?
-  selectedAnswer String
+  id              Int      @id @default(autoincrement())
+  userId          String
+  quizId          String
+  subject         String
+  testLevel       String
+  score           Int?
+  selectedAnswer  String
   quizTimeSeconds Int?
-  quizTime       String?
-  accuracyBonus  String?
-  position       Int?
-  correctAnswer  String
-  earning        Int
-  submittedAt    DateTime
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  quizTime        String?
+  accuracyBonus   String?
+  position        Int?
+  correctAnswer   String
+  earning         Int
+  submittedAt     DateTime
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   @@index([userId])
   @@index([quizId])
@@ -837,7 +839,7 @@ model bitnobWithdrawal {
   currency          String
   chain             String
   reference         String
-  userId             Int
+  userId            Int
   memo              String?
   description       String?
   hash              String?
@@ -856,14 +858,14 @@ model UserHistory {
   submittedBy SubmittedBy
   createdAt   DateTime    @default(now())
   user        User        @relation("UserToHistory", fields: [userId], references: [id], onDelete: Cascade)
-  creator     User        @relation(fields: [creatorId], references: [id])
+  creator     User        @relation(fields: [creatorId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([createdAt])
 }
 
 model Stream {
-  id                Int             @id @default(autoincrement())
+  id                Int                 @id @default(autoincrement())
   userId            Int
   title             String
   description       String?
@@ -872,7 +874,7 @@ model Stream {
   streamId          String?
   rtmpUrl           String?
   streamKey         String?
-  networkPlatform   String          @default("unknown")
+  networkPlatform   String              @default("unknown")
   streamUrl         String?
   liveTiming        String?
   preRecordedTiming String?
@@ -882,32 +884,32 @@ model Stream {
   thumbnailUrl      String?
   recordedVideoUrl  String?
   duration          String? // in seconds
-  lockChat          Boolean         @default(false)
-  isActive          Boolean         @default(false)
-  createdAt         DateTime        @default(now())
+  lockChat          Boolean             @default(false)
+  isActive          Boolean             @default(false)
+  createdAt         DateTime            @default(now())
   streamComments    StreamComment[]
   streamUserBans    StreamUserBan[]
   chatLockLogs      StreamChatLockLog[]
 }
 
 model Podcast {
-  id             Int      @id @default(autoincrement())
+  id             Int       @id @default(autoincrement())
   title          String
   description    String?
   episode        Int
   host           String
   guest          String?
-  youtubeVideoId String   @unique
+  youtubeVideoId String    @unique
   youtubeUrl     String
   thumbnailUrl   String?
   duration       String?
-  privacyStatus  String   @default("private")
-  uploadStatus   String   @default("PROCESSING")
+  privacyStatus  String    @default("private")
+  uploadStatus   String    @default("PROCESSING")
   publishedAt    DateTime?
   createdById    Int
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-  createdBy      User     @relation(fields: [createdById], references: [id], onDelete: Cascade)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  createdBy      User      @relation(fields: [createdById], references: [id], onDelete: Cascade)
 
   @@index([publishedAt])
   @@index([createdById])
@@ -979,14 +981,14 @@ model StreamComment {
   updatedAt DateTime @updatedAt
 
   // Relations
-  stream       Stream          @relation(fields: [streamId], references: [id], onDelete: Cascade)
-  parent       StreamComment?  @relation("StreamCommentChildren", fields: [parentId], references: [id], onDelete: Cascade)
-  replies      StreamComment[] @relation("StreamCommentChildren")
-  root         StreamComment?  @relation("StreamCommentRoot", fields: [rootId], references: [id], onDelete: Cascade)
-  descendants  StreamComment[] @relation("StreamCommentRoot")
-  likes        CommentLike[]
-  reports      CommentReport[]
-  legacyReplies CommentReply[] @relation("LegacyCommentReplies")
+  stream        Stream          @relation(fields: [streamId], references: [id], onDelete: Cascade)
+  parent        StreamComment?  @relation("StreamCommentChildren", fields: [parentId], references: [id], onDelete: Cascade)
+  replies       StreamComment[] @relation("StreamCommentChildren")
+  root          StreamComment?  @relation("StreamCommentRoot", fields: [rootId], references: [id], onDelete: Cascade)
+  descendants   StreamComment[] @relation("StreamCommentRoot")
+  likes         CommentLike[]
+  reports       CommentReport[]
+  legacyReplies CommentReply[]  @relation("LegacyCommentReplies")
 
   @@index([streamId, createdAt])
   @@index([parentId, createdAt])
@@ -1022,17 +1024,17 @@ model CommentReply {
   updatedAt DateTime @updatedAt
 
   // relation
-  comment StreamComment @relation("LegacyCommentReplies", fields: [commentId], references: [id])
-  likes CommentReplyLike[]
+  comment StreamComment        @relation("LegacyCommentReplies", fields: [commentId], references: [id])
+  likes   CommentReplyLike[]
   reports CommentReplyReport[]
 
   @@index([commentId])
 }
 
 model CommentReplyLike {
-  id      Int @id @default(autoincrement())
-  replyId Int
-  userId  Int
+  id        Int      @id @default(autoincrement())
+  replyId   Int
+  userId    Int
   createdAt DateTime @default(now())
 
   reply CommentReply @relation(fields: [replyId], references: [id], onDelete: Cascade)
@@ -1041,10 +1043,10 @@ model CommentReplyLike {
 }
 
 model CommentReplyReport {
-  id      Int @id @default(autoincrement())
-  replyId Int
-  userId  Int
-  reason  String?
+  id        Int      @id @default(autoincrement())
+  replyId   Int
+  userId    Int
+  reason    String?
   createdAt DateTime @default(now())
 
   reply CommentReply @relation(fields: [replyId], references: [id], onDelete: Cascade)
@@ -1248,8 +1250,8 @@ model Order {
   currency      String        @default("NGN")
   shippingFee   Float         @default(0)
   vatAmount     Float         @default(0)
-  paymentMethod String        // e.g. "wallet", "card", "bank", "stablecoin"
-  subWallet     String?       // e.g. "Personal", "Gold"
+  paymentMethod String // e.g. "wallet", "card", "bank", "stablecoin"
+  subWallet     String? // e.g. "Personal", "Gold"
   paymentStatus String        @default("PAID")
   fullName      String
   country       String
@@ -1302,48 +1304,48 @@ model OrderReturn {
 }
 
 model AdCampaign {
-  id              Int           @id @default(autoincrement())
-  userId          Int?
-  username        String?
-  headline        String
-  description     String?
-  buttonLabel     String?
-  websiteUrl      String?
-  mediaUrls       String[]      @default([])
-  mediaType       String?       // "video" | "image"
-  dailyFee        Int           @default(500)
-  totalFee        Int
-  days            Int           @default(1)
-  startDate       DateTime
-  endDate         DateTime?
-  runContinuously Boolean       @default(true)
-  ageRange             String?       // "18-24", "18-35", "25-45", "45+"
-  guaranteedDailyViews Int           @default(1000)
-  pausedByAdmin        Boolean       @default(false)
-  approvedByAdmin      Boolean       @default(false)
-  status               AdStatus      @default(PENDING)
-  views           Int           @default(0)
-  clicks          Int           @default(0)
-  paymentStatus   String        @default("PENDING") // PENDING, PAID, FAILED
-  paymentRef      String?
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  id                   Int       @id @default(autoincrement())
+  userId               Int?
+  username             String?
+  headline             String
+  description          String?
+  buttonLabel          String?
+  websiteUrl           String?
+  mediaUrls            String[]  @default([])
+  mediaType            String? // "video" | "image"
+  dailyFee             Int       @default(500)
+  totalFee             Int
+  days                 Int       @default(1)
+  startDate            DateTime
+  endDate              DateTime?
+  runContinuously      Boolean   @default(true)
+  ageRange             String? // "18-24", "18-35", "25-45", "45+"
+  guaranteedDailyViews Int       @default(1000)
+  pausedByAdmin        Boolean   @default(false)
+  approvedByAdmin      Boolean   @default(false)
+  status               AdStatus  @default(PENDING)
+  views                Int       @default(0)
+  clicks               Int       @default(0)
+  paymentStatus        String    @default("PENDING") // PENDING, PAID, FAILED
+  paymentRef           String?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
-  placements      AdPlacement[]
-  events          AdEvent[]
+  placements AdPlacement[]
+  events     AdEvent[]
 }
 
 model AdPlacement {
-  id          Int          @id @default(autoincrement())
+  id          Int      @id @default(autoincrement())
   campaignId  Int
-  key         String       // e.g. "QUIZ_MIDPOINT"
+  key         String // e.g. "QUIZ_MIDPOINT"
   mediaUrl    String
-  durationSec Int          @default(30)
-  skipAllowed Boolean      @default(false)
-  createdAt   DateTime     @default(now())
+  durationSec Int      @default(30)
+  skipAllowed Boolean  @default(false)
+  createdAt   DateTime @default(now())
 
-  campaign    AdCampaign   @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  events      AdEvent[]
+  campaign AdCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  events   AdEvent[]
 }
 
 model AdEvent {
@@ -1356,8 +1358,8 @@ model AdEvent {
   pointsGiven Int         @default(0)
   createdAt   DateTime    @default(now())
 
-  campaign    AdCampaign   @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  placement   AdPlacement? @relation(fields: [placementId], references: [id], onDelete: SetNull)
+  campaign  AdCampaign   @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  placement AdPlacement? @relation(fields: [placementId], references: [id], onDelete: SetNull)
 }
 
 enum AdStatus {

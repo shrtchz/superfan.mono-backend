@@ -372,9 +372,9 @@ export class UserService {
       const loginMethod =
         clerkUser.externalAccounts?.[0]?.provider?.replace(/^oauth_/, '') || 'clerk';
       const rawEmail = clerkUser.emailAddresses?.[0]?.emailAddress as string | undefined;
-      const email =
-        rawEmail ||
-        `${clerkUserId}@${loginMethod}.superfan.app`;
+      const email = rawEmail;
+
+
 
       const phone =
         (clerkUser.unsafeMetadata?.phone as string) ||
@@ -387,7 +387,7 @@ export class UserService {
       let user = await this.findUserByClerkId(clerkUserId);
 
       if (!user) {
-        user = await this.findUserByEmail(email);
+        user = email ? await this.findUserByEmail(email) : null;
         if (user) {
           user = await prisma.user.update({
             where: { id: user.id },
@@ -397,6 +397,11 @@ export class UserService {
       }
 
       if (!user) {
+        if (!email) {
+          throw new BadRequestException(
+            'Email address is required to complete registration. Please verify your email on the sign-up page.',
+          );
+        }
         const clientIp = this.rateLimiter.normalizeIp(
           ip || metadata.ip_address || (clerkUser.unsafeMetadata?.ip_address as string),
         );
@@ -3237,15 +3242,49 @@ async checkSubscriptionStatusbyUserId(userId: number): Promise<{
           throw new ForbiddenException('Current password is incorrect');
         }
       }
-      await prisma.userCard
-        .deleteMany({
-          where: { userId: id },
-        })
-        .catch(() => null);
 
-      await prisma.user.delete({
+      // 1. Revoke access from Clerk
+      if (user.clerkUserId && this.clerkService) {
+        await this.clerkService
+          .getClient()
+          .users.deleteUser(user.clerkUserId)
+          .catch((err) => {
+            console.warn(`[deleteUser] Failed to delete Clerk user ${user.clerkUserId}:`, err);
+          });
+      }
+
+      // 2. Clear private payment cards and withdrawal accounts
+      await prisma.userCard.deleteMany({ where: { userId: id } }).catch(() => null);
+      await prisma.userWithdrawalBank.deleteMany({ where: { userId: id } }).catch(() => null);
+      await prisma.userWithdrawalWallet.deleteMany({ where: { userId: id } }).catch(() => null);
+      await prisma.userDevice.deleteMany({ where: { userId: id } }).catch(() => null);
+
+      // 3. Soft-delete and anonymize user PII (preserves accounting, reward & subscription history)
+      const timestamp = Date.now();
+      await prisma.user.update({
         where: { id: id },
+        data: {
+          isDeleted: true,
+          deletedAt: new Date(),
+          active: false,
+          isOnline: false,
+          email: `deleted_${id}_${timestamp}@deleted.superfan.invalid`,
+          username: `deleted_user_${id}_${timestamp}`,
+          firstName: 'Deleted',
+          lastName: 'User',
+          phone: null,
+          clerkUserId: null,
+          referral_code: null,
+          profilePicture: null,
+          verify_photo: null,
+          address: null,
+          bvn: null,
+          nin: null,
+          resetToken: null,
+          verificationCode: null,
+        },
       });
+
       return { message: 'User deleted successfully' };
     } catch (error) {
       throw error;
