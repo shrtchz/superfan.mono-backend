@@ -2327,25 +2327,18 @@ async getCard(userId: number): Promise<any> {
       }
 
       const isSavings = subWallet === 'savings';
-      let availableBalance = isSavings
+      // For internal transactions like Pro subscriptions, funds in holding state can be used
+      const rawChecking = Math.max(
+        Number(wallet.checkingBalance) || 0,
+        Number(wallet.personalBalance) || 0,
+      );
+      const walletBalance = isSavings
         ? Number(wallet.savingsBalance) || 0
-        : Number(wallet.checkingBalance) || 0;
+        : rawChecking;
 
-      if (!isSavings) {
-        const held = await prisma.walletTransaction.aggregate({
-          _sum: { amount: true },
-          where: {
-            userId,
-            account_type: { in: ['Checking', 'checking'] },
-            holdUntil: { gt: new Date() },
-          },
-        });
-        availableBalance = Math.max(0, availableBalance - Number(held._sum.amount || 0));
-      }
-
-      if (availableBalance < amount) {
+      if (walletBalance < amount) {
         throw new BadRequestException(
-          `Insufficient ${isSavings ? 'Savings' : 'Checking'} wallet balance. Required: ₦${amount.toFixed(2)}, Available: ₦${availableBalance.toFixed(2)}`,
+          `Insufficient ${isSavings ? 'Savings' : 'Checking'} wallet balance. Required: ₦${amount.toFixed(2)}, Available: ₦${walletBalance.toFixed(2)}`,
         );
       }
 
@@ -2359,13 +2352,74 @@ async getCard(userId: number): Promise<any> {
           },
         });
       } else {
+        const currentPersonal = Number(wallet.personalBalance) || 0;
         await prisma.wallet.update({
           where: { userId },
           data: {
             checkingBalance: { decrement: amount },
+            personalBalance: currentPersonal > 0 ? { decrement: Math.min(currentPersonal, amount) } : undefined,
             balance: { decrement: amount },
           },
         });
+
+        // Release hold from active held transactions since funds are used for internal transaction
+        let remainingToConsume = amount;
+        const heldTransactions = await prisma.walletTransaction.findMany({
+          where: {
+            userId,
+            account_type: { in: ['Checking', 'checking'] },
+            holdUntil: { gt: new Date() },
+          },
+          orderBy: { createdAt: 'asc' },
+        });
+
+        for (const tx of heldTransactions) {
+          if (remainingToConsume <= 0) break;
+          const txAmount = Number(tx.amount) || 0;
+          if (txAmount <= remainingToConsume) {
+            await prisma.walletTransaction.update({
+              where: { id: tx.id },
+              data: { holdUntil: null },
+            });
+            remainingToConsume -= txAmount;
+          } else {
+            await prisma.walletTransaction.update({
+              where: { id: tx.id },
+              data: { amount: txAmount - remainingToConsume },
+            });
+            await prisma.walletTransaction.create({
+              data: {
+                userId: tx.userId,
+                amount: remainingToConsume,
+                type: tx.type,
+                currency: tx.currency,
+                username: tx.username,
+                account_name: tx.account_name,
+                payment_method: tx.payment_method,
+                bank_name: tx.bank_name,
+                cardToken: tx.cardToken,
+                wallet_address: tx.wallet_address,
+                account_no: tx.account_no,
+                account_type: tx.account_type,
+                settlement_date: tx.settlement_date,
+                reference: tx.reference ? `${tx.reference}-UNHELD` : null,
+                status: tx.status,
+                total_earnings: tx.total_earnings,
+                payouts: tx.payouts,
+                last_payout: tx.last_payout,
+                payment_date: tx.payment_date,
+                pending_balance: tx.pending_balance,
+                rewardType: tx.rewardType,
+                transactionType: tx.transactionType,
+                description: tx.description,
+                trx_ref: tx.trx_ref,
+                holdUntil: null,
+                walletId: tx.walletId,
+              },
+            });
+            remainingToConsume = 0;
+          }
+        }
       }
 
       // Record wallet transaction
@@ -2443,6 +2497,10 @@ async getCard(userId: number): Promise<any> {
     this.notificationService
       .planUpgraded(userId, subscriptionPlan)
       .catch(() => undefined);
+
+    if (isWalletPayment) {
+      this.eventEmitter.emit('user.wallet.updated', { userId });
+    }
 
     return {
       message: 'Subscription created successfully',
