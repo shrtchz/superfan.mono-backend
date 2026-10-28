@@ -462,6 +462,10 @@ export class QuizService {
     private readonly notificationService: NotificationService,
   ) {}
 
+  async getPointsConversionRate() {
+    return this.pointsConversionUtil.getConversionRateDetails();
+  }
+
   /** Service JWT for server-to-server calls to the Go quiz API (AuthRequired routes). */
   private getGoServiceAuthHeaders(): Record<string, string> {
     const token = this.jwtService.sign(
@@ -2986,7 +2990,7 @@ async getQuizleaderboard(
       let pointsEquivalent = 500;
       if (isWinner) {
         const prizeNaira = Number(attempt.earning || liveLead?.unitPrize || 0);
-        pointsEquivalent = prizeNaira > 0 ? prizeNaira * pointsToNairaRate : 1000;
+        pointsEquivalent = prizeNaira > 0 ? prizeNaira * pointsToNairaRate : pointsToNairaRate;
       }
 
       const startTime = attempt.startedAt || questionMeta?.quizScheduleDate || attempt.createdAt;
@@ -3041,7 +3045,7 @@ async getQuizleaderboard(
       let pointsEquivalent = 500;
       if (isWinner) {
         const prizeNaira = Number(lead.unitPrize || 0);
-        pointsEquivalent = prizeNaira > 0 ? prizeNaira * pointsToNairaRate : 1000;
+        pointsEquivalent = prizeNaira > 0 ? prizeNaira * pointsToNairaRate : pointsToNairaRate;
       }
 
       const startTime = questionMeta?.quizScheduleDate || lead.createdAt;
