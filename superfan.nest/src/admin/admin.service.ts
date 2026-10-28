@@ -884,9 +884,49 @@ export class AdminService {
 
   async deleteAdmin(adminId: number): Promise<any> {
     try {
-      await prisma.user.delete({
+      const user = await prisma.user.findUnique({
         where: { id: adminId },
       });
+      if (!user) {
+        throw new NotFoundException('Admin user not found');
+      }
+
+      // 1. Delete from Clerk if present
+      if (user.clerkUserId && this.clerkService) {
+        await this.clerkService
+          .getClient()
+          .users.deleteUser(user.clerkUserId)
+          .catch((err) => {
+            console.warn(`[deleteAdmin] Failed to delete Clerk user ${user.clerkUserId}:`, err);
+          });
+      }
+
+      // 2. Clear subAdmin association and permissions
+      await prisma.subAdmin.deleteMany({ where: { userId: adminId } }).catch(() => null);
+      await prisma.admin.deleteMany({ where: { userId: adminId } }).catch(() => null);
+      await prisma.userCard.deleteMany({ where: { userId: adminId } }).catch(() => null);
+      await prisma.userDevice.deleteMany({ where: { userId: adminId } }).catch(() => null);
+
+      // 3. Soft-delete and anonymize admin
+      const timestamp = Date.now();
+      await prisma.user.update({
+        where: { id: adminId },
+        data: {
+          isDeleted: true,
+          deletedAt: new Date(),
+          active: false,
+          isOnline: false,
+          email: `deleted_admin_${adminId}_${timestamp}@deleted.superfan.invalid`,
+          username: `deleted_admin_${adminId}_${timestamp}`,
+          firstName: 'Deleted',
+          lastName: 'Admin',
+          phone: null,
+          clerkUserId: null,
+          profilePicture: null,
+          roleName: 'deleted',
+        },
+      });
+
       return { message: 'Admin deleted successfully' };
     } catch (error) {
       throw error;
