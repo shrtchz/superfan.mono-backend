@@ -49,6 +49,12 @@ export class QuizController {
   ) {}
 
   @Public()
+  @Public()
+  @Get('/points-conversion-rate')
+  getPointsConversionRate() {
+    return this.quizService.getPointsConversionRate();
+  }
+
   @Post('/create')
   createQuiz(@Body() quizData: CreateQuizDto) {
     try {

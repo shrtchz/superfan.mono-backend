@@ -628,7 +628,18 @@ export class NotificationService {
   }
 
   async liveQuizConsolationReward(userId: number, points = 500, quizName = 'Live Quiz', createdAt?: Date) {
-    const amountNaira = (points / 1000).toFixed(2);
+    let rate = 1000;
+    try {
+      const setting = await prisma.platformSetting.findUnique({
+        where: { key: 'pointsToNairaRate' },
+      });
+      if (setting?.value && Number(setting.value) > 0) {
+        rate = Number(setting.value);
+      }
+    } catch {
+      // fallback if setting not yet initialized
+    }
+    const amountNaira = (points / rate).toFixed(2);
     const msg = `You didn’t take the jackpot this time, but you earned ${Number(points).toLocaleString()} PTS (₦${amountNaira}) for playing “${quizName}”`;
     return this.notify(userId, NotificationTriggers.LIVE_QUIZ_CONSOLATION, msg, '', createdAt);
   }
