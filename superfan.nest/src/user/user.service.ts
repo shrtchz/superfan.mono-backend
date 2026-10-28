@@ -372,9 +372,9 @@ export class UserService {
       const loginMethod =
         clerkUser.externalAccounts?.[0]?.provider?.replace(/^oauth_/, '') || 'clerk';
       const rawEmail = clerkUser.emailAddresses?.[0]?.emailAddress as string | undefined;
-      const email =
-        rawEmail ||
-        `${clerkUserId}@${loginMethod}.superfan.app`;
+      const email = rawEmail;
+
+
 
       const phone =
         (clerkUser.unsafeMetadata?.phone as string) ||
@@ -387,7 +387,7 @@ export class UserService {
       let user = await this.findUserByClerkId(clerkUserId);
 
       if (!user) {
-        user = await this.findUserByEmail(email);
+        user = email ? await this.findUserByEmail(email) : null;
         if (user) {
           user = await prisma.user.update({
             where: { id: user.id },
@@ -397,6 +397,11 @@ export class UserService {
       }
 
       if (!user) {
+        if (!email) {
+          throw new BadRequestException(
+            'Email address is required to complete registration. Please verify your email on the sign-up page.',
+          );
+        }
         const clientIp = this.rateLimiter.normalizeIp(
           ip || metadata.ip_address || (clerkUser.unsafeMetadata?.ip_address as string),
         );
