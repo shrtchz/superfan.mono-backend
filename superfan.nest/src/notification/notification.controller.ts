@@ -33,7 +33,7 @@ export class NotificationController {
     if (!title && !message) {
       const amt = body.amount ?? body.data?.amount ?? 0;
       if (type === 'live_quiz_reward') {
-        title = `You earned ₦${Number(amt).toLocaleString()} from today's live quiz.`;
+        title = `You won ₦${Number(amt).toLocaleString()} from today's live quiz.`;
         message = title;
       } else if (type === 'live_quiz_consolation') {
         title = `You didn’t take the jackpot this time, but you earned 500 PTS (₦0.50) for playing.`;

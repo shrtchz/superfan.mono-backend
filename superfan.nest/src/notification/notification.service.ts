@@ -618,7 +618,7 @@ export class NotificationService {
   }
 
   async liveQuizReward(userId: number, amountNaira: number, createdAt?: Date) {
-    const msg = `You earned ₦${Number(amountNaira).toLocaleString()} from today's live quiz.`;
+    const msg = `You won ₦${Number(amountNaira).toLocaleString()} from today's live quiz.`;
     return this.notify(userId, NotificationTriggers.LIVE_QUIZ_REWARD, msg, msg, createdAt);
   }
 
@@ -943,7 +943,7 @@ export class NotificationService {
   }
 
   async streamLiveQuizJackpot(userId: number, amountNaira: number) {
-    const msg = ` You won ₦${amountNaira.toLocaleString()} in the live quiz.`;
+    const msg = `You won ₦${amountNaira.toLocaleString()} from today's live quiz.`;
     return this.notify(userId, NotificationTriggers.STREAM_LIVE_QUIZ_JACKPOT, msg, msg);
   }
 
