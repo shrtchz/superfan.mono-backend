@@ -312,6 +312,18 @@ func (f *LiveQuizFinaliser) finaliseQuiz(raw bson.M, quizID string) {
 			if err := f.sendNotification(p.UserID, rewardAmount, question, quizID, now); err != nil {
 				log.Printf("[LiveQuizFinaliser] failed to send notification for user %s: %v", p.UserID, err)
 			}
+		} else if !isWinner {
+			// Consolation reward for participants who did not win (500 PTS)
+			consolationPoints := 500
+			consolationAmount := float64(consolationPoints) / float64(getPointsToNairaRate())
+			if err := f.creditConsolationReward(p.UserID, consolationAmount, consolationPoints, quizID, question, now); err != nil {
+				log.Printf("[LiveQuizFinaliser] failed to credit consolation reward for user %s: %v", p.UserID, err)
+			}
+
+			// Send consolation notification via NestJS
+			if err := f.sendConsolationNotification(p.UserID, consolationPoints, consolationAmount, question, quizID, now); err != nil {
+				log.Printf("[LiveQuizFinaliser] failed to send consolation notification for user %s: %v", p.UserID, err)
+			}
 		}
 	}
 
@@ -504,6 +516,168 @@ func (f *LiveQuizFinaliser) sendNotification(userID string, amount float64, ques
 		"createdAt": createdAt.UTC().Format(time.RFC3339Nano),
 		"data": map[string]interface{}{
 			"quizId": quizID,
+			"amount": amount,
+		},
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal notification payload: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/api/v1/notifications/create", f.nestBaseURL)
+	resp, err := f.httpClient.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("http post to nest: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("nest returned status %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+func liveQuizConsolationReference(quizID, userID string) string {
+	return fmt.Sprintf("live_quiz_consolation:%s:%s", userID, quizID)
+}
+
+func (f *LiveQuizFinaliser) creditConsolationReward(userID string, amount float64, points int, quizID, question string, now time.Time) error {
+	userIDInt, err := parseInt(userID)
+	if err != nil {
+		return fmt.Errorf("invalid user ID: %w", err)
+	}
+
+	return utils.DB.Transaction(func(tx *gorm.DB) error {
+		rewardRef := liveQuizConsolationReference(quizID, userID)
+		lockKey := fmt.Sprintf("live-quiz-consolation:%s", rewardRef)
+		if err := tx.Exec(`SELECT pg_advisory_xact_lock(hashtext(?))`, lockKey).Error; err != nil {
+			return fmt.Errorf("lock live quiz consolation: %w", err)
+		}
+
+		var existing models.WalletTransaction
+		err := tx.Where(`"trx_ref" = ?`, rewardRef).First(&existing).Error
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("check live quiz consolation transaction: %w", err)
+		}
+
+		wallet := models.Wallet{UserID: userIDInt}
+		if err := tx.Where(`"userId" = ?`, userIDInt).FirstOrCreate(&wallet).Error; err != nil {
+			return fmt.Errorf("ensure wallet exists: %w", err)
+		}
+
+		result := tx.Model(&models.Wallet{}).
+			Where(`"userId" = ?`, userIDInt).
+			Updates(map[string]interface{}{
+				"balance":        gorm.Expr(`"balance" + ?`, amount),
+				"savingsBalance": gorm.Expr(`"savingsBalance" + ?`, amount),
+			})
+		if result.Error != nil {
+			return fmt.Errorf("update wallet for consolation: %w", result.Error)
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("update wallet: expected one wallet row, updated %d", result.RowsAffected)
+		}
+
+		userResult := tx.Model(&models.User{}).
+			Where("id = ?", userIDInt).
+			UpdateColumn("lifetime_points", gorm.Expr(`"lifetime_points" + ?`, points))
+		if userResult.Error != nil {
+			return fmt.Errorf("update lifetime points: %w", userResult.Error)
+		}
+		if userResult.RowsAffected != 1 {
+			return fmt.Errorf("update lifetime points: expected one user row, updated %d", userResult.RowsAffected)
+		}
+
+		trxType := "credit"
+		savingsType := "Savings"
+		description := "Live Quiz Consolation Reward"
+		status := "Completed"
+		txnType := "Reward"
+		if err := tx.Create(&models.WalletTransaction{
+			UserID:          userIDInt,
+			Amount:          amount,
+			Type:            &trxType,
+			AccountType:     &savingsType,
+			Description:     &description,
+			TrxRef:          &rewardRef,
+			Status:          &status,
+			TransactionType: &txnType,
+			Currency:        "NGN",
+			CreatedAt:       now,
+		}).Error; err != nil {
+			return fmt.Errorf("create wallet transaction: %w", err)
+		}
+
+		// Create Reward record
+		if err := tx.Create(&models.Reward{
+			ID:        uuid.NewString(),
+			UserID:    userIDInt,
+			Amount:    int(math.Round(amount)),
+			Currency:  "NGN",
+			Reference: &rewardRef,
+			Type:      "live_quiz_consolation",
+			Status:    "PAID_OUT",
+			CreatedAt: now,
+		}).Error; err != nil {
+			return fmt.Errorf("create reward: %w", err)
+		}
+
+		// Create Point record
+		accountType := "Gold"
+		if err := tx.Create(&models.Point{
+			ID:          uuid.NewString(),
+			UserID:      userIDInt,
+			Points:      points,
+			Reference:   &rewardRef,
+			Type:        "live_quiz_consolation",
+			AccountType: accountType,
+			CreatedAt:   now,
+		}).Error; err != nil {
+			return fmt.Errorf("create point: %w", err)
+		}
+
+		if tx.Migrator().HasTable("ActivityWallet") {
+			if err := tx.Exec(
+				`INSERT INTO "ActivityWallet" ("userId", "type", "title", "description", "amount", "currency", "status", "createdAt")
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				userIDInt, "credit",
+				"Live Quiz",
+				"Live Quiz Consolation Reward",
+				amount, "NGN", "SUCCESS", now,
+			).Error; err != nil {
+				log.Printf("[LiveQuizFinaliser] activity wallet insert warning: %v", err)
+			}
+		}
+
+		return nil
+	})
+}
+
+func (f *LiveQuizFinaliser) sendConsolationNotification(userID string, points int, amount float64, question, quizID string, createdAt time.Time) error {
+	userIDInt, err := parseInt(userID)
+	if err != nil {
+		return fmt.Errorf("invalid user ID for consolation notification: %w", err)
+	}
+
+	quizName := strings.TrimSpace(question)
+	if quizName == "" {
+		quizName = "Live Quiz"
+	}
+	msg := fmt.Sprintf("You didn't take the jackpot this time, but you earned %d PTS (₦%.2f) for playing \"%s\"", points, amount, quizName)
+	payload := map[string]interface{}{
+		"userId":    userIDInt,
+		"title":     msg,
+		"message":   msg,
+		"type":      "live_quiz_consolation",
+		"createdAt": createdAt.UTC().Format(time.RFC3339Nano),
+		"data": map[string]interface{}{
+			"quizId": quizID,
+			"points": points,
 			"amount": amount,
 		},
 	}
