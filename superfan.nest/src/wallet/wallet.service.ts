@@ -421,7 +421,7 @@ export class WalletService {
 
     await this.notificationService.createNotification(
       userId,
-      `you earned ${points}PTS🎮`,
+      `you earned ${points}PTS`,
       `from ${subject} Quiz`,
       'quiz_reward'
     );
