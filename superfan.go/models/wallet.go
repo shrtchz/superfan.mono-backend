@@ -90,6 +90,7 @@ type Reward struct {
 	UserID    int       `gorm:"column:userId" json:"userId"`
 	Amount    int       `gorm:"column:amount" json:"amount"`
 	Currency  string    `gorm:"column:currency" json:"currency"`
+	Reference *string   `gorm:"column:reference" json:"reference"`
 	Type      string    `gorm:"column:type" json:"type"`
 	Status    string    `gorm:"column:status" json:"status"`
 	CreatedAt time.Time `gorm:"column:createdAt" json:"createdAt"`
