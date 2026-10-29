@@ -130,7 +130,6 @@ export class UserController {
     return this.userService.getUserLoginMethod(userId);
   }
 
-  @Public()
   @Post('/logout/:userId')
   async logout(@Param('userId') userId: number) {
     return this.userService.logout(userId);
