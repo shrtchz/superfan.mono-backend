@@ -2786,7 +2786,7 @@ async checkSubscriptionStatusbyUserId(userId: number): Promise<{
           residentialAddress: user.address || null,
           address: user.address || null,
           postal_code: user.postal_code || null,
-          status: user.isOnline ? 'active' : (user.active ? 'active' : 'inactive'),
+          status: user.active ? 'active' : 'inactive',
           active: user.active,
           isOnline: user.isOnline,
           isBanned: user.isBanned,
