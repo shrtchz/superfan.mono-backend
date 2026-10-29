@@ -259,7 +259,7 @@ func (s *QuizSessionV2Service) finalizeSession(
 
 	streakMessage := "Streak saved! You completed a test just in time"
 	if dailyStreak == 3 || dailyStreak == 7 || dailyStreak == 14 || dailyStreak == 30 {
-		streakMessage = fmt.Sprintf("🔥 %d-day streak! Bonus applied.", dailyStreak)
+		streakMessage = fmt.Sprintf("%d-day streak! Bonus applied.", dailyStreak)
 	}
 
 	return &models.FinalizeSessionV2Result{
@@ -268,7 +268,7 @@ func (s *QuizSessionV2Service) finalizeSession(
 		Streak: map[string]interface{}{
 			"current":     dailyStreak,
 			"bonusPoints": streakBonus,
-			"flameIcon":   "🔥",
+			"flameIcon":   true,
 			"message":     streakMessage,
 		},
 		Session: models.SessionV2Summary{
@@ -363,7 +363,7 @@ func (s *QuizSessionV2Service) completeSessionWithZeroAnswers(
 
 	streakMessage := "Streak saved! You completed a test just in time"
 	if dailyStreak == 3 || dailyStreak == 7 || dailyStreak == 14 || dailyStreak == 30 {
-		streakMessage = fmt.Sprintf("🔥 %d-day streak! Bonus applied.", dailyStreak)
+		streakMessage = fmt.Sprintf("%d-day streak! Bonus applied.", dailyStreak)
 	}
 
 	result := map[string]interface{}{
@@ -398,7 +398,7 @@ func (s *QuizSessionV2Service) completeSessionWithZeroAnswers(
 		Streak: map[string]interface{}{
 			"current":     dailyStreak,
 			"bonusPoints": streakBonus,
-			"flameIcon":   "🔥",
+			"flameIcon":   true,
 			"message":     streakMessage,
 		},
 		Session: models.SessionV2Summary{
