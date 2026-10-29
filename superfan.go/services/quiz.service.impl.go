@@ -217,6 +217,8 @@ func buildTopWinnerCandidatesFromAttempts(attempts []models.LiveQuizAttempt) []m
 		}
 
 		winners = append(winners, map[string]interface{}{
+			"id":        attempt.UserID,
+			"userId":    attempt.UserID,
 			"username":  userName,
 			"fullname":  fullName,
 			"firstName": firstName,
