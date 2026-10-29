@@ -41,6 +41,7 @@ export class PresenceGateway
     if (userId) {
       this.onlineUsers.set(userId, client.id);
       console.log(`User ${userId} is online`);
+      this.setUserOnline(userId);
     }
   }
 
@@ -50,6 +51,7 @@ async handleDisconnect(client: Socket) {
       this.onlineUsers.delete(userId);
 
       console.log(`User ${userId} is offline`);
+      this.setUserOffline(userId);
       break;
     }
   }
