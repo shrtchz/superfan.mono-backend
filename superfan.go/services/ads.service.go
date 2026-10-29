@@ -97,7 +97,7 @@ func (s *adsServiceImpl) completeEndedCampaigns(ctx context.Context, now time.Ti
 	return nil
 }
 
-const activeCampaignDateCondition = `("AdCampaign"."runContinuously" = TRUE OR (CASE WHEN "AdCampaign"."endDate" IS NOT NULL THEN "AdCampaign"."endDate" + INTERVAL '1 day' ELSE "AdCampaign"."startDate" + GREATEST("AdCampaign"."days", 1) * INTERVAL '1 day' END) > NOW())`
+const activeCampaignDateCondition = `("AdCampaign"."runContinuously" = TRUE OR (CASE WHEN "AdCampaign"."endDate" IS NOT NULL THEN "AdCampaign"."endDate" + INTERVAL '1 day' ELSE "AdCampaign"."startDate" + GREATEST("AdCampaign"."days", 1) * INTERVAL '1 day' END) > NOW()) AND ("AdCampaign"."pausedByAdmin" IS NOT TRUE)`
 
 func NewAdsService(db *gorm.DB) AdsService {
 	if db != nil {

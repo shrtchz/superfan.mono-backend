@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	sentry "github.com/getsentry/sentry-go"
+	sentrygin "github.com/getsentry/sentry-go/gin"
 	_ "github.com/joho/godotenv/autoload"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -107,6 +109,35 @@ func ErrorHandler() gin.HandlerFunc {
 func init() {
 	utils.LoadEnv()
 	get := utils.GetEnvWithKey
+
+	sentryDsn := get("SENTRY_DSN")
+	if sentryDsn != "" {
+		err := sentry.Init(sentry.ClientOptions{
+			Dsn:              sentryDsn,
+			EnableTracing:    true,
+			TracesSampleRate: 1.0,
+			AttachStacktrace: true,
+			Environment:      os.Getenv("GIN_MODE"),
+		})
+		if err != nil {
+			log.Printf("sentry.Init failed: %v", err)
+		} else {
+			log.Println("Sentry initialized successfully")
+		}
+	} else {
+		log.Println("SENTRY_DSN not set; skipping Sentry initialization")
+	}
+
+	posthogKey := get("POSTHOG_API_KEY")
+	if posthogKey == "" {
+		posthogKey = get("POSTHOG_KEY")
+	}
+	posthogHost := get("POSTHOG_HOST")
+	if posthogHost == "" {
+		posthogHost = "https://us.i.posthog.com"
+	}
+	utils.InitPostHog(posthogKey, posthogHost)
+
 	mongoURI := get("MONGO_URI")
 
 	if mongoURI == "" {
@@ -207,6 +238,10 @@ func init() {
 	}()
 
 	server = gin.New()
+	server.Use(sentrygin.New(sentrygin.Options{
+		Repanic: true,
+	}))
+	server.Use(middleware.PostHogMiddleware())
 	server.Use(gin.Logger())
 	server.Use(middleware.CORSMiddleware())
 	server.Use(gin.CustomRecovery(func(c *gin.Context, recovered interface{}) {
@@ -234,9 +269,17 @@ func main() {
 	}
 
 	defer mongoclient.Disconnect(ctx)
+	defer sentry.Flush(2 * time.Second)
+	defer utils.ClosePostHog()
 
 	server.GET("/health", func(c *gin.Context) {
 		utils.Success(c, http.StatusOK, "UP", nil)
+	})
+
+	server.GET("/health/debug-sentry", func(c *gin.Context) {
+		err := errors.New("Go Sentry test error")
+		sentry.CaptureException(err)
+		panic("Go Sentry panic test")
 	})
 
 	basepath := server.Group("/v1")
