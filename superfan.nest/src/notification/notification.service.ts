@@ -657,7 +657,7 @@ export class NotificationService {
   }
 
   async liveQuizStartingSoon(userIds: number[], minutes = 5) {
-    const msg = `Kicks off in ${minutes} minutes.`;
+    const msg = `Live Quiz kicks off in ${minutes} minutes.`;
     await Promise.all(
       userIds.map((id) =>
         this.notify(id, NotificationTriggers.LIVE_QUIZ_STARTING_SOON, msg, msg).catch(() => null),
