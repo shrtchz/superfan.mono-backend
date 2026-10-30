@@ -49,6 +49,12 @@ export class QuizController {
   ) {}
 
   @Public()
+  @Public()
+  @Get('/points-conversion-rate')
+  getPointsConversionRate(@Query('category') category?: 'quiz' | 'ads') {
+    return this.quizService.getPointsConversionRate(category);
+  }
+
   @Post('/create')
   createQuiz(@Body() quizData: CreateQuizDto) {
     try {
@@ -251,13 +257,21 @@ export class QuizController {
     }
   }
 
+      @Public()
       @Get('gq-leaderboard')
   async getGeneralQuizLeaderboard(
       @Query('filter')
-  filter: 'all' | 'today' | 'weekly' | 'monthly',
+  filter: 'all' | 'today' | 'weekly' | 'monthly' = 'all',
+      @Query('view') view?: string,
+      @Query('timeRange') timeRange?: string,
+      @Query('userId') userId?: string,
   ) {
     try {
-      return await this.quizService.getQuizleaderboard(filter);
+      return await this.quizService.getQuizleaderboard(filter, {
+        view,
+        timeRange,
+        userId,
+      });
     } catch (error) {
       console.log('Error fetching general quiz leaderboard:', error);
       throw failureResponse(
@@ -486,6 +500,39 @@ async getOngoingLiveQuiz(@Param('id', ParseIntPipe) id: number) {
 
     return {
       data,
+    };
+  }
+
+  /**
+   * GET /api/v1/quiz/live-answer/:quizId?userId=:userId
+   *
+   * Returns the user's previously submitted answer for a live quiz question.
+   * The answer is read from Nest's Postgres ongoingLiveQuiz table — NOT from
+   * the Go service, which only returns empty strings for this field.
+   *
+   * Authentication: public (supports both auth header and ?userId query param
+   * so the frontend can call it without a Clerk session on the streaming page).
+   */
+  @Public()
+  @Get('live-answer/:quizId')
+  async getLiveQuizAnswer(
+    @Req() req: any,
+    @Param('quizId') quizId: string,
+    @Query('userId') queryUserId?: string,
+  ) {
+    const userId = req.user?.id ?? queryUserId;
+    if (!userId) {
+      throw new BadRequestException('userId is required (pass as ?userId= or use auth header)');
+    }
+    const data = await this.quizService.getLiveQuizAnswerFromDb(
+      String(userId),
+      quizId,
+    );
+    return {
+      success: true,
+      message: 'success',
+      data,
+      timestamp: new Date().toISOString(),
     };
   }
 

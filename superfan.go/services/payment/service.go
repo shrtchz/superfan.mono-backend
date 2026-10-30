@@ -1,11 +1,15 @@
 package payment
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"math"
+	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,6 +17,7 @@ import (
 	"quiz.superfan.com/apis/labels"
 	"quiz.superfan.com/apis/models"
 	"quiz.superfan.com/apis/services/payment/providers"
+	"quiz.superfan.com/apis/utils"
 )
 
 type PaymentService struct {
@@ -32,6 +37,7 @@ type savedCardMetadata struct {
 
 const minimumDepositAmount = 1000.0
 const minimumWithdrawalAmount = 1000.0
+const withdrawalAccountUnlockThreshold = 10000.0
 const personalDepositHold = 5 * 24 * time.Hour
 
 func stringValuePtr(value string) *string {
@@ -65,6 +71,63 @@ func normalizeCardExpiry(value string) string {
 		return trimmed
 	}
 	return digits[:2] + "/" + digits[2:]
+}
+
+func formatNaira(amount float64) string {
+	whole := int64(math.Round(amount))
+	digits := strconv.FormatInt(whole, 10)
+	if len(digits) <= 3 {
+		return digits
+	}
+	var buf strings.Builder
+	for i, r := range digits {
+		if i > 0 && (len(digits)-i)%3 == 0 {
+			buf.WriteByte(',')
+		}
+		buf.WriteRune(r)
+	}
+	return buf.String()
+}
+
+func withdrawalThresholdMessage(accountType string, balance float64) string {
+	thresholdLabel := formatNaira(withdrawalAccountUnlockThreshold)
+	if strings.EqualFold(accountType, "savings") {
+		percent := int(math.Round(balance / withdrawalAccountUnlockThreshold * 100))
+		return fmt.Sprintf(
+			"Keep building! Your Savings Account unlocks at ₦%s. You're currently at ₦%s (%d%%). Complete today's quizzes to get closer!",
+			thresholdLabel, formatNaira(balance), percent,
+		)
+	}
+	return fmt.Sprintf(
+		"Minimum withdrawal threshold is ₦%s. Your Checking Account currently has ₦%s. You can use this balance to buy extra quiz runs, upgrade to Premium, or top up to reach the withdrawal target.",
+		thresholdLabel, formatNaira(balance),
+	)
+}
+
+func notifyBelowWithdrawalThreshold(userID int, accountType string, balance float64) {
+	nestBaseURL := utils.GetEnvWithKey("NEST_BASE_URL")
+	if nestBaseURL == "" {
+		return
+	}
+	payload := map[string]interface{}{
+		"userId":  userID,
+		"title":   "Withdrawal unavailable",
+		"message": withdrawalThresholdMessage(accountType, balance),
+		"type":    "minimum_withdrawal_not_met",
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("[PaymentService] Failed to marshal minimum-withdrawal notification: %v", err)
+		return
+	}
+	go func() {
+		resp, err := http.Post(fmt.Sprintf("%s/api/v1/notifications/create", nestBaseURL), "application/json", bytes.NewReader(body))
+		if err != nil {
+			log.Printf("[PaymentService] Failed to send minimum-withdrawal notification: %v", err)
+			return
+		}
+		resp.Body.Close()
+	}()
 }
 
 func buildMaskedPan(first6, last4 string) string {
@@ -400,7 +463,7 @@ func (s *PaymentService) GetWalletByUserID(ctx context.Context, userID int) (*mo
 	err := s.db.WithContext(ctx).Where("\"userId\" = ?", userID).First(&wallet).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return &models.Wallet{UserID: userID, Balance: 0, GoldBalance: 0, PersonalBalance: 0, UsdcBalance: 0, UsdtBalance: 0, TotalBalance: 0, HoldBalance: 0, AvailablePersonalBalance: 0, AvailableBalance: 0}, nil
+			return &models.Wallet{UserID: userID, Balance: 0, SavingsBalance: 0, CheckingBalance: 0, GoldBalance: 0, PersonalBalance: 0, UsdcBalance: 0, UsdtBalance: 0, TotalBalance: 0, HoldBalance: 0, AvailablePersonalBalance: 0, AvailableCheckingBalance: 0, AvailableBalance: 0}, nil
 		}
 		return nil, err
 	}
@@ -410,6 +473,7 @@ func (s *PaymentService) GetWalletByUserID(ctx context.Context, userID int) (*mo
 	}
 	wallet.HoldBalance = heldBalance
 	wallet.AvailablePersonalBalance = availablePersonal
+	wallet.AvailableCheckingBalance = availablePersonal
 	wallet.TotalBalance = wallet.PersonalBalance + wallet.GoldBalance
 	wallet.AvailableBalance = wallet.GoldBalance + availablePersonal
 	return &wallet, nil
@@ -425,7 +489,7 @@ func (s *PaymentService) getPersonalBalanceBreakdown(ctx context.Context, userID
 	err := s.db.WithContext(ctx).
 		Table("WalletTransaction").
 		Select("COALESCE(SUM(amount), 0)").
-		Where(`"userId" = ? AND LOWER(COALESCE("account_type", '')) = 'personal' AND "holdUntil" > ?`, userID, time.Now()).
+		Where(`"userId" = ? AND LOWER(COALESCE("account_type", '')) IN ('checking') AND "holdUntil" > ?`, userID, time.Now()).
 		Scan(&held).Error
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to calculate available wallet balance: %w", err)
@@ -558,7 +622,7 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 		db = db.Where("\"account_type\" = ?", filter.AccountType)
 	} else if filter.AccountType == "" {
 		// Default to Personal Wallet deposits/withdrawals; exclude quiz rewards, gold credits, and referral bonuses
-		db = db.Where("(\"account_type\" IS NULL OR \"account_type\" = '' OR LOWER(\"account_type\") = 'personal') AND (\"rewardType\" IS NULL OR \"rewardType\" = '') AND (\"description\" IS NULL OR (LOWER(\"description\") NOT LIKE '%quiz%' AND LOWER(\"description\") NOT LIKE '%reward%' AND LOWER(\"description\") NOT LIKE '%referral%' AND LOWER(\"description\") NOT LIKE '%bonus%'))")
+		db = db.Where("(\"account_type\" IS NULL OR \"account_type\" = '' OR LOWER(\"account_type\") IN ('checking')) AND (\"rewardType\" IS NULL OR \"rewardType\" = '') AND (\"description\" IS NULL OR (LOWER(\"description\") NOT LIKE '%quiz%' AND LOWER(\"description\") NOT LIKE '%reward%' AND LOWER(\"description\") NOT LIKE '%referral%' AND LOWER(\"description\") NOT LIKE '%bonus%'))")
 	}
 	if filter.Type != "" {
 		db = db.Where("\"type\" ILIKE ?", filter.Type)
@@ -669,7 +733,7 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 		if err := s.db.WithContext(ctx).Model(&models.WalletTransaction{}).
 			Select("\"userId\", SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) as total").
 			Where("\"userId\" IN ?", userIDs).
-			Where("(LOWER(COALESCE(\"account_type\", '')) = 'gold' OR \"rewardType\" IS NOT NULL OR LOWER(COALESCE(\"description\", '')) LIKE '%quiz%' OR LOWER(COALESCE(\"description\", '')) LIKE '%reward%' OR LOWER(COALESCE(\"description\", '')) LIKE '%bonus%' OR LOWER(COALESCE(\"description\", '')) LIKE '%referral%')").
+			Where("(LOWER(COALESCE(\"account_type\", '')) IN ('savings') OR \"rewardType\" IS NOT NULL OR LOWER(COALESCE(\"description\", '')) LIKE '%quiz%' OR LOWER(COALESCE(\"description\", '')) LIKE '%reward%' OR LOWER(COALESCE(\"description\", '')) LIKE '%bonus%' OR LOWER(COALESCE(\"description\", '')) LIKE '%referral%')").
 			Where("(status IS NULL OR UPPER(status) IN ('SUCCESS', 'PAID', 'COMPLETED'))").
 			Group("\"userId\"").
 			Scan(&earningsList).Error; err == nil {
@@ -713,7 +777,7 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 		if err := s.db.WithContext(ctx).Model(&models.WalletTransaction{}).
 			Select("\"userId\", COUNT(*) as count").
 			Where("\"userId\" IN ?", userIDs).
-			Where("(LOWER(COALESCE(\"account_type\", '')) = 'gold' AND (LOWER(COALESCE(type, '')) = 'debit' OR LOWER(COALESCE(\"description\", '')) LIKE '%withdraw%'))").
+			Where("(LOWER(COALESCE(\"account_type\", '')) IN ('savings') AND (LOWER(COALESCE(type, '')) = 'debit' OR LOWER(COALESCE(\"description\", '')) LIKE '%withdraw%'))").
 			Group("\"userId\"").
 			Scan(&txPayoutCountList).Error; err == nil {
 			for _, res := range txPayoutCountList {
@@ -746,7 +810,7 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 		var goldTxList []models.WalletTransaction
 		if err := s.db.WithContext(ctx).Model(&models.WalletTransaction{}).
 			Where("\"userId\" IN ?", userIDs).
-			Where("(LOWER(COALESCE(\"account_type\", '')) = 'gold' OR \"rewardType\" IS NOT NULL OR LOWER(COALESCE(\"description\", '')) LIKE '%quiz%' OR LOWER(COALESCE(\"description\", '')) LIKE '%reward%')").
+			Where("(LOWER(COALESCE(\"account_type\", '')) IN ('savings') OR \"rewardType\" IS NOT NULL OR LOWER(COALESCE(\"description\", '')) LIKE '%quiz%' OR LOWER(COALESCE(\"description\", '')) LIKE '%reward%')").
 			Order("\"createdAt\" DESC").
 			Find(&goldTxList).Error; err == nil {
 			for _, gtx := range goldTxList {
@@ -853,7 +917,7 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 			status = *tx.Status
 		}
 
-		accType := "Personal"
+		accType := "Checking"
 		if tx.AccountType != nil && *tx.AccountType != "" {
 			accType = *tx.AccountType
 		}
@@ -1031,6 +1095,10 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 		isInternalTransfer := txTypeLowerForTransfer == "transfer" ||
 			strings.Contains(descLowerForTransfer, "transfer from") ||
 			strings.Contains(descLowerForTransfer, "transfer to") ||
+			strings.Contains(descLowerForTransfer, "between checking") ||
+			strings.Contains(descLowerForTransfer, "between savings") ||
+			strings.Contains(descLowerForTransfer, "savings to checking") ||
+			strings.Contains(descLowerForTransfer, "checking to savings") ||
 			strings.Contains(descLowerForTransfer, "between personal") ||
 			strings.Contains(descLowerForTransfer, "between gold") ||
 			strings.Contains(descLowerForTransfer, "gold to personal") ||
@@ -1239,6 +1307,8 @@ func (s *PaymentService) ChargeCardAndCreditWallet(ctx context.Context, userID i
 				"id":              wallet.ID,
 				"userId":          wallet.UserID,
 				"balance":         wallet.Balance,
+				"savingsBalance":  wallet.SavingsBalance,
+				"checkingBalance": wallet.CheckingBalance,
 				"personalBalance": wallet.PersonalBalance,
 				"goldBalance":     wallet.GoldBalance,
 				"usdcBalance":     wallet.UsdcBalance,
@@ -1299,7 +1369,7 @@ func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amoun
 		wallet.Balance += amount
 		wallet.PersonalBalance += amount
 		holdUntil := time.Now().Add(personalDepositHold)
-		accountType := "Personal"
+		accountType := "Checking"
 		switch currency {
 		case "USDC":
 			wallet.UsdcBalance += amount
@@ -1464,8 +1534,8 @@ func (s *PaymentService) TransferBetweenWallets(ctx context.Context, userID int,
 	}
 
 	fromType := strings.ToLower(strings.TrimSpace(fromAccountType))
-	if fromType != "gold" && fromType != "personal" {
-		return nil, fmt.Errorf("invalid fromAccountType: '%s' (must be 'gold' or 'personal')", fromAccountType)
+	if fromType != "savings" && fromType != "checking" {
+		return nil, fmt.Errorf("invalid fromAccountType: '%s' (must be 'savings' or 'checking')", fromAccountType)
 	}
 
 	log.Printf("[PaymentService] TransferBetweenWallets - userID=%d amount=%.2f from=%s", userID, amount, fromType)
@@ -1485,22 +1555,27 @@ func (s *PaymentService) TransferBetweenWallets(ctx context.Context, userID int,
 		var activityType string
 		txRef := fmt.Sprintf("TRF-%s-%d", strings.ToUpper(fromType), time.Now().UnixNano())
 
-		if fromType == "gold" {
+		if fromType == "savings" {
 			if wallet.GoldBalance < amount {
-				return fmt.Errorf("insufficient gold wallet balance (available: %.2f, required: %.2f)", wallet.GoldBalance, amount)
+				return fmt.Errorf("insufficient savings wallet balance (available: %.2f, required: %.2f)", wallet.SavingsBalance, amount)
 			}
 			wallet.GoldBalance -= amount
 			wallet.PersonalBalance += amount
 			wallet.Balance = wallet.PersonalBalance
+			wallet.SavingsBalance = wallet.GoldBalance
+			wallet.CheckingBalance = wallet.PersonalBalance
 			description = labels.Wallet("transferGoldToPersonal", nil)
 			activityType = "credit"
 		} else {
 			if wallet.PersonalBalance < amount {
-				return fmt.Errorf("insufficient personal wallet balance (available: %.2f, required: %.2f)", wallet.PersonalBalance, amount)
+				return fmt.Errorf("insufficient checking wallet balance (available: %.2f, required: %.2f)", wallet.CheckingBalance, amount)
 			}
 			wallet.PersonalBalance -= amount
+		wallet.CheckingBalance = wallet.PersonalBalance
 			wallet.GoldBalance += amount
 			wallet.Balance = wallet.PersonalBalance
+			wallet.SavingsBalance = wallet.GoldBalance
+			wallet.CheckingBalance = wallet.PersonalBalance
 			description = labels.Wallet("transferPersonalToGold", nil)
 			activityType = "debit"
 		}
@@ -1571,6 +1646,60 @@ func (s *PaymentService) ValidateBankAccount(ctx context.Context, accountNumber,
 	return s.monnifyProvider.ValidateBankAccount(ctx, accountNumber, bankCode)
 }
 
+// ValidateActiveBankAccountPayout enforces that a single bank account number can only be linked
+// to one active payout/cash-out at a time across all users (one payout per cycle).
+func (s *PaymentService) ValidateActiveBankAccountPayout(ctx context.Context, accountNumber string) error {
+	accountNumber = strings.TrimSpace(accountNumber)
+	if accountNumber == "" {
+		return errors.New("destination bank account number is required")
+	}
+
+	cleanAccountNumber := normalizeCardDigits(accountNumber)
+	if cleanAccountNumber == "" {
+		cleanAccountNumber = accountNumber
+	}
+
+	// 1. Check for active/pending withdrawal in WalletTransaction across all accounts.
+	var activeTx models.WalletTransaction
+	txErr := s.db.WithContext(ctx).Model(&models.WalletTransaction{}).
+		Where("(account_no = ? OR account_no = ? OR REPLACE(REPLACE(COALESCE(account_no, ''), ' ', ''), '-', '') = ?)", accountNumber, cleanAccountNumber, cleanAccountNumber).
+		Where("(LOWER(COALESCE(\"transactionType\", '')) = 'withdrawal' OR LOWER(COALESCE(description, '')) LIKE '%withdraw%' OR LOWER(COALESCE(type, '')) = 'debit')").
+		Where("UPPER(COALESCE(status, 'PENDING')) IN ('PENDING', 'PROCESSING', 'REQUESTED', 'INITIATED', 'QUEUED', 'IN_PROGRESS', 'HOLD')").
+		Where("UPPER(COALESCE(status, '')) NOT IN ('SUCCESS', 'PAID', 'COMPLETED', 'FAILED', 'CANCELLED', 'REVERSED', 'REJECTED', 'EXPIRED')").
+		Order("\"createdAt\" DESC").
+		First(&activeTx).Error
+
+	if txErr == nil && activeTx.ID > 0 {
+		statusStr := "Pending"
+		if activeTx.Status != nil && *activeTx.Status != "" {
+			statusStr = *activeTx.Status
+		}
+		log.Printf("[PaymentService] Blocked withdrawal: Bank account %s has active WalletTransaction id=%d userId=%d status=%s",
+			cleanAccountNumber, activeTx.ID, activeTx.UserID, statusStr)
+		return fmt.Errorf("this bank account number (%s) is already linked to an active payout. A bank account can only receive one payout per cycle. Please wait for the current payout to complete or fail before initiating another withdrawal", maskIDNumber(accountNumber))
+	} else if txErr != nil && !errors.Is(txErr, gorm.ErrRecordNotFound) {
+		log.Printf("[PaymentService] WARNING: Error querying WalletTransaction for active payout check: %v", txErr)
+	}
+
+	// 2. Check for active/pending payout in Payout table across all accounts.
+	var activePayout models.Payout
+	payoutErr := s.db.WithContext(ctx).Model(&models.Payout{}).
+		Where("UPPER(status::text) = 'PENDING'").
+		Where("(reference = ? OR reference = ? OR metadata->>'accountNumber' = ? OR metadata->>'destinationAccountNumber' = ? OR metadata->>'account_no' = ?)", accountNumber, cleanAccountNumber, cleanAccountNumber, cleanAccountNumber, cleanAccountNumber).
+		Order("\"createdAt\" DESC").
+		First(&activePayout).Error
+
+	if payoutErr == nil && activePayout.ID > 0 {
+		log.Printf("[PaymentService] Blocked withdrawal: Bank account %s has active Payout id=%d userId=%d ref=%s",
+			cleanAccountNumber, activePayout.ID, activePayout.UserID, activePayout.Reference)
+		return fmt.Errorf("this bank account number (%s) is already linked to an active payout. A bank account can only receive one payout per cycle. Please wait for the current payout to complete or fail before initiating another withdrawal", maskIDNumber(accountNumber))
+	} else if payoutErr != nil && !errors.Is(payoutErr, gorm.ErrRecordNotFound) {
+		log.Printf("[PaymentService] WARNING: Error querying Payout for active payout check: %v", payoutErr)
+	}
+
+	return nil
+}
+
 // ProcessWalletWithdrawal executes a bank withdrawal for a user and atomically debits their wallet.
 func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int, amount float64, payload map[string]interface{}) (map[string]interface{}, error) {
 	if userID <= 0 {
@@ -1585,6 +1714,65 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 		return nil, err
 	}
 
+	accountName, _ := payload["accountName"].(string)
+	accountNumber := ""
+	if v, ok := payload["destinationAccountNumber"].(string); ok {
+		accountNumber = v
+	} else if v, ok := payload["accountNumber"].(string); ok {
+		accountNumber = v
+	} else if v, ok := payload["destinationAccountNumber"].(float64); ok {
+		accountNumber = fmt.Sprintf("%.0f", v)
+	} else if v, ok := payload["accountNumber"].(float64); ok {
+		accountNumber = fmt.Sprintf("%.0f", v)
+	}
+	accountNumber = strings.TrimSpace(accountNumber)
+	if accountNumber == "" {
+		return nil, errors.New("destination bank account number is required")
+	}
+
+	bankName, _ := payload["destinationBankName"].(string)
+	if bankName == "" {
+		bankName, _ = payload["bankName"].(string)
+	}
+
+	// Enforce rule: a single bank account number can only be linked to one active payout/cash-out at a time.
+	if err := s.ValidateActiveBankAccountPayout(ctx, accountNumber); err != nil {
+		return nil, err
+	}
+
+	// Savings (Gold) / Checking (Personal) accounts unlock withdrawals at ₦10,000.
+	sourceAccountType := strings.ToLower(strings.TrimSpace(func() string {
+		v, _ := payload["accountType"].(string)
+		return v
+	}()))
+	if sourceAccountType == "" {
+		sourceAccountType = "checking"
+	}
+	isSavings := sourceAccountType == "savings"
+	var wallet models.Wallet
+	if err := s.db.WithContext(ctx).Where("\"userId\" = ?", userID).First(&wallet).Error; err != nil {
+		return nil, fmt.Errorf("wallet not found for user: %w", err)
+	}
+	accountBalance := wallet.PersonalBalance
+	if isSavings {
+		accountBalance = wallet.GoldBalance
+	} else {
+		if availablePersonal, err := s.availablePersonalBalance(ctx, userID, wallet.PersonalBalance); err == nil {
+			accountBalance = availablePersonal
+		}
+	}
+	if accountBalance < withdrawalAccountUnlockThreshold {
+		acctLabel := "checking"
+		if isSavings {
+			acctLabel = "savings"
+		}
+		notifyBelowWithdrawalThreshold(userID, acctLabel, accountBalance)
+		return nil, fmt.Errorf(
+			"minimum withdrawal threshold is ₦%s on your %s account. Keep earning to unlock withdrawals (current balance: ₦%s)",
+			formatNaira(withdrawalAccountUnlockThreshold), acctLabel, formatNaira(accountBalance),
+		)
+	}
+
 	txRef, _ := payload["reference"].(string)
 	if txRef == "" {
 		txRef = fmt.Sprintf("DISB-%d", time.Now().UnixNano())
@@ -1592,19 +1780,10 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 	}
 
 	log.Printf("[PaymentService] ProcessWalletWithdrawal - userID=%d amount=%.2f ref=%s", userID, amount, txRef)
-	accountName, _ := payload["accountName"].(string)
-	accountNumber, _ := payload["destinationAccountNumber"].(string)
-	if accountNumber == "" {
-		accountNumber, _ = payload["accountNumber"].(string)
-	}
-	bankName, _ := payload["destinationBankName"].(string)
-	if bankName == "" {
-		bankName, _ = payload["bankName"].(string)
-	}
 	paymentMethod := "bankTransfer"
 	transactionType := "WITHDRAWAL"
 	txStatus := "Pending"
-	accountType := "Personal"
+	accountType := "Checking"
 
 	// Step 1: Verify user wallet balance and debit in DB transaction
 	var updatedWallet models.Wallet
@@ -1624,6 +1803,7 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 
 		// Debit personal balance
 		wallet.PersonalBalance -= amount
+		wallet.CheckingBalance = wallet.PersonalBalance
 		wallet.Balance = wallet.PersonalBalance
 
 		if err := tx.Save(&wallet).Error; err != nil {
@@ -1694,6 +1874,8 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 				"amount":    amount,
 				"wallet": map[string]interface{}{
 					"balance":         updatedWallet.Balance,
+					"checkingBalance": updatedWallet.CheckingBalance,
+					"savingsBalance":  updatedWallet.SavingsBalance,
 					"personalBalance": updatedWallet.PersonalBalance,
 				},
 			},
@@ -1741,6 +1923,7 @@ func (s *PaymentService) DebitUserWallet(ctx context.Context, userID int, amount
 
 		// Debit personal balance
 		wallet.PersonalBalance -= amount
+		wallet.CheckingBalance = wallet.PersonalBalance
 		wallet.Balance = wallet.PersonalBalance
 
 		if err := tx.Save(&wallet).Error; err != nil {

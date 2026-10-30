@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"net/http"
 	"os"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"quiz.superfan.com/apis/labels"
 	"quiz.superfan.com/apis/models"
 	"quiz.superfan.com/apis/utils"
@@ -21,6 +23,29 @@ import (
 const defaultPointsToNairaRate = 1000
 
 func getPointsToNairaRate() int {
+	if utils.DB != nil {
+		var setting struct {
+			Value string
+		}
+		err := utils.DB.Raw(
+			`SELECT "value" FROM "platform_settings" WHERE "key" = ? LIMIT 1`,
+			"pointsToNairaRate",
+		).Scan(&setting).Error
+		if err != nil {
+			log.Printf("failed to load points conversion rate from platform settings: %v", err)
+		} else if setting.Value != "" {
+			rate, parseErr := strconv.Atoi(setting.Value)
+			if parseErr == nil && rate > 0 {
+				return rate
+			}
+			log.Printf("stored points conversion rate is invalid; falling back to environment configuration")
+		}
+	}
+
+	return getEnvironmentPointsToNairaRate()
+}
+
+func getEnvironmentPointsToNairaRate() int {
 	value := strings.TrimSpace(os.Getenv("POINTS_TO_NAIRA_RATE"))
 	if value == "" {
 		return defaultPointsToNairaRate
@@ -39,6 +64,14 @@ func convertTotalEarningToRewardAmounts(totalEarning int) (amountInNaira float64
 	amountInNaira = float64(totalEarning) / float64(pointsToNairaRate)
 	finalNairaAmount, finalUSDCAmount, finalUSDTAmount = computeSessionEarnings(totalEarning)
 	return amountInNaira, finalNairaAmount, finalUSDCAmount, finalUSDTAmount
+}
+
+func calculateSessionAccuracyPercent(correctAnswers, totalQuestions int) int {
+	if totalQuestions <= 0 {
+		return 0
+	}
+
+	return int(math.Round(float64(correctAnswers) / float64(totalQuestions) * 100.0))
 }
 
 // SubmitSession grades saved answers, applies rewards, and completes the session.
@@ -107,10 +140,7 @@ func (s *QuizSessionV2Service) finalizeSession(
 	correctAnswers := countCorrectResponses(submission)
 	baseScore := submission.TotalEarning
 	accuracyBonusPercent := getAccuracyBonusPercent(correctAnswers, totalQuestions)
-	accuracyPercent := 0
-	if totalQuestions > 0 {
-		accuracyPercent = int(math.Round(float64(correctAnswers) / float64(totalQuestions) * 100.0))
-	}
+	accuracyPercent := calculateSessionAccuracyPercent(correctAnswers, totalQuestions)
 	speedBonusPercent := getSpeedBonusPercent(req.QuizTimeSeconds)
 	dailyStreak, err := updateDailyStreak(req.UserID, now)
 	if err != nil {
@@ -130,6 +160,7 @@ func (s *QuizSessionV2Service) finalizeSession(
 		status = "quit"
 	}
 
+	var referralNotification *referralFirstTestNotification
 	if err := utils.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&models.OngoingQuiz{}).
 			Where(`"id" = ? AND "userId" = ?`, sessionID, req.UserID).
@@ -142,6 +173,9 @@ func (s *QuizSessionV2Service) finalizeSession(
 				"totalEarninginUSDT":  finalUSDTAmount,
 				"quizTime":            strconv.Itoa(req.QuizTimeSeconds),
 				"baseScore":           baseScore,
+				"accuracyPercent":     accuracyPercent,
+				"correctAnswers":      correctAnswers,
+				"attemptedAnswers":    len(submission.Responses),
 				"accuracyBonus":       accuracyGain,
 				"speedBonus":          speedGain,
 				"streakMultiplier":    streakBonus,
@@ -167,9 +201,6 @@ func (s *QuizSessionV2Service) finalizeSession(
 		}
 
 		for _, item := range submission.Responses {
-			if item.Earning <= 0 {
-				continue
-			}
 			accuracyLabel := fmt.Sprintf("%d%%", accuracyBonusPercent)
 			quizTime := strconv.Itoa(req.QuizTimeSeconds)
 			row := models.QuizLeaderboard{
@@ -192,9 +223,17 @@ func (s *QuizSessionV2Service) finalizeSession(
 			}
 		}
 
-		return creditQuizReward(tx, req.UserID, amountInNaira, submission.Subject, submission.Score, totalPoints, now)
+		if err := creditQuizReward(tx, req.UserID, amountInNaira, submission.Subject, submission.Score, totalPoints, now); err != nil {
+			return err
+		}
+
+		referralNotification, err = awardReferralFirstTestReward(tx, req.UserID, now)
+		return err
 	}); err != nil {
 		return nil, utils.NewAppError(http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to finalize quiz session")
+	}
+	if referralNotification != nil {
+		go notifyReferralFirstTestBonus(referralNotification)
 	}
 
 	result := map[string]interface{}{
@@ -220,7 +259,7 @@ func (s *QuizSessionV2Service) finalizeSession(
 
 	streakMessage := "Streak saved! You completed a test just in time"
 	if dailyStreak == 3 || dailyStreak == 7 || dailyStreak == 14 || dailyStreak == 30 {
-		streakMessage = fmt.Sprintf("🔥 %d-day streak! Bonus applied.", dailyStreak)
+		streakMessage = fmt.Sprintf("%d-day streak! Bonus applied.", dailyStreak)
 	}
 
 	return &models.FinalizeSessionV2Result{
@@ -229,7 +268,7 @@ func (s *QuizSessionV2Service) finalizeSession(
 		Streak: map[string]interface{}{
 			"current":     dailyStreak,
 			"bonusPoints": streakBonus,
-			"flameIcon":   "🔥",
+			"flameIcon":   true,
 			"message":     streakMessage,
 		},
 		Session: models.SessionV2Summary{
@@ -269,6 +308,7 @@ func (s *QuizSessionV2Service) completeSessionWithZeroAnswers(
 
 	testSubject := lookup.record.Subject
 
+	var referralNotification *referralFirstTestNotification
 	if err := utils.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&models.OngoingQuiz{}).
 			Where(`"id" = ? AND "userId" = ?`, sessionID, req.UserID).
@@ -281,6 +321,9 @@ func (s *QuizSessionV2Service) completeSessionWithZeroAnswers(
 				"totalEarninginUSDT":  finalUSDTAmount,
 				"quizTime":            strconv.Itoa(req.QuizTimeSeconds),
 				"baseScore":           0,
+				"accuracyPercent":     0,
+				"correctAnswers":      0,
+				"attemptedAnswers":    0,
 				"accuracyBonus":       0,
 				"speedBonus":          0,
 				"streakMultiplier":    streakBonus,
@@ -305,14 +348,22 @@ func (s *QuizSessionV2Service) completeSessionWithZeroAnswers(
 			}
 		}
 
-		return creditQuizReward(tx, req.UserID, amountInNaira, testSubject, 0, totalPoints, now)
+		if err := creditQuizReward(tx, req.UserID, amountInNaira, testSubject, 0, totalPoints, now); err != nil {
+			return err
+		}
+
+		referralNotification, err = awardReferralFirstTestReward(tx, req.UserID, now)
+		return err
 	}); err != nil {
 		return nil, utils.NewAppError(http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to finalize quiz session")
+	}
+	if referralNotification != nil {
+		go notifyReferralFirstTestBonus(referralNotification)
 	}
 
 	streakMessage := "Streak saved! You completed a test just in time"
 	if dailyStreak == 3 || dailyStreak == 7 || dailyStreak == 14 || dailyStreak == 30 {
-		streakMessage = fmt.Sprintf("🔥 %d-day streak! Bonus applied.", dailyStreak)
+		streakMessage = fmt.Sprintf("%d-day streak! Bonus applied.", dailyStreak)
 	}
 
 	result := map[string]interface{}{
@@ -321,6 +372,7 @@ func (s *QuizSessionV2Service) completeSessionWithZeroAnswers(
 		"totalQuestions":   totalQuestions,
 		"correctAnswers":   0,
 		"attemptedAnswers": 0,
+		"accuracyPercent":  0,
 		"baseEarning":      0,
 		"totalPoints":      totalPoints,
 		"amountInNaira":    amountInNaira,
@@ -346,7 +398,7 @@ func (s *QuizSessionV2Service) completeSessionWithZeroAnswers(
 		Streak: map[string]interface{}{
 			"current":     dailyStreak,
 			"bonusPoints": streakBonus,
-			"flameIcon":   "🔥",
+			"flameIcon":   true,
 			"message":     streakMessage,
 		},
 		Session: models.SessionV2Summary{
@@ -426,6 +478,162 @@ func updateDailyStreak(userID int, now time.Time) (int, error) {
 	return newStreak, nil
 }
 
+type referralFirstTestNotification struct {
+	ReferrerID      int
+	RefereeUsername string
+}
+
+func awardReferralFirstTestReward(tx *gorm.DB, refereeID int, now time.Time) (*referralFirstTestNotification, error) {
+	var referral models.Referral
+	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where(`"refereeId" = ? AND "testRewardGiven" = ?`, refereeID, false).
+		Order(`"id" ASC`).
+		First(&referral).Error
+	if err == gorm.ErrRecordNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	claimed := tx.Model(&models.Referral{}).
+		Where(`"id" = ? AND "testRewardGiven" = ?`, referral.ID, false).
+		Updates(map[string]interface{}{
+			"status":          "FIRST_TEST_COMPLETED",
+			"testRewardGiven": true,
+		})
+	if claimed.Error != nil {
+		return nil, claimed.Error
+	}
+	if claimed.RowsAffected != 1 {
+		return nil, nil
+	}
+
+	if err := creditReferralTestBonus(tx, referral.ReferrerID, 10000, "referral_first_test_referrer", "Referral Bonus - First Test", now); err != nil {
+		return nil, err
+	}
+
+	var refereeUsername string
+	if err := tx.Table("User").Select("username").Where("id = ?", referral.RefereeID).Scan(&refereeUsername).Error; err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(refereeUsername) == "" {
+		refereeUsername = "Your referee"
+	}
+
+	return &referralFirstTestNotification{
+		ReferrerID:      referral.ReferrerID,
+		RefereeUsername: refereeUsername,
+	}, nil
+}
+
+func notifyReferralFirstTestBonus(notification *referralFirstTestNotification) {
+	if notification == nil {
+		return
+	}
+
+	nestBaseURL := strings.TrimRight(utils.GetEnvWithKey("NEST_BASE_URL"), "/")
+	if nestBaseURL == "" {
+		nestBaseURL = "http://localhost:3000"
+	}
+
+	payload, err := json.Marshal(map[string]interface{}{
+		"referrerId":      notification.ReferrerID,
+		"refereeUsername": notification.RefereeUsername,
+	})
+	if err != nil {
+		log.Printf("[Referral] Failed to encode first-test notification: %v", err)
+		return
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Post(
+		fmt.Sprintf("%s/api/v1/notification/triggers/referral-first-test", nestBaseURL),
+		"application/json",
+		bytes.NewReader(payload),
+	)
+	if err != nil {
+		log.Printf("[Referral] Failed to send first-test notification: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		log.Printf("[Referral] First-test notification returned status %s", resp.Status)
+	}
+}
+
+func creditReferralTestBonus(tx *gorm.DB, userID, points int, pointType, title string, now time.Time) error {
+	amountInNaira := float64(points) / float64(getPointsToNairaRate())
+	updatedWallet := tx.Model(&models.Wallet{}).
+		Where(`"userId" = ?`, userID).
+		Updates(map[string]interface{}{
+			"balance":     gorm.Expr(`"balance" + ?`, amountInNaira),
+			"savingsBalance": gorm.Expr(`"savingsBalance" + ?`, amountInNaira),
+			"goldBalance": gorm.Expr(`"goldBalance" + ?`, amountInNaira),
+		})
+	if updatedWallet.Error != nil {
+		return updatedWallet.Error
+	}
+	if updatedWallet.RowsAffected != 1 {
+		return fmt.Errorf("wallet not found for referral reward user %d", userID)
+	}
+
+	pointReference := "POINTS_" + uuid.NewString()
+	if err := tx.Create(&models.Point{
+		ID:          uuid.NewString(),
+		UserID:      userID,
+		Points:      points,
+		Reference:   &pointReference,
+		Type:        pointType,
+		AccountType: "Savings",
+		CreatedAt:   now,
+	}).Error; err != nil {
+		return err
+	}
+
+	updatedUser := tx.Model(&models.User{}).
+		Where("id = ?", userID).
+		Update("lifetime_points", gorm.Expr("lifetime_points + ?", points))
+	if updatedUser.Error != nil {
+		return updatedUser.Error
+	}
+	if updatedUser.RowsAffected != 1 {
+		return fmt.Errorf("user not found for referral reward user %d", userID)
+	}
+
+	transactionType := "credit"
+	accountType := "Savings"
+	transactionStatus := "SUCCESS"
+	entryType := "Reward"
+	description := title
+	transactionReference := "REFERRAL_TEST_" + uuid.NewString()
+	if err := tx.Create(&models.WalletTransaction{
+		UserID:          userID,
+		Amount:          amountInNaira,
+		Type:            &transactionType,
+		Currency:        "NGN",
+		AccountType:     &accountType,
+		Status:          &transactionStatus,
+		TransactionType: &entryType,
+		Description:     &description,
+		TrxRef:          &transactionReference,
+		CreatedAt:       now,
+	}).Error; err != nil {
+		return err
+	}
+
+	return tx.Create(&models.ActivityWallet{
+		UserID:      userID,
+		Type:        "credit",
+		Title:       title,
+		Description: title,
+		Amount:      amountInNaira,
+		Currency:    "NGN",
+		Status:      "SUCCESS",
+		CreatedAt:   now,
+	}).Error
+}
+
 func creditQuizReward(tx *gorm.DB, userID int, amountInNaira float64, subject string, score int, totalPoints int, now time.Time) error {
 	if amountInNaira <= 0 {
 		return nil
@@ -443,15 +651,16 @@ func creditQuizReward(tx *gorm.DB, userID int, amountInNaira float64, subject st
 		Where(`"userId" = ?`, userID).
 		Updates(map[string]interface{}{
 			"balance":     gorm.Expr(`"balance" + ?`, amountInNaira),
+			"savingsBalance": gorm.Expr(`"savingsBalance" + ?`, amountInNaira),
 			"goldBalance": gorm.Expr(`"goldBalance" + ?`, amountInNaira),
 		}).Error; err != nil {
 		return err
 	}
 
-	// 2. Create WalletTransaction tagged to the Gold Account with the standard
+	// 2. Create WalletTransaction tagged to the Savings Account with the standard
 	//    "Credit Wallet - Quiz Earning" label.
 	trxType := "credit"
-	goldType := "Gold"
+	savingsType := "Savings"
 	status := "Completed"
 	transactionType := "Reward"
 	description := labels.Wallet("quizEarning", nil)
@@ -465,7 +674,7 @@ func creditQuizReward(tx *gorm.DB, userID int, amountInNaira float64, subject st
 		Type:            &trxType,
 		TransactionType: &transactionType,
 		Currency:        "NGN",
-		AccountType:     &goldType,
+		AccountType:     &savingsType,
 		Status:          &status,
 		Description:     &description,
 		TrxRef:          &trxRef,
@@ -519,7 +728,7 @@ func creditQuizReward(tx *gorm.DB, userID int, amountInNaira float64, subject st
 		payload := map[string]interface{}{
 			"userId":  userID,
 			"title":   description,
-			"message": fmt.Sprintf("Your Gold Wallet has been credited with ₦%.0f from %s Quiz", amountInNaira, subject),
+			"message": fmt.Sprintf("Your Savings Wallet has been credited with ₦%.0f from %s Quiz", amountInNaira, subject),
 			"type":    "quiz_reward",
 		}
 		body, _ := json.Marshal(payload)

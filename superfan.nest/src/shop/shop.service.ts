@@ -4,6 +4,7 @@ import {
   BadRequestException,
   UnauthorizedException,
 } from '@nestjs/common';
+import { NotificationService } from '../notification/notification.service';
 import { prisma } from '../prisma/prisma';
 import {
   GetProductsQueryDto,
@@ -21,6 +22,7 @@ function generateOrderNumber(): string {
 
 @Injectable()
 export class ShopService {
+  constructor(private readonly notificationService: NotificationService) {}
   async getProducts(query?: GetProductsQueryDto) {
     const where: any = {};
 
@@ -44,7 +46,7 @@ export class ShopService {
     const [products, total] = await Promise.all([
       prisma.product.findMany({
         where,
-        orderBy: { id: 'asc' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         skip,
         take: limit,
       }),
@@ -270,23 +272,21 @@ export class ShopService {
             data: {
               userId,
               balance: 0,
-              personalBalance: 0,
-              goldBalance: 0,
-            },
+                                        },
           });
         }
 
-        const isGold = dto.subWallet?.toLowerCase() === 'gold';
-        let availableBalance = isGold
-          ? Number(wallet.goldBalance) || 0
-          : Number(wallet.personalBalance) || 0;
+        const isSavings = dto.subWallet?.toLowerCase() === 'savings';
+        let availableBalance = isSavings
+          ? Number(wallet.savingsBalance) || 0
+          : Number(wallet.checkingBalance) || 0;
 
-        if (!isGold) {
+        if (!isSavings) {
           const held = await tx.walletTransaction.aggregate({
             _sum: { amount: true },
             where: {
               userId,
-              account_type: 'Personal',
+              account_type: { in: ['Checking', 'checking'] },
               holdUntil: { gt: new Date() },
             },
           });
@@ -295,16 +295,16 @@ export class ShopService {
 
         if (availableBalance < totalAmount) {
           throw new BadRequestException(
-            `Insufficient ${isGold ? 'Gold' : 'Personal'} wallet balance. Required: ₦${totalAmount.toFixed(2)}, Available: ₦${availableBalance.toFixed(2)}`,
+            `Insufficient ${isSavings ? 'Savings' : 'Checking'} wallet balance. Required: ₦${totalAmount.toFixed(2)}, Available: ₦${availableBalance.toFixed(2)}`,
           );
         }
 
         // Deduct from wallet balance
-        if (isGold) {
+        if (isSavings) {
           await tx.wallet.update({
             where: { userId },
             data: {
-              goldBalance: { decrement: totalAmount },
+              savingsBalance: { decrement: totalAmount },
               balance: { decrement: totalAmount },
             },
           });
@@ -312,7 +312,7 @@ export class ShopService {
           await tx.wallet.update({
             where: { userId },
             data: {
-              personalBalance: { decrement: totalAmount },
+              checkingBalance: { decrement: totalAmount },
               balance: { decrement: totalAmount },
             },
           });
@@ -328,7 +328,7 @@ export class ShopService {
             payment_method: 'shop',
             reference: `SHOP-${Date.now()}`,
             status: 'SUCCESS',
-            account_name: `Shop Purchase (${dto.subWallet || 'Personal'})`,
+            account_name: `Shop Purchase (${dto.subWallet || 'Checking'})`,
             description: 'Shop Merch Payment',
           },
         });
@@ -362,6 +362,17 @@ export class ShopService {
         },
       });
     });
+
+    // ✅ Order Confirmed for <first product(s)>. — client notification page trigger
+    try {
+      const productLabel =
+        itemsData.length > 1
+          ? `${itemsData[0].productName} +${itemsData.length - 1} more`
+          : itemsData[0].productName;
+      await this.notificationService.orderConfirmed(userId, productLabel);
+    } catch {
+      // notifications must never break order placement
+    }
 
     return {
       message: 'Order placed successfully',
@@ -664,6 +675,17 @@ export class ShopService {
         returns: true,
       },
     });
+
+    // 📦 Order Shipped! #<orderNumber> is on its way. — generic status updates too
+    try {
+      await this.notificationService.orderStatusUpdate(
+        updatedOrder.userId,
+        updatedOrder.orderNumber,
+        normalized,
+      );
+    } catch {
+      // notifications must never break status updates
+    }
 
     return {
       message: `Order status updated to ${normalized}`,

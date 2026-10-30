@@ -2,9 +2,11 @@ import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHmac } from 'crypto';
 import { generateFiveUniqueRandomNumbers } from '../common/utils/utils';
+import { MailService } from '../mail/mail.service';
+import { ClerkService } from '../common/clerk/clerk.service';
 import { NotificationService } from '../notification/notification.service';
-import { WalletService } from '../wallet/wallet.service';
 import { prisma } from '../prisma/prisma';
+import { WalletService } from '../wallet/wallet.service';
 import { DisbursementEventDataDto, MonnifyWebhookDto } from './webhook.dto';
 
 @Injectable()
@@ -16,6 +18,8 @@ export class MonnifyWebhookService {
     private readonly configService: ConfigService,
     private readonly notificationService: NotificationService,
     private readonly walletService: WalletService,
+    private readonly mailService: MailService,
+    private readonly clerkService: ClerkService,
   ) {
     this.merchantClientSecret = process.env.MONNIFY_SECRET_KEY;
   }
@@ -274,7 +278,7 @@ if (bankTransfer) {
         account_name: bankTransfer.accountName,
         bank_name: bankTransfer.bankName,
         account_no: bankTransfer.accountNumber,
-        account_type: 'personal',
+        account_type: 'checking',
         trx_ref: `${generateFiveUniqueRandomNumbers()}`
       },
     }),
@@ -441,7 +445,7 @@ if (bankTransfer) {
     }
 
     await prisma.$transaction([
-      // 💰 Update Wallet Balance (⚠️ still single wallet per user)
+      // 💰 Update Wallet Balance (⚠️ still single wallet per user)dddd
       prisma.wallet.update({
         where: { userId: user.id },
         data: {
@@ -505,7 +509,21 @@ if (bankTransfer) {
     eventData: MonnifyWebhookDto['eventData'],
   ): Promise<void> {
     this.logger.warn(`Failed transaction: ${eventData.transactionReference}`);
-    // TODO: notify customer, log failure reason, etc.
+    // ⚠️ Payment Failed. Tap to retry. — resolve payer from payment reference
+    try {
+      const reference = eventData?.paymentReference || eventData?.transactionReference;
+      if (reference) {
+        const existingTx = await prisma.walletTransaction.findFirst({
+          where: { reference },
+          select: { userId: true },
+        });
+        if (existingTx?.userId) {
+          await this.notificationService.paymentFailed(existingTx.userId);
+        }
+      }
+    } catch {
+      // notifications must never break webhook processing
+    }
 
     console.log(eventData, 'handle failed transaction');
   }
@@ -532,7 +550,21 @@ if (bankTransfer) {
     eventData: MonnifyWebhookDto['eventData'],
   ): Promise<void> {
     this.logger.warn(`Failed transaction: ${eventData.transactionReference}`);
-    // TODO: notify customer, log failure reason, etc.
+    // ⚠️ Payment Failed. Tap to retry.
+    try {
+      const reference = eventData?.paymentReference || eventData?.transactionReference;
+      if (reference) {
+        const existingTx = await prisma.walletTransaction.findFirst({
+          where: { reference },
+          select: { userId: true },
+        });
+        if (existingTx?.userId) {
+          await this.notificationService.paymentFailed(existingTx.userId);
+        }
+      }
+    } catch {
+      // notifications must never break webhook processing
+    }
 
     console.log(eventData, 'handle rejected payment');
   }
@@ -669,7 +701,25 @@ if (bankTransfer) {
       `failed disbursement transaction: ${eventData.transactionReference}`,
     );
     console.log(eventData, 'reversed transaction data');
-    // TODO: reverse any credits applied, notify customer, etc.
+    try {
+      const payout = await prisma.payout.findFirst({
+        where: {
+          OR: [
+            { reference: eventData.reference },
+            { reference: eventData.transactionReference },
+            { providerRef: eventData.reference },
+            { providerRef: eventData.transactionReference },
+          ],
+        },
+      });
+      if (payout) {
+        await this.notificationService
+          .withdrawalFailed(payout.userId)
+          .catch(() => undefined);
+      }
+    } catch (error) {
+      this.logger.error('Failed disbursement notification error', error);
+    }
   }
 
   private async handleMandate(
@@ -924,4 +974,229 @@ if (bankTransfer) {
     throw error;
   }
 }
+
+  /**
+   * Verifies Clerk webhook signature using svix headers and CLERK_WEBHOOK_SECRET.
+   */
+  async verifyClerkWebhook(
+    rawBody: string,
+    headers: {
+      'svix-id'?: string;
+      'svix-timestamp'?: string;
+      'svix-signature'?: string;
+    },
+  ): Promise<any> {
+    const webhookSecret =
+      this.configService.get<string>('CLERK_WEBHOOK_SECRET') ||
+      process.env.CLERK_WEBHOOK_SECRET;
+
+    if (!webhookSecret) {
+      this.logger.error('CLERK_WEBHOOK_SECRET is not configured in server environment');
+      throw new UnauthorizedException('CLERK_WEBHOOK_SECRET is not configured');
+    }
+
+    const svixId = headers['svix-id'];
+    const svixTimestamp = headers['svix-timestamp'];
+    const svixSignature = headers['svix-signature'];
+
+    if (!svixId || !svixTimestamp || !svixSignature) {
+      this.logger.warn('Missing required Svix headers in Clerk webhook');
+      throw new UnauthorizedException('Missing Svix signature headers');
+    }
+
+    try {
+      // @ts-ignore
+      const { Webhook } = await import('svix');
+      const wh = new Webhook(webhookSecret);
+      wh.verify(rawBody, {
+        'svix-id': svixId,
+        'svix-timestamp': svixTimestamp,
+        'svix-signature': svixSignature,
+      });
+      ////////////////dsdsds
+      const parsed = typeof rawBody === 'string' ? JSON.parse(rawBody) : rawBody;
+      return parsed;
+    } catch (err: any) {
+      this.logger.warn('Clerk webhook signature verification failed: ' + err.message);
+      throw new UnauthorizedException('Invalid Clerk webhook signature: ' + err.message);
+    }
+  }
+
+  /**
+   * Handles verified Clerk webhook events (e.g. emails.created).
+   */
+  async handleClerkWebhookEvent(event: any): Promise<any> {
+    const eventType = event?.type;
+    this.logger.log(`[Clerk Webhook] Processing event: "${eventType}"`);
+
+    if (eventType === 'email.created' || eventType === 'emails.created') {
+      const emailData = event.data || {};
+      const toEmail =
+        emailData.to_email_address ||
+        emailData.email_address ||
+        emailData.to ||
+        emailData.data?.to_email_address ||
+        emailData.data?.email_address;
+
+      if (!toEmail) {
+        this.logger.warn(`[Clerk Webhook] "${eventType}" received but no to_email_address found in payload: ${JSON.stringify(emailData)}`);
+        return { received: true, handled: false, reason: 'missing_email' };
+      }
+
+      // Extract 6-digit OTP code from data object, subject, or text body
+      let otpCode: string | undefined =
+        emailData.data?.otp_code ||
+        emailData.data?.otp ||
+        emailData.data?.code ||
+        emailData.otp ||
+        emailData.code;
+
+      if (!otpCode && typeof emailData.body_plain === 'string') {
+        const match = emailData.body_plain.match(/\b\d{6}\b/);
+        if (match) otpCode = match[0];
+      }
+
+      if (!otpCode && typeof emailData.subject === 'string') {
+        const match = emailData.subject.match(/\b\d{6}\b/);
+        if (match) otpCode = match[0];
+      }
+
+      if (!otpCode && typeof emailData.body === 'string') {
+        const match = emailData.body.match(/\b\d{6}\b/);
+        if (match) otpCode = match[0];
+      }
+
+      if (!otpCode) {
+        this.logger.warn(
+          `[Clerk Webhook] "${eventType}" for ${toEmail} could not extract OTP code. Payload: ${JSON.stringify(emailData)}`,
+        );
+        return { received: true, handled: false, reason: 'otp_not_found' };
+      }
+
+      // Determine recipient's first name
+      let firstName: string =
+        emailData.data?.first_name ||
+        emailData.data?.firstName ||
+        '';
+
+      if (!firstName) {
+        try {
+          const user = await prisma.user.findFirst({
+            where: { email: { equals: toEmail, mode: 'insensitive' } },
+            select: { firstName: true },
+          });
+          if (user?.firstName) {
+            firstName = user.firstName;
+          }
+        } catch {
+          // ignore lookup error
+        }
+      }
+
+      if (!firstName) {
+        firstName = toEmail.split('@')[0] || 'Superfan';
+      }
+
+      this.logger.log(
+        `[Clerk Webhook] Extracted toEmail="${toEmail}", OTP="${otpCode}", firstName="${firstName}". Queueing email via mailService...`,
+      );
+
+      const job = await this.mailService.verifyEmail(toEmail, otpCode, firstName);
+
+      this.logger.log(`[Clerk Webhook] mailService.verifyEmail completed. BullMQ Job ID: ${job?.id || 'queued'}`);
+
+      return { received: true, handled: true, event: eventType, to: toEmail, otp: otpCode, jobId: job?.id };
+    }
+
+    if (eventType === 'user.created' || eventType === 'user.updated') {
+      const userData = event.data || {};
+      const clerkUserId = userData.id;
+      const emailAddresses: any[] = userData.email_addresses || [];
+      const primaryEmailId = userData.primary_email_address_id;
+
+      const primaryObj = emailAddresses.find((e: any) => e.id === primaryEmailId) || emailAddresses[0];
+      const verifiedObj = emailAddresses.find((e: any) => e.verification?.status === 'verified');
+      const targetEmailObj = verifiedObj || primaryObj;
+      const toEmail = targetEmailObj?.email_address;
+      const isEmailVerified = Boolean(
+        targetEmailObj?.verification?.status === 'verified' ||
+        emailAddresses.some((e: any) => e.verification?.status === 'verified')
+      );
+
+      this.logger.log(
+        `[Clerk Webhook] ${eventType} for clerkUserId="${clerkUserId}", email="${toEmail}", isEmailVerified=${isEmailVerified}`,
+      );
+
+      if (!toEmail || !isEmailVerified) {
+        this.logger.log(`[Clerk Webhook] Skipping welcome email: email missing or not yet verified`);
+        return { received: true, handled: false, reason: 'not_verified_or_no_email' };
+      }
+
+      const publicMetadata = userData.public_metadata || {};
+      if (publicMetadata.welcomeEmailSent) {
+        this.logger.log(`[Clerk Webhook] Welcome email already sent for clerkUserId="${clerkUserId}"`);
+        return { received: true, handled: false, reason: 'already_sent' };
+      }
+
+      let firstName =
+        userData.first_name ||
+        userData.firstName ||
+        '';
+
+      if (!firstName && toEmail) {
+        try {
+          const dbUser = await prisma.user.findFirst({
+            where: { email: { equals: toEmail, mode: 'insensitive' } },
+            select: { firstName: true },
+          });
+          if (dbUser?.firstName) firstName = dbUser.firstName;
+        } catch {
+          // ignore lookup error
+        }
+      }
+
+      if (!firstName && toEmail) {
+        firstName = toEmail.split('@')[0] || 'Superfan';
+      }
+
+      const frontendUrl = process.env.FRONTEND_URL || 'https://superfan.ng';
+      let startQuizUrl = `${frontendUrl}/get-started`;
+
+      if (clerkUserId && this.clerkService) {
+        try {
+          const ticket = await this.clerkService.createSignInTicket(clerkUserId);
+          if (ticket) {
+            startQuizUrl = `${frontendUrl}/auth/magic?token=${ticket}&email=${encodeURIComponent(toEmail)}`;
+          }
+        } catch (err: any) {
+          this.logger.warn(`[Clerk Webhook] Could not create sign-in ticket for welcome email: ${err?.message}`);
+        }
+      }
+
+      this.logger.log(`[Clerk Webhook] Queueing welcome email for ${toEmail}...`);
+      const job = await this.mailService.welcomeUserEmail(toEmail, firstName, startQuizUrl);
+
+      if (clerkUserId && this.clerkService) {
+        try {
+          await this.clerkService.getClient().users.updateUser(clerkUserId, {
+            publicMetadata: {
+              ...publicMetadata,
+              welcomeEmailSent: true,
+            },
+          });
+          this.logger.log(`[Clerk Webhook] Marked welcomeEmailSent=true in Clerk publicMetadata for ${clerkUserId}`);
+        } catch (err: any) {
+          this.logger.warn(`[Clerk Webhook] Failed to update Clerk publicMetadata: ${err?.message}`);
+        }
+      }
+
+      return { received: true, handled: true, event: eventType, to: toEmail, jobId: job?.id };
+    }
+
+    this.logger.warn(`[Clerk Webhook] Ignored unhandled event type: "${eventType}"`);
+    return { received: true, handled: false, event: eventType };
+  }
+
 }
+
+///ssssssssssssssssss

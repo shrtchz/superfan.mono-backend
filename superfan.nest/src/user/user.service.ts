@@ -11,12 +11,13 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { TestLevel, User } from '@prisma/client';
+import { Prisma, TestLevel, User } from '@prisma/client';
 import * as argon from 'argon2';
 import { PostHog } from 'posthog-node';
 import { ClerkService } from '../common/clerk/clerk.service';
 import { generateReferralCode } from '../common/shared/lib';
 import { PointsConversionUtil } from '../common/utils/points-conversion.util';
+import { ExchangeRateService } from '../common/services/exchange-rate.service';
 import { generateFiveUniqueRandomNumbers } from '../common/utils/utils';
 import { ElasticsearchService } from '../elasticsearch/elasticsearch.service';
 import { ImageService } from '../image/image.service';
@@ -40,11 +41,13 @@ import {
 } from './dto/auth.dto';
 import { PresenceGateway } from './gateway/presence.gateway';
 import { DiditService, FileUploadInput } from './didit.service';
+import { AccountCreationRateLimiterService } from './account-creation-rate-limiter.service';
 
 type SyncUserMetadata = {
   referralCode?: string;
   ip_address?: string;
   location?: string;
+  userAgent?: string;
 };
 
 @Injectable()
@@ -65,9 +68,14 @@ export class UserService {
     private pointsConversionUtil: PointsConversionUtil,
     private readonly diditService: DiditService,
     private readonly imageService: ImageService,
+    private readonly rateLimiter: AccountCreationRateLimiterService,
+    private readonly exchangeRateService: ExchangeRateService,
   ) {}
 
-  async signupUser(dto: AuthDto): Promise<any> {
+  async signupUser(dto: AuthDto, ip?: string): Promise<any> {
+    const clientIp = this.rateLimiter.normalizeIp(ip || dto.ip_address);
+    const releaseRateLimit = await this.rateLimiter.checkAndReserve(clientIp);
+
     try {
       // ✅ Check if email already exists
       const existingEmail = await prisma.user.findUnique({
@@ -169,6 +177,7 @@ export class UserService {
           verificationCode,
           verificationCodeExpiry: verificationExpiry,
           active: false,
+          ip_address: clientIp || null,
         },
       });
 
@@ -205,6 +214,7 @@ export class UserService {
 
       try {
         await this.mail.verifyEmail(dto.email, verificationCode, dto.firstName);
+        await this.notificationService.otpCodeSent(user.id, verificationCode).catch(() => null);
       } catch (mailError) {
         console.warn('Verification email failed to queue during signup (non-fatal):', mailError);
       }
@@ -217,6 +227,7 @@ export class UserService {
         suscriptionPlan: user.subscriptionPlan,
       };
     } catch (error) {
+      releaseRateLimit();
       console.error('Signup error:', error);
       if (error instanceof HttpException) {
         throw error;
@@ -262,12 +273,14 @@ export class UserService {
         role: user.roleName,
       });
 
-      const magicLink = await this.generateMagicLink(user);
+      const magicLink = await this.generateMagicLink(user).catch(() => null);
+      const frontendUrl = process.env.FRONTEND_URL || 'https://superfan.ng';
+      const startQuizUrl = magicLink?.magicLinkURI || `${frontendUrl}/get-started`;
 
       await this.mail.welcomeUserEmail(
         dto.email,
-        user.firstName,
-        magicLink.magicLinkURI,
+        user.firstName || 'Superfan',
+        startQuizUrl,
       );
 
       return { message: 'Email verified successfully', id: user.id };
@@ -320,6 +333,8 @@ export class UserService {
   async syncFromClerkToken(
     authorizationHeader: string | undefined,
     metadata: SyncUserMetadata = {},
+    userAgent?: string,
+    ip?: string,
   ) {
     try {
       const token = (authorizationHeader || '')
@@ -342,7 +357,7 @@ export class UserService {
       });
 
       const clerkUser = await this.clerkService.getClient().users.getUser(payload.sub);
-      return this.syncFromClerk(clerkUser, metadata);
+      return this.syncFromClerk(clerkUser, metadata, userAgent, ip);
     } catch (error) {
       console.error('Sync from Clerk token error:', error);
       throw new ForbiddenException(
@@ -351,16 +366,15 @@ export class UserService {
     }
   }
 
-  async syncFromClerk(clerkUser: any, metadata: SyncUserMetadata = {}) {
+  async syncFromClerk(clerkUser: any, metadata: SyncUserMetadata = {}, userAgent?: string, ip?: string) {
     try {
       const clerkUserId = clerkUser.id as string;
-      const email = clerkUser.emailAddresses?.[0]?.emailAddress as
-        | string
-        | undefined;
+      const loginMethod =
+        clerkUser.externalAccounts?.[0]?.provider?.replace(/^oauth_/, '') || 'clerk';
+      const rawEmail = clerkUser.emailAddresses?.[0]?.emailAddress as string | undefined;
+      const email = rawEmail;
 
-      if (!email) {
-        throw new BadRequestException('Clerk user has no email address');
-      }
+
 
       const phone =
         (clerkUser.unsafeMetadata?.phone as string) ||
@@ -369,13 +383,11 @@ export class UserService {
       const referralCode =
         metadata.referralCode ||
         (clerkUser.unsafeMetadata?.referralCode as string | undefined);
-      const loginMethod =
-        clerkUser.externalAccounts?.[0]?.provider || 'clerk';
 
       let user = await this.findUserByClerkId(clerkUserId);
 
       if (!user) {
-        user = await this.findUserByEmail(email);
+        user = email ? await this.findUserByEmail(email) : null;
         if (user) {
           user = await prisma.user.update({
             where: { id: user.id },
@@ -385,19 +397,35 @@ export class UserService {
       }
 
       if (!user) {
-        user = await this.registerClerkUser({
-          clerkUserId,
-          email,
-          firstName: clerkUser.firstName || 'User',
-          lastName: clerkUser.lastName || '',
-          username:
-            clerkUser.username ||
-            clerkUser.firstName?.toLowerCase() ||
-            `user_${clerkUserId.slice(-6)}`,
-          phone,
-          login_method: loginMethod,
-          referralCode,
-        });
+        if (!email) {
+          throw new BadRequestException(
+            'Email address is required to complete registration. Please verify your email on the sign-up page.',
+          );
+        }
+        const clientIp = this.rateLimiter.normalizeIp(
+          ip || metadata.ip_address || (clerkUser.unsafeMetadata?.ip_address as string),
+        );
+        const releaseRateLimit = await this.rateLimiter.checkAndReserve(clientIp);
+
+        try {
+          user = await this.registerClerkUser({
+            clerkUserId,
+            email,
+            firstName: clerkUser.firstName || 'User',
+            lastName: clerkUser.lastName || '',
+            username:
+              clerkUser.username ||
+              clerkUser.firstName?.toLowerCase() ||
+              `user_${clerkUserId.slice(-6)}`,
+            phone,
+            login_method: loginMethod,
+            referralCode,
+            ip_address: clientIp || null,
+          });
+        } catch (err) {
+          releaseRateLimit();
+          throw err;
+        }
       }
 
       const clerkImageUrl =
@@ -416,6 +444,17 @@ export class UserService {
         },
       });
 
+      const effectiveReferralCode = user.referredByCode || referralCode || undefined;
+      if (effectiveReferralCode) {
+        if (!user.referredByCode) {
+          user = await prisma.user.update({
+            where: { id: user.id },
+            data: { referredByCode: effectiveReferralCode },
+          });
+        }
+        await this.processReferralSignup(user, effectiveReferralCode);
+      }
+
       try {
         this.presenceGateway.setUserOnline(user.id);
       } catch (presenceError) {
@@ -428,6 +467,48 @@ export class UserService {
         console.warn('user.logged_in event failed during sync (non-fatal):', eventError);
       }
 
+      try {
+        await this.flagNewLoginDevice(user, userAgent);
+      } catch {
+        // notifications must never break login flow
+      }
+
+      // Automatically send welcome email once OTP / email is verified if not already sent
+      const isEmailVerified = Boolean(
+        clerkUser.emailAddresses?.some(
+          (e: any) => e.verification?.status === 'verified',
+        ),
+      );
+
+      if (isEmailVerified && !clerkUser.publicMetadata?.welcomeEmailSent) {
+        try {
+          const magicLink = await this.generateMagicLink(user).catch(() => null);
+          const frontendUrl = process.env.FRONTEND_URL || 'https://superfan.ng';
+          const startQuizUrl = magicLink?.magicLinkURI || `${frontendUrl}/get-started`;
+          await this.mail.welcomeUserEmail(
+            user.email,
+            user.firstName || clerkUser.firstName || 'Superfan',
+            startQuizUrl,
+          );
+          await this.clerkService
+            .getClient()
+            .users.updateUser(clerkUserId, {
+              publicMetadata: {
+                ...(clerkUser.publicMetadata || {}),
+                welcomeEmailSent: true,
+              },
+            })
+            .catch((err) => {
+              console.warn(
+                'Failed to update Clerk publicMetadata with welcomeEmailSent:',
+                err?.message,
+              );
+            });
+        } catch (welcomeErr) {
+          console.warn('Failed to send welcome email in syncFromClerk:', welcomeErr);
+        }
+      }
+
       return this.formatSyncUser(user);
     } catch (error) {
       console.error('Sync from Clerk error:', error);
@@ -435,6 +516,44 @@ export class UserService {
         error instanceof Error ? error.message : 'Failed to sync with Clerk'
       );
     }
+  }
+
+  private async flagNewLoginDevice(user: User, userAgent?: string) {
+    if (!userAgent || typeof userAgent !== 'string') return false;
+
+    const fingerprint = this.deviceFingerprint(userAgent);
+
+    const existing = await prisma.userDevice.findUnique({
+      where: { userId_fingerprint: { userId: user.id, fingerprint } },
+    });
+
+    if (existing) {
+      await prisma.userDevice.update({
+        where: { id: existing.id },
+        data: { lastSeenAt: new Date() },
+      });
+      return false;
+    }
+
+    await prisma.userDevice.create({
+      data: {
+        userId: user.id,
+        fingerprint,
+        userAgent: userAgent.slice(0, 500),
+      },
+    });
+
+    await this.notificationService.newLoginDevice(user.id);
+    return true;
+  }
+
+  private deviceFingerprint(userAgent: string): string {
+    let hash = 5381;
+    const normalized = userAgent.trim().replace(/\s+/g, ' ').toLowerCase();
+    for (let i = 0; i < normalized.length; i++) {
+      hash = (hash * 33) ^ normalized.charCodeAt(i);
+    }
+    return `djb2_${(hash >>> 0).toString(16)}_${normalized.length}`;
   }
 
   async updateOnboarding(
@@ -560,6 +679,10 @@ export class UserService {
         where: { id: user.id },
         data: { email: newEmail },
       });
+
+      this.notificationService
+        .contactInfoUpdated(user.id, 'email')
+        .catch(() => undefined);
 
       emailToUse = newEmail;
     }
@@ -746,7 +869,9 @@ export class UserService {
       });
 
       permissions =
-        subAdmin?.subAdminPermissions.map((p) => p.permission.name) || [];
+        subAdmin?.subAdminPermissions
+          .map((p) => p.permission.name)
+          .filter((name) => name !== 'home') || [];
     }
 
     await prisma.user.update({
@@ -808,6 +933,18 @@ export class UserService {
         // Handle referral bonuses
         if (dto.referralCode) {
           await this.processReferralSignup(user, dto.referralCode);
+        }
+
+        // Log user registration activity for platform updates
+        try {
+          await this.taskService.userRegistered({
+            id: user.id,
+            name: user.username || user.firstName || 'User',
+            email: user.email,
+            role: user.roleName || 'client',
+          });
+        } catch (activityErr) {
+          console.error('[UserService] Failed to log userRegistered activity:', activityErr);
         }
       }
 
@@ -990,6 +1127,10 @@ export class UserService {
       },
     });
 
+    this.notificationService
+      .paymentMethodAdded(userId, card.issuer || card.cardType || card.maskedPan)
+      .catch(() => undefined);
+
     return {
       success: true,
       message: 'Card saved successfully',
@@ -1057,6 +1198,10 @@ async getCard(userId: number): Promise<any> {
         },
       });
 
+      this.notificationService
+        .defaultPaymentMethodChanged(userId, card.issuer || card.cardType || card.maskedPan)
+        .catch(() => undefined);
+
       return {
         success: true,
         message: 'Default card updated successfully',
@@ -1099,6 +1244,10 @@ async getCard(userId: number): Promise<any> {
           });
         }
       }
+
+      this.notificationService
+        .paymentMethodRemoved(userId, card.issuer || card.cardType || card.maskedPan)
+        .catch(() => undefined);
 
       return {
         success: true,
@@ -1175,24 +1324,64 @@ async getCard(userId: number): Promise<any> {
       throw new NotFoundException('User not found');
     }
 
-    const badgeInfo = await this.getUserBadge(userId);
+    const [badgeInfo, quizEarnings] = await Promise.all([
+      this.getUserBadge(userId),
+      this.getQuizEarnings(userId),
+    ]);
     return {
       ...user,
       ...badgeInfo,
+      quizEarnings,
     };
   }
 
 
-  /** New: full-text / prefix search via Elasticsearch */
+  /** New: full-text / prefix search via Elasticsearch with database fallback */
   async searchUsersByUsername(query: string, limit = 10) {
-    const results = await this.es.searchUsers(query, limit);
+    let results: any[] = [];
+    try {
+      results = await this.es.searchUsers(query, limit);
+    } catch {
+      results = [];
+    }
 
     // Optional: fall back to Prisma ILIKE if ES returns nothing
     if (!results.length) {
       return prisma.user.findMany({
         where: { username: { contains: query, mode: 'insensitive' } },
-        select: { id: true, username: true },
+        select: {
+          id: true,
+          username: true,
+          profilePicture: true,
+          firstName: true,
+          lastName: true,
+        },
         take: limit,
+      });
+    }
+
+    // Enrich ES results with profilePicture and names from Prisma
+    const userIds = results.map((r: any) => Number(r.id)).filter(Boolean);
+    if (userIds.length > 0) {
+      const users = await prisma.user.findMany({
+        where: { id: { in: userIds } },
+        select: {
+          id: true,
+          username: true,
+          profilePicture: true,
+          firstName: true,
+          lastName: true,
+        },
+      });
+      const userMap = new Map(users.map((u) => [u.id, u]));
+      return results.map((r: any) => {
+        const u = userMap.get(Number(r.id));
+        return {
+          ...r,
+          profilePicture: u?.profilePicture ?? null,
+          firstName: u?.firstName ?? null,
+          lastName: u?.lastName ?? null,
+        };
       });
     }
 
@@ -1203,9 +1392,9 @@ async getCard(userId: number): Promise<any> {
   async indexUser(userId: number) {
     const user = await prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, username: true, email: true, createdAt: true },
+      select: { id: true, username: true, email: true, createdAt: true, profilePicture: true },
     });
-    if (user) await this.es.indexUser({id: user.id, username: user.username, email: user.email, createdAt: user.createdAt });
+    if (user) await this.es.indexUser({id: user.id, username: user.username, email: user.email, createdAt: user.createdAt, profilePicture: user.profilePicture });
   }
 
   async findUserByUsername(username: string): Promise<any> {
@@ -1280,6 +1469,111 @@ async getCard(userId: number): Promise<any> {
             .find((b) => b.required > points) || null,
   };
 }
+
+  async getQuizEarnings(userId: number) {
+    try {
+      // 1. Points exclusively earned from regular and live quiz
+      const pointsAgg = await prisma.point.aggregate({
+        where: {
+          userId,
+          type: {
+            in: ['quiz_reward', 'live_quiz_consolation'],
+          },
+        },
+        _sum: {
+          points: true,
+        },
+      });
+
+      const ongoingQuizzes = await prisma.ongoingQuiz.findMany({
+        where: {
+          userId,
+          isCompleted: true,
+        },
+        select: {
+          baseScore: true,
+          accuracyBonus: true,
+          speedBonus: true,
+          streakMultiplier: true,
+          adBonuses: true,
+          totalEarninginNaira: true,
+          totalEarning: true,
+        },
+      });
+
+      const ongoingQuizPoints = ongoingQuizzes.reduce((sum, q) => {
+        const pts =
+          (q.baseScore || 0) +
+          (q.accuracyBonus || 0) +
+          (q.speedBonus || 0) +
+          (q.streakMultiplier || 0) +
+          (q.adBonuses || 0);
+        return sum + pts;
+      }, 0);
+
+      const quizLeaderboardAgg = await prisma.quizLeaderboard.aggregate({
+        where: {
+          userId: String(userId),
+        },
+        _sum: {
+          earning: true,
+        },
+      });
+      const leaderboardPoints = quizLeaderboardAgg._sum.earning || 0;
+
+      const liveWinnerRewards = await prisma.reward.findMany({
+        where: {
+          userId,
+          type: 'live_quiz_winner',
+        },
+        select: {
+          amount: true,
+        },
+      });
+
+      const pointsToNairaRate = await this.pointsConversionUtil.getConversionRate();
+      const liveWinCash = liveWinnerRewards.reduce(
+        (sum, r) => sum + (Number(r.amount) || 0),
+        0,
+      );
+      const liveWinPoints = Math.round(liveWinCash * pointsToNairaRate);
+
+      const regularQuizPoints = Math.max(
+        pointsAgg._sum.points || 0,
+        ongoingQuizPoints,
+        leaderboardPoints,
+      );
+
+      const totalPoints = regularQuizPoints + liveWinPoints;
+
+      // 2. Cash converted exclusively from quiz points to Naira (NGN)
+      const totalCash = await this.pointsConversionUtil.pointsToNaira(totalPoints);
+
+      // 3. Stablecoin converted directly from cash via backend exchange rate
+      let totalStablecoin = 0;
+      try {
+        const usdtRate = await this.exchangeRateService.getNairaToUSDTRate();
+        if (totalCash > 0 && usdtRate > 0) {
+          totalStablecoin = totalCash / usdtRate;
+        }
+      } catch (err) {
+        this.logger.warn(`Failed to fetch USDT rate in getQuizEarnings: ${err?.message}`);
+        totalStablecoin = totalCash > 0 ? totalCash / 1600 : 0;
+      }
+
+      return {
+        points: totalPoints,
+        cash: totalCash,
+        stablecoin: totalStablecoin,
+      };
+    } catch (error) {
+      this.logger.error(`Failed to calculate quiz earnings for user ${userId}:`, error);
+      return {
+        points: 0,
+        cash: 0,
+      };
+    }
+  }
 
   async updateKycDetails(userId: number, dto: KycDto) {
     try {
@@ -1845,6 +2139,10 @@ async getCard(userId: number): Promise<any> {
       },
     });
 
+    this.notificationService
+      .passwordChanged(user.id)
+      .catch(() => undefined);
+
     return { message: 'Password has been reset successfully' };
   }
 
@@ -2023,56 +2321,110 @@ async getCard(userId: number): Promise<any> {
       dto.paymentMethod === 'wallet' ||
       dto.paymentMethod === 'WALLET' ||
       !dto.paymentMethod;
-    const subWallet = (dto.subWallet || 'personal').toLowerCase();
+    const subWallet = (dto.subWallet || 'checking').toLowerCase();
 
     if (isWalletPayment) {
       let wallet = await prisma.wallet.findUnique({ where: { userId } });
       if (!wallet) {
         wallet = await prisma.wallet.create({
-          data: { userId, balance: 0, personalBalance: 0, goldBalance: 0 },
+          data: { userId, balance: 0, checkingBalance: 0, savingsBalance: 0 },
         });
       }
 
-      const isGold = subWallet === 'gold';
-      let availableBalance = isGold
-        ? Number(wallet.goldBalance) || 0
-        : Number(wallet.personalBalance) || 0;
+      const isSavings = subWallet === 'savings';
+      // For internal transactions like Pro subscriptions, funds in holding state can be used
+      const rawChecking = Math.max(
+        Number(wallet.checkingBalance) || 0,
+        Number(wallet.personalBalance) || 0,
+      );
+      const walletBalance = isSavings
+        ? Number(wallet.savingsBalance) || 0
+        : rawChecking;
 
-      if (!isGold) {
-        const held = await prisma.walletTransaction.aggregate({
-          _sum: { amount: true },
-          where: {
-            userId,
-            account_type: 'Personal',
-            holdUntil: { gt: new Date() },
-          },
-        });
-        availableBalance = Math.max(0, availableBalance - Number(held._sum.amount || 0));
-      }
-
-      if (availableBalance < amount) {
+      if (walletBalance < amount) {
         throw new BadRequestException(
-          `Insufficient ${isGold ? 'Gold' : 'Personal'} wallet balance. Required: ₦${amount.toFixed(2)}, Available: ₦${availableBalance.toFixed(2)}`,
+          `Insufficient ${isSavings ? 'Savings' : 'Checking'} wallet balance. Required: ₦${amount.toFixed(2)}, Available: ₦${walletBalance.toFixed(2)}`,
         );
       }
 
       // Deduct from wallet
-      if (isGold) {
+      if (isSavings) {
         await prisma.wallet.update({
           where: { userId },
           data: {
-            goldBalance: { decrement: amount },
+            savingsBalance: { decrement: amount },
             balance: { decrement: amount },
           },
         });
       } else {
+        const currentPersonal = Number(wallet.personalBalance) || 0;
         await prisma.wallet.update({
           where: { userId },
           data: {
-            personalBalance: { decrement: amount },
+            checkingBalance: { decrement: amount },
+            personalBalance: currentPersonal > 0 ? { decrement: Math.min(currentPersonal, amount) } : undefined,
             balance: { decrement: amount },
           },
         });
+
+        // Release hold from active held transactions since funds are used for internal transaction
+        let remainingToConsume = amount;
+        const heldTransactions = await prisma.walletTransaction.findMany({
+          where: {
+            userId,
+            account_type: { in: ['Checking', 'checking'] },
+            holdUntil: { gt: new Date() },
+          },
+          orderBy: { createdAt: 'asc' },
+        });
+
+        for (const tx of heldTransactions) {
+          if (remainingToConsume <= 0) break;
+          const txAmount = Number(tx.amount) || 0;
+          if (txAmount <= remainingToConsume) {
+            await prisma.walletTransaction.update({
+              where: { id: tx.id },
+              data: { holdUntil: null },
+            });
+            remainingToConsume -= txAmount;
+          } else {
+            await prisma.walletTransaction.update({
+              where: { id: tx.id },
+              data: { amount: txAmount - remainingToConsume },
+            });
+            await prisma.walletTransaction.create({
+              data: {
+                userId: tx.userId,
+                amount: remainingToConsume,
+                type: tx.type,
+                currency: tx.currency,
+                username: tx.username,
+                account_name: tx.account_name,
+                payment_method: tx.payment_method,
+                bank_name: tx.bank_name,
+                cardToken: tx.cardToken,
+                wallet_address: tx.wallet_address,
+                account_no: tx.account_no,
+                account_type: tx.account_type,
+                settlement_date: tx.settlement_date,
+                reference: tx.reference ? `${tx.reference}-UNHELD` : null,
+                status: tx.status,
+                total_earnings: tx.total_earnings,
+                payouts: tx.payouts,
+                last_payout: tx.last_payout,
+                payment_date: tx.payment_date,
+                pending_balance: tx.pending_balance,
+                rewardType: tx.rewardType,
+                transactionType: tx.transactionType,
+                description: tx.description,
+                trx_ref: tx.trx_ref,
+                holdUntil: null,
+                walletId: tx.walletId,
+              },
+            });
+            remainingToConsume = 0;
+          }
+        }
       }
 
       // Record wallet transaction
@@ -2083,7 +2435,7 @@ async getCard(userId: number): Promise<any> {
           type: 'debit',
           currency: 'NGN',
           payment_method: 'subscription',
-          account_type: isGold ? 'Gold' : 'Personal',
+          account_type: isSavings ? 'Savings' : 'Checking',
           reference: `SUB-${Date.now()}`,
           status: 'SUCCESS',
           account_name: `Subscription (${subscriptionPlan})`,
@@ -2146,6 +2498,14 @@ async getCard(userId: number): Promise<any> {
       where: { id: userId },
       data: { subscriptionPlan },
     });
+
+    this.notificationService
+      .planUpgraded(userId, subscriptionPlan)
+      .catch(() => undefined);
+
+    if (isWalletPayment) {
+      this.eventEmitter.emit('user.wallet.updated', { userId });
+    }
 
     return {
       message: 'Subscription created successfully',
@@ -2220,6 +2580,10 @@ async getCard(userId: number): Promise<any> {
       data: { subscriptionPlan: dto.subscriptionPlan },
     });
 
+    this.notificationService
+      .planUpgraded(userId, dto.subscriptionPlan)
+      .catch(() => undefined);
+
     return subscription;
   }
 
@@ -2259,30 +2623,207 @@ async checkSubscriptionStatusbyUserId(userId: number): Promise<{
   };
 }
 
-  async fetchClients(params: { page: number; perPage: number }): Promise<any> {
+  async fetchClients(params: {
+    page?: number;
+    perPage?: number;
+    status?: string;
+    plan?: string;
+    search?: string;
+    sortBy?: string;
+    sortOrder?: 'asc' | 'desc';
+  }): Promise<any> {
     try {
-      const { page = 1, perPage = 10 } = params;
+      const page = Math.max(1, Number(params.page) || 1);
+      const perPage = Math.max(1, Number(params.perPage) || 10);
+      const { status, plan, search, sortBy = 'createdAt', sortOrder = 'desc' } = params;
 
       const skip = (page - 1) * perPage;
 
-      const [clients, total] = await prisma.$transaction([
+      const baseWhere: any = {
+        roleName: 'client',
+      };
+
+      const where: any = { ...baseWhere };
+
+      if (status) {
+        const normalized = status.toLowerCase().trim();
+        if (normalized === 'active') {
+          where.active = true;
+        } else if (normalized === 'inactive') {
+          where.active = false;
+        } else if (normalized === 'online') {
+          where.isOnline = true;
+        } else if (normalized === 'offline') {
+          where.isOnline = false;
+        } else if (normalized === 'banned') {
+          where.isBanned = true;
+        }
+      }
+
+      if (plan) {
+        const normalizedPlan = plan.toUpperCase().trim();
+        if (normalizedPlan === 'FREE') {
+          where.subscriptionPlan = 'FREE';
+        } else if (normalizedPlan === 'PREMIUM_PRO' || normalizedPlan === 'PRO') {
+          where.subscriptionPlan = 'PREMIUM_PRO';
+        } else if (normalizedPlan === 'PREMIUM_PRO_MAX' || normalizedPlan === 'PRO_MAX' || normalizedPlan === 'PRO MAX') {
+          where.subscriptionPlan = 'PREMIUM_PRO_MAX';
+        } else if (normalizedPlan === 'PREMIUM') {
+          where.subscriptionPlan = { in: ['PREMIUM_PRO', 'PREMIUM_PRO_MAX'] };
+        }
+      }
+
+      if (search && search.trim()) {
+        const q = search.trim();
+        where.OR = [
+          { username: { contains: q, mode: 'insensitive' } },
+          { firstName: { contains: q, mode: 'insensitive' } },
+          { lastName: { contains: q, mode: 'insensitive' } },
+          { email: { contains: q, mode: 'insensitive' } },
+          { phone: { contains: q, mode: 'insensitive' } },
+          { bvn: { contains: q, mode: 'insensitive' } },
+          { nin: { contains: q, mode: 'insensitive' } },
+          { country: { contains: q, mode: 'insensitive' } },
+          { state: { contains: q, mode: 'insensitive' } },
+        ];
+      }
+
+      const orderBy: any = {};
+      if (['createdAt', 'username', 'email', 'firstName', 'lastName', 'dob'].includes(sortBy)) {
+        orderBy[sortBy] = sortOrder === 'asc' ? 'asc' : 'desc';
+      } else {
+        orderBy.createdAt = 'desc';
+      }
+
+      const [clients, total, activeCount, inactiveCount, bannedCount] = await prisma.$transaction([
         prisma.user.findMany({
-          where: { roleName: 'client' },
+          where,
           skip,
           take: perPage,
+          orderBy,
         }),
-        prisma.user.count({
-          where: { roleName: 'client' },
-        }),
+        prisma.user.count({ where }),
+        prisma.user.count({ where: { ...baseWhere, active: true } }),
+        prisma.user.count({ where: { ...baseWhere, active: false } }),
+        prisma.user.count({ where: { ...baseWhere, isBanned: true } }),
       ]);
 
+      const clientIds = clients.map((c) => c.id);
+
+      const subscriptions = clientIds.length > 0
+        ? await prisma.subscription.findMany({
+            where: { userId: { in: clientIds } },
+            orderBy: { startDate: 'desc' },
+          })
+        : [];
+
+      const subscriptionMap = subscriptions.reduce((acc, sub) => {
+        if (!acc[sub.userId]) {
+          acc[sub.userId] = sub;
+        }
+        return acc;
+      }, {} as Record<number, any>);
+
+      const formatted = clients.map((user) => {
+        const sub = subscriptionMap[user.id];
+
+        const effectivePlan = user.subscriptionPlan || (sub?.subscriptionPlan ?? 'FREE');
+        let subscriptionName = 'Free';
+        let planTier: string | null = null;
+
+        if (effectivePlan === 'PREMIUM_PRO' || effectivePlan === 'PREMIUM_PRO_MAX') {
+          subscriptionName = 'Premium';
+          planTier = effectivePlan === 'PREMIUM_PRO' ? 'Pro' : 'Pro Max';
+        } else if (effectivePlan === 'FREE') {
+          subscriptionName = 'Free';
+          planTier = null;
+        } else if (effectivePlan) {
+          subscriptionName = String(effectivePlan);
+        }
+
+        let age: number | null = null;
+        if (user.dob) {
+          const birth = new Date(user.dob);
+          if (!isNaN(birth.getTime())) {
+            const today = new Date();
+            let calculatedAge = today.getFullYear() - birth.getFullYear();
+            const monthDiff = today.getMonth() - birth.getMonth();
+            if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birth.getDate())) {
+              calculatedAge--;
+            }
+            age = calculatedAge >= 0 ? calculatedAge : null;
+          }
+        }
+
+        const fullName = `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.username;
+
+        return {
+          id: user.id,
+          username: user.username,
+          displayPhoto: user.profilePicture || user.verify_photo || null,
+          profilePicture: user.profilePicture || null,
+          name: fullName,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          email: user.email,
+          phone: user.phone || null,
+          dateRegistered: user.createdAt,
+          createdAt: user.createdAt,
+          subscriptionPlan: effectivePlan,
+          subscription: subscriptionName,
+          plan: planTier,
+          subscriptionDate: sub?.startDate ?? null,
+          subscriptionExpiry: sub?.endDate ?? null,
+          birthDate: user.dob ?? null,
+          dob: user.dob ?? null,
+          age,
+          country: user.country || null,
+          state: user.state || null,
+          verifiedPhoto: user.verify_photo || null,
+          verify_photo: user.verify_photo || null,
+          bvn: user.bvn || null,
+          nin: user.nin || null,
+          residentialAddress: user.address || null,
+          address: user.address || null,
+          postal_code: user.postal_code || null,
+          status: user.active ? 'active' : 'inactive',
+          active: user.active,
+          isOnline: user.isOnline,
+          isBanned: user.isBanned,
+          lastLogin: user.login_timestamp ?? null,
+          login_timestamp: user.login_timestamp ?? null,
+          location: user.location || null,
+          ip_address: user.ip_address || null,
+          kyc_status: user.kyc_status,
+          kyc_tier: user.kyc_tier,
+          report: {
+            banReason: user.banReason || '',
+            banCategory: user.banCategory || '',
+            unbanReason: user.unBanReason || '',
+          },
+        };
+      });
+
       return {
-        data: clients,
+        data: formatted,
         meta: {
           page,
           perPage,
           total,
           lastPage: Math.ceil(total / perPage),
+          hasNextPage: page < Math.ceil(total / perPage),
+          hasPrevPage: page > 1,
+        },
+        counts: {
+          total,
+          active: activeCount,
+          inactive: inactiveCount,
+          banned: bannedCount,
+        },
+        statusCounts: {
+          active: activeCount,
+          inactive: inactiveCount,
+          banned: bannedCount,
         },
       };
     } catch (error) {
@@ -2290,24 +2831,46 @@ async checkSubscriptionStatusbyUserId(userId: number): Promise<{
     }
   }
 
-  async fetchSubadmin(params: { page: number; perPage: number }): Promise<any> {
+  async fetchSubadmin(params: {
+    page: number;
+    perPage: number;
+    status?: string;
+  }): Promise<any> {
     try {
-      const { page = 1, perPage = 10 } = params;
+      const { page = 1, perPage = 10, status } = params;
 
       const skip = (page - 1) * perPage;
 
-      const [users, total] = await prisma.$transaction([
+      const baseRoleWhere = {
+        roleName: { in: ['superadmin', 'subadmin'] },
+      };
+
+      const where: any = { ...baseRoleWhere };
+
+      if (status) {
+        const normalized = status.toLowerCase().trim();
+        if (normalized === 'active') {
+          where.active = true;
+        } else if (normalized === 'inactive') {
+          where.active = false;
+        }
+      }
+
+      const [users, total, activeCount, inactiveCount] = await prisma.$transaction([
         prisma.user.findMany({
-          where: {
-            roleName: { in: ['superadmin', 'subadmin'] },
-          },
+          where,
           skip,
           take: perPage,
+          orderBy: { createdAt: 'desc' },
         }),
         prisma.user.count({
-          where: {
-            roleName: { in: ['superadmin', 'subadmin'] },
-          },
+          where,
+        }),
+        prisma.user.count({
+          where: { ...baseRoleWhere, active: true },
+        }),
+        prisma.user.count({
+          where: { ...baseRoleWhere, active: false },
         }),
       ]);
 
@@ -2351,7 +2914,9 @@ async checkSubscriptionStatusbyUserId(userId: number): Promise<{
           if (!acc[item.subAdminId]) {
             acc[item.subAdminId] = [];
           }
-          acc[item.subAdminId].push(item.permission);
+          if (item.permission?.name !== 'home' && item.permission?.id !== 31) {
+            acc[item.subAdminId].push(item.permission);
+          }
           return acc;
         },
         {} as Record<number, any[]>,
@@ -2378,6 +2943,15 @@ async checkSubscriptionStatusbyUserId(userId: number): Promise<{
           perPage,
           total,
           lastPage: Math.ceil(total / perPage),
+        },
+        counts: {
+          active: activeCount,
+          inactive: inactiveCount,
+          total: activeCount + inactiveCount,
+        },
+        statusCounts: {
+          active: activeCount,
+          inactive: inactiveCount,
         },
       };
     } catch (error) {
@@ -2423,6 +2997,10 @@ async checkSubscriptionStatusbyUserId(userId: number): Promise<{
           username: true,
         },
       });
+
+      this.notificationService
+        .accountBanned(id, banReason)
+        .catch(() => undefined);
 
       // 4. Create history (you can also include creator name if needed)
       await this.taskService.createClientHistory({
@@ -2523,6 +3101,10 @@ async checkSubscriptionStatusbyUserId(userId: number): Promise<{
           username: true,
         },
       });
+
+      this.notificationService
+        .accountUnbanned(id)
+        .catch(() => undefined);
 
       // 4. Create history
       await this.taskService.createClientHistory({
@@ -2646,11 +3228,63 @@ async checkSubscriptionStatusbyUserId(userId: number): Promise<{
     }
   }
 
-  async deleteUser(id: number) {
+  async deleteUser(id: number, password?: string) {
     try {
-      await prisma.user.delete({
+      const user = await prisma.user.findUnique({
         where: { id: id },
       });
+      if (!user) {
+        throw new NotFoundException('User not found');
+      }
+      if (password && user.password) {
+        const passwordMatches = await argon.verify(user.password, password);
+        if (!passwordMatches) {
+          throw new ForbiddenException('Current password is incorrect');
+        }
+      }
+
+      // 1. Revoke access from Clerk
+      if (user.clerkUserId && this.clerkService) {
+        await this.clerkService
+          .getClient()
+          .users.deleteUser(user.clerkUserId)
+          .catch((err) => {
+            console.warn(`[deleteUser] Failed to delete Clerk user ${user.clerkUserId}:`, err);
+          });
+      }
+
+      // 2. Clear private payment cards and withdrawal accounts
+      await prisma.userCard.deleteMany({ where: { userId: id } }).catch(() => null);
+      await prisma.userWithdrawalBank.deleteMany({ where: { userId: id } }).catch(() => null);
+      await prisma.userWithdrawalWallet.deleteMany({ where: { userId: id } }).catch(() => null);
+      await prisma.userDevice.deleteMany({ where: { userId: id } }).catch(() => null);
+
+      // 3. Soft-delete and anonymize user PII (preserves accounting, reward & subscription history)
+      const timestamp = Date.now();
+      await prisma.user.update({
+        where: { id: id },
+        data: {
+          isDeleted: true,
+          deletedAt: new Date(),
+          active: false,
+          isOnline: false,
+          email: `deleted_${id}_${timestamp}@deleted.superfan.invalid`,
+          username: `deleted_user_${id}_${timestamp}`,
+          firstName: 'Deleted',
+          lastName: 'User',
+          phone: null,
+          clerkUserId: null,
+          referral_code: null,
+          profilePicture: null,
+          verify_photo: null,
+          address: null,
+          bvn: null,
+          nin: null,
+          resetToken: null,
+          verificationCode: null,
+        },
+      });
+
       return { message: 'User deleted successfully' };
     } catch (error) {
       throw error;
@@ -2734,6 +3368,7 @@ async updateDailyStreak(userId: number): Promise<{ streak: number; milestoneReac
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
 
   let newStreak = 1;
+  let streakWasReset = false;
 
   if (user?.lastStreakDate) {
     const last = new Date(user.lastStreakDate);
@@ -2748,6 +3383,7 @@ async updateDailyStreak(userId: number): Promise<{ streak: number; milestoneReac
       newStreak = user.dailyStreak + 1;
     } else {
       newStreak = 1;
+        streakWasReset = user.dailyStreak > 0;
     }
   }
 
@@ -2755,6 +3391,16 @@ async updateDailyStreak(userId: number): Promise<{ streak: number; milestoneReac
     where: { id: userId },
     data: { dailyStreak: newStreak, lastStreakDate: now },
   });
+
+  try {
+    if (streakWasReset) {
+      await this.notificationService.streakReset(userId);
+    } else if (newStreak === 5) {
+      await this.notificationService.streakMilestone(userId, newStreak);
+    }
+  } catch (error) {
+    this.logger.warn(`Failed to send streak notification for user ${userId}: ${error}`);
+  }
 
   return {
     streak: newStreak,
@@ -2777,6 +3423,7 @@ async findUserByEmail(email: string): Promise<any> {
     phone: string;
     login_method: string;
     referralCode?: string;
+    ip_address?: string | null;
   }): Promise<any> {
     const referralCode = generateReferralCode(data.firstName);
     const user = await prisma.user.create({
@@ -2794,6 +3441,7 @@ async findUserByEmail(email: string): Promise<any> {
         referral_code: referralCode,
         referredByCode: data.referralCode || null,
         active: true,
+        ip_address: data.ip_address || null,
       },
     });
 
@@ -2804,6 +3452,20 @@ async findUserByEmail(email: string): Promise<any> {
     if (data.referralCode) {
       await this.processReferralSignup(user, data.referralCode);
     }
+
+    // Log user registration activity for platform updates
+    try {
+      await this.taskService.userRegistered({
+        id: user.id,
+        name: user.username || user.firstName || 'User',
+        email: user.email,
+        role: user.roleName || 'client',
+      });
+    } catch (activityErr) {
+      console.error('[UserService] Failed to log userRegistered activity:', activityErr);
+    }
+
+    // Welcome email is triggered automatically once user email/OTP is verified
 
     return user;
   }
@@ -2852,76 +3514,263 @@ async findUserByEmail(email: string): Promise<any> {
       where: { refereeId: user.id },
     });
 
-    if (existingReferral) {
-      console.log('[Referral][END] Existing referral found for referee', {
+    if (existingReferral && existingReferral.referrerId !== referrer.id) {
+      console.warn('[Referral] Existing referral attribution does not match code', {
         refereeId: user.id,
-        existingReferral,
+        existingReferrerId: existingReferral.referrerId,
+        suppliedReferrerId: referrer.id,
       });
       return;
     }
 
-    // Create referral relationship record
-    const referralRecord = await prisma.referral.create({
+    const referralRecord = existingReferral ?? await prisma.referral.create({
       data: {
         referrerId: referrer.id,
         refereeId: user.id,
-        signupRewardGiven: true,
+        signupRewardGiven: false,
         testRewardGiven: false,
         status: 'SIGNED_UP',
       },
     });
+
+    const signupReference = `REFERRAL_SIGNUP_${referralRecord.id}`;
+    const refereeSignupReference = `REFERRAL_SIGNUP_REFEREE_${referralRecord.id}`;
+    const nairaAmount = await this.pointsConversionUtil.pointsToNaira(20000);
+
+    if (referralRecord.signupRewardGiven) {
+      const legacyCredit = await prisma.walletTransaction.findFirst({
+        where: {
+          userId: referrer.id,
+          type: 'credit',
+          account_type: 'Savings',
+          description: 'Referral Bonus - Sign up',
+          createdAt: {
+            gte: referralRecord.createdAt,
+            lte: new Date(referralRecord.createdAt.getTime() + 120_000),
+          },
+        },
+        select: { id: true },
+      });
+
+      const recoveredRewards = await prisma.$transaction(async (tx) => {
+        const referrerWalletCredited = legacyCredit
+          ? false
+          : await this.creditReferralSignupWallet(
+              tx,
+              referrer.id,
+              nairaAmount,
+              signupReference,
+              'Referral Bonus - Sign up',
+            );
+        const refereeRewardGranted = await this.grantRefereeSignupBonus(
+          tx,
+          user.id,
+          referralRecord.id,
+          nairaAmount,
+        );
+
+        return { referrerWalletCredited, refereeRewardGranted };
+      });
+
+      if (recoveredRewards.referrerWalletCredited) {
+        this.emitReferralWalletUpdated(referrer.id);
+        await this.notificationService.referralSignupBonus(referrer.id, user.username);
+      }
+      if (recoveredRewards.refereeRewardGranted) {
+        this.emitReferralWalletUpdated(user.id);
+        await this.notificationService.refereeSignupBonus(user.id);
+      }
+      return;
+    }
+
     console.log('[Referral] Referral record created', {
       referralId: referralRecord.id,
       referrerId: referrer.id,
       refereeId: user.id,
     });
 
-    // Referrer — Signup Bonus: 20,000 PTS credited directly to Gold Account
-    const point = await prisma.point.create({
-      data: {
+    const rewardsGranted = await prisma.$transaction(async (tx) => {
+      const claim = await tx.referral.updateMany({
+        where: { id: referralRecord.id, signupRewardGiven: false },
+        data: { signupRewardGiven: true },
+      });
+      if (claim.count !== 1) return null;
+
+      const point = await tx.point.create({
+        data: {
+          userId: referrer.id,
+          points: 20000,
+          reference: `POINTS_REFERRAL_SIGNUP_${referralRecord.id}`,
+          type: 'referral_signup',
+          accountType: 'Savings',
+        },
+      });
+
+      const refereePoint = await tx.point.create({
+        data: {
+          userId: user.id,
+          points: 20000,
+          reference: `POINTS_REFERRAL_SIGNUP_REFEREE_${referralRecord.id}`,
+          type: 'referee_signup_bonus',
+          accountType: 'Savings',
+        },
+      });
+
+      await tx.user.update({
+        where: { id: referrer.id },
+        data: { lifetimePoints: { increment: 20000 } },
+      });
+      await tx.user.update({
+        where: { id: user.id },
+        data: { lifetimePoints: { increment: 20000 } },
+      });
+
+      const referrerWalletCredited = await this.creditReferralSignupWallet(
+        tx,
+        referrer.id,
+        nairaAmount,
+        signupReference,
+        'Referral Bonus - Sign up',
+      );
+      const refereeWalletCredited = await this.creditReferralSignupWallet(
+        tx,
+        user.id,
+        nairaAmount,
+        refereeSignupReference,
+        'Referee Bonus - Sign up',
+      );
+
+      console.log('[Referral] Point created', {
+        pointId: point.id,
         userId: referrer.id,
-        points: 20000,
-        reference: `POINTS_${generateFiveUniqueRandomNumbers()}`,
-        type: 'referral_signup',
-        accountType: 'Gold',
-      },
+        points: point.points,
+        type: point.type,
+      });
+      console.log('[Referral] Referee point created', {
+        pointId: refereePoint.id,
+        userId: user.id,
+        points: refereePoint.points,
+        type: refereePoint.type,
+      });
+
+      return { referrerWalletCredited, refereeWalletCredited };
     });
 
-    await prisma.user.update({
-      where: { id: referrer.id },
-      data: { lifetimePoints: { increment: 20000 } },
-    });
+    if (!rewardsGranted) return;
 
-    console.log('[Referral] Point created', {
-      pointId: point.id,
-      userId: referrer.id,
-      points: point.points,
-      type: point.type,
-    });
-
-    // Credit referrer wallet so the balance is visible in the Gold Wallet
-    const nairaAmount = this.pointsConversionUtil.pointsToNaira(20000);
-    await this.walletService.creditWallet(
-      referrer.id,
-      nairaAmount,
-      'Referral Bonus - Sign up',
-      'Referral Bonus - Sign up',
-      'Gold',
-    );
     console.log('[Referral] Wallet credited for referrer', {
       referrerId: referrer.id,
       amount: nairaAmount,
     });
 
-    // Notification for referrer
-    await this.notificationService.createNotification(
-      referrer.id,
-      'Referral Bonus - Sign up',
-      `You earned 20,000 PTS (Gold Account) because @${user.username} signed up using your referral link.`,
-      'referral_reward',
-    );
+    if (rewardsGranted.referrerWalletCredited) {
+      this.emitReferralWalletUpdated(referrer.id);
+      await this.notificationService.referralSignupBonus(referrer.id, user.username);
+    }
+    if (rewardsGranted.refereeWalletCredited) {
+      this.emitReferralWalletUpdated(user.id);
+      await this.notificationService.refereeSignupBonus(user.id);
+    }
 
     console.log('[Referral][END] Completed successfully');
   }
-}
 
+  private async creditReferralSignupWallet(
+    tx: Prisma.TransactionClient,
+    referrerId: number,
+    amount: number,
+    reference: string,
+    description: string,
+  ): Promise<boolean> {
+    const existingCredit = await tx.walletTransaction.findFirst({
+      where: { reference },
+      select: { id: true },
+    });
+    if (existingCredit) return false;
+
+    await tx.wallet.upsert({
+      where: { userId: referrerId },
+      update: {
+        balance: { increment: amount },
+        savingsBalance: { increment: amount },
+              },
+      create: {
+        userId: referrerId,
+        balance: amount,
+        savingsBalance: amount,
+              },
+    });
+
+    await tx.walletTransaction.create({
+      data: {
+        userId: referrerId,
+        amount,
+        type: 'credit',
+        currency: 'NGN',
+        status: 'SUCCESS',
+        description,
+        account_type: 'Savings',
+        transactionType: 'Reward',
+        reference,
+        trx_ref: `REFERRAL_${generateFiveUniqueRandomNumbers()}`,
+      },
+    });
+
+    await tx.activityWallet.create({
+      data: {
+        userId: referrerId,
+        type: 'credit',
+        title: description,
+        description,
+        amount,
+        currency: 'NGN',
+        status: 'SUCCESS',
+      },
+    });
+
+    return true;
+  }
+
+  private async grantRefereeSignupBonus(
+    tx: Prisma.TransactionClient,
+    refereeId: number,
+    referralId: number,
+    amount: number,
+  ): Promise<boolean> {
+    const pointReference = `POINTS_REFERRAL_SIGNUP_REFEREE_${referralId}`;
+    const walletReference = `REFERRAL_SIGNUP_REFEREE_${referralId}`;
+    const existingPoint = await tx.point.findFirst({
+      where: { reference: pointReference },
+      select: { id: true },
+    });
+
+    if (!existingPoint) {
+      await tx.point.create({
+        data: {
+          userId: refereeId,
+          points: 20000,
+          reference: pointReference,
+          type: 'referee_signup_bonus',
+          accountType: 'Savings',
+        },
+      });
+      await tx.user.update({
+        where: { id: refereeId },
+        data: { lifetimePoints: { increment: 20000 } },
+      });
+    }
+
+    return this.creditReferralSignupWallet(
+      tx,
+      refereeId,
+      amount,
+      walletReference,
+      'Referee Bonus',
+    );
+  }
+
+  private emitReferralWalletUpdated(userId: number): void {
+    this.eventEmitter.emit('user.wallet.updated', { userId });
+    this.eventEmitter.emit('user.payment.history', { userId });
+  }
+}

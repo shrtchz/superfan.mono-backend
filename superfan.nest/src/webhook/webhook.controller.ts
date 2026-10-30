@@ -166,6 +166,41 @@ async handleBitnobWebhook(
   return { status: 'success' };
 }
 
+  @Post(['clerk', '/api/v1/webhook/clerk', '/api/v1/webhooks/clerk'])
+  @HttpCode(HttpStatus.OK)
+  async handleClerkWebhook(
+    @Headers('svix-id') svixId: string,
+    @Headers('svix-timestamp') svixTimestamp: string,
+    @Headers('svix-signature') svixSignature: string,
+    @Req() req: Request & { rawBody?: Buffer },
+    @Body() body: any,
+  ): Promise<any> {
+    this.logger.log(`[Clerk Webhook] >>> Incoming POST to /webhooks/clerk (svix-id: ${svixId}, svix-timestamp: ${svixTimestamp})`);
+
+    const rawBody =
+      req.rawBody?.toString('utf-8') ||
+      (typeof body === 'string' ? body : JSON.stringify(body));
+
+    let event: any;
+    try {
+      event = await this.webhookService.verifyClerkWebhook(rawBody, {
+        'svix-id': svixId,
+        'svix-timestamp': svixTimestamp,
+        'svix-signature': svixSignature,
+      });
+      if (!event || typeof event !== 'object' || !event.type) {
+        event = typeof rawBody === 'string' ? JSON.parse(rawBody) : body;
+      }
+      this.logger.log(`[Clerk Webhook] Signature verified. Event type: "${event?.type}"`);
+    } catch (verifyErr: any) {
+      this.logger.error(`[Clerk Webhook] Signature verification failed: ${verifyErr?.message}`);
+      throw verifyErr;
+    }
+
+    const result = await this.webhookService.handleClerkWebhookEvent(event);
+    this.logger.log(`[Clerk Webhook] <<< Result: ${JSON.stringify(result)}`);
+    return result;
+  }
 
 private async handleBitnobTransferSuccess(payload: any) {
   try {
@@ -229,12 +264,9 @@ private async handleBitnobTransferSuccess(payload: any) {
     });
 
     // Notification
-    await this.notificationService.createNotification(
-      transaction.userId,
-      'token withdrawal',
-      `Successfully withdrew ${amount} ${currency}`,
-      'TOKEN_WITHDRAWAL',
-    );
+    await this.notificationService
+      .withdrawalCompleted(transaction.userId, amount)
+      .catch(() => undefined);
 
     console.log(
       '[BITNOB TRANSFER SUCCESS] ✅ Transfer completed successfully',
@@ -459,7 +491,7 @@ private async handleCardCharge(payload: any) {
         status: 'SUCCESS',
         reference,
         payment_method: 'CARD',
-        account_type: 'Personal',
+        account_type: 'Checking',
         description: 'Deposit - Debit Card',
         trx_ref: `${generateFiveUniqueRandomNumbers()}`
       },

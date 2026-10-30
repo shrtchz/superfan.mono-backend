@@ -46,6 +46,7 @@ var (
 	// ErrQuizAlreadyFinalised is returned when a quiz has already been processed.
 	ErrQuizAlreadyFinalised = errors.New("live quiz already finalised")
 )
+
 // here
 // NewLiveQuizFinaliser creates a finaliser backed by the given MongoDB collection.
 func NewLiveQuizFinaliser(liveQuizCollection *mongo.Collection) *LiveQuizFinaliser {
@@ -103,7 +104,15 @@ func (f *LiveQuizFinaliser) Start() {
 		}
 
 		if now.After(finishAt) || now.Equal(finishAt) {
-			// Already expired — finalise immediately on a goroutine
+			// Already expired — skip if already finalised in a previous run
+			if utils.DB != nil {
+				var count int64
+				if err := utils.DB.Model(&models.LiveQuizAttempt{}).
+					Where(`"quizId" = ? AND "isCompleted" = ?`, quizID, true).
+					Count(&count).Error; err == nil && count > 0 {
+					continue
+				}
+			}
 			log.Printf("[LiveQuizFinaliser] quiz %s already expired at %s — finalising now", quizID, finishAt.Format(time.RFC3339))
 			go f.finaliseQuiz(raw, quizID)
 		} else {
@@ -264,7 +273,10 @@ func (f *LiveQuizFinaliser) finaliseQuiz(raw bson.M, quizID string) {
 		winnersSet[w.UserID] = true
 	}
 
-	rewardAmount := int(math.Round(unitPrize))
+	// In live quizzes, unitPrize is already the cash prize amount in Naira (e.g. ₦600), NOT points.
+	// Do NOT divide by POINTS_TO_NAIRA_RATE.
+	rewardAmount := unitPrize
+	rewardPoints := int(math.Round(unitPrize))
 	if rewardAmount <= 0 {
 		log.Printf("[LiveQuizFinaliser] quiz %s – unitPrize is zero, skipping reward distribution", quizID)
 	}
@@ -279,7 +291,7 @@ func (f *LiveQuizFinaliser) finaliseQuiz(raw bson.M, quizID string) {
 		isWinner := winnersSet[p.UserID]
 		earning := 0
 		if isWinner {
-			earning = rewardAmount
+			earning = rewardPoints
 		}
 
 		// Upsert LiveQuizAttempt
@@ -298,15 +310,29 @@ func (f *LiveQuizFinaliser) finaliseQuiz(raw bson.M, quizID string) {
 			continue
 		}
 
-		// Credit gold wallet for winners
-		if isWinner && rewardAmount > 0 {
-			if err := f.creditGoldWallet(p.UserID, rewardAmount, quizID, question, now); err != nil {
-				log.Printf("[LiveQuizFinaliser] failed to credit gold wallet for user %s: %v", p.UserID, err)
+		// Credit savings wallet for winners
+		if isWinner && rewardPoints > 0 {
+			credited, err := f.creditSavingsWallet(p.UserID, rewardAmount, rewardPoints, quizID, question, now)
+			if err != nil {
+				log.Printf("[LiveQuizFinaliser] failed to credit savings wallet for user %s: %v", p.UserID, err)
+			} else if credited {
+				// Send notification via NestJS ONLY if newly credited
+				if err := f.sendNotification(p.UserID, rewardAmount, question, quizID, now); err != nil {
+					log.Printf("[LiveQuizFinaliser] failed to send notification for user %s: %v", p.UserID, err)
+				}
 			}
-
-			// Send notification via NestJS
-			if err := f.sendNotification(p.UserID, rewardAmount, question, quizID); err != nil {
-				log.Printf("[LiveQuizFinaliser] failed to send notification for user %s: %v", p.UserID, err)
+		} else if !isWinner {
+			// Consolation reward for participants who did not win (500 PTS)
+			consolationPoints := 500
+			consolationAmount := float64(consolationPoints) / float64(getPointsToNairaRate())
+			credited, err := f.creditConsolationReward(p.UserID, consolationAmount, consolationPoints, quizID, question, now)
+			if err != nil {
+				log.Printf("[LiveQuizFinaliser] failed to credit consolation reward for user %s: %v", p.UserID, err)
+			} else if credited {
+				// Send consolation notification via NestJS ONLY if newly credited
+				if err := f.sendConsolationNotification(p.UserID, consolationPoints, consolationAmount, question, quizID, now); err != nil {
+					log.Printf("[LiveQuizFinaliser] failed to send consolation notification for user %s: %v", p.UserID, err)
+				}
 			}
 		}
 	}
@@ -377,32 +403,67 @@ func (f *LiveQuizFinaliser) fetchParticipants(quizID string) ([]participantRespo
 	return results, nil
 }
 
-func (f *LiveQuizFinaliser) creditGoldWallet(userID string, amount int, quizID, question string, now time.Time) error {
+func (f *LiveQuizFinaliser) creditSavingsWallet(userID string, amount float64, points int, quizID, question string, now time.Time) (bool, error) {
 	userIDInt, err := parseInt(userID)
 	if err != nil {
-		return fmt.Errorf("invalid user ID: %w", err)
+		return false, fmt.Errorf("invalid user ID: %w", err)
 	}
 
-	return utils.DB.Transaction(func(tx *gorm.DB) error {
-		// 1. Update the main wallet balance
-		if err := tx.Model(&models.Wallet{}).
-			Where(`"userId" = ?`, userIDInt).
-			UpdateColumn("balance", gorm.Expr(`"balance" + ?`, float64(amount))).Error; err != nil {
-			return fmt.Errorf("update wallet: %w", err)
+	newlyCredited := false
+	err = utils.DB.Transaction(func(tx *gorm.DB) error {
+		trxRef := liveQuizRewardReference(quizID, userID)
+		lockKey := fmt.Sprintf("live-quiz-reward:%s", trxRef)
+		if err := tx.Exec(`SELECT pg_advisory_xact_lock(hashtext(?))`, lockKey).Error; err != nil {
+			return fmt.Errorf("lock live quiz reward: %w", err)
 		}
 
-		// 2. Create wallet transaction with account_type = 'Gold'
+		var existing models.WalletTransaction
+		err := tx.Where(`"trx_ref" = ?`, trxRef).First(&existing).Error
+		if err == nil {
+			return nil // already credited
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("check live quiz reward transaction: %w", err)
+		}
+
+		wallet := models.Wallet{UserID: userIDInt}
+		if err := tx.Where(`"userId" = ?`, userIDInt).FirstOrCreate(&wallet).Error; err != nil {
+			return fmt.Errorf("ensure wallet exists: %w", err)
+		}
+
+		result := tx.Model(&models.Wallet{}).
+			Where(`"userId" = ?`, userIDInt).
+			Updates(map[string]interface{}{
+				"balance":        gorm.Expr(`"balance" + ?`, amount),
+				"savingsBalance": gorm.Expr(`"savingsBalance" + ?`, amount),
+			})
+		if result.Error != nil {
+			return fmt.Errorf("update wallet: %w", result.Error)
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("update wallet: expected one wallet row, updated %d", result.RowsAffected)
+		}
+
+		userResult := tx.Model(&models.User{}).
+			Where("id = ?", userIDInt).
+			UpdateColumn("lifetime_points", gorm.Expr(`"lifetime_points" + ?`, points))
+		if userResult.Error != nil {
+			return fmt.Errorf("update lifetime points: %w", userResult.Error)
+		}
+		if userResult.RowsAffected != 1 {
+			return fmt.Errorf("update lifetime points: expected one user row, updated %d", userResult.RowsAffected)
+		}
+
 		trxType := "credit"
-		goldType := "Gold"
-		description := fmt.Sprintf("You earned ₦%d from Live Quiz: %s", amount, truncate(question, 80))
-		trxRef := fmt.Sprintf("LQ_%s_%d", quizID, now.UnixNano())
+		savingsType := "Savings"
+		description := "Live Quiz Earning"
 		status := "Completed"
 		txnType := "Reward"
 		if err := tx.Create(&models.WalletTransaction{
 			UserID:          userIDInt,
 			Amount:          float64(amount),
 			Type:            &trxType,
-			AccountType:     &goldType,
+			AccountType:     &savingsType,
 			Description:     &description,
 			TrxRef:          &trxRef,
 			Status:          &status,
@@ -417,7 +478,7 @@ func (f *LiveQuizFinaliser) creditGoldWallet(userID string, amount int, quizID, 
 		if err := tx.Create(&models.Reward{
 			ID:        uuid.NewString(),
 			UserID:    userIDInt,
-			Amount:    amount,
+			Amount:    int(math.Round(amount)),
 			Currency:  "NGN",
 			Type:      "live_quiz_reward",
 			Status:    "PAID_OUT",
@@ -426,37 +487,209 @@ func (f *LiveQuizFinaliser) creditGoldWallet(userID string, amount int, quizID, 
 			return fmt.Errorf("create reward: %w", err)
 		}
 
-		// 4. Insert into activity wallet table (optional but matches Nest pattern)
 		if tx.Migrator().HasTable("ActivityWallet") {
 			if err := tx.Exec(
 				`INSERT INTO "ActivityWallet" ("userId", "type", "title", "description", "amount", "currency", "status", "createdAt")
 				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 				userIDInt, "credit",
-				fmt.Sprintf("₦%d has been added to your wallet", amount),
-				fmt.Sprintf("You earned ₦%d from Live Quiz", amount),
-				float64(amount), "NGN", "SUCCESS", now,
+				"Live Quiz",
+				"Live Quiz Earning",
+				amount, "NGN", "SUCCESS", now,
 			).Error; err != nil {
 				log.Printf("[LiveQuizFinaliser] activity wallet insert warning: %v", err)
 			}
 		}
 
+		newlyCredited = true
 		return nil
 	})
+	return newlyCredited, err
 }
 
-func (f *LiveQuizFinaliser) sendNotification(userID string, amount int, question, quizID string) error {
+func liveQuizRewardReference(quizID, userID string) string {
+	return fmt.Sprintf("live_quiz_reward:%s:%s", quizID, userID)
+}
+
+func liveQuizRewardAmount(points int) float64 {
+	return float64(points) / float64(getPointsToNairaRate())
+}
+
+func (f *LiveQuizFinaliser) sendNotification(userID string, amount float64, question, quizID string, createdAt time.Time) error {
 	userIDInt, err := parseInt(userID)
 	if err != nil {
 		return fmt.Errorf("invalid user ID for notification: %w", err)
 	}
 
+	msg := fmt.Sprintf("You won ₦%.2f from today's live quiz.", amount)
 	payload := map[string]interface{}{
-		"userId":  userIDInt,
-		"title":   fmt.Sprintf("🎉 You won ₦%d from Live Quiz!", amount),
-		"message": fmt.Sprintf("Congratulations! You got the correct answer for \"%s\" and earned ₦%d.", truncate(question, 60), amount),
-		"type":    "live_quiz_reward",
+		"userId":    userIDInt,
+		"title":     msg,
+		"message":   msg,
+		"type":      "live_quiz_reward",
+		"createdAt": createdAt.UTC().Format(time.RFC3339Nano),
 		"data": map[string]interface{}{
 			"quizId": quizID,
+			"amount": amount,
+		},
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal notification payload: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/api/v1/notifications/create", f.nestBaseURL)
+	resp, err := f.httpClient.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("http post to nest: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("nest returned status %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+func liveQuizConsolationReference(quizID, userID string) string {
+	return fmt.Sprintf("live_quiz_consolation:%s:%s", userID, quizID)
+}
+
+func (f *LiveQuizFinaliser) creditConsolationReward(userID string, amount float64, points int, quizID, question string, now time.Time) (bool, error) {
+	userIDInt, err := parseInt(userID)
+	if err != nil {
+		return false, fmt.Errorf("invalid user ID: %w", err)
+	}
+
+	newlyCredited := false
+	err = utils.DB.Transaction(func(tx *gorm.DB) error {
+		rewardRef := liveQuizConsolationReference(quizID, userID)
+		lockKey := fmt.Sprintf("live-quiz-consolation:%s", rewardRef)
+		if err := tx.Exec(`SELECT pg_advisory_xact_lock(hashtext(?))`, lockKey).Error; err != nil {
+			return fmt.Errorf("lock live quiz consolation: %w", err)
+		}
+
+		var existing models.WalletTransaction
+		err := tx.Where(`"trx_ref" = ?`, rewardRef).First(&existing).Error
+		if err == nil {
+			return nil // already credited
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("check live quiz consolation transaction: %w", err)
+		}
+
+		wallet := models.Wallet{UserID: userIDInt}
+		if err := tx.Where(`"userId" = ?`, userIDInt).FirstOrCreate(&wallet).Error; err != nil {
+			return fmt.Errorf("ensure wallet exists: %w", err)
+		}
+
+		result := tx.Model(&models.Wallet{}).
+			Where(`"userId" = ?`, userIDInt).
+			Updates(map[string]interface{}{
+				"balance":        gorm.Expr(`"balance" + ?`, amount),
+				"savingsBalance": gorm.Expr(`"savingsBalance" + ?`, amount),
+			})
+		if result.Error != nil {
+			return fmt.Errorf("update wallet for consolation: %w", result.Error)
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("update wallet: expected one wallet row, updated %d", result.RowsAffected)
+		}
+
+		userResult := tx.Model(&models.User{}).
+			Where("id = ?", userIDInt).
+			UpdateColumn("lifetime_points", gorm.Expr(`"lifetime_points" + ?`, points))
+		if userResult.Error != nil {
+			return fmt.Errorf("update lifetime points: %w", userResult.Error)
+		}
+		if userResult.RowsAffected != 1 {
+			return fmt.Errorf("update lifetime points: expected one user row, updated %d", userResult.RowsAffected)
+		}
+
+		trxType := "credit"
+		savingsType := "Savings"
+		description := "Live Quiz Consolation Reward"
+		status := "Completed"
+		txnType := "Reward"
+		if err := tx.Create(&models.WalletTransaction{
+			UserID:          userIDInt,
+			Amount:          amount,
+			Type:            &trxType,
+			AccountType:     &savingsType,
+			Description:     &description,
+			TrxRef:          &rewardRef,
+			Status:          &status,
+			TransactionType: &txnType,
+			Currency:        "NGN",
+			CreatedAt:       now,
+		}).Error; err != nil {
+			return fmt.Errorf("create wallet transaction: %w", err)
+		}
+
+		// Create Reward record
+		if err := tx.Create(&models.Reward{
+			ID:        uuid.NewString(),
+			UserID:    userIDInt,
+			Amount:    int(math.Round(amount)),
+			Currency:  "NGN",
+			Reference: &rewardRef,
+			Type:      "live_quiz_consolation",
+			Status:    "PAID_OUT",
+			CreatedAt: now,
+		}).Error; err != nil {
+			return fmt.Errorf("create reward: %w", err)
+		}
+
+		// Create Point record
+		accountType := "Gold"
+		if err := tx.Create(&models.Point{
+			ID:          uuid.NewString(),
+			UserID:      userIDInt,
+			Points:      points,
+			Reference:   &rewardRef,
+			Type:        "live_quiz_consolation",
+			AccountType: accountType,
+			CreatedAt:   now,
+		}).Error; err != nil {
+			return fmt.Errorf("create point: %w", err)
+		}
+
+		if tx.Migrator().HasTable("ActivityWallet") {
+			if err := tx.Exec(
+				`INSERT INTO "ActivityWallet" ("userId", "type", "title", "description", "amount", "currency", "status", "createdAt")
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				userIDInt, "credit",
+				"Live Quiz",
+				"Live Quiz Consolation Reward",
+				amount, "NGN", "SUCCESS", now,
+			).Error; err != nil {
+				log.Printf("[LiveQuizFinaliser] activity wallet insert warning: %v", err)
+			}
+		}
+
+		newlyCredited = true
+		return nil
+	})
+	return newlyCredited, err
+}
+
+func (f *LiveQuizFinaliser) sendConsolationNotification(userID string, points int, amount float64, question, quizID string, createdAt time.Time) error {
+	userIDInt, err := parseInt(userID)
+	if err != nil {
+		return fmt.Errorf("invalid user ID for consolation notification: %w", err)
+	}
+
+	msg := fmt.Sprintf("+%d PTS for playing! Every quiz counts.", points)
+	payload := map[string]interface{}{
+		"userId":    userIDInt,
+		"title":     msg,
+		"message":   msg,
+		"type":      "live_quiz_consolation",
+		"createdAt": createdAt.UTC().Format(time.RFC3339Nano),
+		"data": map[string]interface{}{
+			"quizId": quizID,
+			"points": points,
 			"amount": amount,
 		},
 	}
@@ -488,21 +721,27 @@ func (f *LiveQuizFinaliser) recordLeaderboard(quizID, question, correctAnswer st
 			earning = 1
 		}
 
-		entry := models.QuizLeaderboard{
-			UserID:         p.UserID,
-			QuizID:         quizID,
-			Subject:        "live-quiz",
-			TestLevel:      "live",
-			SelectedAnswer: p.SelectedAnswer,
-			CorrectAnswer:  correctAnswer,
-			Earning:        earning,
-			SubmittedAt:    p.SubmittedAt,
-			CreatedAt:      now,
-			UpdatedAt:      now,
+		rewardStatus := "none"
+		if isWinner {
+			rewardStatus = "pending"
+		}
+
+		entry := models.LiveQuizLeaderboardRow{
+			UserID:       p.UserID,
+			QuizID:       quizID,
+			Question:     question,
+			Answer:       correctAnswer,
+			RewardType:   "CASH",
+			IsWinner:     isWinner,
+			Participants: len(participants),
+			UnitPrize:    earning,
+			RewardStatus: rewardStatus,
+			QuizDate:     now,
+			CreatedAt:    now,
 		}
 
 		if err := utils.DB.Create(&entry).Error; err != nil {
-			log.Printf("[LiveQuizFinaliser] leaderboard insert error for user %s quiz %s: %v", p.UserID, quizID, err)
+			log.Printf("[LiveQuizFinaliser] live quiz leaderboard insert error for user %s quiz %s: %v", p.UserID, quizID, err)
 		}
 	}
 	return nil

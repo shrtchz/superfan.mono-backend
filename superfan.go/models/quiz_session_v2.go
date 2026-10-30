@@ -39,8 +39,9 @@ type SaveAnswerV2Request struct {
 
 // SaveAnswerV2Result is returned after saving an answer.
 type SaveAnswerV2Result struct {
-	Answer  SavedAnswerV2Feedback `json:"answer"`
-	Session SaveAnswerV2Session   `json:"session"`
+	Answer           SavedAnswerV2Feedback `json:"answer"`
+	Session          SaveAnswerV2Session   `json:"session"`
+	AlreadySubmitted bool                  `json:"alreadySubmitted,omitempty"`
 }
 
 type SavedAnswerV2Feedback struct {

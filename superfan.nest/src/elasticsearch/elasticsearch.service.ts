@@ -95,7 +95,7 @@ export class ElasticsearchService implements OnModuleInit {
 
 
   /** Upsert a user document into ES when created/updated via Prisma */
-  async indexUser(user: { id: number; username: string; email?: string; createdAt?: Date }) {
+  async indexUser(user: { id: number; username: string; email?: string; createdAt?: Date; profilePicture?: string | null }) {
     if (!this.client) return;
     await this.client.index({
       index: 'users',
@@ -107,24 +107,29 @@ export class ElasticsearchService implements OnModuleInit {
   /** Search usernames — supports prefix/fuzzy matching */
   async searchUsers(query: string, size = 10) {
     if (!this.client) return [];
-    const { hits } = await this.client.search({
-      index: 'users',
-      size,
-      query: {
-        multi_match: {
-          query,
-          type: 'bool_prefix',          // "search as you type"
-          fields: [
-            'username',
-            // 'username._2gram',
-            // 'username._3gram',
-          ],
-          fuzziness: 'AUTO',            // handles typos
+    try {
+      const { hits } = await this.client.search({
+        index: 'users',
+        size,
+        query: {
+          multi_match: {
+            query,
+            type: 'bool_prefix',          // "search as you type"
+            fields: [
+              'username',
+              // 'username._2gram',
+              // 'username._3gram',
+            ],
+            fuzziness: 'AUTO',            // handles typos
+          },
         },
-      },
-    });
+      });
 
-    return hits.hits.map((hit) => hit._source);
+      return hits.hits.map((hit) => hit._source);
+    } catch (err: any) {
+      this.logger.warn(`Elasticsearch searchUsers failed: ${err?.message ?? err}. Falling back to database.`);
+      return [];
+    }
   }
 
   async deleteComment(commentId: number) {

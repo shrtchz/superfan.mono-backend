@@ -13,7 +13,14 @@ import { UserController } from "./user.controller";
 import { UserService } from "./user.service";
 import { UserListener } from "./user.listener";
 import { DiditService } from "./didit.service";
+import { TwoFactorController } from "./two-factor/two-factor.controller";
+import { TwoFactorService } from "./two-factor/two-factor.service";
+import { TalkingDrumService } from "./two-factor/talking-drum.service";
+import { TwilioService } from "./two-factor/twilio.service";
+import { OtpRateLimiterService } from "./two-factor/otp-rate-limiter.service";
 import { ImageModule } from "../image/image.module";
+import { AccountCreationRateLimiterService } from "./account-creation-rate-limiter.service";
+import { ExchangeRateService } from "../common/services/exchange-rate.service";
 
 @Global()
 @Module({
@@ -28,14 +35,20 @@ import { ImageModule } from "../image/image.module";
         NotificationModule,
         ImageModule,
     ],
-    controllers: [UserController],
+    controllers: [UserController, TwoFactorController],
     providers: [
         UserService, 
         PresenceGateway, 
         UserListener, 
         AccessControlService,
         DiditService,
+        TwoFactorService,
+        TalkingDrumService,
+        TwilioService,
+        OtpRateLimiterService,
+        AccountCreationRateLimiterService,
+        ExchangeRateService,
     ],
-    exports: [UserService, PresenceGateway, DiditService],
+    exports: [UserService, PresenceGateway, DiditService, TwoFactorService, TalkingDrumService, TwilioService, OtpRateLimiterService, AccountCreationRateLimiterService],
 })
 export class UserModule {}

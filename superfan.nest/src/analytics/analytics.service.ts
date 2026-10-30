@@ -15,39 +15,53 @@ export class AnalyticsService {
       const startOfToday = new Date(now);
       startOfToday.setHours(0, 0, 0, 0);
 
-      // Last 7 days
-      const startOfWeek = new Date(now);
-      startOfWeek.setDate(now.getDate() - 7);
+      // Current week window: last 7 days
+      const startOfCurrentWeek = new Date(now);
+      startOfCurrentWeek.setDate(now.getDate() - 7);
+
+      // Previous week window: 8–14 days ago (for true WoW comparison)
+      const startOfPreviousWeek = new Date(now);
+      startOfPreviousWeek.setDate(now.getDate() - 14);
 
       // Run all queries in parallel 🚀
       const [
         totalAdmins,
-        newAdminsThisWeek,
+        newAdminsCurrentWeek,
+        newAdminsPreviousWeek,
         totalInvites,
         invitesThisWeek,
         invitesToday,
         totalClients,
         newClientsToday,
       ] = await Promise.all([
-        // ✅ Admins (superadmin + subadmin)
+        // ✅ Admins (superadmin + subadmin) — all active admin accounts
         prisma.user.count({
           where: {
-            roleName: { in: ['subadmin'] },
+            roleName: { in: ['superadmin', 'subadmin'] },
             active: true,
           },
         }),
+        // New admins in the current 7-day window
         prisma.user.count({
           where: {
-            roleName: { in: ['subadmin'] },
+            roleName: { in: ['superadmin', 'subadmin'] },
             active: true,
-            createdAt: { gte: startOfWeek },
+            createdAt: { gte: startOfCurrentWeek },
+          },
+        }),
+        // New admins in the prior 7-day window (for WoW delta baseline)
+        prisma.user.count({
+          where: {
+            roleName: { in: ['superadmin', 'subadmin'] },
+            active: true,
+            createdAt: { gte: startOfPreviousWeek, lt: startOfCurrentWeek },
           },
         }),
 
         // ✅ Invites
         prisma.subAdminInvite.count(),
         prisma.subAdminInvite.count({
-          where: { createdAt: { gte: startOfWeek } },
+          where: { createdAt: { gte: startOfCurrentWeek } },
         }),
         prisma.subAdminInvite.count({
           where: { createdAt: { gte: startOfToday } },
@@ -66,10 +80,16 @@ export class AnalyticsService {
         }),
       ]);
 
+      // Week-over-week delta: positive means more admins added this week vs last week
+      const weeklyDelta = newAdminsCurrentWeek - newAdminsPreviousWeek;
+
       return {
         admins: {
           total: totalAdmins,
-          weeklyChange: `+${newAdminsThisWeek} this week`,
+          weeklyDelta,
+          weeklyChange: weeklyDelta >= 0
+            ? `+${newAdminsCurrentWeek} this week`
+            : `${newAdminsCurrentWeek} this week`,
         },
         invites: {
           total: totalInvites,
@@ -78,6 +98,8 @@ export class AnalyticsService {
         },
         clients: {
           total: totalClients,
+          today: newClientsToday,
+          dailyDelta: newClientsToday,
           dailyChange: `+${newClientsToday} today`,
         },
       };
@@ -85,6 +107,7 @@ export class AnalyticsService {
       throw error;
     }
   }
+
 
   async fetchTotalClients() {
     try {
@@ -99,6 +122,7 @@ export class AnalyticsService {
         where: {
           roleName: 'client',
           active: true,
+          isBanned: false,
         },
       });
 
@@ -107,6 +131,7 @@ export class AnalyticsService {
         where: {
           roleName: 'client',
           active: true,
+          isBanned: false,
           createdAt: {
             gte: startOfToday,
           },
@@ -114,8 +139,13 @@ export class AnalyticsService {
       });
 
       return {
+        total: totalClients,
+        today: newClientsToday,
+        dailyDelta: newClientsToday,
+        deltaLabel: `+${newClientsToday} today`,
         totalClients,
         dailyChange: `+${newClientsToday} today`,
+        asOf: now.toISOString(),
       };
     } catch (error) {
       throw error;
@@ -397,17 +427,17 @@ export class AnalyticsService {
       });
 
       // Calculate balances
-      const gold_balance = transactions
-        .filter(tx => tx.type === 'credit' && (tx.account_type === 'Gold' || tx.account_type == null))
+      const savings_balance = transactions
+        .filter(tx => tx.type === 'credit' && (tx.account_type === 'Savings' || tx.account_type == null))
         .reduce((sum, tx) => sum + tx.amount, 0);
 
-      const personal_balance = transactions
-        .filter(tx => tx.type === 'credit' && tx.account_type === 'Personal')
+      const checking_balance = transactions
+        .filter(tx => tx.type === 'credit' && tx.account_type === 'Checking')
         .reduce((sum, tx) => sum + tx.amount, 0);
 
-      const wallet_balance = gold_balance + personal_balance;
+      const wallet_balance = savings_balance + checking_balance;
 
-      // Total deposits: sum of deposit credits into personal wallet (excluding quiz/reward earnings)
+      // Total deposits: sum of deposit credits into checking wallet (excluding quiz/reward earnings)
       const total_deposits = transactions
         .filter(tx => {
           const typeLower = (tx.type || '').toLowerCase();
@@ -415,26 +445,26 @@ export class AnalyticsService {
           const accLower = (tx.account_type || '').toLowerCase();
           const isDeposit = typeLower === 'credit' || typeLower === 'deposit';
           const isNotReward = !descLower.includes('quiz') && !descLower.includes('reward') && !descLower.includes('bonus') && !descLower.includes('referral');
-          const isPersonal = accLower === 'personal' || accLower === '' || accLower == null;
-          return isDeposit && isNotReward && isPersonal;
+          const isChecking = accLower === 'checking' || accLower === '' || accLower == null;
+          return isDeposit && isNotReward && isChecking;
         })
         .reduce((sum, tx) => sum + Math.abs(tx.amount), 0);
 
-      // Total earnings: sum of gold account credits that are rewards/bonuses/quiz earnings
+      // Total earnings: sum of savings account credits that are rewards/bonuses/quiz earnings)
       const total_earnings = transactions
         .filter(tx => {
           const typeUpper = (tx.type || '').toUpperCase();
           const accLower = (tx.account_type || '').toLowerCase();
-          const isGold = accLower === 'gold' || accLower === '' || accLower == null;
+          const isSavings = accLower === 'savings' || accLower === '' || accLower == null;
           const isReward = tx.description?.toLowerCase().includes('reward') ||
                            tx.description?.toLowerCase().includes('earned') ||
                            tx.description?.toLowerCase().includes('quiz') ||
                            tx.description?.toLowerCase().includes('bonus');
-          return typeUpper === 'CREDIT' && isGold && isReward;
+          return typeUpper === 'CREDIT' && isSavings && isReward;
         })
         .reduce((sum, tx) => sum + Math.abs(tx.amount), 0);
 
-      // Total withdrawals: sum of debits from personal wallet
+      // Total withdrawals: sum of debits from checking wallet
       const total_withdrawals = transactions
         .filter(tx => {
           const typeLower = (tx.type || '').toLowerCase();
@@ -453,10 +483,10 @@ export class AnalyticsService {
         : null;
 
       return {
-        gold_balance,
-        personal_balance,
+        savings_balance,
+        checking_balance,
         wallet_balance,
-        account_type: 'Gold', // Assuming this summary is for Gold account as per platform-earned
+        account_type: 'Savings', // Assuming this summary is for Savings account as per platform-earned
         total_deposits,
         total_earnings,
         total_withdrawals,

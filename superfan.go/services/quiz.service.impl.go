@@ -217,6 +217,8 @@ func buildTopWinnerCandidatesFromAttempts(attempts []models.LiveQuizAttempt) []m
 		}
 
 		winners = append(winners, map[string]interface{}{
+			"id":        attempt.UserID,
+			"userId":    attempt.UserID,
 			"username":  userName,
 			"fullname":  fullName,
 			"firstName": firstName,
@@ -1656,10 +1658,34 @@ func (u *QuizServiceImpl) GetLiveQuizAnswerById(userID int, id string) (map[stri
 		return nil, errors.New("postgres is not configured")
 	}
 
+	var liveQuizSessions []struct {
+		Answers JSONB `gorm:"column:answers"`
+	}
+	if err := utils.DB.Raw(
+		`SELECT "answers" FROM "ongoing_live_quiz" WHERE "userId" = ? AND ? = ANY("quizIds") ORDER BY "updatedAt" DESC`,
+		strconv.Itoa(userID),
+		id,
+	).Scan(&liveQuizSessions).Error; err != nil {
+		return nil, err
+	}
+
+	for _, session := range liveQuizSessions {
+		answer, found, err := findLiveQuizSubmission([]byte(session.Answers), id)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			response["selectedAnswer"] = answer.SelectedAnswer
+			response["answer"] = answer.SelectedAnswer
+			return response, nil
+		}
+	}
+
 	var ongoingQuiz models.OngoingQuiz
 	err = utils.DB.
-		Where(`"userId" = ? AND "isCompleted" = ?`, userID, false).
+		Where(`"userId" = ?`, userID).
 		Where(`"questions" @> ?`, fmt.Sprintf(`[{"id":"%s"}]`, id)).
+		Order(`"updatedAt" DESC`).
 		First(&ongoingQuiz).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -2207,3 +2233,50 @@ func (u *QuizServiceImpl) DeleteQuiz(id string) error {
 
 	return nil
 }
+
+func (u *QuizServiceImpl) UpdateQuizAudioURL(id string, lang string, audioURL string) error {
+	objectId, err := bson.ObjectIDFromHex(id)
+	if err != nil {
+		return errors.New("invalid id format")
+	}
+
+	normalizedLang := strings.ToLower(strings.TrimSpace(lang))
+	if normalizedLang == "" {
+		normalizedLang = "yo"
+	}
+
+	filter := bson.M{"_id": objectId}
+	update := bson.M{
+		"$set": bson.M{
+			"audioUrl": audioURL,
+			fmt.Sprintf("audioUrls.%s", normalizedLang): audioURL,
+		},
+	}
+
+	_, err = u.quizcollection.UpdateOne(u.ctx, filter, update)
+	return err
+}
+
+func (u *QuizServiceImpl) UpdateLiveQuizAudioURL(id string, lang string, audioURL string) error {
+	objectId, err := bson.ObjectIDFromHex(id)
+	if err != nil {
+		return errors.New("invalid id format")
+	}
+
+	normalizedLang := strings.ToLower(strings.TrimSpace(lang))
+	if normalizedLang == "" {
+		normalizedLang = "yo"
+	}
+
+	filter := bson.M{"_id": objectId}
+	update := bson.M{
+		"$set": bson.M{
+			"audioUrl": audioURL,
+			fmt.Sprintf("audioUrls.%s", normalizedLang): audioURL,
+		},
+	}
+
+	_, err = u.liveQuizCollection.UpdateOne(u.ctx, filter, update)
+	return err
+}
+

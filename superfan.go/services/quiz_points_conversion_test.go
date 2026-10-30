@@ -36,3 +36,25 @@ func TestConvertTotalEarningToRewardAmountsUsesBaseEarning(t *testing.T) {
 		t.Fatalf("expected zero USDT amount for the default exchange rates, got %d", finalUSDTAmount)
 	}
 }
+
+func TestLiveQuizRewardAmountConvertsPointsToNaira(t *testing.T) {
+	t.Setenv("POINTS_TO_NAIRA_RATE", "1000")
+
+	if got := liveQuizRewardAmount(2500); got != 2.5 {
+		t.Fatalf("expected live quiz reward of 2.5 naira, got %v", got)
+	}
+}
+
+func TestLiveQuizRewardReferenceIsStablePerQuizAndUser(t *testing.T) {
+	first := liveQuizRewardReference("quiz-1", "user-1")
+	second := liveQuizRewardReference("quiz-1", "user-1")
+	differentUser := liveQuizRewardReference("quiz-1", "user-2")
+	differentQuiz := liveQuizRewardReference("quiz-2", "user-1")
+
+	if first != second {
+		t.Fatalf("expected stable reward reference, got %q and %q", first, second)
+	}
+	if first == differentUser || first == differentQuiz {
+		t.Fatalf("expected reward reference to vary by quiz and user")
+	}
+}

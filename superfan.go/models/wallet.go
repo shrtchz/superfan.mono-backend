@@ -11,6 +11,8 @@ type Wallet struct {
 	ID                       int     `gorm:"column:id;primaryKey" json:"id"`
 	UserID                   int     `gorm:"column:userId;uniqueIndex" json:"userId"`
 	Balance                  float64 `gorm:"column:balance" json:"balance"`
+	SavingsBalance           float64 `gorm:"column:savingsBalance" json:"savingsBalance"`
+	CheckingBalance          float64 `gorm:"column:checkingBalance" json:"checkingBalance"`
 	GoldBalance              float64 `gorm:"column:goldBalance" json:"goldBalance"`
 	PersonalBalance          float64 `gorm:"column:personalBalance" json:"personalBalance"`
 	UsdcBalance              float64 `gorm:"column:usdcBalance" json:"usdcBalance"`
@@ -18,6 +20,7 @@ type Wallet struct {
 	TotalBalance             float64 `gorm:"-" json:"totalBalance"`
 	HoldBalance              float64 `gorm:"-" json:"holdBalance"`
 	AvailablePersonalBalance float64 `gorm:"-" json:"availablePersonalBalance"`
+	AvailableCheckingBalance float64 `gorm:"-" json:"availableCheckingBalance"`
 	AvailableBalance         float64 `gorm:"-" json:"availableBalance"`
 }
 
@@ -62,7 +65,9 @@ type LedgerSummary struct {
 	PendingSettlement  float64 `json:"pendingSettlement"`
 	PendingCount       int64   `json:"pendingCount"`
 	CashBank           float64 `json:"cashBank"`
+	CheckingWalletLiab float64 `json:"checkingWalletLiab"`
 	PersonalWalletLiab float64 `json:"personalWalletLiab"`
+	SavingsWalletLiab  float64 `json:"savingsWalletLiab"`
 	GoldWalletLiab     float64 `json:"goldWalletLiab"` // NGN earnings: quiz, ads, referral
 	PlatformRevenue    float64 `json:"platformRevenue"`
 }
@@ -85,6 +90,7 @@ type Reward struct {
 	UserID    int       `gorm:"column:userId" json:"userId"`
 	Amount    int       `gorm:"column:amount" json:"amount"`
 	Currency  string    `gorm:"column:currency" json:"currency"`
+	Reference *string   `gorm:"column:reference" json:"reference"`
 	Type      string    `gorm:"column:type" json:"type"`
 	Status    string    `gorm:"column:status" json:"status"`
 	CreatedAt time.Time `gorm:"column:createdAt" json:"createdAt"`
@@ -95,12 +101,13 @@ func (Reward) TableName() string {
 }
 
 type Point struct {
-	ID        string    `gorm:"column:id;primaryKey" json:"id"`
-	UserID    int       `gorm:"column:userId" json:"userId"`
-	Points    int       `gorm:"column:points" json:"points"`
-	Reference *string   `gorm:"column:reference" json:"reference"`
-	Type      string    `gorm:"column:type" json:"type"`
-	CreatedAt time.Time `gorm:"column:createdAt" json:"createdAt"`
+	ID          string    `gorm:"column:id;primaryKey" json:"id"`
+	UserID      int       `gorm:"column:userId" json:"userId"`
+	Points      int       `gorm:"column:points" json:"points"`
+	Reference   *string   `gorm:"column:reference" json:"reference"`
+	Type        string    `gorm:"column:type" json:"type"`
+	AccountType string    `gorm:"column:accountType" json:"accountType"`
+	CreatedAt   time.Time `gorm:"column:createdAt" json:"createdAt"`
 }
 
 func (Point) TableName() string {

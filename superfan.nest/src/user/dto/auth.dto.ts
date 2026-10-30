@@ -46,6 +46,14 @@ export class AuthDto {
 
   @IsEnum(SubscriptionPlan)
   subscriptionPlan: SubscriptionPlan;
+
+  @IsOptional()
+  @IsString()
+  ip_address?: string;
+
+  @IsOptional()
+  @IsString()
+  location?: string;
 }
 
 export class UpdateUserDto {

@@ -11,10 +11,12 @@ import {
   Post,
   Query,
   Req,
+  Res,
   UseGuards,
 } from '@nestjs/common';
 import { ApiRoutes } from '../common/enums/routes.enum';
 import { Roles } from '../common/decorators';
+import { Public } from '../common/decorators/public.decorator';
 import { Role } from '../common/enums/role.enum';
 import { JwtGuard } from '../common/guards';
 import { RoleGuard } from '../common/guards/roles.guard';
@@ -45,6 +47,39 @@ export class StreamingController {
       ...tokens,
       service: tokens.service || 'youtube',
     });
+  }
+
+  @Get('auth-url')
+  @Public()
+  async getAuthUrl() {
+    return { authUrl: this.streamingService.generateAuthUrl() };
+  }
+
+  @Get('oauth/callback')
+  @Public()
+  async oauthCallback(
+    @Query('code') code: string,
+    @Res() res,
+    @Query('error') error?: string,
+  ) {
+    if (error) {
+      return res.redirect(
+        `${this.streamingService.getFrontendBaseUrl()}/streams?youtube=error`,
+      );
+    }
+
+    try {
+      await this.streamingService.handleOAuthCallback(code);
+      return res.redirect(
+        `${this.streamingService.getFrontendBaseUrl()}/streams?youtube=linked`,
+      );
+    } catch (err: any) {
+      return res.redirect(
+        `${this.streamingService.getFrontendBaseUrl()}/streams?youtube=error&message=${encodeURIComponent(
+          err?.message || 'Unknown error',
+        )}`,
+      );
+    }
   }
 
   @Get('streams')
@@ -111,13 +146,16 @@ export class StreamingController {
   async comment(
     @Param('streamId', ParseIntPipe) streamId: number,
     @Body('comment') comment: string,
+    @Body('quizFinishDate') quizFinishDateRaw: string | undefined,
     @Req() req,
   ) {
     const userId = req.user?.id;
+    const quizFinishDate = quizFinishDateRaw ? new Date(quizFinishDateRaw) : undefined;
     const created = await this.streamingService.commentOnStream(
       streamId,
       comment,
       Number(userId),
+      quizFinishDate,
     );
     this.streamGateway.broadcastChat('streamMessage', {
       ...created,
@@ -152,7 +190,7 @@ export class StreamingController {
   }
 
   @Get('/comment')
-  async getStreamcomment(@Query('streamId') streamId: number, @Req() req) {
+  async getStreamcomment(@Query('streamId') streamId: string, @Req() req) {
     return this.streamingService.getStreamCommentsandReplies(
       streamId,
       Number(req.user?.id),

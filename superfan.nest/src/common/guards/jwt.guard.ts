@@ -188,7 +188,13 @@ export class JwtGuard implements CanActivate {
 
       }
 
-
+      const reason =
+        typeof error?.reason === 'string'
+          ? error.reason
+          : error?.message || error?.name || 'unknown';
+      console.warn(
+        `[JwtGuard] Clerk token verification failed (${reason}). Verify CLERK_SECRET_KEY matches the Clerk instance issuing client session JWTs and that Clerk's JWKS endpoint is reachable.`,
+      );
 
       throw new UnauthorizedException(
 

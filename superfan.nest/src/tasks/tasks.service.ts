@@ -292,13 +292,104 @@ export class TaskService {
     });
   }
 
+  private maskEmail(email: string): string {
+    if (!email || !email.includes('@')) return '[redacted]';
+    const [local, domain] = email.split('@');
+    if (local.length <= 2) {
+      return `${local[0]}***@${domain}`;
+    }
+    return `${local[0]}***${local[local.length - 1]}@${domain}`;
+  }
+
   async getRecentActivities(limit = 20) {
-    return prisma.activityMonitor.findMany({
+    let activities = await prisma.activityMonitor.findMany({
       take: limit,
       orderBy: {
         createdAt: 'desc',
       },
     });
+
+    // If no activities recorded yet, populate from recent registered users
+    if (activities.length === 0) {
+      try {
+        const recentUsers = await prisma.user.findMany({
+          where: { isDeleted: false },
+          take: limit,
+          orderBy: { createdAt: 'desc' },
+          select: {
+            id: true,
+            username: true,
+            firstName: true,
+            email: true,
+            roleName: true,
+            createdAt: true,
+          },
+        });
+
+        if (recentUsers.length > 0) {
+          await prisma.activityMonitor.createMany({
+            data: recentUsers.map((u) => ({
+              type: ActivityType.user_registered,
+              actorId: u.id,
+              actorName: u.username || u.firstName || 'User',
+              actorEmail: u.email || '',
+              metadata: {
+                role: u.roleName || 'client',
+                label: `New ${(u.roleName || 'client').toLowerCase()} registered`,
+              },
+              createdAt: u.createdAt,
+            })),
+          });
+
+          activities = await prisma.activityMonitor.findMany({
+            take: limit,
+            orderBy: {
+              createdAt: 'desc',
+            },
+          });
+        }
+      } catch (backfillErr) {
+        console.error('[TasksService] Failed to backfill recent activities:', backfillErr);
+      }
+    }
+
+    if (!activities || activities.length === 0) {
+      return [];
+    }
+
+    // Mask deleted actors for UI display while preserving raw forensic logs in database
+    const actorIds = activities
+      .map((a) => a.actorId)
+      .filter((id): id is number => typeof id === 'number');
+
+    if (actorIds.length > 0) {
+      try {
+        const users = await prisma.user.findMany({
+          where: { id: { in: actorIds } },
+          select: { id: true, isDeleted: true },
+        });
+        const userMap = new Map(users.map((u) => [u.id, u]));
+
+        return activities.map((activity) => {
+          if (!activity.actorId) return activity;
+          const user = userMap.get(activity.actorId);
+          // If actor is soft-deleted or completely removed from User table
+          if (!user || user.isDeleted) {
+            return {
+              ...activity,
+              actorName: '[Closed Account]',
+              actorEmail: activity.actorEmail ? this.maskEmail(activity.actorEmail) : '',
+              isActorDeleted: true,
+            };
+          }
+          return activity;
+        });
+      } catch (err) {
+        console.error('[TasksService] Failed to check user deletion status for activities:', err);
+      }
+    }
+
+    return activities;
   }
 
   async userRegistered(user: {
@@ -307,34 +398,41 @@ export class TaskService {
     email: string;
     role: string;
   }) {
+    const actorName = user.name || 'User';
+    const actorEmail = user.email || '';
+    const role = user.role || 'client';
     const activity = await this.logActivity({
       type: ActivityType.user_registered,
       actorId: user.id,
-      actorName: user.name,
-      actorEmail: user.email,
+      actorName,
+      actorEmail,
       metadata: {
-        role: user.role, // ✅ store role here
-        label: `New ${user.role.toLowerCase()} registered`, // optional readable text
+        role, // ✅ store role here
+        label: `New ${role.toLowerCase()} registered`, // optional readable text
       },
     });
 
     // Notify all superadmin and subadmin users
-    const admins = await prisma.user.findMany({
-      where: {
-        roleName: { in: ['superadmin', 'subadmin'] },
-      },
-      select: { id: true, username: true },
-    });
+    try {
+      const admins = await prisma.user.findMany({
+        where: {
+          roleName: { in: ['superadmin', 'subadmin'] },
+        },
+        select: { id: true, username: true },
+      });
 
-    await Promise.all(
-      admins.map((admin) =>
-        this.notificationService.createNotification(
-          admin.id,
-          `New user Signup`,
-          `${user.role} account. @${user.name}`,
+      await Promise.all(
+        admins.map((admin) =>
+          this.notificationService.createNotification(
+            admin.id,
+            `New user Signup`,
+            `${role} account. @${actorName}`,
+          ),
         ),
-      ),
-    );
+      );
+    } catch (notifErr) {
+      console.error('[TasksService] Failed to notify admins of registration:', notifErr);
+    }
 
     return activity;
   }
@@ -378,10 +476,10 @@ export class TaskService {
     return activity;
   }
 
-  async deleteActivity(id: number) {
+  async deleteActivity(id: number | string) {
     return prisma.activityMonitor.delete({
       where: {
-        id,
+        id: Number(id),
       },
     });
   }
@@ -404,24 +502,37 @@ export class TaskService {
 
     if (!referral) return;
 
-    // Referrer Bonus: 10,000 PTS into Gold Account
+    const claimedReferral = await prisma.referral.updateMany({
+      where: {
+        id: referral.id,
+        testRewardGiven: false,
+      },
+      data: {
+        status: 'FIRST_TEST_COMPLETED',
+        testRewardGiven: true,
+      },
+    });
+
+    if (claimedReferral.count === 0) return;
+
+    // Referrer Bonus: 10,000 PTS into Savings Account
     const referrerPoints = 10000;
-    const referrerNaira = this.pointsConversionUtil.pointsToNaira(referrerPoints);
+    const referrerNaira = await this.pointsConversionUtil.pointsToNaira(referrerPoints);
     await prisma.point.create({
       data: {
         userId: referral.referrerId,
         points: referrerPoints,
         reference: `POINTS_${generateFiveUniqueRandomNumbers()}`,
         type: 'referral_first_test_referrer',
-        accountType: 'Gold',
+        accountType: 'Savings',
       },
     });
     await this.walletService.creditWallet(
       referral.referrerId,
       referrerNaira,
-      'Referral Bonus — First Test: NGN 10',
-      `You earned ₦${referrerNaira} because your referee completed their first test.`,
-      'Gold'
+      'Referral Bonus - First Test',
+      'Referral Bonus - First Test',
+      'Savings'
     );
 
     await prisma.user.update({
@@ -429,52 +540,15 @@ export class TaskService {
       data: { lifetimePoints: { increment: 10000 } },
     });
 
-    await this.notificationService.createNotification(
-      referral.referrerId,
-      'Referral Bonus — First Test: NGN 10',
-      'You earned 10,000 PTS (Gold Account) because your referee completed their first test.',
-      'referral_reward',
-    );
-
-    // Referee Bonus: 20,000 PTS into Gold Account
-    const refereePoints = 20000;
-    const refereeNaira = this.pointsConversionUtil.pointsToNaira(refereePoints);
-    await prisma.point.create({
-      data: {
-        userId: referral.refereeId,
-        points: refereePoints,
-        reference: `POINTS_${generateFiveUniqueRandomNumbers()}`,
-        type: 'referral_first_test_referee',
-        accountType: 'Gold',
-      },
-    });
-    await this.walletService.creditWallet(
-      referral.refereeId,
-      refereeNaira,
-      'Referee Bonus (NGN 20)',
-      `You earned ₦${refereeNaira} for completing your first test.`,
-      'Gold'
-    );
-
-    await prisma.user.update({
+    const referee = await prisma.user.findUnique({
       where: { id: referral.refereeId },
-      data: { lifetimePoints: { increment: 20000 } },
+      select: { username: true },
     });
 
-    await this.notificationService.createNotification(
-      referral.refereeId,
-      'Referee Bonus (NGN 20)',
-      'You earned 20,000 PTS (Gold Account) for completing your first test.',
-      'welcome_bonus',
+    await this.notificationService.referralFirstTestBonus(
+      referral.referrerId,
+      referee?.username ?? 'Your referee',
     );
-
-    await prisma.referral.update({
-      where: { id: referral.id },
-      data: {
-        status: 'FIRST_TEST_COMPLETED',
-        testRewardGiven: true,
-      },
-    });
   }
 
   async getMyReferrals(userId: number) {
@@ -492,11 +566,11 @@ export class TaskService {
    * - status FIRST_TEST_COMPLETED → "completed"
    *
    * Bonus amounts per referral (referrer perspective):
-   *   sign-up bonus: signupRewardGiven ? ₦10 : 0
+  *   sign-up bonus: signupRewardGiven ? ₦20 : 0
    *   first-test bonus: testRewardGiven ? ₦10 : 0  (pending if not yet given)
    */
   async getMyReferralSummary(userId: number) {
-    const REFERRER_SIGNUP_BONUS = 10;   // ₦ credited on referee sign-up
+    const REFERRER_SIGNUP_BONUS = 20;   // ₦ credited on referee sign-up
     const REFERRER_TEST_BONUS   = 10;   // ₦ credited when referee completes first test
 
     const referrals = await prisma.referral.findMany({
@@ -744,6 +818,18 @@ async createClientHistory(payload: CreateClientHistoryDto) {
     // ✅ Enforce KYC-based withdrawal limits & ₦9,999 minimum withdrawal (SCRUM-350)
     await this.walletService.validateTransactionLimits(dto.userId, dto.amount, 'WITHDRAWAL');
 
+    // ✅ Enforce that a single bank account number can only be linked to one active payout at a time (Option A)
+    const meta = (dto.metadata || {}) as Record<string, any>;
+    const destinationAccount =
+      meta.accountNumber ||
+      meta.destinationAccountNumber ||
+      meta.account_no ||
+      (dto.method === 'MONNIFY' ? dto.reference : null);
+
+    if (destinationAccount) {
+      await this.walletService.validateActiveBankAccountPayout(String(destinationAccount));
+    }
+
     // check if reference already exists
     const existingPayout = await prisma.payout.findUnique({
       where: { reference: dto.reference },
@@ -766,6 +852,10 @@ async createClientHistory(payload: CreateClientHistoryDto) {
         metadata: dto.metadata,
       }
   })
+
+  this.notificationService
+    .withdrawalRequested(dto.userId, Number(dto.amount || 0))
+    .catch(() => undefined);
 
   return payout;
 
@@ -797,12 +887,12 @@ async getUserPayoutDetail(userId: number) {
     throw new NotFoundException('User not found');
   }
 
-  // Fetch Gold wallet transactions (quiz rewards, live quiz, referrals, ad bonuses, gold transfers/payouts)
-  const goldTransactions = await prisma.walletTransaction.findMany({
+  // Fetch Savings wallet transactions (quiz rewards, live quiz, referrals, ad bonuses, savings transfers/payouts)
+  const savingsTransactions = await prisma.walletTransaction.findMany({
     where: {
       userId,
       OR: [
-        { account_type: { equals: 'Gold', mode: 'insensitive' } },
+        { account_type: { equals: 'Savings', mode: 'insensitive' } },
         { rewardType: { not: null } },
         { description: { contains: 'Quiz', mode: 'insensitive' } },
         { description: { contains: 'Reward', mode: 'insensitive' } },
@@ -841,26 +931,26 @@ async getUserPayoutDetail(userId: number) {
     },
   });
 
-  // Calculate total earnings from Gold transactions
-  const goldEarningsSum = goldTransactions
+  // Calculate total earnings from Savings transactions
+  const savingsEarningsSum = savingsTransactions
     .filter(tx => {
       const type = (tx.type || '').toLowerCase();
       return (type === 'credit' || !type.includes('debit')) && tx.amount > 0;
     })
     .reduce((sum, tx) => sum + tx.amount, 0);
 
-  const totalEarnings = goldEarningsSum > 0 ? goldEarningsSum : (aggregates._sum.amount || 0);
+  const totalEarnings = savingsEarningsSum > 0 ? savingsEarningsSum : (aggregates._sum.amount || 0);
 
   // Total payouts count
-  const goldPayoutsCount = goldTransactions.filter(tx => {
+  const savingsPayoutsCount = savingsTransactions.filter(tx => {
     const type = (tx.type || '').toLowerCase();
     const desc = (tx.description || '').toLowerCase();
     return type === 'debit' || desc.includes('withdraw') || tx.amount < 0;
   }).length;
 
-  const totalPayouts = aggregates._count.id > 0 ? aggregates._count.id : goldPayoutsCount;
+  const totalPayouts = aggregates._count.id > 0 ? aggregates._count.id : savingsPayoutsCount;
 
-  // Combine Payout records and Gold Wallet Transactions
+  // Combine Payout records and Savings Wallet Transactions
   const mappedPayouts = payouts.map(p => ({
     id: p.id,
     date: p.processedAt || p.createdAt,
@@ -874,7 +964,7 @@ async getUserPayoutDetail(userId: number) {
     createdAt: p.createdAt,
   }));
 
-  const mappedGoldTransactions = goldTransactions.map(tx => {
+  const mappedSavingsTransactions = savingsTransactions.map(tx => {
     const isDebit = (tx.type || '').toLowerCase() === 'debit' || (tx.description || '').toLowerCase().includes('withdraw') || tx.amount < 0;
     return {
       id: tx.id,
@@ -883,14 +973,14 @@ async getUserPayoutDetail(userId: number) {
       type: isDebit ? 'DEBIT' : 'CREDIT',
       rawType: isDebit ? 'DEBIT' : 'CREDIT',
       method: isDebit ? 'Wallet Debit' : 'Wallet Credit',
-      ref: tx.reference || tx.trx_ref || tx.description || 'Gold Wallet Earning',
-      description: tx.description || tx.rewardType || 'Gold Wallet Earning',
+      ref: tx.reference || tx.trx_ref || tx.description || 'Savings Wallet Earning',
+      description: tx.description || tx.rewardType || 'Savings Wallet Earning',
       status: tx.status || 'SUCCESS',
       createdAt: tx.createdAt,
     };
   });
 
-  const combinedHistory = [...mappedPayouts, ...mappedGoldTransactions].sort(
+  const combinedHistory = [...mappedPayouts, ...mappedSavingsTransactions].sort(
     (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
   );
 

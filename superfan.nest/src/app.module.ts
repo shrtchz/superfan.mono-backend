@@ -39,6 +39,8 @@ import { LoggingMiddleware } from './common/middleware/logging.middleware';
 import { WaitlistModule } from './waitlist/waitlist.module';
 import { ShopModule } from './shop/shop.module';
 import { PodcastModule } from './podcast/podcast.module';
+import { FriendInviteModule } from './friend-invite/friend-invite.module';
+import { VersusModule } from './versus/versus.module';
 
 @Module({
   imports: [
@@ -86,8 +88,10 @@ import { PodcastModule } from './podcast/podcast.module';
     WebhookModule,
     ResetModule,
     WaitlistModule,
-    ShopModule,
+ShopModule,
     PodcastModule,
+    FriendInviteModule,
+    VersusModule,
     BullModule.forRootAsync({
       imports: [ConfigModule],
       useFactory: (configService: ConfigService) => {
@@ -112,7 +116,7 @@ import { PodcastModule } from './podcast/podcast.module';
               delay: 5000,
             },
             removeOnComplete: true,
-            removeOnFail: true,
+            removeOnFail: false,
           },
         };
       },

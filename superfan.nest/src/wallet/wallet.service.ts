@@ -128,6 +128,9 @@ export class WalletService {
 
     // 1. Enforce minimum withdrawal of ₦9,999 on all withdrawal requests regardless of method
     if (type === 'WITHDRAWAL' && amount < this.MIN_WITHDRAWAL_NGN) {
+      this.notificationService
+        .minimumWithdrawalNotMet(userId, this.MIN_WITHDRAWAL_NGN)
+        .catch(() => undefined);
       throw new BadRequestException(
         `Minimum withdrawal amount is ₦${this.MIN_WITHDRAWAL_NGN.toLocaleString()}. Your request was ₦${amount.toLocaleString()}.`,
       );
@@ -156,7 +159,54 @@ export class WalletService {
 
     return status;
   }
-  async creditWallet(userId: number, amount: number, title: string, description: string, accountType?: string, currency: string = 'NGN') {
+
+  /**
+   * Enforces that a single bank account number can only be linked to one active payout/cash-out at a time (Option A).
+   */
+  async validateActiveBankAccountPayout(accountNumber: string): Promise<void> {
+    const raw = (accountNumber || '').trim();
+    if (!raw) return;
+    const cleanAccount = raw.replace(/\D/g, '');
+    const searchAccounts = Array.from(new Set([cleanAccount, raw].filter(Boolean)));
+    if (searchAccounts.length === 0) return;
+
+    const masked = cleanAccount.length >= 4 ? `••••${cleanAccount.slice(-4)}` : raw;
+
+    // 1. Check for active Payout records across all users
+    const activePayout = await prisma.payout.findFirst({
+      where: {
+        status: 'PENDING',
+        OR: [
+          ...searchAccounts.map((acc) => ({ reference: acc })),
+          ...searchAccounts.map((acc) => ({ metadata: { path: ['accountNumber'], equals: acc } })),
+          ...searchAccounts.map((acc) => ({ metadata: { path: ['destinationAccountNumber'], equals: acc } })),
+          ...searchAccounts.map((acc) => ({ metadata: { path: ['account_no'], equals: acc } })),
+        ],
+      },
+    });
+
+    if (activePayout) {
+      throw new BadRequestException(
+        `This bank account number (${masked}) is already linked to an active payout. A bank account can only receive one payout per cycle. Please wait for the current payout to complete or fail before initiating another withdrawal.`,
+      );
+    }
+
+    // 2. Check for active WalletTransaction records across all users
+    const activeTx = await prisma.walletTransaction.findFirst({
+      where: {
+        account_no: { in: searchAccounts },
+        status: { in: ['Pending', 'PENDING', 'Processing', 'PROCESSING', 'REQUESTED', 'INITIATED', 'QUEUED', 'HOLD'] },
+      },
+    });
+
+    if (activeTx) {
+      throw new BadRequestException(
+        `This bank account number (${masked}) is already linked to an active payout. A bank account can only receive one payout per cycle. Please wait for the current payout to complete or fail before initiating another withdrawal.`,
+      );
+    }
+  }
+
+  async creditWallet(userId: number, amount: number, title: string, description: string, accountType?: string, currency: string = 'NGN', streamTitle?: string, createdAt?: Date) {
     console.log('[Wallet][creditWallet][START]', {
       userId,
       amount,
@@ -166,8 +216,11 @@ export class WalletService {
       currency,
     });
 
-    const isGold = accountType === 'Gold';
-    const balanceField = isGold ? 'goldBalance' : 'personalBalance';
+    const normalizedAccountType =
+      accountType === 'Savings' || accountType === 'savings'
+        ? 'Savings'
+        : 'Checking';
+    const balanceField = normalizedAccountType === 'Savings' ? 'savingsBalance' : 'checkingBalance';
 
     // Use transaction to ensure atomicity - all or nothing
     await prisma.$transaction(async (tx) => {
@@ -198,8 +251,9 @@ export class WalletService {
           currency,
           status: 'SUCCESS',
           description,
-          account_type: accountType,
-          trx_ref: `${generateFiveUniqueRandomNumbers()}`
+          account_type: normalizedAccountType,
+          trx_ref: `${generateFiveUniqueRandomNumbers()}`,
+          ...(createdAt ? { createdAt } : {}),
         },
       });
       console.log('[Wallet][creditWallet] Wallet transaction created', {
@@ -219,6 +273,7 @@ export class WalletService {
           amount,
           currency,
           status: 'SUCCESS',
+          ...(createdAt ? { createdAt } : {}),
         },
       });
       console.log('[Wallet][creditWallet] Activity wallet created', {
@@ -227,8 +282,14 @@ export class WalletService {
         amount,
       });
 
-      // Send notification for manual/deposit wallet credit
-      if (title.startsWith('Deposit') || title === 'Manual Credit') {
+      // Send notification — 💰 ₦2 added from a recent live quiz.
+      if (title === 'Manual Credit') {
+        if (streamTitle) {
+          await this.notificationService.streamManualCredit(userId, amount, streamTitle);
+        } else {
+          await this.notificationService.manualCreditApplied(userId, amount);
+        }
+      } else if (title.startsWith('Deposit')) {
         await this.notificationService.createNotification(
           userId,
           title,
@@ -260,8 +321,9 @@ export class WalletService {
   }
 
 
-  createReward(userId: number, points: number, type: string, status: EarningStatus) {
-    const amount = this.pointsConversionUtil.pointsToNaira(points);
+  async createReward(userId: number, points: number, type: string, status: EarningStatus) {
+    const category = type.toLowerCase().includes('ad') ? 'ads' : 'quiz';
+    const amount = await this.pointsConversionUtil.pointsToNaira(points, category);
     return this.createRewardWithAmount(userId, amount, 'NGN', type, status);
   }
 
@@ -276,16 +338,20 @@ export class WalletService {
       },
     });
 
-    // Credit the wallet - system rewards always go to Gold Account
+    // Credit the wallet - system rewards always go to Savings Account
     const rewardLabel = type.toLowerCase().includes('ad') ? 'Ads Reward' : 'Test Quiz Earning';
-    await this.creditWallet(userId, amount, rewardLabel, rewardLabel, 'Gold', currency);
+    await this.creditWallet(userId, amount, rewardLabel, rewardLabel, 'Savings', currency);
 
-    // Send notification
-    await this.notificationService.createNotification(
-      userId,
-      rewardLabel,
-      `You have earned ${amount} ${currency} from ${type}`,
-    );
+    // Send notification — ad rewards carry the ₦2-per-ad copy
+    if (type.toLowerCase().includes('ad')) {
+      await this.notificationService.adRewardCredited(userId, amount);
+    } else {
+      await this.notificationService.createNotification(
+        userId,
+        rewardLabel,
+        `You have earned ${amount} ${currency} from ${type}`,
+      );
+    }
 
     // Fire socket events for live update
     this.eventEmitter.emit('user.wallet.updated', { userId });
@@ -298,8 +364,11 @@ export class WalletService {
   }
 
   async createQuizReward(userId: number, points: number, subject: string, status: EarningStatus, reference?: string) {
-    const amount = this.pointsConversionUtil.pointsToNaira(points);
-    const rewardReference = reference ?? `quiz_reward:${userId}:${subject}:${points}:${status}`;
+    const amount = await this.pointsConversionUtil.pointsToNaira(points);
+    // Key on the quiz session ID (passed as reference) — NOT on points/subject,
+    // because totalPoints can differ between retries (streak variance) and would
+    // defeat the idempotency guard, creating duplicate wallet credits.
+    const rewardReference = reference ?? `quiz_reward:${userId}:${subject}`;
 
     const existingReward = await this.prisma.reward.findFirst({
       where: {
@@ -325,81 +394,168 @@ export class WalletService {
       },
     });
 
-    // Credit the wallet - quiz rewards go to Gold Account
-    await this.creditWallet(userId, amount, 'Test Quiz Earning', 'Test Quiz Earning', 'Gold', 'NGN');
+    // Credit the wallet — test quiz rewards go to Savings Account
+    await this.creditWallet(userId, amount, 'Test Quiz Earning', 'Test Quiz Earning', 'Savings', 'NGN');
 
-    await this.prisma.point.create({
-      data: {
-        userId,
-        points,
-        reference: rewardReference,
-        type: 'quiz_reward',
-      }
+    // Guard point record with same reference to prevent double-counting
+    const existingPoint = await this.prisma.point.findFirst({
+      where: { userId, reference: rewardReference, type: 'quiz_reward' },
     });
+    if (!existingPoint) {
+      await this.prisma.point.create({
+        data: {
+          userId,
+          points,
+          reference: rewardReference,
+          type: 'quiz_reward',
+        },
+      });
 
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: { lifetimePoints: { increment: points } },
-    });
+      await this.prisma.user.update({
+        where: { id: userId },
+        data: { lifetimePoints: { increment: points } },
+      });
+    }
 
-    // Send notification
+    // Send notification — 🎉 You earned 20 pts (₦2).
+    await this.notificationService.testQuizReward(userId, points, amount);
+
     await this.notificationService.createNotification(
       userId,
-      'Test Quiz Earning',
-      `You earned ₦${amount} from ${subject} Quiz`,
-      'quiz_reward'
-    );
-
-        await this.notificationService.createNotification(
-      userId,
-      `you earned ${points}PTS🎮`,
+      `you earned ${points}PTS`,
       `from ${subject} Quiz`,
       'quiz_reward'
     );
   }
 
-  async createLiveQuizReward(userId: number, points: number, status: EarningStatus, reference?: string) {
-    const amount = this.pointsConversionUtil.pointsToNaira(points);
-    const rewardReference = reference ?? `live_quiz_reward:${userId}:${points}:${status}`;
+  /**
+   * Credits a flat 500 PTS (₦0.50 at 1,000 PTS = ₦1) consolation reward to every participant
+   * who completes a live quiz when jackpot odds are heavily diluted
+   * (participants / winner-spots ≥ 20, i.e. ≤ 5% win chance).
+   *
+   * Awarded on top of jackpot winnings for actual winners.
+   * Idempotent — safe to call multiple times for the same session.
+   */
+  async createLiveQuizConsolationReward(
+    userId: number,
+    sessionId: number | string,
+    consolationPoints = 500,
+    quizName = 'Live Quiz',
+  ) {
+    const rewardReference = `live_quiz_consolation:${userId}:${sessionId}`;
+    const amount = await this.pointsConversionUtil.pointsToNaira(consolationPoints);
 
+    // Idempotency guard — do not double-credit the same session
     const existingReward = await this.prisma.reward.findFirst({
       where: {
         userId,
-        type: 'live_quiz_reward',
+        type: 'live_quiz_consolation',
         reference: rewardReference,
       },
-      orderBy: { createdAt: 'desc' },
     });
 
     if (existingReward) {
       return;
     }
-    
+
     await this.prisma.reward.create({
       data: {
         userId,
         amount,
         currency: 'NGN',
-        type: 'live_quiz_reward',
-        status,
+        type: 'live_quiz_consolation',
+        status: 'PAID_OUT',
         reference: rewardReference,
       },
     });
 
-    // Credit the wallet - live quiz rewards go to Gold Account
-    await this.creditWallet(userId, amount, 'Test Quiz Earning', 'Test Quiz Earning', 'Gold', 'NGN');
-
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: { lifetimePoints: { increment: points } },
+    // Credit points record
+    await this.prisma.point.create({
+      data: {
+        userId,
+        points: consolationPoints,
+        reference: rewardReference,
+        type: 'live_quiz_consolation',
+      },
     });
 
-    await this.notificationService.createNotification(
+    // Increment lifetime points
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { lifetimePoints: { increment: consolationPoints } },
+    });
+
+    // Credit the Savings Account wallet
+    await this.creditWallet(
       userId,
-      'Test Quiz Earning',
-      `You earned ₦${amount} from Live Quiz`,
-      'live_quiz_reward'
+      amount,
+      'Live Quiz Consolation Reward',
+      'Live Quiz Consolation Reward',
+      'Savings',
+      'NGN',
     );
+
+    // Push notification to user
+    await this.notificationService.liveQuizConsolationReward(userId, consolationPoints, quizName);
+  }
+
+  /**
+   * Credits the actual cash prize to a live quiz winner.
+   *
+   * IMPORTANT: unitPrize is already a Naira amount (e.g. ₦600), NOT points.
+   * Do NOT pass it through pointsToNaira() — that would divide by 1000 and
+   * produce ₦0.60 instead of ₦600.
+   *
+   * Idempotent — safe to call multiple times for the same quiz attempt.
+   */
+  async createLiveQuizWinnerReward(
+    userId: number,
+    quizId: string,
+    amountNaira: number,
+    quizFinishDate?: Date,
+  ): Promise<void> {
+    if (!amountNaira || amountNaira <= 0) return;
+
+    const rewardReference = `live_quiz_winner:${userId}:${quizId}`;
+    const ts = quizFinishDate ?? new Date();
+
+    // Idempotency guard — do not double-credit the same quiz win
+    const existingReward = await this.prisma.reward.findFirst({
+      where: {
+        userId,
+        type: 'live_quiz_winner',
+        reference: rewardReference,
+      },
+    });
+    if (existingReward) return;
+
+    await this.prisma.reward.create({
+      data: {
+        userId,
+        amount: amountNaira,
+        currency: 'NGN',
+        type: 'live_quiz_winner',
+        status: 'PAID_OUT',
+        reference: rewardReference,
+        createdAt: ts,
+      },
+    });
+
+    // Credit the Savings Account wallet with the raw Naira amount,
+    // stamped at quiz finish time so wallet history shows the correct time.
+    await this.creditWallet(
+      userId,
+      amountNaira,
+      'Live Quiz',
+      'Live Quiz Earning',
+      'Savings',
+      'NGN',
+      undefined,
+      ts,
+    );
+
+    // Notify the user at the exact credit reward timestamp
+    await this.notificationService.liveQuizReward(userId, amountNaira, ts);
   }
 
 
@@ -498,20 +654,24 @@ async getUserWalletTransactions(filters: WalletTransactionFilterDto) {
       (acc: any) => acc.accountNumber === accountNumber,
     );
 
-    const accountType = matchedAccount?.accountType || 'Personal';
+    const accountType = matchedAccount?.accountType || 'Checking';
+    const normalizedAccountType =
+      accountType === 'Savings' || accountType === 'savings'
+        ? 'Savings'
+        : 'Checking';
 
-    // ✅ Reject deposits into Gold Account
-    if (accountType === 'Gold') {
-      throw new Error('Deposits into Gold Account are not allowed');
+    // ✅ Reject deposits into Savings Account
+    if (accountType === 'Savings' || accountType === 'savings') {
+      throw new Error('Deposits into Savings Account are not allowed');
     }
 
-    // ✅ Block Free-tier users from Personal Account deposits
-    if (accountType === 'Personal' && user.subscriptionPlan === 'FREE') {
-      throw new Error('Free tier users cannot deposit into Personal Account. Please upgrade to Pro or Pro Max.');
+    // ✅ Block Free-tier users from Checking Account deposits
+    if ((accountType === 'Checking' || accountType === 'checking') && user.subscriptionPlan === 'FREE') {
+      throw new Error('Free tier users cannot deposit into Checking Account. Please upgrade to Pro or Pro Max.');
     }
 
     // Determine which balance to increment
-    const balanceField = accountType === 'Gold' ? 'goldBalance' : 'personalBalance';
+    const balanceField = (accountType === 'Savings' || accountType === 'savings') ? 'savingsBalance' : 'checkingBalance';
 
     await this.prisma.$transaction([
       // Update wallet balances
@@ -537,7 +697,7 @@ async getUserWalletTransactions(filters: WalletTransactionFilterDto) {
           account_name: customerName,
           bank_name: bankName,
           account_no: accountNumber,
-          account_type: accountType,
+          account_type: normalizedAccountType,
           description: 'Deposit - Debit Card',
           holdUntil: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000),
           trx_ref: `${generateFiveUniqueRandomNumbers()}`
@@ -568,10 +728,14 @@ async getUserWalletTransactions(filters: WalletTransactionFilterDto) {
     this.eventEmitter.emit('user.wallet.updated', { userId });
     this.eventEmitter.emit('user.payment.history', { userId });
 
+    this.notificationService
+      .walletCredited(userId, amount)
+      .catch(() => undefined);
+
     return { message: 'Wallet funded successfully', amount };
   }
 
-  async transferbtwPersonalandGoldAccount(userId: number, amount: number, fromAccountType: 'Personal' | 'Gold') {
+  async transferBtwCheckingAndSavingsAccount(userId: number, amount: number, fromAccountType: 'Checking' | 'Savings') {
     // Validate amount
     if (amount <= 0) {
       throw new Error('Amount must be greater than 0');
@@ -603,17 +767,17 @@ async getUserWalletTransactions(filters: WalletTransactionFilterDto) {
 
     // Get accounts
     const accounts = (user.accounts as any[]) || [];
-    const personalAccount = accounts.find((acc: any) => acc.accountType === 'Personal');
-    const goldAccount = accounts.find((acc: any) => acc.accountType === 'Gold');
+    const checkingAccount = accounts.find((acc: any) => acc.accountType === 'Checking');
+    const savingsAccount = accounts.find((acc: any) => acc.accountType === 'Savings');
 
-    if (!personalAccount || !goldAccount) {
-      throw new Error('Personal or Gold account not found');
+    if (!checkingAccount || !savingsAccount) {
+      throw new Error('Checking or Savings account not found');
     }
 
     // Determine source and destination based on fromAccountType
-    const sourceAccount = fromAccountType === 'Personal' ? personalAccount : goldAccount;
-    const destinationAccount = fromAccountType === 'Personal' ? goldAccount : personalAccount;
-    const destinationAccountType = fromAccountType === 'Personal' ? 'Gold' : 'Personal';
+    const sourceAccount = fromAccountType === 'Checking' ? checkingAccount : savingsAccount;
+    const destinationAccount = fromAccountType === 'Checking' ? savingsAccount : checkingAccount;
+    const destinationAccountType = fromAccountType === 'Checking' ? 'Savings' : 'Checking';
 const trf_reference = `TRANSFER_${Date.now()}`;
     // Perform transfer in a transaction
     await this.prisma.$transaction([
@@ -685,12 +849,9 @@ const trf_reference = `TRANSFER_${Date.now()}`;
     ]);
 
     // Send notification
-    await this.notificationService.createNotification(
-      userId,
-      'Transfer Successful',
-      `You have transferred ${amount} NGN from ${fromAccountType} to ${destinationAccountType} account`,
-      'money_transfer'
-    );
+    await this.notificationService
+      .savingsCheckingTransfer(userId, amount, fromAccountType, destinationAccountType)
+      .catch(() => undefined);
 
     // Fire socket events for live update
     this.eventEmitter.emit('user.wallet.updated', { userId });

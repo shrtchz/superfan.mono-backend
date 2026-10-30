@@ -1,10 +1,14 @@
 package controllers
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"quiz.superfan.com/apis/middleware"
 	"quiz.superfan.com/apis/models"
 	"quiz.superfan.com/apis/services"
 	"quiz.superfan.com/apis/utils"
@@ -54,6 +58,113 @@ func (ac *AdsController) GetCampaigns(c *gin.Context) {
 	utils.Success(c, http.StatusOK, "Campaigns retrieved successfully", res)
 }
 
+// GetMyCampaigns handles GET /v2/ads/campaigns/mine.
+func (ac *AdsController) GetMyCampaigns(c *gin.Context) {
+	var userID int
+	if userIDValue, ok := c.Get(middleware.ContextUserIDKey); ok {
+		if id, ok := userIDValue.(int); ok && id > 0 {
+			userID = id
+		}
+	}
+	if userID <= 0 {
+		if uidStr := c.Query("userId"); uidStr != "" {
+			if parsed, err := strconv.Atoi(uidStr); err == nil && parsed > 0 {
+				userID = parsed
+			}
+		}
+	}
+	if userID <= 0 {
+		if uidStr := c.Query("user_id"); uidStr != "" {
+			if parsed, err := strconv.Atoi(uidStr); err == nil && parsed > 0 {
+				userID = parsed
+			}
+		}
+	}
+
+	var query services.CampaignListQuery
+	if err := c.ShouldBindQuery(&query); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "invalid query parameters")
+		return
+	}
+	if userID > 0 {
+		query.UserID = &userID
+	}
+
+	res, err := ac.adsService.GetCampaigns(c.Request.Context(), &query)
+	if err != nil {
+		utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
+		return
+	}
+
+	utils.Success(c, http.StatusOK, "User campaigns retrieved successfully", res)
+}
+
+// GetMyInsights handles GET /v2/ads/campaigns/mine/insights.
+func (ac *AdsController) GetMyInsights(c *gin.Context) {
+	var userID int
+	if userIDValue, ok := c.Get(middleware.ContextUserIDKey); ok {
+		if id, ok := userIDValue.(int); ok && id > 0 {
+			userID = id
+		}
+	}
+	if userID <= 0 {
+		if uidStr := c.Query("userId"); uidStr != "" {
+			if parsed, err := strconv.Atoi(uidStr); err == nil && parsed > 0 {
+				userID = parsed
+			}
+		}
+	}
+	if userID <= 0 {
+		if uidStr := c.Query("user_id"); uidStr != "" {
+			if parsed, err := strconv.Atoi(uidStr); err == nil && parsed > 0 {
+				userID = parsed
+			}
+		}
+	}
+	if userID <= 0 {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "userId query parameter or authenticated user required")
+		return
+	}
+
+	query := &services.AdInsightsQuery{UserID: userID}
+	for name, target := range map[string]**time.Time{
+		"startDate": &query.StartDate,
+		"endDate":   &query.EndDate,
+	} {
+		value := c.Query(name)
+		if value == "" {
+			continue
+		}
+		parsed, err := parseAdDate(value, name == "endDate")
+		if err != nil {
+			utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", fmt.Sprintf("invalid %s; use YYYY-MM-DD or RFC3339", name))
+			return
+		}
+		*target = &parsed
+	}
+
+	res, err := ac.adsService.GetMyInsights(c.Request.Context(), query)
+	if err != nil {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", err.Error())
+		return
+	}
+	utils.Success(c, http.StatusOK, "Ad insights retrieved successfully", res)
+}
+
+func parseAdDate(value string, endOfDay bool) (time.Time, error) {
+	if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+		return parsed, nil
+	}
+	parsed, err := time.Parse("2006-01-02", value)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if endOfDay {
+		return parsed.Add(24*time.Hour - time.Nanosecond), nil
+	}
+	return parsed, nil
+}
+
 // GetInventoryStats handles GET /v2/ads/inventory/stats
 func (ac *AdsController) GetInventoryStats(c *gin.Context) {
 	res, err := ac.adsService.GetInventoryStats(c.Request.Context())
@@ -75,20 +186,78 @@ func (ac *AdsController) UpdateCampaignStatus(c *gin.Context) {
 	}
 
 	var req struct {
-		Status models.AdStatus `json:"status" binding:"required"`
+		Status        models.AdStatus `json:"status" binding:"required"`
+		PausedByAdmin *bool           `json:"pausedByAdmin"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "invalid status payload")
 		return
 	}
 
-	campaign, err := ac.adsService.UpdateCampaignStatus(c.Request.Context(), id, req.Status)
+	userIDValue, ok := c.Get(middleware.ContextUserIDKey)
+	userID, validUserID := userIDValue.(int)
+	if !ok || !validUserID || userID <= 0 {
+		utils.SendError(c, http.StatusUnauthorized, "UNAUTHORIZED", "authenticated user is required")
+		return
+	}
+
+	var user models.User
+	if err := utils.DB.WithContext(c.Request.Context()).Select("roleName").First(&user, userID).Error; err != nil {
+		utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to verify campaign permissions")
+		return
+	}
+	roleName := ""
+	if user.RoleName != nil {
+		roleName = strings.ToLower(strings.TrimSpace(*user.RoleName))
+	}
+	isAdmin := roleName == "superadmin" || roleName == "subadmin"
+
+	campaign, err := ac.adsService.UpdateCampaignStatus(
+		c.Request.Context(),
+		id,
+		req.Status,
+		req.PausedByAdmin,
+		userID,
+		isAdmin,
+	)
 	if err != nil {
+		message := err.Error()
+		if strings.Contains(message, "not allowed") ||
+			strings.Contains(message, "only administrators") ||
+			strings.Contains(message, "paused by an administrator") {
+			utils.SendError(c, http.StatusForbidden, "FORBIDDEN", message)
+			return
+		}
+		if strings.Contains(message, "not been approved") {
+			utils.SendError(c, http.StatusForbidden, "FORBIDDEN", message)
+			return
+		}
 		utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
 		return
 	}
 
 	utils.Success(c, http.StatusOK, "Campaign status updated successfully", campaign)
+}
+
+// DeleteCampaign handles DELETE /v2/ads/campaigns/:id
+func (ac *AdsController) DeleteCampaign(c *gin.Context) {
+	idParam := c.Param("id")
+	id, err := strconv.Atoi(idParam)
+	if err != nil {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "invalid campaign ID")
+		return
+	}
+
+	if err := ac.adsService.DeleteCampaign(c.Request.Context(), id); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			utils.SendError(c, http.StatusNotFound, "NOT_FOUND", err.Error())
+			return
+		}
+		utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
+		return
+	}
+
+	utils.Success(c, http.StatusOK, "Campaign deleted successfully", nil)
 }
 
 // ApproveCampaign handles POST /v2/ads/campaigns/:id/approve
@@ -100,7 +269,7 @@ func (ac *AdsController) ApproveCampaign(c *gin.Context) {
 		return
 	}
 
-	campaign, err := ac.adsService.UpdateCampaignStatus(c.Request.Context(), id, models.AdStatusActive)
+	campaign, err := ac.adsService.ApproveCampaign(c.Request.Context(), id)
 	if err != nil {
 		utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
 		return
@@ -118,13 +287,59 @@ func (ac *AdsController) RejectCampaign(c *gin.Context) {
 		return
 	}
 
-	campaign, err := ac.adsService.UpdateCampaignStatus(c.Request.Context(), id, models.AdStatusPaused)
+	var req services.RejectCampaignRequest
+	_ = c.ShouldBindJSON(&req)
+
+	campaign, err := ac.adsService.RejectAndRefundCampaign(c.Request.Context(), id, &req)
 	if err != nil {
 		utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
 		return
 	}
 
-	utils.Success(c, http.StatusOK, "Campaign rejected successfully", campaign)
+	utils.Success(c, http.StatusOK, "Campaign rejected and refunded successfully", campaign)
+}
+
+// TestLink handles POST /v2/ads/test-link
+func (ac *AdsController) TestLink(c *gin.Context) {
+	var req struct {
+		URL        string `json:"url"`
+		CampaignID *int   `json:"campaignId"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "invalid request payload")
+		return
+	}
+
+	res, err := ac.adsService.TestLink(c.Request.Context(), req.URL, req.CampaignID)
+	if err != nil {
+		utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
+		return
+	}
+
+	utils.Success(c, http.StatusOK, "Link tested successfully", res)
+}
+
+// TestCampaignLink handles POST /v2/ads/campaigns/:id/test-link
+func (ac *AdsController) TestCampaignLink(c *gin.Context) {
+	idParam := c.Param("id")
+	id, err := strconv.Atoi(idParam)
+	if err != nil {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "invalid campaign ID")
+		return
+	}
+
+	var req struct {
+		URL string `json:"url"`
+	}
+	_ = c.ShouldBindJSON(&req)
+
+	res, err := ac.adsService.TestLink(c.Request.Context(), req.URL, &id)
+	if err != nil {
+		utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
+		return
+	}
+
+	utils.Success(c, http.StatusOK, "Campaign link tested successfully", res)
 }
 
 // LogAdEvent handles POST /v2/ads/events
@@ -133,6 +348,17 @@ func (ac *AdsController) LogAdEvent(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "invalid event payload")
 		return
+	}
+
+	if req.ClientIP == "" {
+		req.ClientIP = c.ClientIP()
+	}
+	if req.UserID == nil {
+		if uidVal, ok := c.Get(middleware.ContextUserIDKey); ok {
+			if uid, ok := uidVal.(int); ok && uid > 0 {
+				req.UserID = &uid
+			}
+		}
 	}
 
 	if err := ac.adsService.LogAdEvent(c.Request.Context(), &req); err != nil {
@@ -237,8 +463,14 @@ func RegisterAdsRoutes(rg *gin.RouterGroup, ac *AdsController) {
 		adsGroup.POST("/reward", ac.AwardMidQuizReward)
 		adsGroup.POST("/campaigns", ac.CreateCampaign)
 		adsGroup.GET("/campaigns", ac.GetCampaigns)
+		adsGroup.POST("/test-link", ac.TestLink)
+		adsGroup.POST("/campaigns/:id/test-link", ac.TestCampaignLink)
+		authenticatedAdsGroup := rg.Group("/ads", middleware.OptionalAuth())
+		authenticatedAdsGroup.GET("/campaigns/mine", ac.GetMyCampaigns)
+		authenticatedAdsGroup.GET("/campaigns/mine/insights", ac.GetMyInsights)
 		adsGroup.GET("/inventory/stats", ac.GetInventoryStats)
-		adsGroup.PATCH("/campaigns/:id/status", ac.UpdateCampaignStatus)
+		adsGroup.PATCH("/campaigns/:id/status", middleware.AuthRequired(), ac.UpdateCampaignStatus)
+		adsGroup.DELETE("/campaigns/:id", ac.DeleteCampaign)
 		adsGroup.POST("/campaigns/:id/approve", ac.ApproveCampaign)
 		adsGroup.POST("/campaigns/:id/reject", ac.RejectCampaign)
 		adsGroup.POST("/events", ac.LogAdEvent)

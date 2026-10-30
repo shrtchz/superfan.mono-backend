@@ -75,8 +75,11 @@ export class UserController {
   @Public()
   @Post('/auth/signup')
   @HttpCode(HttpStatus.OK)
-  async signupUser(@Body() dto: AuthDto): Promise<{ message: string }> {
-    return this.userService.signupUser(dto);
+  async signupUser(
+    @Body() dto: AuthDto,
+    @RealIp() ip: string,
+  ): Promise<{ message: string }> {
+    return this.userService.signupUser(dto, ip);
   }
 
   // Debug endpoint to list all users with referral codes
@@ -97,10 +100,16 @@ export class UserController {
   @Public()
   @Post('/sync')
   @HttpCode(HttpStatus.OK)
-  async syncUser(@Req() req: any, @Body() dto: SyncUserDto) {
+  async syncUser(
+    @Req() req: any,
+    @Body() dto: SyncUserDto,
+    @RealIp() ip: string,
+  ) {
     const user = await this.userService.syncFromClerkToken(
       req.headers.authorization,
       dto,
+      req.headers['user-agent'] as string | undefined,
+      ip,
     );
     return successResponse('User synced successfully', user);
   }
@@ -109,8 +118,12 @@ export class UserController {
   @Public()
   @Post('/clerk-login')
   @HttpCode(HttpStatus.OK)
-  async clerkLogin(@Req() req: any, @Body() dto: SyncUserDto) {
-    return this.syncUser(req, dto);
+  async clerkLogin(
+    @Req() req: any,
+    @Body() dto: SyncUserDto,
+    @RealIp() ip: string,
+  ) {
+    return this.syncUser(req, dto, ip);
   }
   @Get(':id/login-method')
   async getLoginMethod(@Param('id', ParseIntPipe) userId: number) {
@@ -269,10 +282,34 @@ export class UserController {
   getClients(
     @Query('page') page: number = 1,
     @Query('perPage') perPage: number = 10,
-  ): Promise<PaginatedOutputDto<UserDto>> {
+    @Query('status') status?: string,
+    @Query('plan') plan?: string,
+    @Query('search') search?: string,
+  ): Promise<any> {
     return this.userService.fetchClients({
-      page,
-      perPage,
+      page: Number(page) || 1,
+      perPage: Number(perPage) || 10,
+      status,
+      plan,
+      search,
+    });
+  }
+
+  @Get('/list-clients')
+  @ApiPaginatedResponse(UserDto)
+  listClients(
+    @Query('page') page: number = 1,
+    @Query('perPage') perPage: number = 10,
+    @Query('status') status?: string,
+    @Query('plan') plan?: string,
+    @Query('search') search?: string,
+  ): Promise<any> {
+    return this.userService.fetchClients({
+      page: Number(page) || 1,
+      perPage: Number(perPage) || 10,
+      status,
+      plan,
+      search,
     });
   }
 
@@ -297,6 +334,11 @@ export class UserController {
       @Get('/user-badge/:userId')
   getUserBadge(@Param('userId', ParseIntPipe) userId: number): Promise<any> {
     return this.userService.getUserBadge(userId);
+  }
+
+  @Get('/quiz-earnings/:userId')
+  getQuizEarnings(@Param('userId', ParseIntPipe) userId: number): Promise<any> {
+    return this.userService.getQuizEarnings(userId);
   }
 
   @Get('/top-earners')
@@ -341,10 +383,12 @@ export class UserController {
   getAdmins(
     @Query('page') page: number = 1,
     @Query('perPage') perPage: number = 10,
+    @Query('status') status?: string,
   ): Promise<PaginatedOutputDto<UserDto>> {
     return this.userService.fetchSubadmin({
-      page,
-      perPage,
+      page: Number(page) || 1,
+      perPage: Number(perPage) || 10,
+      status,
     });
   }
 
@@ -405,8 +449,11 @@ export class UserController {
 
   @Public()
   @Delete('/delete/:userId')
-  async deleteAdmin(@Param('userId') userId: number) {
-    return this.userService.deleteUser(userId);
+  async deleteUser(
+    @Param('userId', ParseIntPipe) userId: number,
+    @Body() body?: { password?: string },
+  ) {
+    return this.userService.deleteUser(userId, body?.password);
   }
 
   @Get('/payment-methods')

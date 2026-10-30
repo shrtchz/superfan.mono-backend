@@ -24,6 +24,10 @@ export class AutoSeedService implements OnApplicationBootstrap {
         this.logger.log('✅ All database tables created successfully!');
       }
 
+      await this.ensureAdCampaignColumns();
+      await this.ensureAdEventTypes();
+      await this.ensureAdEventColumns();
+
       // 3. Seed base data only if Role table is empty
       const roleCount = await this.prisma.role.count().catch(() => 0);
       if (roleCount === 0) {
@@ -37,6 +41,41 @@ export class AutoSeedService implements OnApplicationBootstrap {
     } catch (error: any) {
       this.logger.warn(`Auto-seed/schema init error: ${error?.message || error}`);
     }
+  }
+
+  private async ensureAdCampaignColumns() {
+    const statements = [
+      `ALTER TABLE "AdCampaign" ADD COLUMN IF NOT EXISTS "placementType" TEXT`,
+      `ALTER TABLE "AdCampaign" ADD COLUMN IF NOT EXISTS "pricingModel" TEXT`,
+      `ALTER TABLE "AdCampaign" ADD COLUMN IF NOT EXISTS "questionBlocks" INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE "AdCampaign" ADD COLUMN IF NOT EXISTS "guaranteedDailyViews" INTEGER NOT NULL DEFAULT 1000`,
+      `ALTER TABLE "AdCampaign" ADD COLUMN IF NOT EXISTS "pausedByAdmin" BOOLEAN NOT NULL DEFAULT false`,
+      `ALTER TABLE "AdCampaign" ADD COLUMN IF NOT EXISTS "approvedByAdmin" BOOLEAN NOT NULL DEFAULT false`,
+    ];
+
+    for (const statement of statements) {
+      await this.prisma.$executeRawUnsafe(statement);
+    }
+  }
+
+  private async ensureAdEventTypes() {
+    const statements = [
+      `ALTER TYPE "AdEventType" ADD VALUE IF NOT EXISTS 'REWARD_AWARDED'`,
+      `ALTER TYPE "AdEventType" ADD VALUE IF NOT EXISTS 'REWARD_SUPPRESSED'`,
+    ];
+
+    for (const statement of statements) {
+      await this.prisma.$executeRawUnsafe(statement);
+    }
+  }
+
+  private async ensureAdEventColumns() {
+    await this.prisma.$executeRawUnsafe(
+      `ALTER TABLE "AdEvent" ADD COLUMN IF NOT EXISTS "pointsGiven" INTEGER NOT NULL DEFAULT 0`,
+    );
+    await this.prisma.$executeRawUnsafe(
+      `CREATE INDEX IF NOT EXISTS "idx_adevent_campaign_event_created" ON "AdEvent"("campaignId", "eventType", "createdAt")`,
+    );
   }
 
   private async createAllTables() {
@@ -77,7 +116,7 @@ export class AutoSeedService implements OnApplicationBootstrap {
       `DO $$ BEGIN CREATE TYPE "OrderStatus" AS ENUM ('ORDERED','PROCESSING','SHIPPED','OUT_FOR_DELIVERY','DELIVERED','CANCELLED'); EXCEPTION WHEN duplicate_object THEN null; END $$`,
       `DO $$ BEGIN CREATE TYPE "ReturnStatus" AS ENUM ('PENDING','APPROVED','REJECTED','COMPLETED'); EXCEPTION WHEN duplicate_object THEN null; END $$`,
       `DO $$ BEGIN CREATE TYPE "AdStatus" AS ENUM ('PENDING','ACTIVE','PAUSED','COMPLETED'); EXCEPTION WHEN duplicate_object THEN null; END $$`,
-      `DO $$ BEGIN CREATE TYPE "AdEventType" AS ENUM ('VIEW_START','COMPLETION','CLICK'); EXCEPTION WHEN duplicate_object THEN null; END $$`,
+      `DO $$ BEGIN CREATE TYPE "AdEventType" AS ENUM ('VIEW_START','COMPLETION','CLICK','REWARD_AWARDED','REWARD_SUPPRESSED'); EXCEPTION WHEN duplicate_object THEN null; END $$`,
 
       // ─── ROLE / PERMISSION ─────────────────────────────────────────────────
       `CREATE TABLE IF NOT EXISTS "Role" (
@@ -301,7 +340,7 @@ export class AutoSeedService implements OnApplicationBootstrap {
         "points" INTEGER NOT NULL,
         "reference" TEXT,
         "type" TEXT NOT NULL,
-        "accountType" TEXT NOT NULL DEFAULT 'Gold',
+        "accountType" TEXT NOT NULL DEFAULT 'Savings',
         "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
       )`,
 
@@ -884,6 +923,11 @@ export class AutoSeedService implements OnApplicationBootstrap {
         "endDate" TIMESTAMP(3),
         "runContinuously" BOOLEAN NOT NULL DEFAULT true,
         "ageRange" TEXT,
+        "placementType" TEXT,
+        "pricingModel" TEXT,
+        "questionBlocks" INTEGER NOT NULL DEFAULT 0,
+        "pausedByAdmin" BOOLEAN NOT NULL DEFAULT false,
+        "approvedByAdmin" BOOLEAN NOT NULL DEFAULT false,
         "status" "AdStatus" NOT NULL DEFAULT 'PENDING',
         "views" INTEGER NOT NULL DEFAULT 0,
         "clicks" INTEGER NOT NULL DEFAULT 0,
@@ -910,6 +954,7 @@ export class AutoSeedService implements OnApplicationBootstrap {
         "placementId" INTEGER REFERENCES "AdPlacement"("id") ON DELETE SET NULL,
         "quizId" TEXT,
         "eventType" "AdEventType" NOT NULL DEFAULT 'VIEW_START',
+        "pointsGiven" INTEGER NOT NULL DEFAULT 0,
         "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
       )`,
 

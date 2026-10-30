@@ -41,7 +41,9 @@ type Quiz struct {
 	Answer        string   `json:"answer" bson:"answer"`
 	IsTypedAnswer bool     `json:"isTypedAnswer" bson:"isTypedAnswer"`
 	TypedAnswer   string   `json:"typedAnswer,omitempty" bson:"typedAnswer,omitempty"`
-	ImageLink     []string `json:"imageLink,omitempty" bson:"imageLink,omitempty"`
+	ImageLink     []string          `json:"imageLink,omitempty" bson:"imageLink,omitempty"`
+	AudioURL      string            `json:"audioUrl,omitempty" bson:"audioUrl,omitempty"`
+	AudioURLs     map[string]string `json:"audioUrls,omitempty" bson:"audioUrls,omitempty"`
 }
 
 type LiveQuiz struct {
@@ -49,6 +51,8 @@ type LiveQuiz struct {
 	IDHex                      string                 `bson:"-" json:"id"`
 	Question                   string                 `json:"question" bson:"question"`
 	Options                    []string               `json:"options" bson:"options"`
+	AudioURL                   string                 `json:"audioUrl,omitempty" bson:"audioUrl,omitempty"`
+	AudioURLs                  map[string]string      `json:"audioUrls,omitempty" bson:"audioUrls,omitempty"`
 	Answer                     string                 `bson:"answer,omitempty" json:"answer,omitempty"`
 	CustomCountdownLabel       string                 `json:"customCountdownLabel,omitempty" bson:"customCountdownLabel,omitempty"`
 	CustomCountdownLabelBefore string                 `json:"customCountdownLabelBefore,omitempty" bson:"customCountdownLabelBefore,omitempty"`

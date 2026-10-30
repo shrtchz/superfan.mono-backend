@@ -1,24 +1,39 @@
 package services
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lib/pq"
 	"gorm.io/gorm"
 	"quiz.superfan.com/apis/labels"
 	"quiz.superfan.com/apis/models"
+	"quiz.superfan.com/apis/utils"
 )
 
 type AdsService interface {
 	CreateCampaign(ctx context.Context, req *CreateCampaignRequest) (*models.AdCampaign, error)
 	GetCampaigns(ctx context.Context, query *CampaignListQuery) (*CampaignListResponse, error)
+	GetMyInsights(ctx context.Context, query *AdInsightsQuery) (*AdInsightsResponse, error)
 	GetInventoryStats(ctx context.Context) (*InventoryStatsResponse, error)
-	UpdateCampaignStatus(ctx context.Context, id int, status models.AdStatus) (*models.AdCampaign, error)
+	UpdateCampaignStatus(ctx context.Context, id int, status models.AdStatus, pausedByAdmin *bool, userID int, isAdmin bool) (*models.AdCampaign, error)
+	DeleteCampaign(ctx context.Context, id int) error
+	ApproveCampaign(ctx context.Context, id int) (*models.AdCampaign, error)
+	RejectAndRefundCampaign(ctx context.Context, id int, req *RejectCampaignRequest) (*models.AdCampaign, error)
+	TestLink(ctx context.Context, rawURL string, campaignID *int) (*TestLinkResponse, error)
 	LogAdEvent(ctx context.Context, req *LogAdEventRequest) error
 	GetPlacementEligibility(ctx context.Context, userId int, placementKey string) (*PlacementEligibilityResponse, error)
 	EstimateAdCost(ctx context.Context, req *EstimateAdCostRequest) (*EstimateAdCostResponse, error)
@@ -28,11 +43,147 @@ type AdsService interface {
 }
 
 type adsServiceImpl struct {
-	db *gorm.DB
+	db             *gorm.DB
+	nestBaseURL    string
+	httpClient     *http.Client
+	clickDebouncer *ClickDebouncer
 }
 
+func campaignHasEnded(campaign *models.AdCampaign, now time.Time) bool {
+	if campaign == nil || campaign.RunContinuously {
+		return false
+	}
+
+	var expiresAt time.Time
+	if campaign.EndDate != nil && !campaign.EndDate.IsZero() {
+		expiresAt = campaign.EndDate.AddDate(0, 0, 1)
+	} else {
+		if campaign.StartDate.IsZero() {
+			return false
+		}
+		days := campaign.Days
+		if days < 1 {
+			days = 1
+		}
+		expiresAt = campaign.StartDate.AddDate(0, 0, days)
+	}
+
+	return !now.Before(expiresAt)
+}
+
+func (s *adsServiceImpl) completeEndedCampaigns(ctx context.Context, now time.Time) error {
+	if s.db == nil {
+		return nil
+	}
+
+	var campaigns []models.AdCampaign
+	if err := s.db.WithContext(ctx).
+		Where("LOWER(status::text) <> ?", "completed").
+		Find(&campaigns).Error; err != nil {
+		return err
+	}
+
+	endedIDs := make([]int, 0)
+	for _, campaign := range campaigns {
+		if campaignHasEnded(&campaign, now) {
+			endedIDs = append(endedIDs, campaign.ID)
+		}
+	}
+	if len(endedIDs) > 0 {
+		if err := s.db.WithContext(ctx).Model(&models.AdCampaign{}).
+			Where("id IN ?", endedIDs).
+			Update("status", models.AdStatusCompleted).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+const activeCampaignDateCondition = `("AdCampaign"."runContinuously" = TRUE OR (CASE WHEN "AdCampaign"."endDate" IS NOT NULL THEN "AdCampaign"."endDate" + INTERVAL '1 day' ELSE "AdCampaign"."startDate" + GREATEST("AdCampaign"."days", 1) * INTERVAL '1 day' END) > NOW()) AND ("AdCampaign"."pausedByAdmin" IS NOT TRUE)`
+
 func NewAdsService(db *gorm.DB) AdsService {
-	return &adsServiceImpl{db: db}
+	if db != nil {
+		_ = db.Exec(`ALTER TABLE "AdCampaign" ADD COLUMN IF NOT EXISTS "guaranteedDailyViews" INTEGER NOT NULL DEFAULT 1000`).Error
+		_ = db.Exec(`ALTER TABLE "AdCampaign" ADD COLUMN IF NOT EXISTS "pausedByAdmin" BOOLEAN DEFAULT FALSE`).Error
+		_ = db.Exec(`ALTER TABLE "AdCampaign" ADD COLUMN IF NOT EXISTS "approvedByAdmin" BOOLEAN DEFAULT FALSE`).Error
+		_ = db.Exec(`UPDATE "AdCampaign" SET "approvedByAdmin" = TRUE WHERE "status" = 'ACTIVE' OR "status" = 'COMPLETED'`).Error
+		_ = db.Exec(`CREATE INDEX IF NOT EXISTS "idx_adevent_campaign_event_created" ON "AdEvent"("campaignId", "eventType", "createdAt")`).Error
+		_ = db.Exec(`CREATE INDEX IF NOT EXISTS "idx_adevent_campaign_user_event_created" ON "AdEvent"("campaignId", "userId", "eventType", "createdAt")`).Error
+	}
+	return &adsServiceImpl{
+		db:             db,
+		nestBaseURL:    utils.GetEnvWithKey("NEST_BASE_URL"),
+		httpClient:     &http.Client{Timeout: 10 * time.Second},
+		clickDebouncer: NewClickDebouncer(),
+	}
+}
+
+// notifyNest fans an ad event out to the NestJS notification triggers so it
+// lands on the user's notifications page. Failures are never fatal for ads.
+func (s *adsServiceImpl) notifyNest(path string, payload map[string]interface{}) {
+	if s.nestBaseURL == "" {
+		return
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	url := fmt.Sprintf("%s/api/v1/notification/triggers/%s", strings.TrimRight(s.nestBaseURL, "/"), path)
+	resp, err := s.httpClient.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+}
+
+func (s *adsServiceImpl) notifyAdApprovedLive(ownerID *int, headline string) {
+	if ownerID == nil {
+		return
+	}
+	s.notifyNest("ad-approved-live", map[string]interface{}{
+		"userId": *ownerID, "campaignTitle": headline,
+	})
+}
+
+func (s *adsServiceImpl) notifyAdEnded(ownerID *int, headline string) {
+	if ownerID == nil {
+		return
+	}
+	s.notifyNest("ad-ended", map[string]interface{}{
+		"userId": *ownerID, "campaignTitle": headline,
+	})
+}
+
+func (s *adsServiceImpl) notifyAdMilestone(ownerID *int, headline string, impressions int) {
+	if ownerID == nil {
+		return
+	}
+	s.notifyNest("ad-performance-milestone", map[string]interface{}{
+		"userId": *ownerID, "campaignTitle": headline, "impressions": impressions,
+	})
+}
+
+func (s *adsServiceImpl) notifyAdLimitReached(userID int) {
+	// Resets at the next midnight in Africa/Lagos.
+	loc, err := time.LoadLocation("Africa/Lagos")
+	now := time.Now()
+	if err == nil {
+		now = now.In(loc)
+	} else {
+		now = now.UTC()
+	}
+	midnight := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location())
+	duration := midnight.Sub(now)
+	if duration <= 0 {
+		duration = 24 * time.Hour
+	}
+	hours := int(duration.Hours())
+	minutes := int(duration.Minutes()) % 60
+	resetsIn := fmt.Sprintf("%dh %dm", hours, minutes)
+
+	s.notifyNest("ad-limit-reached", map[string]interface{}{
+		"userId": userID, "resetsIn": resetsIn,
+	})
 }
 
 type PlacementFormatRule struct {
@@ -124,29 +275,30 @@ type RewardAdQuotaResponse struct {
 }
 
 type CreateCampaignRequest struct {
-	UserID          *int     `json:"userId"`
-	Username        *string  `json:"username"`
-	Headline        string   `json:"headline"`
-	Description     *string  `json:"description"`
-	ButtonLabel     *string  `json:"buttonLabel"`
-	WebsiteURL      *string  `json:"websiteUrl"`
-	MediaURLs       []string `json:"mediaUrls"`
-	MediaType       *string  `json:"mediaType"`
-	DailyFee        int      `json:"dailyFee"`
-	TotalFee        int      `json:"totalFee"`
-	Days            int      `json:"days"`
-	StartDate       string   `json:"startDate"`
-	StartTime       string   `json:"startTime"`
-	EndDate         *string  `json:"endDate"`
-	RunContinuously bool     `json:"runContinuously"`
-	AgeRange        *string  `json:"ageRange"`
-	PaymentMethod   *string  `json:"paymentMethod"`
-	PaymentRef      *string  `json:"paymentRef"`
-	PlacementKey    *string  `json:"placementKey"` // e.g. "QUIZ_AD_Q1", "MID_QUIZ_AD", "POST_QUIZ_AD", "PRE_QUIZ_AD", "SPONSORED_QUESTIONS"
-	PlacementType   *string  `json:"placementType"`
-	QuestionBlocks  *int     `json:"questionBlocks"`
-	DurationSec     *int     `json:"durationSec"`
-	Status          *string  `json:"status"`
+	UserID               *int     `json:"userId"`
+	Username             *string  `json:"username"`
+	Headline             string   `json:"headline"`
+	Description          *string  `json:"description"`
+	ButtonLabel          *string  `json:"buttonLabel"`
+	WebsiteURL           *string  `json:"websiteUrl"`
+	MediaURLs            []string `json:"mediaUrls"`
+	MediaType            *string  `json:"mediaType"`
+	DailyFee             int      `json:"dailyFee"`
+	TotalFee             int      `json:"totalFee"`
+	Days                 int      `json:"days"`
+	StartDate            string   `json:"startDate"`
+	StartTime            string   `json:"startTime"`
+	EndDate              *string  `json:"endDate"`
+	RunContinuously      bool     `json:"runContinuously"`
+	AgeRange             *string  `json:"ageRange"`
+	PaymentMethod        *string  `json:"paymentMethod"`
+	PaymentRef           *string  `json:"paymentRef"`
+	PlacementKey         *string  `json:"placementKey"` // e.g. "QUIZ_AD_Q1", "MID_QUIZ_AD", "POST_QUIZ_AD", "PRE_QUIZ_AD", "SPONSORED_QUESTIONS"
+	PlacementType        *string  `json:"placementType"`
+	QuestionBlocks       *int     `json:"questionBlocks"`
+	GuaranteedDailyViews *int     `json:"guaranteedDailyViews"`
+	DurationSec          *int     `json:"durationSec"`
+	Status               *string  `json:"status"`
 }
 
 type CampaignListQuery struct {
@@ -156,6 +308,7 @@ type CampaignListQuery struct {
 	Search  string `form:"search"`
 	SortBy  string `form:"sortBy,default=createdAt"`
 	SortDir string `form:"sortDir,default=desc"`
+	UserID  *int   `form:"userId"`
 }
 
 type CampaignListResponse struct {
@@ -164,6 +317,28 @@ type CampaignListResponse struct {
 	Page       int                 `json:"page"`
 	Limit      int                 `json:"limit"`
 	TotalPages int                 `json:"totalPages"`
+}
+
+type AdInsightsQuery struct {
+	UserID    int
+	StartDate *time.Time
+	EndDate   *time.Time
+}
+
+type AdInsightsMetric struct {
+	Count                int64   `json:"count"`
+	Percentage           float64 `json:"percentage"`
+	RegisteredUsers      int64   `json:"registeredUsers"`
+	RegisteredPercentage float64 `json:"registeredPercentage"`
+}
+
+type AdInsightsResponse struct {
+	StartDate        time.Time        `json:"startDate"`
+	EndDate          time.Time        `json:"endDate"`
+	Views            AdInsightsMetric `json:"views"`
+	TotalImpressions AdInsightsMetric `json:"totalImpressions"`
+	CompletionRate   AdInsightsMetric `json:"completionRate"`
+	ClickThrough     AdInsightsMetric `json:"clickThrough"`
 }
 
 type InventoryStatsResponse struct {
@@ -186,13 +361,41 @@ type LogAdEventRequest struct {
 	QuizID      *string            `json:"quizId"`
 	EventType   models.AdEventType `json:"eventType"`
 	PointsGiven *int               `json:"pointsGiven,omitempty"`
+	ClientIP    string             `json:"clientIp,omitempty"`
 }
 
 type PlacementEligibilityResponse struct {
-	Eligible  bool                `json:"eligible"`
-	Reason    string              `json:"reason,omitempty"`
-	Campaign  *models.AdCampaign  `json:"campaign,omitempty"`
-	Placement *models.AdPlacement `json:"placement,omitempty"`
+	Eligible             bool                `json:"eligible"`
+	Reason               string              `json:"reason,omitempty"`
+	Campaign             *models.AdCampaign  `json:"campaign,omitempty"`
+	Placement            *models.AdPlacement `json:"placement,omitempty"`
+	GuaranteedDailyViews int                 `json:"guaranteedDailyViews,omitempty"`
+	TodayViews           int                 `json:"todayViews,omitempty"`
+	CycleResetsAt        *time.Time          `json:"cycleResetsAt,omitempty"`
+}
+
+type RejectCampaignRequest struct {
+	Reason string `json:"reason" binding:"required"`
+	Notes  string `json:"notes,omitempty"`
+}
+
+type SafeBrowsingResult struct {
+	Status       string   `json:"status"` // "SAFE", "UNSAFE", "SUSPICIOUS", "INVALID"
+	ThreatsFound []string `json:"threatsFound"`
+	Details      string   `json:"details"`
+}
+
+type TestLinkResponse struct {
+	Pass           bool               `json:"pass"`
+	IsSafe         bool               `json:"isSafe"`
+	Resolves       bool               `json:"resolves"`
+	Status         int                `json:"status"`
+	StatusText     string             `json:"statusText"`
+	OriginalURL    string             `json:"originalUrl"`
+	ResolvedURL    string             `json:"resolvedUrl"`
+	ResponseTimeMs int64              `json:"responseTimeMs"`
+	SafeBrowsing   SafeBrowsingResult `json:"safeBrowsing"`
+	Message        string             `json:"message"`
 }
 
 func ResolvePlacementConfig(placementInput string) PlacementFormatRule {
@@ -444,6 +647,31 @@ func (s *adsServiceImpl) EstimateAdCost(ctx context.Context, req *EstimateAdCost
 	}, nil
 }
 
+func (s *adsServiceImpl) getAdsPointsToNairaRate(ctx context.Context) int {
+	if s.db != nil {
+		var setting struct {
+			Value string
+		}
+		err := s.db.WithContext(ctx).Raw(
+			`SELECT "value" FROM "platform_settings" WHERE "key" = ? LIMIT 1`,
+			"adsPointsToNairaRate",
+		).Scan(&setting).Error
+		if err == nil && setting.Value != "" {
+			rate, parseErr := strconv.Atoi(setting.Value)
+			if parseErr == nil && rate > 0 {
+				return rate
+			}
+		}
+	}
+	value := strings.TrimSpace(os.Getenv("ADS_POINTS_TO_NAIRA_RATE"))
+	if value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil && parsed > 0 {
+			return parsed
+		}
+	}
+	return 200
+}
+
 func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdRewardRequest) (*AwardAdRewardResponse, error) {
 	rule := ResolvePlacementConfig(req.PlacementKey)
 
@@ -499,6 +727,16 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 			QuizID:     req.QuizID,
 			EventType:  models.AdEventTypeRewardSuppressed,
 		})
+
+		// 📺 "Today's ad limit reached, resets in ..." — once per day.
+		var suppressedToday int64
+		s.db.WithContext(ctx).Model(&models.AdEvent{}).
+			Where(`"userId" = ? AND "eventType" = ? AND "createdAt" >= ?`, req.UserID, models.AdEventTypeRewardSuppressed, startOfDay).
+			Count(&suppressedToday)
+		if suppressedToday <= 1 {
+			s.notifyAdLimitReached(req.UserID)
+		}
+
 		return &AwardAdRewardResponse{
 			Awarded:           false,
 			PointsAwarded:     0,
@@ -507,9 +745,13 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 		}, nil
 	}
 
-	// 4. Award 200 PTS as NGN 0.20 in the Gold Wallet.
-	const rewardPoints = 200
-	const rewardNaira = float64(rewardPoints) / 1000.0
+	// 4. Award points converted to Naira in the Savings Wallet using dynamic ads conversion rate.
+	rewardPoints := rule.PointsAwardAmount
+	if rewardPoints <= 0 {
+		rewardPoints = 200
+	}
+	adsConversionRate := s.getAdsPointsToNairaRate(ctx)
+	rewardNaira := float64(rewardPoints) / float64(adsConversionRate)
 	var newBalance float64
 
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -520,7 +762,7 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 				wallet = models.Wallet{
 					UserID:      req.UserID,
 					Balance:     rewardNaira,
-					GoldBalance: rewardNaira,
+					SavingsBalance: rewardNaira,
 				}
 				if err := tx.Create(&wallet).Error; err != nil {
 					return err
@@ -530,22 +772,22 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 			}
 		} else {
 			if err := tx.Model(&wallet).Updates(map[string]interface{}{
-				"balance":     gorm.Expr(`"balance" + ?`, rewardNaira),
-				"goldBalance": gorm.Expr(`"goldBalance" + ?`, rewardNaira),
+				"balance":        gorm.Expr(`"balance" + ?`, rewardNaira),
+				"savingsBalance": gorm.Expr(`"savingsBalance" + ?`, rewardNaira),
 			}).Error; err != nil {
 				return err
 			}
 			wallet.Balance += rewardNaira
-			wallet.GoldBalance += rewardNaira
+			wallet.SavingsBalance += rewardNaira
 		}
 
-		newBalance = wallet.GoldBalance
+		newBalance = wallet.SavingsBalance
 
 		txType := "CREDIT"
 		transactionType := "Deposit"
 		rewardType := labels.Wallet("adsReward", nil)
 		description := rewardType
-		goldAccount := "Gold"
+		savingsAccount := "Savings"
 		currency := "NGN"
 		txRef := fmt.Sprintf("ADREW-%d-%d", req.UserID, time.Now().UnixNano())
 
@@ -557,7 +799,7 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 			Currency:        currency,
 			Status:          &status,
 			TransactionType: &transactionType,
-			AccountType:     &goldAccount,
+			AccountType:     &savingsAccount,
 			RewardType:      &rewardType,
 			Description:     &description,
 			TrxRef:          &txRef,
@@ -608,11 +850,15 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 		return nil, fmt.Errorf("failed to award reward points: %w", err)
 	}
 
+	s.notifyNest("ad-reward-credited", map[string]interface{}{
+		"userId": req.UserID, "amountNaira": rewardNaira,
+	})
+
 	return &AwardAdRewardResponse{
 		Awarded:           true,
 		PointsAwarded:     rewardPoints,
 		DailyQuotaReached: false,
-		Message:           "200 PTS awarded successfully",
+		Message:           fmt.Sprintf("%d PTS awarded successfully", rewardPoints),
 		NewWalletBalance:  newBalance,
 	}, nil
 }
@@ -745,31 +991,52 @@ func (s *adsServiceImpl) CreateCampaign(ctx context.Context, req *CreateCampaign
 
 	placementTypeStr := string(rule.PlacementType)
 	pricingModelStr := rule.PricingModel
+	campaignUsername := req.Username
+	if s.db != nil && req.UserID != nil && *req.UserID > 0 {
+		var owner models.User
+		if err := s.db.WithContext(ctx).Select(`id, username`).First(&owner, *req.UserID).Error; err == nil && strings.TrimSpace(owner.Username) != "" {
+			username := strings.TrimSpace(owner.Username)
+			campaignUsername = &username
+		}
+	}
+
+	guaranteedDailyViews := 1000
+	if req.GuaranteedDailyViews != nil && *req.GuaranteedDailyViews > 0 {
+		guaranteedDailyViews = *req.GuaranteedDailyViews
+	} else if rule.GuaranteedDailyUnits > 0 {
+		guaranteedDailyViews = rule.GuaranteedDailyUnits
+	} else if dailyFee > 0 {
+		guaranteedDailyViews = int(math.Round((float64(dailyFee) / 500.0) * 1000.0))
+		if guaranteedDailyViews <= 0 {
+			guaranteedDailyViews = 1000
+		}
+	}
 
 	campaign := models.AdCampaign{
-		UserID:          req.UserID,
-		Username:        req.Username,
-		Headline:        req.Headline,
-		Description:     req.Description,
-		ButtonLabel:     req.ButtonLabel,
-		WebsiteURL:      req.WebsiteURL,
-		MediaURLs:       pq.StringArray(req.MediaURLs),
-		MediaType:       req.MediaType,
-		DailyFee:        dailyFee,
-		TotalFee:        totalFee,
-		Days:            days,
-		StartDate:       parsedStart,
-		EndDate:         parsedEnd,
-		RunContinuously: req.RunContinuously,
-		AgeRange:        req.AgeRange,
-		PlacementType:   &placementTypeStr,
-		PricingModel:    &pricingModelStr,
-		QuestionBlocks:  blocks,
-		Status:          status,
-		PaymentStatus:   paymentStatus,
-		PaymentRef:      req.PaymentRef,
-		CreatedAt:       time.Now(),
-		UpdatedAt:       time.Now(),
+		UserID:               req.UserID,
+		Username:             campaignUsername,
+		Headline:             req.Headline,
+		Description:          req.Description,
+		ButtonLabel:          req.ButtonLabel,
+		WebsiteURL:           req.WebsiteURL,
+		MediaURLs:            pq.StringArray(req.MediaURLs),
+		MediaType:            req.MediaType,
+		DailyFee:             dailyFee,
+		TotalFee:             totalFee,
+		Days:                 days,
+		StartDate:            parsedStart,
+		EndDate:              parsedEnd,
+		RunContinuously:      req.RunContinuously,
+		AgeRange:             req.AgeRange,
+		PlacementType:        &placementTypeStr,
+		PricingModel:         &pricingModelStr,
+		QuestionBlocks:       blocks,
+		GuaranteedDailyViews: guaranteedDailyViews,
+		Status:               status,
+		PaymentStatus:        paymentStatus,
+		PaymentRef:           req.PaymentRef,
+		CreatedAt:            time.Now(),
+		UpdatedAt:            time.Now(),
 	}
 
 	if err := s.db.WithContext(ctx).Create(&campaign).Error; err != nil {
@@ -806,13 +1073,20 @@ func (s *adsServiceImpl) CreateCampaign(ctx context.Context, req *CreateCampaign
 }
 
 func (s *adsServiceImpl) GetCampaigns(ctx context.Context, q *CampaignListQuery) (*CampaignListResponse, error) {
+	if err := s.completeEndedCampaigns(ctx, time.Now()); err != nil {
+		return nil, err
+	}
+
 	var campaigns []models.AdCampaign
 	var total int64
 
 	db := s.db.WithContext(ctx).Model(&models.AdCampaign{})
 
 	if q.Status != "" && q.Status != "all" {
-		db = db.Where("LOWER(status) = ?", strings.ToLower(q.Status))
+		db = db.Where("LOWER(status::text) = ?", strings.ToLower(q.Status))
+	}
+	if q.UserID != nil {
+		db = db.Where(`"userId" = ?`, *q.UserID)
 	}
 
 	if q.Search != "" {
@@ -885,6 +1159,73 @@ func (s *adsServiceImpl) GetCampaigns(ctx context.Context, q *CampaignListQuery)
 	}, nil
 }
 
+func (s *adsServiceImpl) GetMyInsights(ctx context.Context, q *AdInsightsQuery) (*AdInsightsResponse, error) {
+	if q == nil || q.UserID <= 0 {
+		return nil, fmt.Errorf("a valid user ID is required")
+	}
+
+	startDate := time.Now().UTC().Truncate(24 * time.Hour)
+	endDate := time.Now().UTC()
+	if q.StartDate != nil {
+		startDate = q.StartDate.UTC()
+	}
+	if q.EndDate != nil {
+		endDate = q.EndDate.UTC()
+	}
+	if endDate.Before(startDate) {
+		return nil, fmt.Errorf("end date must be on or after start date")
+	}
+
+	type eventAggregate struct {
+		EventType       string `gorm:"column:event_type"`
+		Count           int64  `gorm:"column:event_count"`
+		RegisteredUsers int64  `gorm:"column:registered_count"`
+	}
+	var aggregates []eventAggregate
+	campaignIDs := s.db.WithContext(ctx).Model(&models.AdCampaign{}).
+		Select("id").Where(`"userId" = ?`, q.UserID)
+
+	if err := s.db.WithContext(ctx).Model(&models.AdEvent{}).
+		Select(`"eventType" AS event_type, COUNT(*) AS event_count, COUNT(DISTINCT "userId") AS registered_count`).
+		Where(`"campaignId" IN (?)`, campaignIDs).
+		Where(`"createdAt" >= ? AND "createdAt" <= ?`, startDate, endDate).
+		Where(`"eventType" IN (?, ?, ?)`, models.AdEventTypeViewStart, models.AdEventTypeCompletion, models.AdEventTypeClick).
+		Group(`"eventType"`).Scan(&aggregates).Error; err != nil {
+		return nil, err
+	}
+
+	counts := map[string]eventAggregate{}
+	for _, aggregate := range aggregates {
+		counts[aggregate.EventType] = aggregate
+	}
+
+	viewStarts := counts[string(models.AdEventTypeViewStart)]
+	completions := counts[string(models.AdEventTypeCompletion)]
+	clicks := counts[string(models.AdEventTypeClick)]
+	metric := func(aggregate eventAggregate, denominator int64) AdInsightsMetric {
+		percentage := 0.0
+		registeredPercentage := 0.0
+		if denominator > 0 {
+			percentage = math.Round(float64(aggregate.Count)/float64(denominator)*10000) / 100
+		}
+		if aggregate.Count > 0 {
+			registeredPercentage = math.Round(float64(aggregate.RegisteredUsers)/float64(aggregate.Count)*10000) / 100
+		}
+		return AdInsightsMetric{
+			Count: aggregate.Count, Percentage: percentage,
+			RegisteredUsers: aggregate.RegisteredUsers, RegisteredPercentage: registeredPercentage,
+		}
+	}
+
+	return &AdInsightsResponse{
+		StartDate: startDate, EndDate: endDate,
+		Views:            metric(viewStarts, viewStarts.Count),
+		TotalImpressions: metric(viewStarts, viewStarts.Count),
+		CompletionRate:   metric(completions, viewStarts.Count),
+		ClickThrough:     metric(clicks, viewStarts.Count),
+	}, nil
+}
+
 func (s *adsServiceImpl) enrichCampaignUser(ctx context.Context, campaign *models.AdCampaign) {
 	if campaign == nil || campaign.UserID == nil || *campaign.UserID <= 0 {
 		return
@@ -900,7 +1241,7 @@ func (s *adsServiceImpl) enrichCampaignUser(ctx context.Context, campaign *model
 		if fullName != "" {
 			campaign.FullName = &fullName
 		}
-		if (campaign.Username == nil || strings.TrimSpace(*campaign.Username) == "") && strings.TrimSpace(owner.Username) != "" {
+		if strings.TrimSpace(owner.Username) != "" {
 			u := strings.TrimSpace(owner.Username)
 			campaign.Username = &u
 		}
@@ -908,6 +1249,10 @@ func (s *adsServiceImpl) enrichCampaignUser(ctx context.Context, campaign *model
 }
 
 func (s *adsServiceImpl) GetInventoryStats(ctx context.Context) (*InventoryStatsResponse, error) {
+	if err := s.completeEndedCampaigns(ctx, time.Now()); err != nil {
+		return nil, err
+	}
+
 	var totalAds int64
 	var activeAds int64
 	var pausedAds int64
@@ -918,10 +1263,10 @@ func (s *adsServiceImpl) GetInventoryStats(ctx context.Context) (*InventoryStats
 	var totalRevenue float64
 
 	_ = s.db.WithContext(ctx).Model(&models.AdCampaign{}).Count(&totalAds).Error
-	_ = s.db.WithContext(ctx).Model(&models.AdCampaign{}).Where("LOWER(status) = ?", "active").Count(&activeAds).Error
-	_ = s.db.WithContext(ctx).Model(&models.AdCampaign{}).Where("LOWER(status) = ?", "paused").Count(&pausedAds).Error
-	_ = s.db.WithContext(ctx).Model(&models.AdCampaign{}).Where("LOWER(status) = ?", "pending").Count(&pendingAds).Error
-	_ = s.db.WithContext(ctx).Model(&models.AdCampaign{}).Where("LOWER(status) = ?", "completed").Count(&completedAds).Error
+	_ = s.db.WithContext(ctx).Model(&models.AdCampaign{}).Where("LOWER(status::text) = ?", "active").Count(&activeAds).Error
+	_ = s.db.WithContext(ctx).Model(&models.AdCampaign{}).Where("LOWER(status::text) = ?", "paused").Count(&pausedAds).Error
+	_ = s.db.WithContext(ctx).Model(&models.AdCampaign{}).Where("LOWER(status::text) = ?", "pending").Count(&pendingAds).Error
+	_ = s.db.WithContext(ctx).Model(&models.AdCampaign{}).Where("LOWER(status::text) = ?", "completed").Count(&completedAds).Error
 
 	type AggStats struct {
 		TotalViews   int64   `gorm:"column:total_views"`
@@ -956,18 +1301,47 @@ func (s *adsServiceImpl) GetInventoryStats(ctx context.Context) (*InventoryStats
 	}, nil
 }
 
-func (s *adsServiceImpl) UpdateCampaignStatus(ctx context.Context, id int, status models.AdStatus) (*models.AdCampaign, error) {
+func (s *adsServiceImpl) UpdateCampaignStatus(ctx context.Context, id int, status models.AdStatus, pausedByAdmin *bool, userID int, isAdmin bool) (*models.AdCampaign, error) {
 	var campaign models.AdCampaign
 	if err := s.db.WithContext(ctx).First(&campaign, id).Error; err != nil {
 		return nil, fmt.Errorf("campaign not found: %w", err)
 	}
 
+	if userID <= 0 {
+		return nil, errors.New("authenticated user is required to update a campaign")
+	}
+	if !isAdmin {
+		if campaign.UserID == nil || *campaign.UserID != userID {
+			return nil, errors.New("user is not allowed to update this campaign")
+		}
+		if pausedByAdmin != nil {
+			return nil, errors.New("only administrators can change the admin pause flag")
+		}
+		if campaign.PausedByAdmin {
+			return nil, errors.New("this ad was paused by an administrator and cannot be changed by the user")
+		}
+	} else if pausedByAdmin != nil && *pausedByAdmin && status != models.AdStatusPaused {
+		return nil, errors.New("an ad paused by an administrator must have PAUSED status")
+	}
+
+	// An ad cannot be set to active if it was not approved by an admin
+	if !campaign.ApprovedByAdmin && status == models.AdStatusActive {
+		return nil, errors.New("this ad has not been approved by an administrator yet")
+	}
+
+	previous := campaign.Status
+
+	updates := map[string]interface{}{
+		"status":    status,
+		"updatedAt": time.Now(),
+	}
+	if isAdmin && pausedByAdmin != nil {
+		updates["pausedByAdmin"] = *pausedByAdmin
+	}
+
 	if err := s.db.WithContext(ctx).Model(&models.AdCampaign{}).
 		Where("id = ?", id).
-		Updates(map[string]interface{}{
-			"status":    status,
-			"updatedAt": time.Now(),
-		}).Error; err != nil {
+		Updates(updates).Error; err != nil {
 		return nil, fmt.Errorf("failed to update campaign status: %w", err)
 	}
 
@@ -975,12 +1349,543 @@ func (s *adsServiceImpl) UpdateCampaignStatus(ctx context.Context, id int, statu
 		return nil, fmt.Errorf("failed to reload campaign after status update: %w", err)
 	}
 
+	// 📢 "Your Ad Is Live!" when a campaign goes active; "Ad Campaign Ended." when completed.
+	if status == models.AdStatusActive && previous != models.AdStatusActive {
+		s.notifyAdApprovedLive(campaign.UserID, campaign.Headline)
+	} else if status == models.AdStatusCompleted && previous != models.AdStatusCompleted {
+		s.notifyAdEnded(campaign.UserID, campaign.Headline)
+	}
+
 	return &campaign, nil
+}
+
+func (s *adsServiceImpl) DeleteCampaign(ctx context.Context, id int) error {
+	var campaign models.AdCampaign
+	if err := s.db.WithContext(ctx).First(&campaign, id).Error; err != nil {
+		return fmt.Errorf("campaign not found: %w", err)
+	}
+
+	_ = s.db.WithContext(ctx).Where(`"campaignId" = ?`, id).Delete(&models.AdEvent{}).Error
+	_ = s.db.WithContext(ctx).Where(`"campaignId" = ?`, id).Delete(&models.AdPlacement{}).Error
+
+	if err := s.db.WithContext(ctx).Delete(&campaign).Error; err != nil {
+		return fmt.Errorf("failed to delete campaign: %w", err)
+	}
+
+	return nil
+}
+
+func (s *adsServiceImpl) ApproveCampaign(ctx context.Context, id int) (*models.AdCampaign, error) {
+	var campaign models.AdCampaign
+	if err := s.db.WithContext(ctx).First(&campaign, id).Error; err != nil {
+		return nil, fmt.Errorf("campaign not found: %w", err)
+	}
+
+	// Approve campaign and set status to ACTIVE (ad server rotation schedules it from its startDate)
+	now := time.Now()
+	if err := s.db.WithContext(ctx).Model(&models.AdCampaign{}).
+		Where("id = ?", id).
+		Updates(map[string]interface{}{
+			"status":          models.AdStatusActive,
+			"approvedByAdmin": true,
+			"pausedByAdmin":   false,
+			"updatedAt":       now,
+		}).Error; err != nil {
+		return nil, fmt.Errorf("failed to approve campaign: %w", err)
+	}
+
+	if err := s.db.WithContext(ctx).First(&campaign, id).Error; err != nil {
+		return nil, fmt.Errorf("failed to reload campaign: %w", err)
+	}
+
+	// Notify advertiser that their ad is approved and in server rotation
+	s.notifyAdApprovedLive(campaign.UserID, campaign.Headline)
+
+	return &campaign, nil
+}
+
+func (s *adsServiceImpl) RejectAndRefundCampaign(ctx context.Context, id int, req *RejectCampaignRequest) (*models.AdCampaign, error) {
+	var campaign models.AdCampaign
+	if err := s.db.WithContext(ctx).First(&campaign, id).Error; err != nil {
+		return nil, fmt.Errorf("campaign not found: %w", err)
+	}
+
+	reason := "Rejected by moderation"
+	notes := ""
+	if req != nil {
+		if strings.TrimSpace(req.Reason) != "" {
+			reason = strings.TrimSpace(req.Reason)
+		}
+		notes = strings.TrimSpace(req.Notes)
+	}
+
+	now := time.Now()
+
+	// Update campaign status to PAUSED and revoke approval
+	if err := s.db.WithContext(ctx).Model(&models.AdCampaign{}).
+		Where("id = ?", id).
+		Updates(map[string]interface{}{
+			"status":          models.AdStatusPaused,
+			"approvedByAdmin": false,
+			"updatedAt":       now,
+		}).Error; err != nil {
+		return nil, fmt.Errorf("failed to update campaign status to rejected: %w", err)
+	}
+
+	// Issue wallet credit refund to advertiser if fee > 0 and user exists
+	refundAmount := float64(campaign.TotalFee)
+	if campaign.UserID != nil && *campaign.UserID > 0 && refundAmount > 0 {
+		userID := *campaign.UserID
+
+		// Credit user's wallet
+		var wallet models.Wallet
+		walletErr := s.db.WithContext(ctx).Where(`"userId" = ?`, userID).First(&wallet).Error
+		if walletErr == nil && wallet.ID > 0 {
+			if err := s.db.WithContext(ctx).Model(&models.Wallet{}).
+				Where("id = ?", wallet.ID).
+				Updates(map[string]interface{}{
+					"checkingBalance": gorm.Expr(`"checkingBalance" + ?`, refundAmount),
+					"balance":         gorm.Expr(`"balance" + ?`, refundAmount),
+				}).Error; err != nil {
+				fmt.Printf("Warning: failed to credit wallet %d: %v\n", wallet.ID, err)
+			}
+		} else {
+			// Create wallet with credited amount
+			newWallet := models.Wallet{
+				UserID:          userID,
+				CheckingBalance: refundAmount,
+				Balance:         refundAmount,
+			}
+			_ = s.db.WithContext(ctx).Create(&newWallet).Error
+		}
+
+		// Insert WalletTransaction record
+		trxType := "credit"
+		trxCategory := "AD_REFUND"
+		trxStatus := "SUCCESS"
+		trxDesc := "Ad Rejection Refund"
+		ref := fmt.Sprintf("REF-AD-%d-%d", campaign.ID, now.Unix())
+
+		txRecord := models.WalletTransaction{
+			UserID:          userID,
+			Amount:          refundAmount,
+			Type:            &trxType,
+			TransactionType: &trxCategory,
+			Currency:        "NGN",
+			Status:          &trxStatus,
+			Description:     &trxDesc,
+			Reference:       &ref,
+			TrxRef:          &ref,
+			CreatedAt:       now,
+		}
+		_ = s.db.WithContext(ctx).Create(&txRecord).Error
+
+		// Trigger in-app notification and email via Nest
+		s.notifyNest("ad-rejected", map[string]interface{}{
+			"userId":        userID,
+			"campaignTitle": campaign.Headline,
+			"reason":        reason,
+			"notes":         notes,
+			"refundAmount":  campaign.TotalFee,
+		})
+	}
+
+	if err := s.db.WithContext(ctx).First(&campaign, id).Error; err != nil {
+		return nil, fmt.Errorf("failed to reload campaign after rejection: %w", err)
+	}
+
+	return &campaign, nil
+}
+
+func isPrivateOrLoopbackHost(host string) bool {
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".internal") || strings.HasSuffix(host, ".local") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		ips, err := net.LookupIP(host)
+		if err == nil && len(ips) > 0 {
+			ip = ips[0]
+		}
+	}
+	if ip != nil {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+			return true
+		}
+	}
+	return false
+}
+
+func checkMaliciousOrExplicitContent(parsed *url.URL) []string {
+	threats := make([]string, 0)
+	full := strings.ToLower(parsed.String())
+	host := strings.ToLower(parsed.Hostname())
+
+	maliciousKeywords := []string{
+		"phishing", "malware", "ransomware", "trojan", "stealer", "keylogger",
+		"crypto-drainer", "wallet-drainer", "free-crypto-giveaway", "metamask-verify",
+		"binance-auth-check", "claim-airdrop-now",
+	}
+	for _, kw := range maliciousKeywords {
+		if strings.Contains(full, kw) {
+			threats = append(threats, fmt.Sprintf("Malicious keyword detected (%s)", kw))
+		}
+	}
+
+	explicitKeywords := []string{
+		"porn", "xxx", "nude", "nsfw", "hentai", "camgirl", "escort-service", "adult-dating",
+	}
+	for _, kw := range explicitKeywords {
+		if strings.Contains(full, kw) {
+			threats = append(threats, fmt.Sprintf("Explicit content keyword (%s)", kw))
+		}
+	}
+
+	// Suspicious TLD check
+	suspiciousTLDs := []string{".tk", ".ml", ".ga", ".cf", ".gq"}
+	for _, tld := range suspiciousTLDs {
+		if strings.HasSuffix(host, tld) {
+			threats = append(threats, fmt.Sprintf("High-risk TLD (%s)", tld))
+		}
+	}
+
+	return threats
+}
+
+func checkContentSafety(htmlSnippet string) []string {
+	threats := make([]string, 0)
+	lower := strings.ToLower(htmlSnippet)
+
+	explicitMarkers := []string{"hardcore porn", "xxx video", "adult webcam", "casino hack"}
+	for _, marker := range explicitMarkers {
+		if strings.Contains(lower, marker) {
+			threats = append(threats, fmt.Sprintf("Explicit content marker (%s)", marker))
+		}
+	}
+	return threats
+}
+
+func (s *adsServiceImpl) TestLink(ctx context.Context, rawURL string, campaignID *int) (*TestLinkResponse, error) {
+	if strings.TrimSpace(rawURL) == "" && campaignID != nil && *campaignID > 0 {
+		var c models.AdCampaign
+		if err := s.db.WithContext(ctx).First(&c, *campaignID).Error; err == nil && c.WebsiteURL != nil {
+			rawURL = *c.WebsiteURL
+		}
+	}
+
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return &TestLinkResponse{
+			Pass:           false,
+			IsSafe:         false,
+			Resolves:       false,
+			Status:         0,
+			StatusText:     "No URL Provided",
+			OriginalURL:    rawURL,
+			ResolvedURL:    rawURL,
+			ResponseTimeMs: 0,
+			SafeBrowsing: SafeBrowsingResult{
+				Status:       "INVALID",
+				ThreatsFound: []string{"Missing URL"},
+				Details:      "No destination URL was provided for verification.",
+			},
+			Message: "No destination URL provided to test.",
+		}, nil
+	}
+
+	// Ensure scheme
+	targetURL := rawURL
+	if !strings.HasPrefix(strings.ToLower(targetURL), "http://") && !strings.HasPrefix(strings.ToLower(targetURL), "https://") {
+		targetURL = "https://" + targetURL
+	}
+
+	parsed, err := url.Parse(targetURL)
+	if err != nil || parsed.Host == "" {
+		return &TestLinkResponse{
+			Pass:           false,
+			IsSafe:         false,
+			Resolves:       false,
+			Status:         0,
+			StatusText:     "Invalid URL Format",
+			OriginalURL:    rawURL,
+			ResolvedURL:    targetURL,
+			ResponseTimeMs: 0,
+			SafeBrowsing: SafeBrowsingResult{
+				Status:       "INVALID",
+				ThreatsFound: []string{"Malformed URL"},
+				Details:      "The URL could not be parsed into a valid hostname.",
+			},
+			Message: "Invalid destination URL format.",
+		}, nil
+	}
+
+	hostLower := strings.ToLower(parsed.Hostname())
+
+	// SSRF Protection: block localhost / private IPs
+	if isPrivateOrLoopbackHost(hostLower) {
+		return &TestLinkResponse{
+			Pass:           false,
+			IsSafe:         false,
+			Resolves:       false,
+			Status:         403,
+			StatusText:     "Forbidden Internal Target",
+			OriginalURL:    rawURL,
+			ResolvedURL:    targetURL,
+			ResponseTimeMs: 0,
+			SafeBrowsing: SafeBrowsingResult{
+				Status:       "UNSAFE",
+				ThreatsFound: []string{"Internal/Private IP Target"},
+				Details:      "Destination link points to an internal or non-routable address.",
+			},
+			Message: "Destination URL points to an internal or restricted IP address.",
+		}, nil
+	}
+
+	// Safe Browsing / Keyword heuristics
+	threats := checkMaliciousOrExplicitContent(parsed)
+	isSafe := len(threats) == 0
+
+	// HTTP Check
+	client := &http.Client{
+		Timeout: 8 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return errors.New("stopped after 5 redirects")
+			}
+			return nil
+		},
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", targetURL, nil)
+	if err != nil {
+		safeStatus := "UNSAFE"
+		if isSafe {
+			safeStatus = "SAFE"
+		}
+		return &TestLinkResponse{
+			Pass:           false,
+			IsSafe:         isSafe,
+			Resolves:       false,
+			Status:         0,
+			StatusText:     "Request Creation Failed",
+			OriginalURL:    rawURL,
+			ResolvedURL:    targetURL,
+			ResponseTimeMs: 0,
+			SafeBrowsing: SafeBrowsingResult{
+				Status:       safeStatus,
+				ThreatsFound: threats,
+				Details:      "Failed to initialize HTTP request.",
+			},
+			Message: "Failed to initialize HTTP connection: " + err.Error(),
+		}, nil
+	}
+
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 SuperfanAdBot/1.0")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+
+	startTime := time.Now()
+	resp, err := client.Do(req)
+	elapsedMs := time.Since(startTime).Milliseconds()
+
+	if err != nil {
+		safeStatus := "UNSAFE"
+		if isSafe {
+			safeStatus = "SAFE"
+		}
+		return &TestLinkResponse{
+			Pass:           false,
+			IsSafe:         isSafe,
+			Resolves:       false,
+			Status:         0,
+			StatusText:     "Connection Failed / Unreachable",
+			OriginalURL:    rawURL,
+			ResolvedURL:    targetURL,
+			ResponseTimeMs: elapsedMs,
+			SafeBrowsing: SafeBrowsingResult{
+				Status:       safeStatus,
+				ThreatsFound: append(threats, "Destination Unreachable"),
+				Details:      fmt.Sprintf("Failed to resolve URL: %v", err),
+			},
+			Message: fmt.Sprintf("Destination URL is unreachable or timed out (%dms): %v", elapsedMs, err),
+		}, nil
+	}
+	defer resp.Body.Close()
+
+	resolvedURL := resp.Request.URL.String()
+	resolves := resp.StatusCode >= 200 && resp.StatusCode < 400
+
+	// Check body sample if html
+	bodySample := make([]byte, 4096)
+	n, _ := resp.Body.Read(bodySample)
+	if n > 0 {
+		contentThreats := checkContentSafety(string(bodySample[:n]))
+		if len(contentThreats) > 0 {
+			threats = append(threats, contentThreats...)
+			isSafe = false
+		}
+	}
+
+	pass := resolves && isSafe
+
+	safeStatus := "SAFE"
+	safeDetails := "Destination passed all security, malware, and content safety checks."
+	if !isSafe {
+		safeStatus = "UNSAFE"
+		safeDetails = fmt.Sprintf("Flagged potential security concerns: %s", strings.Join(threats, ", "))
+	}
+
+	msg := "Destination URL is live, reachable, and verified safe."
+	if !resolves {
+		msg = fmt.Sprintf("Destination URL returned HTTP %d %s", resp.StatusCode, http.StatusText(resp.StatusCode))
+	} else if !isSafe {
+		msg = fmt.Sprintf("Destination URL resolved with HTTP %d but failed safe-browsing checks (%s)", resp.StatusCode, strings.Join(threats, ", "))
+	}
+
+	return &TestLinkResponse{
+		Pass:           pass,
+		IsSafe:         isSafe,
+		Resolves:       resolves,
+		Status:         resp.StatusCode,
+		StatusText:     http.StatusText(resp.StatusCode),
+		OriginalURL:    rawURL,
+		ResolvedURL:    resolvedURL,
+		ResponseTimeMs: elapsedMs,
+		SafeBrowsing: SafeBrowsingResult{
+			Status:       safeStatus,
+			ThreatsFound: threats,
+			Details:      safeDetails,
+		},
+		Message: msg,
+	}, nil
+}
+
+const ClickDebounceDuration = 5 * time.Second
+
+// ClickDebouncer manages in-memory rate-limiting of counted clicks per (user, ad) or (ip, ad).
+type ClickDebouncer struct {
+	mu       sync.Mutex
+	clicks   map[string]time.Time
+	duration time.Duration
+}
+
+func NewClickDebouncer() *ClickDebouncer {
+	return &ClickDebouncer{
+		clicks:   make(map[string]time.Time),
+		duration: ClickDebounceDuration,
+	}
+}
+
+// ShouldCountClick checks if a click should be counted for metrics.
+// Returns true if the click is counted (and updates the last counted click timestamp).
+// Returns false if the click is within the debounce duration of the last counted click
+// (the last counted timestamp is intentionally NOT modified, ensuring debounce is measured
+// strictly from the last counted click).
+func (d *ClickDebouncer) ShouldCountClick(key string, now time.Time) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	duration := d.duration
+	if duration <= 0 {
+		duration = ClickDebounceDuration
+	}
+
+	// Housekeeping: evict stale entries (> 10 minutes) if cache size grows large
+	if len(d.clicks) > 10000 {
+		cutoff := now.Add(-10 * time.Minute)
+		for k, t := range d.clicks {
+			if t.Before(cutoff) {
+				delete(d.clicks, k)
+			}
+		}
+	}
+
+	if lastCounted, exists := d.clicks[key]; exists {
+		if now.Sub(lastCounted) < duration {
+			return false
+		}
+	}
+
+	d.clicks[key] = now
+	return true
+}
+
+func (d *ClickDebouncer) RecordCountedClick(key string, t time.Time) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.clicks[key] = t
+}
+
+func getClickDebounceKey(userID *int, clientIP string, campaignID int) string {
+	if userID != nil && *userID > 0 {
+		return fmt.Sprintf("u:%d:ad:%d", *userID, campaignID)
+	}
+	if clientIP != "" {
+		return fmt.Sprintf("ip:%s:ad:%d", clientIP, campaignID)
+	}
+	return fmt.Sprintf("ad:%d", campaignID)
+}
+
+func (s *adsServiceImpl) shouldDebounceClick(ctx context.Context, userID *int, clientIP string, campaignID int, now time.Time) bool {
+	if s.clickDebouncer == nil {
+		s.clickDebouncer = NewClickDebouncer()
+	}
+
+	debounceKey := getClickDebounceKey(userID, clientIP, campaignID)
+
+	s.clickDebouncer.mu.Lock()
+	lastCounted, inMemory := s.clickDebouncer.clicks[debounceKey]
+	duration := s.clickDebouncer.duration
+	if duration <= 0 {
+		duration = ClickDebounceDuration
+	}
+	if inMemory {
+		if now.Sub(lastCounted) < duration {
+			s.clickDebouncer.mu.Unlock()
+			return true // Debounce! Ignore click within 5 seconds of last counted click
+		}
+		// Debounce window expired, count new click and update timestamp
+		s.clickDebouncer.clicks[debounceKey] = now
+		s.clickDebouncer.mu.Unlock()
+		return false
+	}
+	s.clickDebouncer.mu.Unlock()
+
+	// Cold start / cache miss: check database for recent click event in AdEvent
+	if s.db != nil && userID != nil && *userID > 0 {
+		var lastClick models.AdEvent
+		err := s.db.WithContext(ctx).
+			Select(`"createdAt"`).
+			Where(`"campaignId" = ? AND "userId" = ? AND "eventType" = ?`, campaignID, *userID, models.AdEventTypeClick).
+			Order(`"createdAt" DESC`).
+			Limit(1).
+			Find(&lastClick).Error
+
+		if err == nil && !lastClick.CreatedAt.IsZero() {
+			if now.Sub(lastClick.CreatedAt) < duration {
+				s.clickDebouncer.RecordCountedClick(debounceKey, lastClick.CreatedAt)
+				return true // Debounce!
+			}
+		}
+	}
+
+	// Count this click
+	s.clickDebouncer.RecordCountedClick(debounceKey, now)
+	return false
 }
 
 func (s *adsServiceImpl) LogAdEvent(ctx context.Context, req *LogAdEventRequest) error {
 	if req == nil {
 		return nil
+	}
+
+	// 🛑 5-second click debounce per user ID per ad:
+	// Any clicks on the same ad from the same user within 5 seconds of their last
+	// counted click are ignored for click-metric purposes (so a single user cannot
+	// spam-click to inflate advertiser click-through numbers).
+	if req.EventType == models.AdEventTypeClick && req.CampaignID > 0 {
+		if s.shouldDebounceClick(ctx, req.UserID, req.ClientIP, req.CampaignID, time.Now()) {
+			return nil
+		}
 	}
 
 	var campaignIDPtr *int
@@ -1019,6 +1924,13 @@ func (s *adsServiceImpl) LogAdEvent(ctx context.Context, req *LogAdEventRequest)
 		switch req.EventType {
 		case models.AdEventTypeViewStart, models.AdEventTypeCompletion, models.AdEventTypeRewardAwarded:
 			_ = s.db.WithContext(ctx).Model(&models.AdCampaign{}).Where("id = ?", *campaignIDPtr).UpdateColumn("views", gorm.Expr("views + 1")).Error
+
+			// 🚀 Performance milestone every 5,000 impressions.
+			var campaign models.AdCampaign
+			if err := s.db.WithContext(ctx).Select("id, \"userId\", headline, views").First(&campaign, *campaignIDPtr).Error; err == nil &&
+				campaign.Views > 0 && campaign.Views%5000 == 0 {
+				s.notifyAdMilestone(campaign.UserID, campaign.Headline, campaign.Views)
+			}
 		case models.AdEventTypeClick:
 			_ = s.db.WithContext(ctx).Model(&models.AdCampaign{}).Where("id = ?", *campaignIDPtr).UpdateColumn("clicks", gorm.Expr("clicks + 1")).Error
 		}
@@ -1027,8 +1939,101 @@ func (s *adsServiceImpl) LogAdEvent(ctx context.Context, req *LogAdEventRequest)
 	return nil
 }
 
+// getCycleStart returns the start of the current 24-hour cycle (midnight in Africa/Lagos WAT).
+func getCycleStart(now time.Time) time.Time {
+	lagosLoc, err := time.LoadLocation("Africa/Lagos")
+	if err != nil {
+		lagosLoc = time.FixedZone("WAT", 1*60*60)
+	}
+	nowLagos := now.In(lagosLoc)
+	return time.Date(nowLagos.Year(), nowLagos.Month(), nowLagos.Day(), 0, 0, 0, 0, lagosLoc)
+}
+
+// getNextCycleReset returns the start of the next 24-hour cycle when daily view quotas reset.
+func getNextCycleReset(now time.Time) time.Time {
+	return getCycleStart(now).AddDate(0, 0, 1)
+}
+
+// getCampaignGuaranteedDailyViews resolves the guaranteed daily view volume for a campaign.
+// e.g. 1,000 views for the 500 NGN/day Starter Daily package.
+func getCampaignGuaranteedDailyViews(campaign *models.AdCampaign) int {
+	if campaign == nil {
+		return 1000
+	}
+	if campaign.GuaranteedDailyViews > 0 {
+		return campaign.GuaranteedDailyViews
+	}
+
+	// Dynamic calculation based on pricing and placement format if not explicitly set
+	if campaign.PlacementType != nil && *campaign.PlacementType != "" {
+		rule := ResolvePlacementConfig(*campaign.PlacementType)
+		if rule.GuaranteedDailyUnits > 0 {
+			return rule.GuaranteedDailyUnits
+		}
+	}
+
+	// If daily fee is set, base package is 500 NGN -> 1,000 views (2 views per NGN 1)
+	if campaign.DailyFee > 0 {
+		views := int(math.Round((float64(campaign.DailyFee) / 500.0) * 1000.0))
+		if views > 0 {
+			return views
+		}
+	}
+
+	// Default Starter Daily guaranteed volume: 1,000 views
+	return 1000
+}
+
+func (s *adsServiceImpl) getCampaignsCycleViews(ctx context.Context, campaignIDs []int, cycleStart time.Time) (map[int]int, error) {
+	viewsMap := make(map[int]int)
+	if s.db == nil || len(campaignIDs) == 0 {
+		return viewsMap, nil
+	}
+
+	type ViewCount struct {
+		CampaignID int `gorm:"column:campaignId"`
+		Count      int `gorm:"column:count"`
+	}
+	var results []ViewCount
+
+	if err := s.db.WithContext(ctx).Model(&models.AdEvent{}).
+		Select(`"campaignId", COUNT(*) as count`).
+		Where(`"campaignId" IN (?) AND "eventType" = ? AND "createdAt" >= ?`, campaignIDs, models.AdEventTypeViewStart, cycleStart).
+		Group(`"campaignId"`).
+		Scan(&results).Error; err != nil {
+		return viewsMap, err
+	}
+
+	for _, r := range results {
+		viewsMap[r.CampaignID] = r.Count
+	}
+	return viewsMap, nil
+}
+
+type servingCandidate struct {
+	campaign   models.AdCampaign
+	placement  *models.AdPlacement
+	viewsToday int
+	guaranteed int
+	ratio      float64
+}
+
 func (s *adsServiceImpl) GetPlacementEligibility(ctx context.Context, userId int, placementKey string) (*PlacementEligibilityResponse, error) {
+	now := time.Now()
+	if err := s.completeEndedCampaigns(ctx, now); err != nil {
+		return nil, err
+	}
+
+	if s.db == nil {
+		return &PlacementEligibilityResponse{
+			Eligible: false,
+			Reason:   "Database not available",
+		}, nil
+	}
+
 	rule := ResolvePlacementConfig(placementKey)
+	resetsAt := getNextCycleReset(now)
+	cycleStart := getCycleStart(now)
 
 	// 1. Check user's subscription
 	if userId > 0 {
@@ -1038,8 +2043,9 @@ func (s *adsServiceImpl) GetPlacementEligibility(ctx context.Context, userId int
 			plan := strings.ToUpper(strings.TrimSpace(*user.SubscriptionPlan))
 			if plan == "PREMIUM_PRO" || plan == "PREMIUM_PRO_MAX" || plan == "PRO" || plan == "PRO_MAX" {
 				return &PlacementEligibilityResponse{
-					Eligible: false,
-					Reason:   "User subscription plan is ad-free",
+					Eligible:      false,
+					Reason:        "User subscription plan is ad-free",
+					CycleResetsAt: &resetsAt,
 				}, nil
 			}
 		}
@@ -1048,189 +2054,296 @@ func (s *adsServiceImpl) GetPlacementEligibility(ctx context.Context, userId int
 	placementKeyUpper := strings.ToUpper(strings.TrimSpace(placementKey))
 	ruleTypeUpper := strings.ToUpper(string(rule.PlacementType))
 
-	// 2. Primary Lookup: Try finding an active/valid AdPlacement linked to an active/valid campaign
-	var placement models.AdPlacement
-	var campaign models.AdCampaign
+	var selectedCandidate *servingCandidate
+	hasCappedCampaigns := false
 
+	// Helper to rank eligible candidates using fair rotation:
+	// Prioritize lower ratio of daily view quota consumed (protects inventory for other advertisers and avoids monopolization)
+	sortCandidates := func(candidates []servingCandidate) {
+		sort.SliceStable(candidates, func(i, j int) bool {
+			// 1. Quota ratio consumed today (ascending)
+			if candidates[i].ratio != candidates[j].ratio {
+				return candidates[i].ratio < candidates[j].ratio
+			}
+			// 2. Status priority: active > approved > paid > pending
+			priority := func(st models.AdStatus) int {
+				switch strings.ToLower(string(st)) {
+				case "active":
+					return 1
+				case "approved":
+					return 2
+				case "paid":
+					return 3
+				default:
+					return 4
+				}
+			}
+			pi, pj := priority(candidates[i].campaign.Status), priority(candidates[j].campaign.Status)
+			if pi != pj {
+				return pi < pj
+			}
+			// 3. Absolute views today (ascending)
+			if candidates[i].viewsToday != candidates[j].viewsToday {
+				return candidates[i].viewsToday < candidates[j].viewsToday
+			}
+			return candidates[i].campaign.ID < candidates[j].campaign.ID
+		})
+	}
+
+	// 2. Primary Lookup: Try finding active AdPlacements linked to active campaigns
+	var placements []models.AdPlacement
 	err := s.db.WithContext(ctx).
 		Table(`"AdPlacement"`).
 		Select(`"AdPlacement".*`).
 		Joins(`JOIN "AdCampaign" ON "AdCampaign".id = "AdPlacement"."campaignId"`).
-		Where(`(UPPER("AdPlacement".key) IN (?, ?) OR UPPER("AdPlacement"."placementType") IN (?, ?)) AND LOWER("AdCampaign".status) IN ('active', 'approved', 'paid', 'pending')`, placementKeyUpper, ruleTypeUpper, placementKeyUpper, ruleTypeUpper).
-		Order(`CASE WHEN LOWER("AdCampaign".status) = 'active' THEN 1 WHEN LOWER("AdCampaign".status) = 'approved' THEN 2 WHEN LOWER("AdCampaign".status) = 'paid' THEN 3 ELSE 4 END, "AdPlacement".id DESC`).
-		First(&placement).Error
+		Where(`(UPPER("AdPlacement".key) IN (?, ?) OR UPPER("AdPlacement"."placementType") IN (?, ?)) AND LOWER("AdCampaign".status::text) IN ('active', 'approved', 'paid', 'pending') AND `+activeCampaignDateCondition, placementKeyUpper, ruleTypeUpper, placementKeyUpper, ruleTypeUpper).
+		Find(&placements).Error
 
-	if err == nil && placement.CampaignID > 0 {
-		_ = s.db.WithContext(ctx).First(&campaign, placement.CampaignID).Error
-		s.enrichCampaignUser(ctx, &campaign)
-
-		media := placement.MediaURL
-		if strings.TrimSpace(media) == "" && len(campaign.MediaURLs) > 0 {
-			media = campaign.MediaURLs[0]
+	if err == nil && len(placements) > 0 {
+		campaignIDs := make([]int, 0, len(placements))
+		for _, p := range placements {
+			campaignIDs = append(campaignIDs, p.CampaignID)
 		}
-		if strings.TrimSpace(media) == "" {
-			return &PlacementEligibilityResponse{
-				Eligible: false,
-			}, nil
-		}
+		viewsMap, _ := s.getCampaignsCycleViews(ctx, campaignIDs, cycleStart)
 
-		durationSec := placement.DurationSec
-		if durationSec <= 0 {
-			durationSec = rule.DurationSec
+		var campaigns []models.AdCampaign
+		_ = s.db.WithContext(ctx).Where("id IN ?", campaignIDs).Find(&campaigns).Error
+		campMap := make(map[int]models.AdCampaign)
+		for _, c := range campaigns {
+			campMap[c.ID] = c
 		}
 
-		skipAfterSec := placement.SkipAfterSec
-		if skipAfterSec <= 0 && rule.SkipAfterSec > 0 {
-			skipAfterSec = rule.SkipAfterSec
+		var eligible []servingCandidate
+		for _, p := range placements {
+			camp, ok := campMap[p.CampaignID]
+			if !ok {
+				continue
+			}
+			media := p.MediaURL
+			if strings.TrimSpace(media) == "" && len(camp.MediaURLs) > 0 {
+				media = camp.MediaURLs[0]
+			}
+			if strings.TrimSpace(media) == "" {
+				continue
+			}
+
+			viewsToday := viewsMap[camp.ID]
+			guaranteed := getCampaignGuaranteedDailyViews(&camp)
+			if viewsToday >= guaranteed {
+				// Capped! Rotate banner out of serving pool for remainder of this 24-hour cycle.
+				hasCappedCampaigns = true
+				continue
+			}
+
+			ratio := 0.0
+			if guaranteed > 0 {
+				ratio = float64(viewsToday) / float64(guaranteed)
+			}
+			pCopy := p
+			eligible = append(eligible, servingCandidate{
+				campaign:   camp,
+				placement:  &pCopy,
+				viewsToday: viewsToday,
+				guaranteed: guaranteed,
+				ratio:      ratio,
+			})
 		}
 
-		ptsAmount := placement.PointsAwardAmount
-		if ptsAmount <= 0 && rule.PointsAwardAmount > 0 {
-			ptsAmount = rule.PointsAwardAmount
+		if len(eligible) > 0 {
+			sortCandidates(eligible)
+			selectedCandidate = &eligible[0]
 		}
-
-		pricingModel := placement.PricingModel
-		if strings.TrimSpace(pricingModel) == "" && campaign.PricingModel != nil {
-			pricingModel = *campaign.PricingModel
-		}
-		if strings.TrimSpace(pricingModel) == "" {
-			pricingModel = rule.PricingModel
-		}
-
-		createdAt := placement.CreatedAt
-		if createdAt.IsZero() {
-			createdAt = campaign.CreatedAt
-		}
-		if createdAt.IsZero() {
-			createdAt = time.Now()
-		}
-
-		key := placement.Key
-		if strings.TrimSpace(key) == "" {
-			key = string(rule.PlacementType)
-		}
-
-		placementType := placement.PlacementType
-		if strings.TrimSpace(string(placementType)) == "" {
-			placementType = rule.PlacementType
-		}
-
-		return &PlacementEligibilityResponse{
-			Eligible: true,
-			Campaign: &campaign,
-			Placement: &models.AdPlacement{
-				ID:                placement.ID,
-				CampaignID:        placement.CampaignID,
-				Key:               key,
-				PlacementType:     placementType,
-				MediaURL:          media,
-				DurationSec:       durationSec,
-				SkipAllowed:       placement.SkipAllowed,
-				SkipAfterSec:      skipAfterSec,
-				PointsAwardActive: placement.PointsAwardActive || rule.PointsAwardActive,
-				PointsAwardAmount: ptsAmount,
-				PricingModel:      pricingModel,
-				CreatedAt:         createdAt,
-			},
-		}, nil
 	}
 
 	// 3. Secondary Lookup: Try finding an AdCampaign directly matching the placement type
-	var directCampaign models.AdCampaign
-	directErr := s.db.WithContext(ctx).
-		Where(`(UPPER("placementType") = ? OR UPPER("placementType") = ?) AND LOWER(status) IN ('active', 'approved', 'paid', 'pending')`, placementKeyUpper, ruleTypeUpper, placementKeyUpper, ruleTypeUpper).
-		Order(`CASE WHEN LOWER(status) = 'active' THEN 1 WHEN LOWER(status) = 'approved' THEN 2 WHEN LOWER(status) = 'paid' THEN 3 ELSE 4 END, id DESC`).
-		First(&directCampaign).Error
+	if selectedCandidate == nil {
+		var directCampaigns []models.AdCampaign
+		directErr := s.db.WithContext(ctx).
+			Where(`(UPPER("placementType") = ? OR UPPER("placementType") = ?) AND LOWER(status::text) IN ('active', 'approved', 'paid', 'pending') AND `+activeCampaignDateCondition, placementKeyUpper, ruleTypeUpper, placementKeyUpper, ruleTypeUpper).
+			Find(&directCampaigns).Error
 
-	if directErr == nil && directCampaign.ID > 0 {
-		s.enrichCampaignUser(ctx, &directCampaign)
-		media := ""
-		if len(directCampaign.MediaURLs) > 0 && strings.TrimSpace(directCampaign.MediaURLs[0]) != "" {
-			media = directCampaign.MediaURLs[0]
-		}
-		if media == "" {
-			return &PlacementEligibilityResponse{Eligible: false}, nil
-		}
+		if directErr == nil && len(directCampaigns) > 0 {
+			campaignIDs := make([]int, 0, len(directCampaigns))
+			for _, c := range directCampaigns {
+				campaignIDs = append(campaignIDs, c.ID)
+			}
+			viewsMap, _ := s.getCampaignsCycleViews(ctx, campaignIDs, cycleStart)
 
-		pricingModel := rule.PricingModel
-		if directCampaign.PricingModel != nil && strings.TrimSpace(*directCampaign.PricingModel) != "" {
-			pricingModel = *directCampaign.PricingModel
-		}
+			var eligible []servingCandidate
+			for _, camp := range directCampaigns {
+				media := ""
+				if len(camp.MediaURLs) > 0 && strings.TrimSpace(camp.MediaURLs[0]) != "" {
+					media = camp.MediaURLs[0]
+				}
+				if media == "" {
+					continue
+				}
 
-		createdAt := directCampaign.CreatedAt
-		if createdAt.IsZero() {
-			createdAt = time.Now()
-		}
+				viewsToday := viewsMap[camp.ID]
+				guaranteed := getCampaignGuaranteedDailyViews(&camp)
+				if viewsToday >= guaranteed {
+					hasCappedCampaigns = true
+					continue
+				}
 
+				ratio := 0.0
+				if guaranteed > 0 {
+					ratio = float64(viewsToday) / float64(guaranteed)
+				}
+				eligible = append(eligible, servingCandidate{
+					campaign:   camp,
+					placement:  nil,
+					viewsToday: viewsToday,
+					guaranteed: guaranteed,
+					ratio:      ratio,
+				})
+			}
+
+			if len(eligible) > 0 {
+				sortCandidates(eligible)
+				selectedCandidate = &eligible[0]
+			}
+		}
+	}
+
+	// 4. Tertiary Lookup: Try finding ANY active AdCampaign in database
+	if selectedCandidate == nil {
+		var activeCampaigns []models.AdCampaign
+		campaignErr := s.db.WithContext(ctx).
+			Where(`LOWER(status::text) IN ('active', 'approved', 'paid', 'pending') AND ` + activeCampaignDateCondition).
+			Find(&activeCampaigns).Error
+
+		if campaignErr == nil && len(activeCampaigns) > 0 {
+			campaignIDs := make([]int, 0, len(activeCampaigns))
+			for _, c := range activeCampaigns {
+				campaignIDs = append(campaignIDs, c.ID)
+			}
+			viewsMap, _ := s.getCampaignsCycleViews(ctx, campaignIDs, cycleStart)
+
+			var eligible []servingCandidate
+			for _, camp := range activeCampaigns {
+				media := ""
+				if len(camp.MediaURLs) > 0 && strings.TrimSpace(camp.MediaURLs[0]) != "" {
+					media = camp.MediaURLs[0]
+				}
+				if media == "" {
+					continue
+				}
+
+				viewsToday := viewsMap[camp.ID]
+				guaranteed := getCampaignGuaranteedDailyViews(&camp)
+				if viewsToday >= guaranteed {
+					hasCappedCampaigns = true
+					continue
+				}
+
+				ratio := 0.0
+				if guaranteed > 0 {
+					ratio = float64(viewsToday) / float64(guaranteed)
+				}
+				eligible = append(eligible, servingCandidate{
+					campaign:   camp,
+					placement:  nil,
+					viewsToday: viewsToday,
+					guaranteed: guaranteed,
+					ratio:      ratio,
+				})
+			}
+
+			if len(eligible) > 0 {
+				sortCandidates(eligible)
+				selectedCandidate = &eligible[0]
+			}
+		}
+	}
+
+	// No eligible campaigns available in serving pool
+	if selectedCandidate == nil {
+		reason := "No active campaign found in serving pool"
+		if hasCappedCampaigns {
+			reason = "Active campaigns have reached their guaranteed daily view volume for the current 24-hour cycle and are rotated out"
+		}
 		return &PlacementEligibilityResponse{
-			Eligible: true,
-			Campaign: &directCampaign,
-			Placement: &models.AdPlacement{
-				ID:                directCampaign.ID,
-				CampaignID:        directCampaign.ID,
-				Key:               string(rule.PlacementType),
-				PlacementType:     rule.PlacementType,
-				MediaURL:          media,
-				DurationSec:       rule.DurationSec,
-				SkipAllowed:       rule.SkipAllowed,
-				SkipAfterSec:      rule.SkipAfterSec,
-				PointsAwardActive: rule.PointsAwardActive,
-				PointsAwardAmount: rule.PointsAwardAmount,
-				PricingModel:      pricingModel,
-				CreatedAt:         createdAt,
-			},
+			Eligible:      false,
+			Reason:        reason,
+			CycleResetsAt: &resetsAt,
 		}, nil
 	}
 
-	// 4. Tertiary Lookup: Try finding ANY active AdCampaign directly in database
-	var activeCampaign models.AdCampaign
-	campaignErr := s.db.WithContext(ctx).
-		Where(`LOWER(status) IN ('active', 'approved', 'paid', 'pending')`).
-		Order(`CASE WHEN LOWER(status) = 'active' THEN 1 WHEN LOWER(status) = 'approved' THEN 2 WHEN LOWER(status) = 'paid' THEN 3 ELSE 4 END, id DESC`).
-		First(&activeCampaign).Error
+	// Prepare and return the winning candidate
+	s.enrichCampaignUser(ctx, &selectedCandidate.campaign)
+	camp := selectedCandidate.campaign
 
-	if campaignErr == nil && activeCampaign.ID > 0 {
-		s.enrichCampaignUser(ctx, &activeCampaign)
-		media := ""
-		if len(activeCampaign.MediaURLs) > 0 && strings.TrimSpace(activeCampaign.MediaURLs[0]) != "" {
-			media = activeCampaign.MediaURLs[0]
-		}
-		if media == "" {
-			return &PlacementEligibilityResponse{Eligible: false}, nil
-		}
-
-		pricingModel := rule.PricingModel
-		if activeCampaign.PricingModel != nil && strings.TrimSpace(*activeCampaign.PricingModel) != "" {
-			pricingModel = *activeCampaign.PricingModel
-		}
-
-		createdAt := activeCampaign.CreatedAt
-		if createdAt.IsZero() {
-			createdAt = time.Now()
-		}
-
-		return &PlacementEligibilityResponse{
-			Eligible: true,
-			Campaign: &activeCampaign,
-			Placement: &models.AdPlacement{
-				ID:                activeCampaign.ID,
-				CampaignID:        activeCampaign.ID,
-				Key:               string(rule.PlacementType),
-				PlacementType:     rule.PlacementType,
-				MediaURL:          media,
-				DurationSec:       rule.DurationSec,
-				SkipAllowed:       rule.SkipAllowed,
-				SkipAfterSec:      rule.SkipAfterSec,
-				PointsAwardActive: rule.PointsAwardActive,
-				PointsAwardAmount: rule.PointsAwardAmount,
-				PricingModel:      pricingModel,
-				CreatedAt:         createdAt,
-			},
-		}, nil
+	media := ""
+	if selectedCandidate.placement != nil && strings.TrimSpace(selectedCandidate.placement.MediaURL) != "" {
+		media = selectedCandidate.placement.MediaURL
+	} else if len(camp.MediaURLs) > 0 {
+		media = camp.MediaURLs[0]
 	}
 
-	// No active campaign in database
+	durationSec := rule.DurationSec
+	skipAllowed := rule.SkipAllowed
+	skipAfterSec := rule.SkipAfterSec
+	pointsAwardActive := rule.PointsAwardActive
+	pointsAwardAmount := rule.PointsAwardAmount
+	pricingModel := rule.PricingModel
+	key := string(rule.PlacementType)
+	placementType := rule.PlacementType
+	placementID := camp.ID
+	createdAt := camp.CreatedAt
+
+	if selectedCandidate.placement != nil {
+		placementID = selectedCandidate.placement.ID
+		if selectedCandidate.placement.DurationSec > 0 {
+			durationSec = selectedCandidate.placement.DurationSec
+		}
+		skipAllowed = selectedCandidate.placement.SkipAllowed
+		if selectedCandidate.placement.SkipAfterSec > 0 {
+			skipAfterSec = selectedCandidate.placement.SkipAfterSec
+		}
+		if selectedCandidate.placement.PointsAwardAmount > 0 {
+			pointsAwardAmount = selectedCandidate.placement.PointsAwardAmount
+		}
+		pointsAwardActive = selectedCandidate.placement.PointsAwardActive || rule.PointsAwardActive
+		if strings.TrimSpace(selectedCandidate.placement.PricingModel) != "" {
+			pricingModel = selectedCandidate.placement.PricingModel
+		}
+		if strings.TrimSpace(selectedCandidate.placement.Key) != "" {
+			key = selectedCandidate.placement.Key
+		}
+		if strings.TrimSpace(string(selectedCandidate.placement.PlacementType)) != "" {
+			placementType = selectedCandidate.placement.PlacementType
+		}
+		if !selectedCandidate.placement.CreatedAt.IsZero() {
+			createdAt = selectedCandidate.placement.CreatedAt
+		}
+	} else if camp.PricingModel != nil && strings.TrimSpace(*camp.PricingModel) != "" {
+		pricingModel = *camp.PricingModel
+	}
+
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
+
 	return &PlacementEligibilityResponse{
-		Eligible: false,
+		Eligible: true,
+		Campaign: &camp,
+		Placement: &models.AdPlacement{
+			ID:                placementID,
+			CampaignID:        camp.ID,
+			Key:               key,
+			PlacementType:     placementType,
+			MediaURL:          media,
+			DurationSec:       durationSec,
+			SkipAllowed:       skipAllowed,
+			SkipAfterSec:      skipAfterSec,
+			PointsAwardActive: pointsAwardActive,
+			PointsAwardAmount: pointsAwardAmount,
+			PricingModel:      pricingModel,
+			CreatedAt:         createdAt,
+		},
+		GuaranteedDailyViews: selectedCandidate.guaranteed,
+		TodayViews:           selectedCandidate.viewsToday,
+		CycleResetsAt:        &resetsAt,
 	}, nil
 }
