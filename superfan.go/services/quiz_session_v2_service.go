@@ -597,7 +597,16 @@ func (s *QuizSessionV2Service) resolvePreferences(
 		timePreference:     "5",
 	}
 
-	if mode == sessionModeRandom {
+	if mode == sessionModeRandom && preferences == nil {
+		if user.LanguagePreference != nil && strings.TrimSpace(*user.LanguagePreference) != "" {
+			resolved.language = strings.TrimSpace(*user.LanguagePreference)
+		}
+		if user.SubjectPreference != nil && strings.TrimSpace(*user.SubjectPreference) != "" {
+			resolved.subject = strings.TrimSpace(*user.SubjectPreference)
+		}
+		if user.TestLevel != nil && strings.TrimSpace(*user.TestLevel) != "" {
+			resolved.level = strings.TrimSpace(*user.TestLevel)
+		}
 		return resolved, nil
 	}
 
