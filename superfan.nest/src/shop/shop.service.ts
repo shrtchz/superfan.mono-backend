@@ -46,7 +46,7 @@ export class ShopService {
     const [products, total] = await Promise.all([
       prisma.product.findMany({
         where,
-        orderBy: { id: 'asc' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         skip,
         take: limit,
       }),
