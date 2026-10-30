@@ -4,11 +4,21 @@ import { ConfigModule } from "@nestjs/config";
 import { FlutterwaveModule } from '@scwar/nestjs-flutterwave';
 import { MailModule } from "../mail/mail.module";
 import { TaskModule } from "../tasks/tasks.module";
+import { VersusModule } from "../versus/versus.module";
+import { WalletModule } from "../wallet/wallet.module";
 import { AdminController } from "./admin.controller";
 import { AdminService } from "./admin.service";
 
 @Module({
-    imports: [ConfigModule, MailModule, HttpModule, FlutterwaveModule, TaskModule],
+    imports: [
+        ConfigModule,
+        MailModule,
+        HttpModule,
+        FlutterwaveModule,
+        TaskModule,
+        VersusModule,
+        WalletModule,
+    ],
     controllers: [AdminController],
     providers: [AdminService]
 })

@@ -17,6 +17,8 @@ import { CreateClientHistoryDto, CreatePayoutDto, GetClientHistoryDto, TaskDto, 
 import { TaskChatGateway } from './tasks.gateway';
 import { TaskStatus, ActivityType } from '../common/enums/task.enum';
 import { CronJobService } from '../cronjobs/cronjob.service';
+import { generateFiveUniqueRandomNumbers } from '../common/utils/utils';
+import { PointsConversionUtil } from '../common/utils/points-conversion.util';
 
 @Injectable()
 export class TaskService {
@@ -26,7 +28,8 @@ export class TaskService {
     private notificationService: NotificationService,
     @Inject(forwardRef(() => UserService))
     private userService: UserService,
-    private cronService: CronJobService
+    private cronService: CronJobService,
+    private pointsConversionUtil: PointsConversionUtil
   ) {}
 
   async createTask(dto: TaskDto) {
@@ -289,13 +292,104 @@ export class TaskService {
     });
   }
 
+  private maskEmail(email: string): string {
+    if (!email || !email.includes('@')) return '[redacted]';
+    const [local, domain] = email.split('@');
+    if (local.length <= 2) {
+      return `${local[0]}***@${domain}`;
+    }
+    return `${local[0]}***${local[local.length - 1]}@${domain}`;
+  }
+
   async getRecentActivities(limit = 20) {
-    return prisma.activityMonitor.findMany({
+    let activities = await prisma.activityMonitor.findMany({
       take: limit,
       orderBy: {
         createdAt: 'desc',
       },
     });
+
+    // If no activities recorded yet, populate from recent registered users
+    if (activities.length === 0) {
+      try {
+        const recentUsers = await prisma.user.findMany({
+          where: { isDeleted: false },
+          take: limit,
+          orderBy: { createdAt: 'desc' },
+          select: {
+            id: true,
+            username: true,
+            firstName: true,
+            email: true,
+            roleName: true,
+            createdAt: true,
+          },
+        });
+
+        if (recentUsers.length > 0) {
+          await prisma.activityMonitor.createMany({
+            data: recentUsers.map((u) => ({
+              type: ActivityType.user_registered,
+              actorId: u.id,
+              actorName: u.username || u.firstName || 'User',
+              actorEmail: u.email || '',
+              metadata: {
+                role: u.roleName || 'client',
+                label: `New ${(u.roleName || 'client').toLowerCase()} registered`,
+              },
+              createdAt: u.createdAt,
+            })),
+          });
+
+          activities = await prisma.activityMonitor.findMany({
+            take: limit,
+            orderBy: {
+              createdAt: 'desc',
+            },
+          });
+        }
+      } catch (backfillErr) {
+        console.error('[TasksService] Failed to backfill recent activities:', backfillErr);
+      }
+    }
+
+    if (!activities || activities.length === 0) {
+      return [];
+    }
+
+    // Mask deleted actors for UI display while preserving raw forensic logs in database
+    const actorIds = activities
+      .map((a) => a.actorId)
+      .filter((id): id is number => typeof id === 'number');
+
+    if (actorIds.length > 0) {
+      try {
+        const users = await prisma.user.findMany({
+          where: { id: { in: actorIds } },
+          select: { id: true, isDeleted: true },
+        });
+        const userMap = new Map(users.map((u) => [u.id, u]));
+
+        return activities.map((activity) => {
+          if (!activity.actorId) return activity;
+          const user = userMap.get(activity.actorId);
+          // If actor is soft-deleted or completely removed from User table
+          if (!user || user.isDeleted) {
+            return {
+              ...activity,
+              actorName: '[Closed Account]',
+              actorEmail: activity.actorEmail ? this.maskEmail(activity.actorEmail) : '',
+              isActorDeleted: true,
+            };
+          }
+          return activity;
+        });
+      } catch (err) {
+        console.error('[TasksService] Failed to check user deletion status for activities:', err);
+      }
+    }
+
+    return activities;
   }
 
   async userRegistered(user: {
@@ -304,34 +398,41 @@ export class TaskService {
     email: string;
     role: string;
   }) {
+    const actorName = user.name || 'User';
+    const actorEmail = user.email || '';
+    const role = user.role || 'client';
     const activity = await this.logActivity({
       type: ActivityType.user_registered,
       actorId: user.id,
-      actorName: user.name,
-      actorEmail: user.email,
+      actorName,
+      actorEmail,
       metadata: {
-        role: user.role, // ✅ store role here
-        label: `New ${user.role.toLowerCase()} registered`, // optional readable text
+        role, // ✅ store role here
+        label: `New ${role.toLowerCase()} registered`, // optional readable text
       },
     });
 
     // Notify all superadmin and subadmin users
-    const admins = await prisma.user.findMany({
-      where: {
-        roleName: { in: ['superadmin', 'subadmin'] },
-      },
-      select: { id: true, username: true },
-    });
+    try {
+      const admins = await prisma.user.findMany({
+        where: {
+          roleName: { in: ['superadmin', 'subadmin'] },
+        },
+        select: { id: true, username: true },
+      });
 
-    await Promise.all(
-      admins.map((admin) =>
-        this.notificationService.createNotification(
-          admin.id,
-          `New user Signup`,
-          `${user.role} account. @${user.name}`,
+      await Promise.all(
+        admins.map((admin) =>
+          this.notificationService.createNotification(
+            admin.id,
+            `New user Signup`,
+            `${role} account. @${actorName}`,
+          ),
         ),
-      ),
-    );
+      );
+    } catch (notifErr) {
+      console.error('[TasksService] Failed to notify admins of registration:', notifErr);
+    }
 
     return activity;
   }
@@ -375,10 +476,10 @@ export class TaskService {
     return activity;
   }
 
-  async deleteActivity(id: number) {
+  async deleteActivity(id: number | string) {
     return prisma.activityMonitor.delete({
       where: {
-        id,
+        id: Number(id),
       },
     });
   }
@@ -401,22 +502,53 @@ export class TaskService {
 
     if (!referral) return;
 
-    await this.walletService.creditWallet(
-      referral.referrerId,
-      10,
-      'referral_test_bonus',
-      `You earned ₦10 because completed a test`,
-    );
-
-    // call createReward and createPoints
-
-    await prisma.referral.update({
-      where: { id: referral.id },
+    const claimedReferral = await prisma.referral.updateMany({
+      where: {
+        id: referral.id,
+        testRewardGiven: false,
+      },
       data: {
         status: 'FIRST_TEST_COMPLETED',
         testRewardGiven: true,
       },
     });
+
+    if (claimedReferral.count === 0) return;
+
+    // Referrer Bonus: 10,000 PTS into Savings Account
+    const referrerPoints = 10000;
+    const referrerNaira = await this.pointsConversionUtil.pointsToNaira(referrerPoints);
+    await prisma.point.create({
+      data: {
+        userId: referral.referrerId,
+        points: referrerPoints,
+        reference: `POINTS_${generateFiveUniqueRandomNumbers()}`,
+        type: 'referral_first_test_referrer',
+        accountType: 'Savings',
+      },
+    });
+    await this.walletService.creditWallet(
+      referral.referrerId,
+      referrerNaira,
+      'Referral Bonus - First Test',
+      'Referral Bonus - First Test',
+      'Savings'
+    );
+
+    await prisma.user.update({
+      where: { id: referral.referrerId },
+      data: { lifetimePoints: { increment: 10000 } },
+    });
+
+    const referee = await prisma.user.findUnique({
+      where: { id: referral.refereeId },
+      select: { username: true },
+    });
+
+    await this.notificationService.referralFirstTestBonus(
+      referral.referrerId,
+      referee?.username ?? 'Your referee',
+    );
   }
 
   async getMyReferrals(userId: number) {
@@ -426,6 +558,90 @@ export class TaskService {
         referee: true,
       },
     });
+  }
+
+  /**
+   * Returns comprehensive referral stats + list for the "Your Referrals" modal UI.
+   * - status SIGNED_UP           → "pending"   (referee joined but hasn't completed a test yet)
+   * - status FIRST_TEST_COMPLETED → "completed"
+   *
+   * Bonus amounts per referral (referrer perspective):
+  *   sign-up bonus: signupRewardGiven ? ₦20 : 0
+   *   first-test bonus: testRewardGiven ? ₦10 : 0  (pending if not yet given)
+   */
+  async getMyReferralSummary(userId: number) {
+    const REFERRER_SIGNUP_BONUS = 20;   // ₦ credited on referee sign-up
+    const REFERRER_TEST_BONUS   = 10;   // ₦ credited when referee completes first test
+
+    const referrals = await prisma.referral.findMany({
+      where: { referrerId: userId },
+      include: {
+        referee: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+            username: true,
+            profilePicture: true,
+            createdAt: true,
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const list = referrals.map((r) => {
+      const isCompleted = r.status === 'FIRST_TEST_COMPLETED';
+      const earned =
+        (r.signupRewardGiven ? REFERRER_SIGNUP_BONUS : 0) +
+        (r.testRewardGiven   ? REFERRER_TEST_BONUS   : 0);
+      const pending = isCompleted ? 0 : REFERRER_TEST_BONUS;
+
+      return {
+        id: r.id,
+        status: isCompleted ? 'completed' : 'pending',
+        earned,
+        pending,
+        joinedAt: r.createdAt,
+        referee: {
+          id: r.referee.id,
+          firstName: r.referee.firstName,
+          lastName: r.referee.lastName,
+          username: r.referee.username,
+          profilePicture: r.referee.profilePicture ?? null,
+        },
+      };
+    });
+
+    const totalReferrals = list.length;
+    const totalEarned    = list.reduce((sum, r) => sum + r.earned,  0);
+    const pendingBonus   = list.reduce((sum, r) => sum + r.pending, 0);
+    const avgPerReferral = totalReferrals > 0
+      ? Math.round(totalEarned / totalReferrals)
+      : 0;
+
+    const signupTotal     = referrals.filter((r) => r.signupRewardGiven).length * REFERRER_SIGNUP_BONUS;
+    const completionTotal = referrals.filter((r) => r.testRewardGiven).length   * REFERRER_TEST_BONUS;
+
+    return {
+      totalReferrals,
+      totalEarned,
+      pendingBonus,
+      avgPerReferral,
+      earningsBreakdown: {
+        signupBonuses: {
+          count: referrals.filter((r) => r.signupRewardGiven).length,
+          amountEach: REFERRER_SIGNUP_BONUS,
+          total: signupTotal,
+        },
+        completionBonuses: {
+          count: referrals.filter((r) => r.testRewardGiven).length,
+          amountEach: REFERRER_TEST_BONUS,
+          total: completionTotal,
+        },
+      },
+      referrals: list,
+    };
   }
 
   async referralEarnings(userId: number) {
@@ -596,7 +812,22 @@ async createClientHistory(payload: CreateClientHistoryDto) {
     });
 
     if (!user) {
-      throw new Error('User not found');
+      throw new NotFoundException('User not found');
+    }
+
+    // ✅ Enforce KYC-based withdrawal limits & ₦9,999 minimum withdrawal (SCRUM-350)
+    await this.walletService.validateTransactionLimits(dto.userId, dto.amount, 'WITHDRAWAL');
+
+    // ✅ Enforce that a single bank account number can only be linked to one active payout at a time (Option A)
+    const meta = (dto.metadata || {}) as Record<string, any>;
+    const destinationAccount =
+      meta.accountNumber ||
+      meta.destinationAccountNumber ||
+      meta.account_no ||
+      (dto.method === 'MONNIFY' ? dto.reference : null);
+
+    if (destinationAccount) {
+      await this.walletService.validateActiveBankAccountPayout(String(destinationAccount));
     }
 
     // check if reference already exists
@@ -617,9 +848,14 @@ async createClientHistory(payload: CreateClientHistoryDto) {
         reference: dto.reference,
         currency: dto.currency,
         provider: dto.provider,
-
+        providerRef: dto.providerRef,
+        metadata: dto.metadata,
       }
   })
+
+  this.notificationService
+    .withdrawalRequested(dto.userId, Number(dto.amount || 0))
+    .catch(() => undefined);
 
   return payout;
 
@@ -627,6 +863,11 @@ async createClientHistory(payload: CreateClientHistoryDto) {
 
   async getAllPayouts() {
     return prisma.payout.findMany({
+      include: {
+        user: {
+          select: { username: true, firstName: true, lastName: true },
+        },
+      },
       orderBy: { createdAt: 'desc' },
     });
   }
@@ -645,6 +886,22 @@ async getUserPayoutDetail(userId: number) {
   if (!user) {
     throw new NotFoundException('User not found');
   }
+
+  // Fetch Savings wallet transactions (quiz rewards, live quiz, referrals, ad bonuses, savings transfers/payouts)
+  const savingsTransactions = await prisma.walletTransaction.findMany({
+    where: {
+      userId,
+      OR: [
+        { account_type: { equals: 'Savings', mode: 'insensitive' } },
+        { rewardType: { not: null } },
+        { description: { contains: 'Quiz', mode: 'insensitive' } },
+        { description: { contains: 'Reward', mode: 'insensitive' } },
+        { description: { contains: 'Referral', mode: 'insensitive' } },
+        { description: { contains: 'Bonus', mode: 'insensitive' } },
+      ],
+    },
+    orderBy: { createdAt: 'desc' },
+  });
 
   const [payouts, aggregates] = await Promise.all([
     prisma.payout.findMany({
@@ -674,14 +931,67 @@ async getUserPayoutDetail(userId: number) {
     },
   });
 
+  // Calculate total earnings from Savings transactions
+  const savingsEarningsSum = savingsTransactions
+    .filter(tx => {
+      const type = (tx.type || '').toLowerCase();
+      return (type === 'credit' || !type.includes('debit')) && tx.amount > 0;
+    })
+    .reduce((sum, tx) => sum + tx.amount, 0);
+
+  const totalEarnings = savingsEarningsSum > 0 ? savingsEarningsSum : (aggregates._sum.amount || 0);
+
+  // Total payouts count
+  const savingsPayoutsCount = savingsTransactions.filter(tx => {
+    const type = (tx.type || '').toLowerCase();
+    const desc = (tx.description || '').toLowerCase();
+    return type === 'debit' || desc.includes('withdraw') || tx.amount < 0;
+  }).length;
+
+  const totalPayouts = aggregates._count.id > 0 ? aggregates._count.id : savingsPayoutsCount;
+
+  // Combine Payout records and Savings Wallet Transactions
+  const mappedPayouts = payouts.map(p => ({
+    id: p.id,
+    date: p.processedAt || p.createdAt,
+    amount: p.amount,
+    type: 'DEBIT',
+    rawType: 'DEBIT',
+    method: p.method || p.provider || 'Bank Transfer',
+    ref: p.reference,
+    description: p.reference,
+    status: p.status || 'COMPLETED',
+    createdAt: p.createdAt,
+  }));
+
+  const mappedSavingsTransactions = savingsTransactions.map(tx => {
+    const isDebit = (tx.type || '').toLowerCase() === 'debit' || (tx.description || '').toLowerCase().includes('withdraw') || tx.amount < 0;
+    return {
+      id: tx.id,
+      date: tx.payment_date || tx.createdAt,
+      amount: Math.abs(tx.amount),
+      type: isDebit ? 'DEBIT' : 'CREDIT',
+      rawType: isDebit ? 'DEBIT' : 'CREDIT',
+      method: isDebit ? 'Wallet Debit' : 'Wallet Credit',
+      ref: tx.reference || tx.trx_ref || tx.description || 'Savings Wallet Earning',
+      description: tx.description || tx.rewardType || 'Savings Wallet Earning',
+      status: tx.status || 'SUCCESS',
+      createdAt: tx.createdAt,
+    };
+  });
+
+  const combinedHistory = [...mappedPayouts, ...mappedSavingsTransactions].sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  );
+
   return {
     user,
     summary: {
-      totalEarnings: aggregates._sum.amount || 0,
+      totalEarnings,
       pendingAmount: pending._sum.amount || 0,
-      totalPayouts: aggregates._count.id,
+      totalPayouts,
     },
-    payouts,
+    payouts: combinedHistory,
   };
 }
 
