@@ -322,7 +322,8 @@ export class WalletService {
 
 
   async createReward(userId: number, points: number, type: string, status: EarningStatus) {
-    const amount = await this.pointsConversionUtil.pointsToNaira(points);
+    const category = type.toLowerCase().includes('ad') ? 'ads' : 'quiz';
+    const amount = await this.pointsConversionUtil.pointsToNaira(points, category);
     return this.createRewardWithAmount(userId, amount, 'NGN', type, status);
   }
 

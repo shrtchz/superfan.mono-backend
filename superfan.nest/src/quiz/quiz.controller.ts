@@ -51,8 +51,8 @@ export class QuizController {
   @Public()
   @Public()
   @Get('/points-conversion-rate')
-  getPointsConversionRate() {
-    return this.quizService.getPointsConversionRate();
+  getPointsConversionRate(@Query('category') category?: 'quiz' | 'ads') {
+    return this.quizService.getPointsConversionRate(category);
   }
 
   @Post('/create')

@@ -115,7 +115,7 @@ describe('AdminService - inviteAdmin & access levels', () => {
       await expect(service.updatePointsConversionRate(2500)).resolves.toEqual(
         result,
       );
-      expect(pointsConversionUtil.setConversionRate).toHaveBeenCalledWith(2500);
+      expect(pointsConversionUtil.setConversionRate).toHaveBeenCalledWith(2500, 'quiz');
     });
 
     it('rejects a non-positive conversion rate', async () => {

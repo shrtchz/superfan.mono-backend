@@ -106,7 +106,7 @@ export class NotificationController {
   @Post('/triggers/ad-reward-credited')
   @HttpCode(HttpStatus.OK)
   triggerAdReward(@Body() body: { userId: number; amountNaira?: number }) {
-    return this.notificationService.adRewardCredited(body.userId, body.amountNaira ?? 2);
+    return this.notificationService.adRewardCredited(body.userId, body.amountNaira);
   }
 
   @Public()

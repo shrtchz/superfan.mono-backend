@@ -547,12 +547,15 @@ export class NotificationService {
     );
   }
 
-  async adRewardCredited(userId: number, amountNaira = 2) {
+  async adRewardCredited(userId: number, amountNaira?: number) {
+    const formattedAmount = typeof amountNaira === 'number' && Number.isFinite(amountNaira)
+      ? (Number.isInteger(amountNaira) ? String(amountNaira) : amountNaira.toFixed(2))
+      : '1';
     return this.notify(
       userId,
       NotificationTriggers.AD_REWARD_CREDITED,
-      `You earned ₦${amountNaira} for watching an ad.`,
-      `You earned ₦${amountNaira} for watching an ad.`,
+      `You earned ₦${formattedAmount} for watching an ad.`,
+      `You earned ₦${formattedAmount} for watching an ad.`,
     );
   }
 
