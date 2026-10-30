@@ -71,16 +71,20 @@ export class AdminService {
     private pointsConversionUtil: PointsConversionUtil,
   ) {}
 
-  getPointsConversionRate() {
-    return this.pointsConversionUtil.getConversionRateDetails();
+  getPointsConversionRate(category: 'quiz' | 'ads' = 'quiz') {
+    return this.pointsConversionUtil.getConversionRateDetails(category);
   }
 
-  async updatePointsConversionRate(rate: number) {
+  getAllPointsConversionRates() {
+    return this.pointsConversionUtil.getAllConversionRatesDetails();
+  }
+
+  async updatePointsConversionRate(rate: number, category: 'quiz' | 'ads' = 'quiz') {
     if (!Number.isSafeInteger(rate) || rate <= 0) {
       throw new BadRequestException('Rate must be a positive whole number');
     }
 
-    return this.pointsConversionUtil.setConversionRate(rate);
+    return this.pointsConversionUtil.setConversionRate(rate, category);
   }
 
   /**

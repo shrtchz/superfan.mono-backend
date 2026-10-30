@@ -97,7 +97,7 @@ func (s *adsServiceImpl) completeEndedCampaigns(ctx context.Context, now time.Ti
 	return nil
 }
 
-const activeCampaignDateCondition = `("AdCampaign"."runContinuously" = TRUE OR (CASE WHEN "AdCampaign"."endDate" IS NOT NULL THEN "AdCampaign"."endDate" + INTERVAL '1 day' ELSE "AdCampaign"."startDate" + GREATEST("AdCampaign"."days", 1) * INTERVAL '1 day' END) > NOW())`
+const activeCampaignDateCondition = `("AdCampaign"."runContinuously" = TRUE OR (CASE WHEN "AdCampaign"."endDate" IS NOT NULL THEN "AdCampaign"."endDate" + INTERVAL '1 day' ELSE "AdCampaign"."startDate" + GREATEST("AdCampaign"."days", 1) * INTERVAL '1 day' END) > NOW()) AND ("AdCampaign"."pausedByAdmin" IS NOT TRUE)`
 
 func NewAdsService(db *gorm.DB) AdsService {
 	if db != nil {
@@ -645,6 +645,31 @@ func (s *adsServiceImpl) EstimateAdCost(ctx context.Context, req *EstimateAdCost
 	}, nil
 }
 
+func (s *adsServiceImpl) getAdsPointsToNairaRate(ctx context.Context) int {
+	if s.db != nil {
+		var setting struct {
+			Value string
+		}
+		err := s.db.WithContext(ctx).Raw(
+			`SELECT "value" FROM "platform_settings" WHERE "key" = ? LIMIT 1`,
+			"adsPointsToNairaRate",
+		).Scan(&setting).Error
+		if err == nil && setting.Value != "" {
+			rate, parseErr := strconv.Atoi(setting.Value)
+			if parseErr == nil && rate > 0 {
+				return rate
+			}
+		}
+	}
+	value := strings.TrimSpace(os.Getenv("ADS_POINTS_TO_NAIRA_RATE"))
+	if value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil && parsed > 0 {
+			return parsed
+		}
+	}
+	return 200
+}
+
 func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdRewardRequest) (*AwardAdRewardResponse, error) {
 	rule := ResolvePlacementConfig(req.PlacementKey)
 
@@ -718,9 +743,13 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 		}, nil
 	}
 
-	// 4. Award 200 PTS as NGN 0.20 in the Savings Wallet.
-	const rewardPoints = 200
-	const rewardNaira = float64(rewardPoints) / 1000.0
+	// 4. Award points converted to Naira in the Savings Wallet using dynamic ads conversion rate.
+	rewardPoints := rule.PointsAwardAmount
+	if rewardPoints <= 0 {
+		rewardPoints = 200
+	}
+	adsConversionRate := s.getAdsPointsToNairaRate(ctx)
+	rewardNaira := float64(rewardPoints) / float64(adsConversionRate)
 	var newBalance float64
 
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -827,7 +856,7 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 		Awarded:           true,
 		PointsAwarded:     rewardPoints,
 		DailyQuotaReached: false,
-		Message:           "200 PTS awarded successfully",
+		Message:           fmt.Sprintf("%d PTS awarded successfully", rewardPoints),
 		NewWalletBalance:  newBalance,
 	}, nil
 }

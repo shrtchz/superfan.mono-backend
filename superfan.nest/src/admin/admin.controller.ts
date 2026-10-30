@@ -48,6 +48,10 @@ class UpdatePointsConversionRateDto {
   @IsInt()
   @Min(1)
   rate: number;
+
+  @IsOptional()
+  @IsIn(['quiz', 'ads'])
+  category?: 'quiz' | 'ads';
 }
 
 @Controller(ApiRoutes.ADMIN)
@@ -210,8 +214,11 @@ export class AdminController {
   }
 
   @Get('/dashboard/points-conversion-rate')
-  async getPointsConversionRate() {
-    return this.adminService.getPointsConversionRate();
+  async getPointsConversionRate(@Query('category') category?: 'quiz' | 'ads') {
+    if (category) {
+      return this.adminService.getPointsConversionRate(category);
+    }
+    return this.adminService.getAllPointsConversionRates();
   }
 
   @Put('/dashboard/points-conversion-rate')
@@ -220,7 +227,7 @@ export class AdminController {
     @Req() req: any,
   ) {
     this.ensureOwner(req.user);
-    return this.adminService.updatePointsConversionRate(body.rate);
+    return this.adminService.updatePointsConversionRate(body.rate, body.category || 'quiz');
   }
 
   @Public()

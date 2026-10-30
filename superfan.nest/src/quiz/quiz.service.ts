@@ -462,8 +462,11 @@ export class QuizService {
     private readonly notificationService: NotificationService,
   ) {}
 
-  async getPointsConversionRate() {
-    return this.pointsConversionUtil.getConversionRateDetails();
+  async getPointsConversionRate(category?: 'quiz' | 'ads') {
+    if (category) {
+      return this.pointsConversionUtil.getConversionRateDetails(category);
+    }
+    return this.pointsConversionUtil.getAllConversionRatesDetails();
   }
 
   /** Service JWT for server-to-server calls to the Go quiz API (AuthRequired routes). */
