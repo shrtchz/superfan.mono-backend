@@ -117,6 +117,33 @@ export class StreamUserController {
     };
   }
 
+  @Post('chat/comment/:id/unlike')
+  async unlikeComment(
+    @Param('id', ParseIntPipe) commentId: number,
+    @Req() req,
+  ) {
+    const userId = Number(req.user?.id);
+    const result = await this.streamingService.unlikeComment(
+      commentId,
+      userId,
+    );
+    const streamId =
+      result?.data?.streamId ??
+      (await this.streamingService.getCommentStreamId(commentId));
+
+    this.streamGateway.broadcastChat('unlikeComment', {
+      commentId,
+      streamId,
+      userId,
+      likesCount: result?.data?.likesCount,
+    });
+
+    return {
+      commentId,
+      likesCount: result?.data?.likesCount ?? 0,
+    };
+  }
+
   @Post('chat/comment/:id/report')
   @HttpCode(HttpStatus.ACCEPTED)
   async reportComment(
