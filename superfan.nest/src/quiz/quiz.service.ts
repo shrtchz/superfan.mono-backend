@@ -2767,6 +2767,152 @@ async recordAnswer(userId: number, dto: RecordAnswerDto) {
   }
 }
 
+async getUserSubjectStatistics(userId: number | string) {
+  const rawUserId = String(userId);
+  const numUserId = Number(userId);
+
+  const leaderboardRows = await prisma.quizLeaderboard.findMany({
+    where: {
+      userId: rawUserId,
+    },
+    select: {
+      id: true,
+      quizId: true,
+      subject: true,
+      selectedAnswer: true,
+      correctAnswer: true,
+      submittedAt: true,
+    },
+    orderBy: {
+      submittedAt: 'asc',
+    },
+  });
+
+  const completedQuizzes = await prisma.ongoingQuiz.findMany({
+    where: {
+      userId: numUserId,
+      isCompleted: true,
+    },
+    select: {
+      id: true,
+      subject: true,
+      answers: true,
+      completedAt: true,
+    },
+  });
+
+  const answerRecords: Array<{
+    quizId?: string;
+    subject?: string;
+    selectedAnswer?: string;
+    correctAnswer?: string;
+    submittedAt?: Date;
+  }> = [];
+
+  for (const row of leaderboardRows) {
+    if (row.subject && row.subject.trim()) {
+      answerRecords.push({
+        quizId: row.quizId,
+        subject: row.subject,
+        selectedAnswer: row.selectedAnswer,
+        correctAnswer: row.correctAnswer,
+        submittedAt: row.submittedAt,
+      });
+    }
+  }
+
+  for (const quiz of completedQuizzes) {
+    const answers = Array.isArray(quiz.answers) ? quiz.answers : [];
+    for (const ans of answers as any[]) {
+      if (ans && typeof ans === 'object') {
+        const ansSubject = ans.subject || quiz.subject;
+        if (ansSubject && ansSubject.trim()) {
+          answerRecords.push({
+            quizId: ans.quizId || ans.questionId,
+            subject: ansSubject,
+            selectedAnswer: ans.selectedAnswer,
+            correctAnswer: ans.correctAnswer,
+            submittedAt: quiz.completedAt || undefined,
+          });
+        }
+      }
+    }
+  }
+
+  const seen = new Set<string>();
+  const subjectMap = new Map<
+    string,
+    { answered: number; correct: number; originalName: string; subjectId?: string }
+  >();
+
+  for (const record of answerRecords) {
+    const rawSubject = (record.subject || '').trim();
+    if (!rawSubject) continue;
+
+    const answerId = record.quizId ? String(record.quizId) : '';
+    const dateKey = record.submittedAt ? new Date(record.submittedAt).getTime() : '';
+    const dedupeKey = `${answerId}_${dateKey}_${rawSubject.toLowerCase()}_${record.selectedAnswer ?? ''}`;
+
+    if (answerId && dateKey && seen.has(dedupeKey)) {
+      continue;
+    }
+    if (answerId && dateKey) {
+      seen.add(dedupeKey);
+    }
+
+    const key = rawSubject.toLowerCase();
+    const formattedName = rawSubject.charAt(0).toUpperCase() + rawSubject.slice(1);
+
+    const entry = subjectMap.get(key) ?? {
+      answered: 0,
+      correct: 0,
+      originalName: formattedName,
+      subjectId: key,
+    };
+
+    entry.answered += 1;
+    const sel = (record.selectedAnswer || '').trim();
+    const cor = (record.correctAnswer || '').trim();
+    if (sel && cor && sel === cor) {
+      entry.correct += 1;
+    }
+
+    subjectMap.set(key, entry);
+  }
+
+  const subjects: Array<{
+    subjectId?: string;
+    subjectName: string;
+    accuracy: number;
+    questionsAnswered: number;
+    correctAnswers: number;
+    band: 'Strong' | 'Developing' | 'Needs work';
+  }> = [];
+
+  for (const [_, data] of subjectMap) {
+    if (data.answered <= 0) continue;
+
+    const accuracy = Math.round((data.correct / data.answered) * 100);
+    const band = accuracy >= 75 ? 'Strong' : accuracy >= 50 ? 'Developing' : 'Needs work';
+
+    subjects.push({
+      subjectId: data.subjectId,
+      subjectName: data.originalName,
+      accuracy,
+      questionsAnswered: data.answered,
+      correctAnswers: data.correct,
+      band,
+    });
+  }
+
+  subjects.sort((a, b) => {
+    if (b.accuracy !== a.accuracy) return b.accuracy - a.accuracy;
+    return b.questionsAnswered - a.questionsAnswered;
+  });
+
+  return { subjects };
+}
+
 async getQuizleaderboard(
   filter: 'all' | 'today' | 'weekly' | 'monthly' = 'all',
   options: { view?: string; timeRange?: string; userId?: string } = {},

@@ -25,6 +25,7 @@ import { MailService } from '../mail/mail.service';
 import { NotificationService } from '../notification/notification.service';
 
 import { prisma } from '../prisma/prisma';
+import { calculateTierStatistics, TierStatisticsResponse } from './tier-engine';
 import { TaskService } from '../tasks/tasks.service';
 import { WalletService } from '../wallet/wallet.service';
 import {
@@ -1425,50 +1426,41 @@ async getCard(userId: number): Promise<any> {
   }
 
   async getUserBadge(userId: number) {
-  // Get total points earned by user
-  const totalPoints = await prisma.point.aggregate({
-    where: {
-      userId,
-    },
-    _sum: {
-      points: true,
-    },
-  });
+    const totalPoints = await prisma.point.aggregate({
+      where: {
+        userId,
+      },
+      _sum: {
+        points: true,
+      },
+    });
 
-  const points = totalPoints._sum.points || 0;
+    const points = totalPoints._sum.points || 0;
+    const tierStats = calculateTierStatistics(points);
 
-  // Badge tiers
-  const badges = [
-    { name: 'Legend', required: 500000 },
-    { name: 'Platinum', required: 250000 },
-    { name: 'Gold', required: 100000 },
-    { name: 'Silver', required: 50000 },
-    { name: 'Bronze', required: 10000 },
-  ];
-
-  // Default badge
-  let currentBadge = 'No Badge';
-
-  // Find highest badge user qualifies for
-  for (const badge of badges) {
-    if (points >= badge.required) {
-      currentBadge = badge.name;
-      break;
-    }
+    return {
+      totalPoints: points,
+      badge: tierStats.currentTier?.name || 'No Badge',
+      nextBadge: tierStats.nextTier
+        ? { name: tierStats.nextTier.name, required: tierStats.nextTier.threshold }
+        : null,
+      ...tierStats,
+    };
   }
 
-  return {
-    totalPoints: points,
-    badge: currentBadge,
-    nextBadge:
-      currentBadge === 'Legend'
-        ? null
-        : badges
-            .slice()
-            .reverse()
-            .find((b) => b.required > points) || null,
-  };
-}
+  async getUserTierStatistics(userId: number): Promise<TierStatisticsResponse> {
+    const totalPoints = await prisma.point.aggregate({
+      where: {
+        userId,
+      },
+      _sum: {
+        points: true,
+      },
+    });
+
+    const points = totalPoints._sum.points || 0;
+    return calculateTierStatistics(points);
+  }
 
   async getQuizEarnings(userId: number) {
     try {
