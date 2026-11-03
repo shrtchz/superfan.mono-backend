@@ -2320,6 +2320,8 @@ async getCard(userId: number): Promise<any> {
     const isWalletPayment =
       dto.paymentMethod === 'wallet' ||
       dto.paymentMethod === 'WALLET' ||
+      dto.paymentMethod?.toLowerCase() === 'superfanvault' ||
+      dto.paymentMethod?.toLowerCase() === 'superfan_vault' ||
       !dto.paymentMethod;
     const subWallet = (dto.subWallet || 'checking').toLowerCase();
 

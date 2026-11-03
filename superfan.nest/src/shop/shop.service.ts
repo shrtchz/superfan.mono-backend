@@ -262,7 +262,13 @@ export class ShopService {
     // Use transaction for atomic wallet debit and order creation
     const order = await prisma.$transaction(async (tx) => {
       // If paying with wallet, verify and deduct balance
-      if (dto.paymentMethod === 'wallet') {
+      const isWalletPayment =
+        dto.paymentMethod === 'wallet' ||
+        dto.paymentMethod === 'WALLET' ||
+        dto.paymentMethod?.toLowerCase() === 'superfanvault' ||
+        dto.paymentMethod?.toLowerCase() === 'superfan_vault';
+
+      if (isWalletPayment) {
         let wallet = await tx.wallet.findUnique({
           where: { userId },
         });
