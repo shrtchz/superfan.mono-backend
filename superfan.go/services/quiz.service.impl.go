@@ -141,7 +141,7 @@ func BuildLiveQuizCountdownLabel(startAt, finishAt time.Time, now time.Time, ove
 	switch ComputeLiveQuizStatus(startAt, finishAt, now) {
 	case "scheduled":
 		defaultLabel = fmt.Sprintf(
-			"Waiting for Live Quiz to start: in %s.",
+			"Waiting for Live Quiz to start in %s.",
 			formatLiveQuizCountdown(startAt, now),
 		)
 		phase = "before"
