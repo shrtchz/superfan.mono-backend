@@ -6,14 +6,14 @@ func TestResolveQuizCountdownLabelKeepsDefaultLabelWhenOverridesExist(t *testing
 	t.Parallel()
 
 	got := resolveQuizCountdownLabel(
-		"Waiting for Live Quiz to start; starts in 5 minutes.",
+		"Waiting for Live Quiz to start: in 5 minutes.",
 		"before",
 		"Be ready!",
 		"",
 		"",
 	)
 
-	if got != "Waiting for Live Quiz to start; starts in 5 minutes." {
+	if got != "Waiting for Live Quiz to start: in 5 minutes." {
 		t.Fatalf("expected default label to remain primary countdown text, got %q", got)
 	}
 }
