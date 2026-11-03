@@ -1,29 +1,30 @@
-// import { createParamDecorator, ExecutionContext } from '@nestjs/common';
-// import { Request } from 'express';
-
-// export const RealIp = createParamDecorator(
-//   (data: unknown, ctx: ExecutionContext) => {
-//     const request = ctx.switchToHttp().getRequest<Request>();
-//     // Check for common proxy headers first, fallback to the request.ip property
-//     const ip = request.headers['x-forwarded-for'] || request.ip;
-//     console.log(ip, '')
-//     // X-Forwarded-For can return a list of IPs. The first one is typically the client IP.
-//     return Array.isArray(ip) ? ip[0] : ip;
-//   },
-// );
-
 import { createParamDecorator, ExecutionContext } from '@nestjs/common';
+
+export function extractClientIp(request: any): string {
+  if (!request) return '';
+  const forwarded = request.headers?.['x-forwarded-for'];
+  let ip = Array.isArray(forwarded)
+    ? forwarded[0]
+    : forwarded?.split(',')[0]?.trim() ||
+      request.headers?.['cf-connecting-ip'] ||
+      request.headers?.['x-real-ip'] ||
+      request.ip ||
+      request.connection?.remoteAddress ||
+      request.socket?.remoteAddress ||
+      '';
+
+  if (typeof ip === 'string') {
+    ip = ip.trim();
+    if (ip.startsWith('::ffff:')) {
+      ip = ip.substring(7);
+    }
+  }
+  return ip;
+}
 
 export const RealIp = createParamDecorator(
   (_data: unknown, ctx: ExecutionContext) => {
     const request = ctx.switchToHttp().getRequest();
-
-    const forwarded = request.headers['x-forwarded-for'];
-
-    const ip = Array.isArray(forwarded)
-      ? forwarded[0]
-      : forwarded?.split(',')[0]?.trim() || request.ip;
-
-    return ip;
+    return extractClientIp(request);
   },
 );

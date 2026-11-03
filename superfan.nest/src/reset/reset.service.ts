@@ -6,7 +6,6 @@ import {
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 import { execSync } from 'child_process';
-import { BushaService } from '../payment/busha.service';
 import { prisma } from '../prisma/prisma';
 // import { PrismaService } from '../prisma/prisma.service'; // adjust path as needed
 
@@ -22,8 +21,7 @@ export class ResetService {
   constructor(
     // private readonly prisma: PrismaService,
     private readonly config: ConfigService,
-    private readonly bushaService: BushaService,
-  ) {}
+    ) {}
 
   // ─── Public entry point ─────────────────────────────────────────────────────
 
@@ -225,8 +223,9 @@ if (user.accounts && Array.isArray(user.accounts)) {
 }
 
   private async deleteBushaCustomer(email: string) {
-    const customersResponse = await this.bushaService.getCustomers();
-    const customers = customersResponse.data || [];
+    // const customersResponse = await this.bushaService.getCustomers();
+    // const customers = customersResponse.data;
+    const customers: any[] = [];
     const customer = customers.find(c => c.email === email);
 
     if (!customer) {

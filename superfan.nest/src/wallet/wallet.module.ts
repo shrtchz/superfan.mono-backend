@@ -1,15 +1,14 @@
 import { HttpModule } from "@nestjs/axios";
-import { Module } from "@nestjs/common";
+import { Module, forwardRef } from "@nestjs/common";
+import { PointsConversionUtil } from "../common/utils/points-conversion.util";
 import { PrismaService } from "../config/database/prisma.service";
 import { NotificationModule } from "../notification/notification.module";
-import { BushaService } from "../payment/busha.service";
-import { MonnifyService } from "../payment/monnify.service";
 import { WalletService } from "./wallet.service";
 
 @Module({
     imports: [HttpModule, NotificationModule],
-    providers: [WalletService, PrismaService, MonnifyService, BushaService],
-    exports: [WalletService]
+    providers: [WalletService, PrismaService, PointsConversionUtil],
+    exports: [WalletService, PointsConversionUtil]
 })
 
 export class WalletModule {}

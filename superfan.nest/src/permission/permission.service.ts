@@ -137,10 +137,10 @@ export class PermissionService {
         return [];
       }
 
-      // Extract permissions
-      const permissions = subAdmin.subAdminPermissions.map(
-        (sp) => sp.permission,
-      );
+      // Extract permissions (subadmins never receive 'home' permission)
+      const permissions = subAdmin.subAdminPermissions
+        .map((sp) => sp.permission)
+        .filter((p) => p && p.name !== 'home' && p.id !== 31);
 
       return permissions;
     } catch (error) {

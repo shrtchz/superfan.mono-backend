@@ -9,20 +9,8 @@ import { Mailprocessor } from './mail.processor';
 import { MailService } from './mail.service';
 import { RedisService } from './redis.service';
 
-function resolveTemplatesDir(): string {
-  const localDir = join(__dirname, 'templates');
-  const distAlternative = join(__dirname, '..', '..', 'mail', 'templates');
+import { resolveTemplatesDir } from './mail.utils';
 
-  if (fs.existsSync(localDir)) {
-    return localDir;
-  }
-
-  if (fs.existsSync(distAlternative)) {
-    return distAlternative;
-  }
-
-  return localDir;
-}
 
 @Global()
 @Module({
@@ -37,13 +25,16 @@ function resolveTemplatesDir(): string {
       useFactory: (configService: ConfigService) => {
         let mailTransport;
         let senderEmail;
-        if (process.env.NODE_ENV === 'development') {
+        const isDev = process.env.NODE_ENV === 'development';
+        const hasLocalConfig = Boolean(configService.get<string>('LOCAL_MAIL_HOST'));
+
+        if (isDev && hasLocalConfig) {
           senderEmail = configService.get<string>('LOCAL_SENDER_EMAIL');
 
           mailTransport = {
             host: configService.get<string>('LOCAL_MAIL_HOST'),
             port: Number(configService.get('LOCAL_EMAIL_PORT')),
-            secure: configService.get<boolean>('LOCAL_EMAIL_SECURE'),
+            secure: configService.get<boolean>('LOCAL_EMAIL_SECURE') ?? false,
             auth: {
               user: senderEmail,
               pass: configService.get<string>('LOCAL_MAIL_SENDER_PASSWORD'),
@@ -53,12 +44,11 @@ function resolveTemplatesDir(): string {
           senderEmail = configService.get<string>('PROD_SENDER_EMAIL');
 
           mailTransport = {
-            host: configService.get<string>('PROD_MAIL_HOST'),
-            port: Number(configService.get('PROD_MAIL_PORT')),
+            host: configService.get<string>('PROD_MAIL_HOST') || 'smtp.zeptomail.com',
+            port: Number(configService.get('PROD_MAIL_PORT')) || 587,
             secure: false,
             auth: {
               user: 'emailapikey',
-              // senderEmail,
               pass: configService.get<string>('PROD_MAIL_SENDER_PASSWORD'),
             },
           };
@@ -67,10 +57,10 @@ function resolveTemplatesDir(): string {
           transport: mailTransport,
           defaults: {
             from: `"${
-              process.env.NODE_ENV === 'development'
+              (isDev && hasLocalConfig
                 ? process.env.LOCAL_SENDER_NAME
-                : process.env.PROD_SENDER_NAME
-            }"`,
+                : process.env.PROD_SENDER_NAME) || 'Superfan'
+            }" <${senderEmail || 'admin@superfan.ng'}>`,
           },
           template: {
             dir: resolveTemplatesDir(),

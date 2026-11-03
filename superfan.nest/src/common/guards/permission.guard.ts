@@ -37,24 +37,43 @@ export class PermissionGuard implements CanActivate {
       return true;
     }
 
-    const role = await prisma.role.findFirst({
-      where: { name: roleName },
-      include: {
-        permissions: {
-          include: {
-            permission: true,
+    let userPermissions: string[] = [];
+
+    if (roleName === 'subadmin') {
+      const subAdmin = await prisma.subAdmin.findUnique({
+        where: { userId: user.id },
+        include: {
+          subAdminPermissions: {
+            include: {
+              permission: true,
+            },
           },
         },
-      },
-    });
+      });
+      userPermissions =
+        subAdmin?.subAdminPermissions
+          .map((sp) => sp.permission?.name)
+          .filter((name): name is string => Boolean(name) && name !== 'home') || [];
+    } else {
+      const role = await prisma.role.findFirst({
+        where: { name: roleName },
+        include: {
+          permissions: {
+            include: {
+              permission: true,
+            },
+          },
+        },
+      });
 
-    if (!role) {
-      throw new ForbiddenException('Role not found');
+      if (!role) {
+        throw new ForbiddenException('Role not found');
+      }
+
+      userPermissions = role.permissions.map(
+        (rp) => rp.permission.name,
+      );
     }
-
-    const userPermissions = role.permissions.map(
-      (rp) => rp.permission.name,
-    );
 
     const hasPermission = requiredPermissions.every((perm) =>
       userPermissions.includes(perm),

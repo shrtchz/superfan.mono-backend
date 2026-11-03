@@ -1,0 +1,2 @@
+ALTER TABLE "WalletTransaction"
+ADD COLUMN IF NOT EXISTS "holdUntil" TIMESTAMP(3);
