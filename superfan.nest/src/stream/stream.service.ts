@@ -1050,6 +1050,7 @@ export class StreamingService {
   duration?: string,
   options?: {
     privacyStatus?: 'public' | 'private' | 'unlisted';
+    broadcastId?: string;
   },
 ): Promise<StreamSession> {
   const checkUser = await prisma.user.findUnique({
@@ -1073,7 +1074,7 @@ export class StreamingService {
     throw new UnauthorizedException('Unauthorized');
   }
 
-  let broadcastId: string | undefined;
+  let broadcastId: string | undefined = options?.broadcastId;
   let streamId: string | undefined;
   let rtmpUrl: string | undefined;
   let streamKey: string | undefined;
@@ -1095,6 +1096,28 @@ export class StreamingService {
     rtmpUrl = setupStream.rtmpUrl;
     streamKey = setupStream.streamKey;
     streamUrl = setupStream.streamUrl;
+  } else {
+    // If broadcastId wasn't explicitly passed, try to extract it from URLs
+    if (!broadcastId) {
+      const candidate = recordedVideoUrl || stream_url;
+      if (candidate) {
+        const watchMatch = candidate.match(/[?&]v=([^?&/]+)/i);
+        const shortMatch = candidate.match(/youtu\.be\/([^?&/]+)/i);
+        const embedMatch = candidate.match(/youtube\.com\/embed\/([^?&/]+)/i);
+        if (watchMatch?.[1]) {
+          broadcastId = watchMatch[1];
+        } else if (shortMatch?.[1]) {
+          broadcastId = shortMatch[1];
+        } else if (embedMatch?.[1]) {
+          broadcastId = embedMatch[1];
+        } else if (/^[A-Za-z0-9_-]{8,}$/.test(candidate) && !candidate.includes('/')) {
+          broadcastId = candidate;
+        }
+      }
+    }
+    if (broadcastId) {
+      this.ensureVideoEmbeddable(broadcastId).catch(() => undefined);
+    }
   }
 
   const createStream = await prisma.stream.create({
@@ -1222,6 +1245,67 @@ async editStream(
 }
 
   async getStream() {
+    // Check if any scheduled pre-recorded streams are due to go live
+    try {
+      const now = new Date();
+      const duePreRecordedStreams = await prisma.stream.findMany({
+        where: {
+          status: { in: ['pre-recorded', 'scheduled'] },
+          scheduledDate: { lte: now },
+        },
+      });
+
+      for (const dueStream of duePreRecordedStreams) {
+        // Extract broadcastId if missing
+        let broadcastId = dueStream.broadcastId;
+        if (!broadcastId) {
+          const candidate = dueStream.recordedVideoUrl || dueStream.streamUrl;
+          if (candidate) {
+            const watchMatch = candidate.match(/[?&]v=([^?&/]+)/i);
+            const shortMatch = candidate.match(/youtu\.be\/([^?&/]+)/i);
+            const embedMatch = candidate.match(/youtube\.com\/embed\/([^?&/]+)/i);
+            if (watchMatch?.[1]) {
+              broadcastId = watchMatch[1];
+            } else if (shortMatch?.[1]) {
+              broadcastId = shortMatch[1];
+            } else if (embedMatch?.[1]) {
+              broadcastId = embedMatch[1];
+            } else if (/^[A-Za-z0-9_-]{8,}$/.test(candidate) && !candidate.includes('/')) {
+              broadcastId = candidate;
+            }
+          }
+        }
+
+        await prisma.stream.update({
+          where: { id: dueStream.id },
+          data: {
+            status: 'live',
+            isActive: true,
+            ...(broadcastId ? { broadcastId } : {}),
+          },
+        });
+
+        if (broadcastId) {
+          this.ensureVideoEmbeddable(broadcastId).catch(() => undefined);
+        }
+
+        // Send stream going live notifications
+        prisma.user
+          .findMany({ where: { active: true }, select: { id: true } })
+          .then(async (users) => {
+            await this.notificationService
+              .streamGoingLive(
+                users.map((u) => u.id),
+                dueStream.title,
+              )
+              .catch(() => undefined);
+          })
+          .catch(() => undefined);
+      }
+    } catch (schedErr: any) {
+      this.logger.error(`Failed to activate scheduled streams: ${schedErr?.message}`);
+    }
+
     let get_streams = await prisma.stream.findMany();
 
     const latestStream = get_streams[get_streams.length - 1];
