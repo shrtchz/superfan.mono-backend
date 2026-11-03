@@ -48,6 +48,10 @@ export class StartStreamDto {
   @IsString()
    @IsOptional()
   privacyStatus?: 'public' | 'unlisted' | 'private';
+
+  @IsString()
+  @IsOptional()
+  broadcastId?: string;
 }
 
 export class StreamOptionsDto {
