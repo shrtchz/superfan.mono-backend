@@ -47,7 +47,7 @@ FROM nest-base AS nest-deps
 WORKDIR /app
 COPY superfan.nest/package.json superfan.nest/pnpm-lock.yaml ./
 COPY superfan.nest/prisma ./prisma
-RUN pnpm install --no-frozen-lockfile
+RUN pnpm install --no-frozen-lockfile --dangerously-allow-all-builds
  
 # Nest Build
 FROM nest-deps AS nest-build
