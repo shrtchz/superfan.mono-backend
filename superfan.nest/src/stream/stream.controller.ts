@@ -96,14 +96,14 @@ export class StreamingController {
       dto.network_platform,
       dto.stream_url,
       dto.status,
-      dto.scheduledDate,
+      dto.scheduledDate ? new Date(dto.scheduledDate) : undefined,
       dto.category,
       dto.thumbnailUrl,
       dto.liveTiming,
       dto.preRecordedTiming,
       dto.recordedVideoUrl,
       dto.duration,
-      { privacyStatus: dto.privacyStatus },
+      { privacyStatus: dto.privacyStatus, broadcastId: dto.broadcastId },
     );
   }
 

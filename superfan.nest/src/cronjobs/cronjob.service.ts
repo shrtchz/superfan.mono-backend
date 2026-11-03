@@ -152,6 +152,63 @@ export class CronJobService {
         }
     }
 
+    @Cron(CronExpression.EVERY_MINUTE)
+    async activateScheduledStreams() {
+        try {
+            const now = new Date();
+            const dueStreams = await prisma.stream.findMany({
+                where: {
+                    status: { in: ['pre-recorded', 'scheduled'] },
+                    scheduledDate: { lte: now },
+                },
+            });
+
+            for (const dueStream of dueStreams) {
+                let broadcastId = dueStream.broadcastId;
+                if (!broadcastId) {
+                    const candidate = dueStream.recordedVideoUrl || dueStream.streamUrl;
+                    if (candidate) {
+                        const watchMatch = candidate.match(/[?&]v=([^?&/]+)/i);
+                        const shortMatch = candidate.match(/youtu\.be\/([^?&/]+)/i);
+                        const embedMatch = candidate.match(/youtube\.com\/embed\/([^?&/]+)/i);
+                        if (watchMatch?.[1]) {
+                            broadcastId = watchMatch[1];
+                        } else if (shortMatch?.[1]) {
+                            broadcastId = shortMatch[1];
+                        } else if (embedMatch?.[1]) {
+                            broadcastId = embedMatch[1];
+                        } else if (/^[A-Za-z0-9_-]{8,}$/.test(candidate) && !candidate.includes('/')) {
+                            broadcastId = candidate;
+                        }
+                    }
+                }
+
+                await prisma.stream.update({
+                    where: { id: dueStream.id },
+                    data: {
+                        status: 'live',
+                        isActive: true,
+                        ...(broadcastId ? { broadcastId } : {}),
+                    },
+                });
+
+                const allUsers = await this.userService.findAllUsers().catch(() => ({ data: [] }));
+                const clientUsers = (allUsers.data ?? []).filter((u: any) => u.active !== false);
+                if (clientUsers.length) {
+                    await this.notificationService
+                        .streamGoingLive(
+                            clientUsers.map((u: any) => u.id),
+                            dueStream.title || 'Livestream',
+                        )
+                        .catch(() => undefined);
+                }
+                this.logger.log(`Scheduled stream ${dueStream.id} ("${dueStream.title}") transitioned to live.`);
+            }
+        } catch (error: any) {
+            this.logger.error(`Error activating scheduled streams: ${error?.message}`);
+        }
+    }
+
     @Cron(CronExpression.EVERY_5_MINUTES)
     async sendStreamEndingSoonNotifications() {
         this.logger.log('Checking for live streams ending soon...');
