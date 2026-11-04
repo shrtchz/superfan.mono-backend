@@ -17,6 +17,7 @@ export class NotificationController {
       message?: string;
       type?: string;
       amount?: number;
+      points?: number;
       createdAt?: string;
       data?: any;
     },
@@ -27,27 +28,54 @@ export class NotificationController {
     }
 
     const type = body.type || 'live_quiz_reward';
-    let title = body.title?.trim();
-    let message = body.message?.trim();
+    const createdAtDate = body.createdAt ? new Date(body.createdAt) : undefined;
+    const points = Number(body.points ?? body.data?.points ?? 0);
+    const amount = Number(body.amount ?? body.data?.amount ?? 0);
 
-    if (!title && !message) {
-      const amt = body.amount ?? body.data?.amount ?? 0;
-      if (type === 'live_quiz_reward') {
-        title = `You won ₦${Number(amt).toLocaleString()} from today's live quiz.`;
-        message = title;
-      } else if (type === 'live_quiz_consolation') {
-        title = `You didn’t take the jackpot this time, but you earned 500 PTS (₦0.50) for playing.`;
-        message = title;
-      } else if (type === 'live_quiz_jackpot') {
-        title = `Jackpot! ₦${Number(amt).toLocaleString()} credited to your Savings Account.`;
-        message = title;
-      } else {
-        title = 'Live Quiz Notification';
-        message = title;
-      }
+    // Route standard trigger types directly to authentic NotificationService methods
+    if (type === 'quiz_reward' || type === 'test_quiz_reward') {
+      return this.notificationService.testQuizReward(
+        resolvedUserId,
+        points,
+        amount,
+      );
     }
 
-    const createdAtDate = body.createdAt ? new Date(body.createdAt) : undefined;
+    if (type === 'live_quiz_reward') {
+      return this.notificationService.liveQuizReward(
+        resolvedUserId,
+        amount,
+        createdAtDate,
+      );
+    }
+
+    if (type === 'live_quiz_consolation') {
+      return this.notificationService.liveQuizConsolationReward(
+        resolvedUserId,
+        points || 500,
+        body.data?.quizName || 'Live Quiz',
+        createdAtDate,
+      );
+    }
+
+    if (type === 'live_quiz_jackpot') {
+      return this.notificationService.liveQuizJackpot(
+        resolvedUserId,
+        amount,
+        createdAtDate,
+      );
+    }
+
+    if (type === 'minimum_withdrawal_not_met') {
+      return this.notificationService.minimumWithdrawalNotMet(
+        resolvedUserId,
+        amount || 1000,
+      );
+    }
+
+    const title = body.title?.trim() || '';
+    const message = body.message?.trim() || '';
+
     return this.notificationService.createNotification(
       resolvedUserId,
       title || message || '',
@@ -160,6 +188,68 @@ export class NotificationController {
     return this.notificationService.referralFirstTestBonus(
       body.referrerId,
       body.refereeUsername,
+    );
+  }
+
+  @Public()
+  @Post('/triggers/test-quiz-reward')
+  @HttpCode(HttpStatus.OK)
+  triggerTestQuizReward(
+    @Body() body: { userId: number; points: number; amountNaira?: number; amount?: number },
+  ) {
+    return this.notificationService.testQuizReward(
+      Number(body.userId),
+      Number(body.points ?? 0),
+      Number(body.amountNaira ?? body.amount ?? 0),
+    );
+  }
+
+  @Public()
+  @Post('/triggers/live-quiz-reward')
+  @HttpCode(HttpStatus.OK)
+  triggerLiveQuizReward(
+    @Body() body: { userId: number; amountNaira: number; createdAt?: string },
+  ) {
+    const createdAtDate = body.createdAt ? new Date(body.createdAt) : undefined;
+    return this.notificationService.liveQuizReward(
+      Number(body.userId),
+      Number(body.amountNaira),
+      createdAtDate,
+    );
+  }
+
+  @Public()
+  @Post('/triggers/live-quiz-consolation')
+  @HttpCode(HttpStatus.OK)
+  triggerLiveQuizConsolation(
+    @Body()
+    body: {
+      userId: number;
+      points?: number;
+      quizName?: string;
+      createdAt?: string;
+    },
+  ) {
+    const createdAtDate = body.createdAt ? new Date(body.createdAt) : undefined;
+    return this.notificationService.liveQuizConsolationReward(
+      Number(body.userId),
+      body.points,
+      body.quizName,
+      createdAtDate,
+    );
+  }
+
+  @Public()
+  @Post('/triggers/live-quiz-jackpot')
+  @HttpCode(HttpStatus.OK)
+  triggerLiveQuizJackpot(
+    @Body() body: { userId: number; amountNaira: number; createdAt?: string },
+  ) {
+    const createdAtDate = body.createdAt ? new Date(body.createdAt) : undefined;
+    return this.notificationService.liveQuizJackpot(
+      Number(body.userId),
+      Number(body.amountNaira),
+      createdAtDate,
     );
   }
 
