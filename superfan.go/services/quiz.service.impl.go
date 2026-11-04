@@ -159,13 +159,15 @@ func BuildLiveQuizCountdownLabel(startAt, finishAt time.Time, now time.Time, ove
 	return resolveQuizCountdownLabel(defaultLabel, phase, overrideBefore, overrideDuring, overrideAfter)
 }
 
-func buildTopWinnerCandidatesFromAttempts(attempts []models.LiveQuizAttempt) []map[string]interface{} {
-	winners := make([]map[string]interface{}, 0, len(attempts))
+func buildParticipantCandidatesFromAttempts(attempts []models.LiveQuizAttempt) []map[string]interface{} {
+	participants := make([]map[string]interface{}, 0, len(attempts))
+	winnerRank := 0
 	for _, attempt := range attempts {
-		if !attempt.IsWinner {
-			continue
+		rank := 0
+		if attempt.IsWinner {
+			winnerRank++
+			rank = winnerRank
 		}
-		rowIndex := len(winners) + 1
 		userName := attempt.UserID
 		fullName := attempt.UserID
 		firstName := attempt.UserID
@@ -216,7 +218,7 @@ func buildTopWinnerCandidatesFromAttempts(attempts []models.LiveQuizAttempt) []m
 			}
 		}
 
-		winners = append(winners, map[string]interface{}{
+		participants = append(participants, map[string]interface{}{
 			"id":        attempt.UserID,
 			"userId":    attempt.UserID,
 			"username":  userName,
@@ -225,19 +227,32 @@ func buildTopWinnerCandidatesFromAttempts(attempts []models.LiveQuizAttempt) []m
 			"lastName":  lastName,
 			"image":     profilePicture,
 			"amountWon": attempt.Earning,
-			"rank":      rowIndex,
+			"rank":      rank,
+			"isWinner":  attempt.IsWinner,
 		})
+	}
+	return participants
+}
+
+func buildTopWinnerCandidatesFromAttempts(attempts []models.LiveQuizAttempt) []map[string]interface{} {
+	participants := buildParticipantCandidatesFromAttempts(attempts)
+	winners := make([]map[string]interface{}, 0, len(participants))
+	for _, participant := range participants {
+		if participant["isWinner"] == true {
+			winners = append(winners, participant)
+		}
 	}
 	return winners
 }
 
 func buildLiveQuizLedgerMeta(quizID string, status string) map[string]interface{} {
 	meta := map[string]interface{}{
-		"participants": 0,
-		"winnerCount":  0,
-		"topWinners":   []map[string]interface{}{},
-		"rewardStatus": "pending",
-		"payoutStatus": "pending",
+		"participants":          0,
+		"winnerCount":           0,
+		"topWinners":            []map[string]interface{}{},
+		"attemptedParticipants": []map[string]interface{}{},
+		"rewardStatus":          "pending",
+		"payoutStatus":          "pending",
 	}
 
 	if strings.TrimSpace(quizID) == "" {
@@ -258,7 +273,15 @@ func buildLiveQuizLedgerMeta(quizID string, status string) map[string]interface{
 			}
 		}
 		meta["winnerCount"] = winnerCount
-		meta["topWinners"] = buildTopWinnerCandidatesFromAttempts(attempts)
+		attemptedParticipants := buildParticipantCandidatesFromAttempts(attempts)
+		meta["attemptedParticipants"] = attemptedParticipants
+		topWinners := make([]map[string]interface{}, 0, winnerCount)
+		for _, participant := range attemptedParticipants {
+			if participant["isWinner"] == true {
+				topWinners = append(topWinners, participant)
+			}
+		}
+		meta["topWinners"] = topWinners
 		if strings.EqualFold(status, "closed") && paid {
 			meta["rewardStatus"] = "paid"
 			meta["payoutStatus"] = "paid"
@@ -272,27 +295,37 @@ func buildLiveQuizLedgerMeta(quizID string, status string) map[string]interface{
 		participantCount := 0
 		winnerCount := 0
 		topWinners := make([]map[string]interface{}, 0)
+		attemptedParticipants := make([]map[string]interface{}, 0, len(leaderboardRows))
 		for _, row := range leaderboardRows {
 			if row.Participants > participantCount {
 				participantCount = row.Participants
 			}
+			rank := 0
 			if row.IsWinner {
 				winnerCount++
-				rowIndex := len(topWinners) + 1
-				topWinners = append(topWinners, map[string]interface{}{
-					"username":  row.UserID,
-					"fullname":  row.UserID,
-					"firstName": row.UserID,
-					"lastName":  "",
-					"image":     nil,
-					"amountWon": 0,
-					"rank":      rowIndex,
-				})
+				rank = winnerCount
+			}
+			participant := map[string]interface{}{
+				"id":        row.UserID,
+				"userId":    row.UserID,
+				"username":  row.UserID,
+				"fullname":  row.UserID,
+				"firstName": row.UserID,
+				"lastName":  "",
+				"image":     nil,
+				"amountWon": 0,
+				"rank":      rank,
+				"isWinner":  row.IsWinner,
+			}
+			attemptedParticipants = append(attemptedParticipants, participant)
+			if row.IsWinner {
+				topWinners = append(topWinners, participant)
 			}
 		}
 		meta["participants"] = participantCount
 		meta["winnerCount"] = winnerCount
 		meta["topWinners"] = topWinners
+		meta["attemptedParticipants"] = attemptedParticipants
 		rewardStatus := strings.ToLower(strings.TrimSpace(leaderboardRows[0].RewardStatus))
 		if rewardStatus == "" {
 			rewardStatus = "pending"
@@ -308,6 +341,7 @@ func buildLiveQuizLedgerMeta(quizID string, status string) map[string]interface{
 	}
 	if err := utils.DB.Raw(`SELECT "userId", "answers" FROM "ongoing_live_quiz" WHERE ? = ANY("quizIds")`, quizID).Scan(&sessions).Error; err == nil {
 		participantSet := make(map[string]struct{})
+		attemptedParticipants := make([]map[string]interface{}, 0)
 		for _, session := range sessions {
 			if len(session.Answers) == 0 {
 				continue
@@ -321,11 +355,25 @@ func buildLiveQuizLedgerMeta(quizID string, status string) map[string]interface{
 			}
 			for _, answer := range answers {
 				if answer.QuizID == quizID && strings.TrimSpace(answer.SelectedAnswer) != "" {
+					if _, exists := participantSet[session.UserID]; exists {
+						continue
+					}
 					participantSet[session.UserID] = struct{}{}
+					attemptedParticipants = append(attemptedParticipants, map[string]interface{}{
+						"id":        session.UserID,
+						"userId":    session.UserID,
+						"username":  session.UserID,
+						"fullname":  session.UserID,
+						"firstName": session.UserID,
+						"lastName":  "",
+						"rank":      0,
+						"isWinner":  false,
+					})
 				}
 			}
 		}
 		meta["participants"] = len(participantSet)
+		meta["attemptedParticipants"] = attemptedParticipants
 	}
 
 	return meta
@@ -389,6 +437,7 @@ func buildLiveQuizResponseMap(raw bson.M, now time.Time) map[string]interface{} 
 		"participants":               ledgerMeta["participants"],
 		"winnerCount":                ledgerMeta["winnerCount"],
 		"topWinners":                 ledgerMeta["topWinners"],
+		"attemptedParticipants":      ledgerMeta["attemptedParticipants"],
 		"rewardStatus":               ledgerMeta["rewardStatus"],
 		"payoutStatus":               ledgerMeta["payoutStatus"],
 	}
@@ -2279,4 +2328,3 @@ func (u *QuizServiceImpl) UpdateLiveQuizAudioURL(id string, lang string, audioUR
 	_, err = u.liveQuizCollection.UpdateOne(u.ctx, filter, update)
 	return err
 }
-
