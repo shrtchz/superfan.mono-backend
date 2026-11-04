@@ -520,17 +520,10 @@ func (f *LiveQuizFinaliser) sendNotification(userID string, amount float64, ques
 		return fmt.Errorf("invalid user ID for notification: %w", err)
 	}
 
-	msg := fmt.Sprintf("You won ₦%.2f from today's live quiz.", amount)
 	payload := map[string]interface{}{
-		"userId":    userIDInt,
-		"title":     msg,
-		"message":   msg,
-		"type":      "live_quiz_reward",
-		"createdAt": createdAt.UTC().Format(time.RFC3339Nano),
-		"data": map[string]interface{}{
-			"quizId": quizID,
-			"amount": amount,
-		},
+		"userId":      userIDInt,
+		"amountNaira": amount,
+		"createdAt":   createdAt.UTC().Format(time.RFC3339Nano),
 	}
 
 	body, err := json.Marshal(payload)
@@ -538,7 +531,7 @@ func (f *LiveQuizFinaliser) sendNotification(userID string, amount float64, ques
 		return fmt.Errorf("marshal notification payload: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/api/v1/notifications/create", f.nestBaseURL)
+	url := fmt.Sprintf("%s/api/v1/notification/triggers/live-quiz-reward", strings.TrimRight(f.nestBaseURL, "/"))
 	resp, err := f.httpClient.Post(url, "application/json", bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("http post to nest: %w", err)
@@ -680,18 +673,11 @@ func (f *LiveQuizFinaliser) sendConsolationNotification(userID string, points in
 		return fmt.Errorf("invalid user ID for consolation notification: %w", err)
 	}
 
-	msg := fmt.Sprintf("+%d PTS for playing! Every quiz counts.", points)
 	payload := map[string]interface{}{
 		"userId":    userIDInt,
-		"title":     msg,
-		"message":   msg,
-		"type":      "live_quiz_consolation",
+		"points":    points,
+		"quizName":  "Live Quiz",
 		"createdAt": createdAt.UTC().Format(time.RFC3339Nano),
-		"data": map[string]interface{}{
-			"quizId": quizID,
-			"points": points,
-			"amount": amount,
-		},
 	}
 
 	body, err := json.Marshal(payload)
@@ -699,7 +685,7 @@ func (f *LiveQuizFinaliser) sendConsolationNotification(userID string, points in
 		return fmt.Errorf("marshal notification payload: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/api/v1/notifications/create", f.nestBaseURL)
+	url := fmt.Sprintf("%s/api/v1/notification/triggers/live-quiz-consolation", strings.TrimRight(f.nestBaseURL, "/"))
 	resp, err := f.httpClient.Post(url, "application/json", bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("http post to nest: %w", err)

@@ -89,31 +89,14 @@ func formatNaira(amount float64) string {
 	return buf.String()
 }
 
-func withdrawalThresholdMessage(accountType string, balance float64) string {
-	thresholdLabel := formatNaira(withdrawalAccountUnlockThreshold)
-	if strings.EqualFold(accountType, "savings") {
-		percent := int(math.Round(balance / withdrawalAccountUnlockThreshold * 100))
-		return fmt.Sprintf(
-			"Keep building! Your Savings Account unlocks at ₦%s. You're currently at ₦%s (%d%%). Complete today's quizzes to get closer!",
-			thresholdLabel, formatNaira(balance), percent,
-		)
-	}
-	return fmt.Sprintf(
-		"Minimum withdrawal threshold is ₦%s. Your Checking Account currently has ₦%s. You can use this balance to buy extra quiz runs, upgrade to Premium, or top up to reach the withdrawal target.",
-		thresholdLabel, formatNaira(balance),
-	)
-}
-
 func notifyBelowWithdrawalThreshold(userID int, accountType string, balance float64) {
-	nestBaseURL := utils.GetEnvWithKey("NEST_BASE_URL")
+	nestBaseURL := strings.TrimRight(utils.GetEnvWithKey("NEST_BASE_URL"), "/")
 	if nestBaseURL == "" {
-		return
+		nestBaseURL = "http://localhost:3000"
 	}
 	payload := map[string]interface{}{
 		"userId":  userID,
-		"title":   "Withdrawal unavailable",
-		"message": withdrawalThresholdMessage(accountType, balance),
-		"type":    "minimum_withdrawal_not_met",
+		"minimum": 1000,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -121,12 +104,16 @@ func notifyBelowWithdrawalThreshold(userID int, accountType string, balance floa
 		return
 	}
 	go func() {
-		resp, err := http.Post(fmt.Sprintf("%s/api/v1/notifications/create", nestBaseURL), "application/json", bytes.NewReader(body))
+		client := &http.Client{Timeout: 5 * time.Second}
+		resp, err := client.Post(fmt.Sprintf("%s/api/v1/notification/triggers/minimum-withdrawal-not-met", nestBaseURL), "application/json", bytes.NewReader(body))
 		if err != nil {
 			log.Printf("[PaymentService] Failed to send minimum-withdrawal notification: %v", err)
 			return
 		}
-		resp.Body.Close()
+		defer resp.Body.Close()
+		if resp.StatusCode >= 300 {
+			log.Printf("[PaymentService] Minimum-withdrawal notification returned status %s", resp.Status)
+		}
 	}()
 }
 

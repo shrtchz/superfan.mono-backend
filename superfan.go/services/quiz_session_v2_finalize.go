@@ -723,21 +723,32 @@ func creditQuizReward(tx *gorm.DB, userID int, amountInNaira float64, subject st
 		return err
 	}
 
-	// 6. Send notification for the quiz wallet credit
-	if nestBaseURL := utils.GetEnvWithKey("NEST_BASE_URL"); nestBaseURL != "" {
-		payload := map[string]interface{}{
-			"userId":  userID,
-			"title":   description,
-			"message": fmt.Sprintf("Your Savings Wallet has been credited with ₦%.0f from %s Quiz", amountInNaira, subject),
-			"type":    "quiz_reward",
-		}
-		body, _ := json.Marshal(payload)
+	// 6. Send notification for the quiz wallet credit via authentic NotificationService
+	nestBaseURL := strings.TrimRight(utils.GetEnvWithKey("NEST_BASE_URL"), "/")
+	if nestBaseURL == "" {
+		nestBaseURL = "http://localhost:3000"
+	}
+	payload := map[string]interface{}{
+		"userId":      userID,
+		"points":      score,
+		"amountNaira": amountInNaira,
+	}
+	if body, err := json.Marshal(payload); err == nil {
 		go func() {
-			http.Post(
-				fmt.Sprintf("%s/api/v1/notifications/create", nestBaseURL),
+			client := &http.Client{Timeout: 5 * time.Second}
+			resp, err := client.Post(
+				fmt.Sprintf("%s/api/v1/notification/triggers/test-quiz-reward", nestBaseURL),
 				"application/json",
 				bytes.NewReader(body),
 			)
+			if err != nil {
+				log.Printf("[QuizSessionV2] Failed to send test-quiz notification: %v", err)
+				return
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode >= 300 {
+				log.Printf("[QuizSessionV2] Test-quiz notification returned status %s", resp.Status)
+			}
 		}()
 	}
 
