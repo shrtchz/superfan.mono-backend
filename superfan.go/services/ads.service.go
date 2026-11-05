@@ -706,8 +706,12 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 	}
 
 	// 3. Platform daily reward ad cap quota check (Max 5 rewarded ads per user per day = 1,000 PTS/day)
-	now := time.Now()
-	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	lagosLoc, errLoc := time.LoadLocation("Africa/Lagos")
+	if errLoc != nil {
+		lagosLoc = time.FixedZone("WAT", 1*60*60)
+	}
+	now := time.Now().In(lagosLoc)
+	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, lagosLoc)
 
 	var todayRewardCount int64
 	s.db.WithContext(ctx).Model(&models.AdEvent{}).
@@ -831,6 +835,13 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 				Where("id = ?", *req.CampaignID).
 				Find(&exists).Error; err == nil && exists {
 				cid := *req.CampaignID
+				campaignIDPtr = &cid
+			}
+		}
+		if campaignIDPtr == nil {
+			var fallbackCamp models.AdCampaign
+			if err := tx.Model(&models.AdCampaign{}).Order("id asc").First(&fallbackCamp).Error; err == nil && fallbackCamp.ID > 0 {
+				cid := fallbackCamp.ID
 				campaignIDPtr = &cid
 			}
 		}
