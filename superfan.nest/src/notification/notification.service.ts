@@ -642,10 +642,7 @@ export class NotificationService {
 
   private formatNairaAmount(amount: number | string): string {
     const num = Number(amount);
-    if (isNaN(num)) return '0';
-    if (Number.isInteger(num)) {
-      return num.toLocaleString('en-US');
-    }
+    if (isNaN(num)) return '0.00';
     return num.toLocaleString('en-US', {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
@@ -654,7 +651,7 @@ export class NotificationService {
 
   async testQuizReward(userId: number, points: number, amountNaira: number) {
     const formattedAmount = this.formatNairaAmount(amountNaira);
-    const msg = `Test Quiz Earnings: Your Savings Vault has been credited with ₦${formattedAmount}.`;
+    const msg = `You earned ₦${formattedAmount} from your Test Quiz! It has been credited to your Savings Vault.`;
     return this.notify(
       userId,
       NotificationTriggers.TEST_QUIZ_REWARD,
