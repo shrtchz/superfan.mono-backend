@@ -123,15 +123,13 @@ func deriveSessionStatus(record *models.OngoingQuiz, expired bool) string {
 	if expired {
 		return "expired"
 	}
-	if record.IsRandom {
-		if record.QuizAttempt != nil && !record.QuizAttempt.IsStarted {
-			return "ready"
-		}
-		if record.StartedAt == nil {
-			return "ready"
-		}
+	if len(normalizeStoredAnswers(record.Answers)) > 0 || record.CurrentIndex > 0 {
+		return "in_progress"
 	}
-	return "in_progress"
+	if record.QuizAttempt != nil && record.QuizAttempt.IsStarted {
+		return "in_progress"
+	}
+	return "ready"
 }
 
 func sessionTimeLimitSeconds(totalTime *int) *int {

@@ -423,19 +423,14 @@ async handleExpiredQuizzes() {
               ? JSON.parse(quiz.answers)
               : quiz.answers;
 
-          // Skip if no answers
+          // Skip if no answers - delete unattempted quiz so it does not falsely count against the user's daily limit
           if (!Array.isArray(answers) || answers.length === 0) {
             this.logger.warn(
-              `Skipping quiz ${quiz.id} because answers are empty`,
+              `Deleting unattempted expired quiz ${quiz.id} (no answers)`,
             );
 
-            // Mark as completed to avoid repeated cron checks
-            await prisma.ongoingQuiz.update({
+            await prisma.ongoingQuiz.delete({
               where: { id: quiz.id },
-              data: {
-                isCompleted: true,
-                completedAt: new Date(),
-              },
             });
 
             continue;

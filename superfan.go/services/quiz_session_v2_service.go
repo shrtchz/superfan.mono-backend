@@ -272,9 +272,8 @@ func (s *QuizSessionV2Service) createNewSession(req models.CreateSessionV2Reques
 		}
 	}
 
-	if !isRandom {
-		startedAt = &now
-	}
+	// Custom sessions start when user actually begins the test
+	// startedAt remains nil until session starts
 
 	timeRemaining := 0
 	if sessionTotalTime != nil {
@@ -460,11 +459,11 @@ func SessionHasStarted(record *models.OngoingQuiz) bool {
 		return true
 	}
 
-	if record.IsRandom {
-		return record.QuizAttempt != nil && record.QuizAttempt.IsStarted
+	if record.QuizAttempt != nil && record.QuizAttempt.IsStarted {
+		return true
 	}
 
-	return record.StartedAt != nil
+	return false
 }
 
 func sessionHasStarted(record *models.OngoingQuiz) bool {
@@ -576,7 +575,7 @@ func (s *QuizSessionV2Service) guardDailyLimit(user *models.User) error {
 
 	var completedToday int64
 	if err := utils.DB.Model(&models.OngoingQuiz{}).
-		Where(`"userId" = ? AND "isCompleted" = ? AND "completedAt" >= ? AND "completedAt" < ?`,
+		Where(`"userId" = ? AND "isCompleted" = ? AND "completedAt" >= ? AND "completedAt" < ? AND ("attemptedAnswers" > 0 OR ("answers" IS NOT NULL AND "answers"::text != '[]' AND "answers"::text != 'null'))`,
 			user.ID, true, startOfDay, endOfDay).
 		Count(&completedToday).Error; err != nil {
 		return utils.NewAppError(http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to check daily quiz limit")
