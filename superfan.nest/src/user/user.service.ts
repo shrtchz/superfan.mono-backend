@@ -578,6 +578,7 @@ export class UserService {
       '45': 'T45',
       '60': 'T60',
       unlimited: 'UNLIMITED',
+      timefree: 'UNLIMITED',
     } as const;
 
     const user = await prisma.user.findUnique({

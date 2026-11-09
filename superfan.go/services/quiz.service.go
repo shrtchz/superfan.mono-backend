@@ -21,6 +21,15 @@ type QuizService interface {
 		timePreference string,
 	) (map[string]interface{}, error)
 
+	GetQuizByPreferencesWithExclusions(
+		languagePreference string,
+		subjectPreference string,
+		testLevel string,
+		questionPreference string,
+		timePreference string,
+		excludeIDs []string,
+	) (map[string]interface{}, error)
+
 	SubmitQuiz(request models.SubmitQuizRequest) (map[string]interface{}, error)
 	GetQuizAnswerById(id string) (map[string]interface{}, error)
 	CreateLiveQuiz(*models.LiveQuiz) error
