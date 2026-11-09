@@ -444,7 +444,8 @@ func isSessionExpired(record *models.OngoingQuiz) bool {
 	return record.ExpiresAt != nil && !record.ExpiresAt.After(now)
 }
 
-func sessionHasStarted(record *models.OngoingQuiz) bool {
+// SessionHasStarted evaluates whether an ongoing quiz session has actually begun.
+func SessionHasStarted(record *models.OngoingQuiz) bool {
 	if record == nil {
 		return false
 	}
@@ -462,6 +463,10 @@ func sessionHasStarted(record *models.OngoingQuiz) bool {
 	}
 
 	return record.StartedAt != nil
+}
+
+func sessionHasStarted(record *models.OngoingQuiz) bool {
+	return SessionHasStarted(record)
 }
 
 func deleteIncompleteSession(sessionID string, userID int) error {

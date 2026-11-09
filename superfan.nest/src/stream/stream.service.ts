@@ -1,5 +1,6 @@
 // streaming.service.ts
 import {
+  BadRequestException,
   ForbiddenException,
   HttpException,
   HttpStatus,
@@ -2214,8 +2215,11 @@ const stream = await prisma.stream.findUnique({
         reportsCount: updatedComment.reportsCount,
       };
     } catch (error: any) {
-      if (error instanceof NotFoundException) {
+      if (error instanceof NotFoundException || error instanceof BadRequestException) {
         throw error;
+      }
+      if (error?.code === 'P2002') {
+        throw new BadRequestException('You have already reported this comment');
       }
       throw new InternalServerErrorException(
         `Failed to report comment: ${error.message}`,

@@ -87,6 +87,9 @@ export const NotificationTriggers = {
   VERSUS_MATCH_WIN: 'versus_match_win',
   VERSUS_MATCH_DRAW: 'versus_match_draw',
   VERSUS_MATCH_LOSS: 'versus_match_loss',
+  QUIZ_INVITATION_SENT: 'quiz_invitation_sent',
+  QUIZ_INVITATION_ACCEPTED: 'quiz_invitation_accepted',
+  QUIZ_INVITATION_DECLINED: 'quiz_invitation_declined',
 } as const;
 
 export type NotificationTrigger =
@@ -246,6 +249,50 @@ export class NotificationService {
     return this.notify(
       senderId,
       NotificationTriggers.CHALLENGE_INVITE_DECLINED,
+      msg,
+      msg,
+    );
+  }
+
+  async quizInvitationSent(
+    recipientId: number,
+    senderName: string,
+    quizTitle: string,
+    invitationId: string,
+    sessionId: string,
+  ) {
+    const msg = `${senderName} has invited you to participate in ${quizTitle}.`;
+    return this.notify(
+      recipientId,
+      NotificationTriggers.QUIZ_INVITATION_SENT,
+      msg,
+      msg,
+    );
+  }
+
+  async quizInvitationAccepted(
+    senderId: number,
+    recipientName: string,
+    quizTitle: string,
+  ) {
+    const msg = `${recipientName} accepted your invitation to participate in ${quizTitle}.`;
+    return this.notify(
+      senderId,
+      NotificationTriggers.QUIZ_INVITATION_ACCEPTED,
+      msg,
+      msg,
+    );
+  }
+
+  async quizInvitationDeclined(
+    senderId: number,
+    recipientName: string,
+    quizTitle: string,
+  ) {
+    const msg = `${recipientName} declined your invitation to participate in ${quizTitle}.`;
+    return this.notify(
+      senderId,
+      NotificationTriggers.QUIZ_INVITATION_DECLINED,
       msg,
       msg,
     );
@@ -642,10 +689,7 @@ export class NotificationService {
 
   private formatNairaAmount(amount: number | string): string {
     const num = Number(amount);
-    if (isNaN(num)) return '0';
-    if (Number.isInteger(num)) {
-      return num.toLocaleString('en-US');
-    }
+    if (isNaN(num)) return '0.00';
     return num.toLocaleString('en-US', {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
@@ -654,7 +698,7 @@ export class NotificationService {
 
   async testQuizReward(userId: number, points: number, amountNaira: number) {
     const formattedAmount = this.formatNairaAmount(amountNaira);
-    const msg = `Test Quiz Earnings: Your Savings Vault has been credited with ₦${formattedAmount}.`;
+    const msg = `You earned ₦${formattedAmount} from your Test Quiz! It has been credited to your Savings Vault.`;
     return this.notify(
       userId,
       NotificationTriggers.TEST_QUIZ_REWARD,

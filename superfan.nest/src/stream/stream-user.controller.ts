@@ -152,14 +152,24 @@ export class StreamUserController {
     @Req() req,
   ) {
     const userId = Number(req.user?.id);
-    await this.streamingService.reportComment(
+    const result = await this.streamingService.reportComment(
       commentId,
       userId,
       userId,
       dto.reason,
     );
 
-    return { received: true };
+    const streamId = await this.streamingService.getCommentStreamId(commentId);
+    if (streamId) {
+      this.streamGateway.broadcastChat('reportComment', {
+        commentId,
+        streamId,
+        userId,
+        reportsCount: result?.reportsCount,
+      });
+    }
+
+    return result || { received: true };
   }
 
   @Delete('chat/comment/:id')
