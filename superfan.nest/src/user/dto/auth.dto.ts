@@ -173,7 +173,7 @@ export class UpdateOnboardingDto {
   @IsIn(['5', '25', '50', '100', '200', '400', '1000'])
   questionPreference: string;
 
-  @IsIn(['5', '15', '30', '45', '60', 'unlimited'])
+  @IsIn(['5', '15', '30', '45', '60', 'unlimited', 'timefree'])
   timePreference: string;
 }
 
