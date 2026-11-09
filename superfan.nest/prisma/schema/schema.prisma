@@ -10,101 +10,105 @@ datasource db {
 }
 
 model User {
-  id                     Int                 @id @default(autoincrement())
-  firstName              String
-  lastName               String?
-  email                  String              @unique
-  password               String
-  username               String              @unique
-  referral_code          String?             @unique
-  phone                  String?
-  clerkUserId            String?             @unique
-  roleName               String
-  login_timestamp        DateTime?
-  active                 Boolean             @default(false)
-  verificationCode       String?
-  verificationCodeExpiry DateTime?
-  profilePicture         String?
-  verify_photo           String?
-  address                String?
-  bvn                    String?
-  country                String?
-  postal_code            String?
-  dob                    DateTime?
-  nin                    String?
-  resetToken             String?
-  resetTokenExpiry       DateTime?
-  banReason              String?
-  unBanReason            String?
-  banCategory            String?
-  userCode               String?
-  isBanned               Boolean             @default(false)
-  isDeleted              Boolean             @default(false)
-  deletedAt              DateTime?
-  createdAt              DateTime            @default(now())
-  state                  String?
-  referredByCode         String?
-  languagePreference     String?
-  subjectPreference      String?
-  subscriptionPlan       SubscriptionPlan?
-  testLevel              TestLevel?
-  userHistory            UserHistory[]       @relation("UserToHistory")
-  payouts                Payout[]            @relation("UserToPayouts")
-  login_method           String?
-  ip_address             String?
-  isOnline               Boolean             @default(false)
-  lastSeen               DateTime?
-  subAccountCode         String?
-  accountNumber          String?
-  accounts               Json?
-  bankCode               String?
-  location               String?
-  flw_customer_id        String?
-  busha_customer_id      String?
-  busha_balance_id       String?
-  bitnob_customer_id     String?
-  kyc_status             KycStatus           @default(UNVERIFIED)
-  kyc_tier               KycTier             @default(TIER_0)
-  didit_session_id       String?             @unique
-  didit_verification_id  String?
-  kyc_rejection_reason   String?
-  kyc_verified_at        DateTime?
-  lifetimePoints         Int                 @default(0) @map("lifetime_points")
-  dailyStreak            Int                 @default(0)
-  lastStreakDate         DateTime? // last date a streak was counted
-  questionPreference     QuestionPreference?
-  timePreference         TimePreference?
-  twoFactorEnabled       Boolean             @default(false)
-  twoFactorMethod        String? // 'authenticator' | 'phone'
-  twoFactorSecret        String? // Base32 TOTP secret
-  twoFactorPhone         String? // Phone number verified for 2FA
-  twoFactorOtp           String? // Hashed pending OTP for phone verification
-  twoFactorOtpExpiry     DateTime? // Expiry timestamp for pending phone OTP
-  accountReference       String?
-  admin                  Admin?
-  notifications          Notification[]
-  referralsReceived      Referral[]          @relation("Referee")
-  referralsMade          Referral[]          @relation("Referrer")
-  subAdmin               SubAdmin?
-  subAdminInvites        SubAdminInvite[]
-  sentChallenges         ChallengeInvite[]   @relation("ChallengeInviteSender")
-  receivedChallenges     ChallengeInvite[]   @relation("ChallengeInviteReceiver")
-  sentVersusRequests     VersusRequest[]     @relation("VersusHost")
-  receivedVersusRequests VersusRequest[]     @relation("VersusOpponent")
-  friendships            Friend[]            @relation("FriendUser")
-  friendOf               Friend[]            @relation("FriendTarget")
-  wallet                 Wallet?
-  WalletTransaction      WalletTransaction[]
-  activityWallets        ActivityWallet[]
-  userHistories          UserHistory[]
-  cardFundings           CardFunding[]
-  bankTransfers          BankTransfer[]
-  userCards              UserCard[]
-  ongoingQuizs           OngoingQuiz[]
-  orders                 Order[]             @relation("UserToOrders")
-  returns                OrderReturn[]       @relation("UserToReturns")
-  podcasts               Podcast[]
-  userDevices            UserDevice[]
+  id                      Int                      @id @default(autoincrement())
+  firstName               String
+  lastName                String?
+  email                   String                   @unique
+  password                String
+  username                String                   @unique
+  referral_code           String?                  @unique
+  phone                   String?
+  clerkUserId             String?                  @unique
+  roleName                String
+  login_timestamp         DateTime?
+  active                  Boolean                  @default(false)
+  verificationCode        String?
+  verificationCodeExpiry  DateTime?
+  profilePicture          String?
+  verify_photo            String?
+  address                 String?
+  bvn                     String?
+  country                 String?
+  postal_code             String?
+  dob                     DateTime?
+  nin                     String?
+  resetToken              String?
+  resetTokenExpiry        DateTime?
+  banReason               String?
+  unBanReason             String?
+  banCategory             String?
+  userCode                String?
+  isBanned                Boolean                  @default(false)
+  isDeleted               Boolean                  @default(false)
+  deletedAt               DateTime?
+  createdAt               DateTime                 @default(now())
+  state                   String?
+  referredByCode          String?
+  languagePreference      String?
+  subjectPreference       String?
+  subscriptionPlan        SubscriptionPlan?
+  testLevel               TestLevel?
+  userHistory             UserHistory[]            @relation("UserToHistory")
+  payouts                 Payout[]                 @relation("UserToPayouts")
+  login_method            String?
+  ip_address              String?
+  isOnline                Boolean                  @default(false)
+  lastSeen                DateTime?
+  subAccountCode          String?
+  accountNumber           String?
+  accounts                Json?
+  bankCode                String?
+  location                String?
+  flw_customer_id         String?
+  busha_customer_id       String?
+  busha_balance_id        String?
+  bitnob_customer_id      String?
+  kyc_status              KycStatus                @default(UNVERIFIED)
+  kyc_tier                KycTier                  @default(TIER_0)
+  didit_session_id        String?                  @unique
+  didit_verification_id   String?
+  kyc_rejection_reason    String?
+  kyc_verified_at         DateTime?
+  lifetimePoints          Int                      @default(0) @map("lifetime_points")
+  dailyStreak             Int                      @default(0)
+  lastStreakDate          DateTime? // last date a streak was counted
+  questionPreference      QuestionPreference?
+  timePreference          TimePreference?
+  twoFactorEnabled        Boolean                  @default(false)
+  twoFactorMethod         String? // 'authenticator' | 'phone'
+  twoFactorSecret         String? // Base32 TOTP secret
+  twoFactorPhone          String? // Phone number verified for 2FA
+  twoFactorOtp            String? // Hashed pending OTP for phone verification
+  twoFactorOtpExpiry      DateTime? // Expiry timestamp for pending phone OTP
+  accountReference        String?
+  admin                   Admin?
+  notifications           Notification[]
+  referralsReceived       Referral[]               @relation("Referee")
+  referralsMade           Referral[]               @relation("Referrer")
+  subAdmin                SubAdmin?
+  subAdminInvites         SubAdminInvite[]
+  sentChallenges          ChallengeInvite[]        @relation("ChallengeInviteSender")
+  receivedChallenges      ChallengeInvite[]        @relation("ChallengeInviteReceiver")
+  sentVersusRequests      VersusRequest[]          @relation("VersusHost")
+  receivedVersusRequests  VersusRequest[]          @relation("VersusOpponent")
+  friendships             Friend[]                 @relation("FriendUser")
+  friendOf                Friend[]                 @relation("FriendTarget")
+  wallet                  Wallet?
+  WalletTransaction       WalletTransaction[]
+  activityWallets         ActivityWallet[]
+  userHistories           UserHistory[]
+  cardFundings            CardFunding[]
+  bankTransfers           BankTransfer[]
+  userCards               UserCard[]
+  ongoingQuizs            OngoingQuiz[]
+  orders                  Order[]                  @relation("UserToOrders")
+  returns                 OrderReturn[]            @relation("UserToReturns")
+  podcasts                Podcast[]
+  userDevices             UserDevice[]
+  createdQuizSessions     QuizSession[]            @relation("QuizSessionCreator")
+  quizParticipations      QuizSessionParticipant[] @relation("QuizSessionParticipantUser")
+  sentQuizInvitations     QuizInvitation[]         @relation("QuizInvitationSender")
+  receivedQuizInvitations QuizInvitation[]         @relation("QuizInvitationRecipient")
 }
 
 model Reward {
@@ -1375,4 +1379,69 @@ enum AdEventType {
   CLICK
   REWARD_AWARDED
   REWARD_SUPPRESSED
+}
+
+model QuizSession {
+  id            String    @id @default(cuid())
+  quizId        String
+  quizTitle     String
+  creatorId     Int
+  status        String    @default("PENDING") // PENDING, ACTIVE, COMPLETED, CANCELLED
+  startedAt     DateTime?
+  completedAt   DateTime?
+  finalRankings Json?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  creator      User                     @relation("QuizSessionCreator", fields: [creatorId], references: [id], onDelete: Cascade)
+  participants QuizSessionParticipant[]
+  invitations  QuizInvitation[]
+
+  @@index([creatorId])
+  @@index([status])
+}
+
+model QuizSessionParticipant {
+  id               String    @id @default(cuid())
+  sessionId        String
+  userId           Int
+  status           String    @default("NOT_STARTED") // NOT_STARTED, IN_PROGRESS, COMPLETED
+  score            Int       @default(0)
+  accuracy         Float     @default(0)
+  correctAnswers   Int       @default(0)
+  attemptedAnswers Int       @default(0)
+  totalQuestions   Int       @default(0)
+  timeSeconds      Float     @default(0)
+  rank             Int?
+  joinedAt         DateTime  @default(now())
+  startedAt        DateTime?
+  completedAt      DateTime?
+  updatedAt        DateTime  @updatedAt
+
+  session QuizSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  user    User        @relation("QuizSessionParticipantUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, userId])
+  @@index([userId])
+}
+
+model QuizInvitation {
+  id          String   @id @default(cuid())
+  sessionId   String
+  quizId      String
+  quizTitle   String
+  senderId    Int
+  recipientId Int
+  status      String   @default("PENDING") // PENDING, ACCEPTED, DECLINED, EXPIRED, CANCELLED
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  session   QuizSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  sender    User        @relation("QuizInvitationSender", fields: [senderId], references: [id], onDelete: Cascade)
+  recipient User        @relation("QuizInvitationRecipient", fields: [recipientId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, recipientId])
+  @@index([recipientId, status])
+  @@index([senderId])
 }

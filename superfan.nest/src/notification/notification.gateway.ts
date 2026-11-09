@@ -66,6 +66,21 @@ export class NotificationGateway
     }
   }
 
+  sendQuizEvent(userIds: (number | string)[], event: string, payload: any) {
+    if (!this.server) return;
+    for (const uid of userIds) {
+      const socketId = this.clients.get(String(uid));
+      if (socketId) {
+        this.server.to(socketId).emit(event, payload);
+      }
+    }
+  }
+
+  broadcastToQuizSession(sessionId: string, event: string, payload: any) {
+    if (!this.server) return;
+    this.server.to(`quiz_session_${sessionId}`).emit(event, payload);
+  }
+
   broadcastNotification(notification: any) {
     this.server.emit('notification', notification);
   }
@@ -78,10 +93,33 @@ export class NotificationGateway
   }
 
   @SubscribeMessage('register')
-handleRegister(
-  @MessageBody() userId: number | string,
-  @ConnectedSocket() client: Socket,
-) {
-  this.registerUser(userId, client);
-}
+  handleRegister(
+    @MessageBody() userId: number | string,
+    @ConnectedSocket() client: Socket,
+  ) {
+    this.registerUser(userId, client);
+  }
+
+  @SubscribeMessage('quiz:join_session')
+  handleJoinQuizSession(
+    @MessageBody() data: { sessionId: string; userId?: number | string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    if (data?.sessionId) {
+      client.join(`quiz_session_${data.sessionId}`);
+      if (data.userId) {
+        this.registerUser(data.userId, client);
+      }
+    }
+  }
+
+  @SubscribeMessage('quiz:leave_session')
+  handleLeaveQuizSession(
+    @MessageBody() data: { sessionId: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    if (data?.sessionId) {
+      client.leave(`quiz_session_${data.sessionId}`);
+    }
+  }
 }

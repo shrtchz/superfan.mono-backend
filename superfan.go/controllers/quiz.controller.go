@@ -378,27 +378,40 @@ func (qc *QuizController) GetOngoingQuiz(ctx *gin.Context) {
 		return
 	}
 
+	hasStarted := services.SessionHasStarted(result.OngoingQuiz)
+	sessionStatus := "ready"
+	if hasStarted {
+		sessionStatus = "in_progress"
+	}
+
+	payload := gin.H{
+		"hasStarted":    hasStarted,
+		"isOngoing":     hasStarted,
+		"sessionStatus": sessionStatus,
+	}
+
 	if result.MissingQuizAttempt {
-		payload := gin.H{
-			"missingQuizAttempt": true,
-			"quizId":             result.QuizID,
-		}
-		if result.OngoingQuiz != nil {
-			raw, err := json.Marshal(result.OngoingQuiz)
-			if err == nil {
-				var ongoing map[string]interface{}
-				if json.Unmarshal(raw, &ongoing) == nil {
-					for key, value := range ongoing {
-						payload[key] = value
-					}
+		payload["missingQuizAttempt"] = true
+		payload["quizId"] = result.QuizID
+	}
+
+	if result.OngoingQuiz != nil {
+		raw, err := json.Marshal(result.OngoingQuiz)
+		if err == nil {
+			var ongoing map[string]interface{}
+			if json.Unmarshal(raw, &ongoing) == nil {
+				for key, value := range ongoing {
+					payload[key] = value
 				}
 			}
 		}
-		utils.Success(ctx, http.StatusOK, "Ongoing quiz fetched successfully", payload)
-		return
 	}
 
-	utils.Success(ctx, http.StatusOK, "Ongoing quiz fetched successfully", result.OngoingQuiz)
+	payload["hasStarted"] = hasStarted
+	payload["isOngoing"] = hasStarted
+	payload["sessionStatus"] = sessionStatus
+
+	utils.Success(ctx, http.StatusOK, "Ongoing quiz fetched successfully", payload)
 }
 
 func (qc *QuizController) SubmitQuiz(ctx *gin.Context) {

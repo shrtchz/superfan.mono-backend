@@ -13,6 +13,7 @@ const (
 	AdStatusActive    AdStatus = "ACTIVE"
 	AdStatusPaused    AdStatus = "PAUSED"
 	AdStatusCompleted AdStatus = "COMPLETED"
+	AdStatusEnded     AdStatus = "ENDED"
 )
 
 type AdEventType string
