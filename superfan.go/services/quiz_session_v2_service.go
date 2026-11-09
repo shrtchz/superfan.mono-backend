@@ -57,6 +57,28 @@ func (s *QuizSessionV2Service) CreateSession(req models.CreateSessionV2Request) 
 			}, nil
 		}
 
+		// If the session has not started yet and the user reached their daily limit,
+		// enforce the daily limit so unstarted sessions don't bypass the non-pro limit.
+		if !sessionHasStarted(active.record) {
+			user, userErr := s.loadUser(req.UserID)
+			if userErr == nil && user != nil {
+				if limitErr := s.guardDailyLimit(user); limitErr != nil {
+					preview, previewErr := s.buildPreviewSession(req, user)
+					if previewErr != nil {
+						return nil, limitErr
+					}
+					return nil, utils.NewAppErrorWithData(
+						http.StatusTooManyRequests,
+						"DAILY_LIMIT_REACHED",
+						"Daily quiz limit reached. Upgrade your plan to get more tests.",
+						map[string]interface{}{
+							"previewSession": preview,
+						},
+					)
+				}
+			}
+		}
+
 		// Preserve the existing active session (ready or in-progress) so questions
 		// are not swapped or deleted unexpectedly when beginning or refreshing.
 		session := mapOngoingQuizToSessionV2(active.record, false)
@@ -132,6 +154,10 @@ func (s *QuizSessionV2Service) BeginSession(sessionID string, userID int) (*mode
 	if record.StartedAt != nil {
 		session := mapOngoingQuizToSessionV2(record, false)
 		return &session, nil
+	}
+
+	if err := s.guardDailyLimit(user); err != nil {
+		return nil, err
 	}
 
 	now, err := lagosNow()
