@@ -974,10 +974,8 @@ async submitQuiz(
     streakMultiplier: streakBonus,
     adBonuses: adBonusPoints,
     earnedAmount: amountInNaira,
-    ...(checkQuiz?.isRandom && {
-      startedAt: now,
-      expiresAt: now,
-    }),
+    startedAt: checkQuiz?.startedAt ?? now,
+    expiresAt: now,
   },
 });
 
@@ -999,17 +997,13 @@ async submitQuiz(
   //   });
   // }
 
-  if (checkQuiz?.isRandom) {
-  await prisma.quizAttempt.update({
+  await prisma.quizAttempt.updateMany({
     where: { quizId: checkQuiz?.id },
     data: {
       isCompleted: true,
       completedAt: now,
-      startedAt: now,
-      expiresAt: now,
     },
   });
-}
 
   // 8. Create wallet reward - pass points, convert to NGN internally
   //    (this sends the 🎉 test-quiz reward notification via wallet.service.ts)
@@ -2322,25 +2316,17 @@ async hasSubmittedLiveQuizForStream(
         timeRemaining: totalTime,
         questions: JSON.parse(JSON.stringify(quizzes)),
         answers: JSON.parse('[]'),
-        ...(!isRandom && {
-          startedAt: now,
-          expiresAt,
-        }),
       },
     });
 
-    if (isRandom) {
-      await prisma.quizAttempt.create({
-        data: {
-          quizId: quizAttempt.id,
-          userId: Number(userId),
-          isStarted: false,
-          isCompleted: false,
-          startedAt: now,
-          expiresAt,
-        },
-      });
-    }
+    await prisma.quizAttempt.create({
+      data: {
+        quizId: quizAttempt.id,
+        userId: Number(userId),
+        isStarted: false,
+        isCompleted: false,
+      },
+    });
 
     return {
       data: {
@@ -2557,12 +2543,11 @@ async fetchOngoingQuiz(userId: number) {
     })
   );
 
-  // NORMAL QUIZ FLOW
+  // NORMAL QUIZ FLOW - only expires if actually started
   if (
+    ongoingQuiz.startedAt &&
     ongoingQuiz.expiresAt &&
     ongoingQuiz.expiresAt <= now
-    
-    // new Date()
   ) {
     return {
       expired: true,
@@ -2673,22 +2658,27 @@ async recordAnswer(userId: number, dto: RecordAnswerDto) {
       );
     }
 
-    if (ongoingQuiz.isRandom) {
+    if (ongoingQuiz.quizAttempt) {
       const quizAttempt = ongoingQuiz.quizAttempt;
 
       if (!quizAttempt.isStarted) {
         throw new HttpException(
-          'Please start random quiz before submitting answers.',
+          'Please start quiz before submitting answers.',
           HttpStatus.BAD_REQUEST,
         );
       }
 
       if (quizAttempt.expiresAt && quizAttempt.expiresAt <= now) {
         throw new HttpException(
-          'Your random quiz session has expired.',
+          'Your quiz session has expired.',
           HttpStatus.GONE,
         );
       }
+    } else if (!ongoingQuiz.startedAt) {
+      throw new HttpException(
+        'Please start quiz before submitting answers.',
+        HttpStatus.BAD_REQUEST,
+      );
     }
 
     const questions = ongoingQuiz.questions as unknown as QuizQuestion[];
