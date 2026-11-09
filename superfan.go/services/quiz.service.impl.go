@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"math/rand"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -907,281 +908,66 @@ func rawTime(v interface{}) time.Time {
 	}
 }
 
-// func (u *QuizServiceImpl) GetQuizByPreferences(
-// 	languagePreference string,
-// 	subjectPreference string,
-// 	testLevel string,
-// 	questionPreference string,
-// 	timePreference string,
-// ) (map[string]interface{}, error) {
+type QuizResponse struct {
+	ID        string      `json:"id"`
+	TestQuiz  string      `json:"testQuiz"`
+	Earning   string      `json:"earning"`
+	Subject   string      `json:"subject"`
+	TestLevel string      `json:"testLevel"`
+	Question  string      `json:"question"`
+	ImageLink []string    `json:"imageLink"`
+	Options   interface{} `json:"options"`
+}
 
-// 	// Validate empty fields
-// 	if languagePreference == "" ||
-// 		subjectPreference == "" ||
-// 		testLevel == "" ||
-// 		questionPreference == "" ||
-// 		timePreference == "" {
-// 		return nil, errors.New("missing required query parameters")
-// 	}
+func (u *QuizServiceImpl) sampleQuizzes(matchConditions bson.D, size int) ([]QuizResponse, error) {
+	if size <= 0 {
+		return nil, nil
+	}
+	var pipeline mongo.Pipeline
+	if len(matchConditions) > 0 {
+		pipeline = mongo.Pipeline{
+			bson.D{{Key: "$match", Value: matchConditions}},
+			bson.D{{Key: "$sample", Value: bson.D{{Key: "size", Value: size}}}},
+		}
+	} else {
+		pipeline = mongo.Pipeline{
+			bson.D{{Key: "$sample", Value: bson.D{{Key: "size", Value: size}}}},
+		}
+	}
 
-// 	// Normalize values (optional but recommended)
-// 	languagePreference = strings.ToLower(languagePreference)
-// 	subjectPreference = strings.ToLower(subjectPreference)
-// 	testLevel = strings.ToLower(testLevel)
+	cursor, err := u.quizcollection.Aggregate(u.ctx, pipeline)
+	if err != nil {
+		return nil, utils.NewAppError(http.StatusInternalServerError, "DB_ERROR",
+			fmt.Sprintf("aggregation error: %v", err))
+	}
+	defer cursor.Close(u.ctx)
 
-// 	// Parse Question Preference
-// 	questionPreference = strings.TrimSpace(strings.ToUpper(questionPreference))
-// 	if strings.HasPrefix(questionPreference, "Q") {
-// 		questionPreference = strings.TrimPrefix(questionPreference, "Q")
-// 	}
-// 	questionLimit, err := strconv.Atoi(strings.TrimSpace(questionPreference))
-// 	if err != nil || questionLimit <= 0 {
-// 		return nil, errors.New("invalid questionPreference")
-// 	}
+	var list []QuizResponse
+	for cursor.Next(u.ctx) {
+		var quiz models.Quiz
+		if err := cursor.Decode(&quiz); err != nil {
+			return nil, utils.NewAppError(http.StatusInternalServerError, "DECODE_ERROR",
+				fmt.Sprintf("failed to decode quiz: %v", err))
+		}
+		list = append(list, QuizResponse{
+			ID:        quiz.ID.Hex(),
+			TestQuiz:  quiz.TestQuiz,
+			Earning:   quiz.Earning,
+			Subject:   quiz.Subject,
+			TestLevel: quiz.TestLevel,
+			Question:  quiz.Question,
+			ImageLink: quiz.ImageLink,
+			Options:   quiz.Options,
+		})
+	}
 
-// 	// Parse Time Preference
-// 	timeLimitStr := strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(timePreference)), "T")
-// 	totalTimeMinutes, err := strconv.Atoi(strings.TrimSpace(timeLimitStr))
-// 	if err != nil || totalTimeMinutes <= 0 {
-// 		return nil, errors.New("invalid timePreference")
-// 	}
+	if err := cursor.Err(); err != nil {
+		return nil, utils.NewAppError(http.StatusInternalServerError, "CURSOR_ERROR",
+			fmt.Sprintf("cursor error: %v", err))
+	}
 
-// 	filter := bson.M{
-// 		"testQuiz":  languagePreference,
-// 		"subject":   subjectPreference,
-// 		"testLevel": testLevel,
-// 	}
-
-// 	count, err := u.quizcollection.CountDocuments(u.ctx, filter)
-// 	if err != nil {
-// 		return nil, err
-// 	}
-
-// 	if count == 0 {
-// 		return nil, errors.New("no quizzes found for selected preferences")
-// 	}
-
-// 	if count < int64(questionLimit) {
-// 		return nil, fmt.Errorf("requested %d questions but only %d quizzes are available", questionLimit, count)
-// 	}
-
-// 	// Mongo Pipeline
-// 	pipeline := mongo.Pipeline{
-// 		{
-// 			{
-// 				Key: "$match",
-// 				Value: bson.M{
-// 					"testQuiz":  languagePreference,
-// 					"subject":   subjectPreference,
-// 					"testLevel": testLevel,
-// 				},
-// 			},
-// 		},
-// 		{
-// 			{
-// 				Key: "$sample",
-// 				Value: bson.M{
-// 					"size": questionLimit,
-// 				},
-// 			},
-// 		},
-// 	}
-
-// 	cursor, err := u.quizcollection.Aggregate(u.ctx, pipeline)
-// 	if err != nil {
-// 		return nil, err
-// 	}
-// 	defer cursor.Close(u.ctx)
-
-// 	type QuizResponse struct {
-// 		ID        string      `json:"id"`
-// 		TestQuiz  string      `json:"testQuiz"`
-// 		Earning   string      `json:"earning"`
-// 		Subject   string      `json:"subject"`
-// 		TestLevel string      `json:"testLevel"`
-// 		Question  string      `json:"question"`
-// 		ImageLink []string      `json:"imageLink"`
-// 		Options   interface{} `json:"options"`
-// 	}
-
-// 	var quizResponses []QuizResponse
-// 	totalEarning := 0
-
-// 	for cursor.Next(u.ctx) {
-// 		var quiz models.Quiz
-
-// 		if err := cursor.Decode(&quiz); err != nil {
-// 			return nil, err
-// 		}
-
-// 		earning, err := strconv.Atoi(strings.TrimSpace(quiz.Earning))
-// 		if err == nil {
-// 			totalEarning += earning
-// 		}
-
-// 		quizResponses = append(quizResponses, QuizResponse{
-// 			ID:        quiz.ID.Hex(),
-// 			TestQuiz:  quiz.TestQuiz,
-// 			Earning:   quiz.Earning,
-// 			Subject:   quiz.Subject,
-// 			TestLevel: quiz.TestLevel,
-// 			Question:  quiz.Question,
-// 			ImageLink: quiz.ImageLink,
-// 			Options:   quiz.Options,
-// 		})
-// 	}
-
-// 	if err := cursor.Err(); err != nil {
-// 		return nil, err
-// 	}
-
-// 	if len(quizResponses) == 0 {
-// 		return nil, errors.New("no quizzes found")
-// 	}
-
-// 	if len(quizResponses) != questionLimit {
-// 		return nil, fmt.Errorf("requested %d questions but only %d quizzes are available", questionLimit, len(quizResponses))
-// 	}
-
-// 	return map[string]interface{}{
-// 		"totalQuestions": len(quizResponses),
-// 		"totalTime":      totalTimeMinutes,
-// 		"totalEarning":   totalEarning,
-// 		"quizzes":        quizResponses,
-// 	}, nil
-// }
-
-// func (u *QuizServiceImpl) GetQuizByPreferences(
-// 	languagePreference string,
-// 	subjectPreference string,
-// 	testLevel string,
-// 	questionPreference string,
-// 	timePreference string,
-// ) (map[string]interface{}, error) {
-
-// 	// Default question preference
-// 	if strings.TrimSpace(questionPreference) == "" {
-// 		questionPreference = "25"
-// 	}
-
-// 	// Default time preference
-// 	if strings.TrimSpace(timePreference) == "" {
-// 		timePreference = "5"
-// 	}
-
-// 	// Normalize values ONCE
-// 	languagePreference = strings.ToLower(strings.TrimSpace(languagePreference))
-// 	subjectPreference = strings.ToLower(strings.TrimSpace(subjectPreference))
-// 	testLevel = strings.ToLower(strings.TrimSpace(testLevel))
-
-// 	// Parse Question Preference — strip leading "Q" or "q"
-// 	qPref := strings.TrimSpace(questionPreference)
-// 	qPref = strings.TrimPrefix(strings.ToUpper(qPref), "Q")
-
-// 	questionLimit, err := strconv.Atoi(qPref)
-// 	if err != nil || questionLimit <= 0 {
-// 		return nil, errors.New("invalid questionPreference: must be a positive integer, e.g. '25' or 'Q25'")
-// 	}
-
-// 	// Parse Time Preference — strip leading "T" or "t"
-// 	tPref := strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(timePreference)), "T")
-
-// 	totalTimeMinutes, err := strconv.Atoi(strings.TrimSpace(tPref))
-// 	if err != nil || totalTimeMinutes <= 0 {
-// 		return nil, errors.New("invalid timePreference: must be a positive integer, e.g. '5' or 'T45'")
-// 	}
-
-// 	// Build filter — only add conditions for non-empty preferences
-// 	filter := bson.M{}
-
-// 	if languagePreference != "" {
-// 		filter["testQuiz"] = bson.M{"$regex": languagePreference, "$options": "i"}
-// 	}
-// 	if subjectPreference != "" {
-// 		filter["subject"] = bson.M{"$regex": subjectPreference, "$options": "i"}
-// 	}
-// 	if testLevel != "" {
-// 		filter["testLevel"] = bson.M{"$regex": testLevel, "$options": "i"}
-// 	}
-
-// 	// Count matching documents
-// 	count, err := u.quizcollection.CountDocuments(u.ctx, filter)
-// 	if err != nil {
-// 		return nil, fmt.Errorf("database error while counting quizzes: %w", err)
-// 	}
-
-// 	if count == 0 {
-// 		return nil, errors.New("no quizzes found for the selected preferences")
-// 	}
-
-// 	// If fewer docs exist than requested, use what's available instead of erroring
-// 	if count < int64(questionLimit) {
-// 		questionLimit = int(count)
-// 	}
-
-// 	// Aggregation: match + random sample
-// 	pipeline := mongo.Pipeline{
-// 		{{Key: "$match", Value: filter}},
-// 		{{Key: "$sample", Value: bson.M{"size": questionLimit}}},
-// 	}
-
-// 	cursor, err := u.quizcollection.Aggregate(u.ctx, pipeline)
-// 	if err != nil {
-// 		return nil, fmt.Errorf("database error during aggregation: %w", err)
-// 	}
-// 	defer cursor.Close(u.ctx)
-
-// 	type QuizResponse struct {
-// 		ID        string      `json:"id"`
-// 		TestQuiz  string      `json:"testQuiz"`
-// 		Earning   string      `json:"earning"`
-// 		Subject   string      `json:"subject"`
-// 		TestLevel string      `json:"testLevel"`
-// 		Question  string      `json:"question"`
-// 		ImageLink []string    `json:"imageLink"`
-// 		Options   interface{} `json:"options"`
-// 	}
-
-// 	var quizResponses []QuizResponse
-// 	totalEarning := 0
-
-// 	for cursor.Next(u.ctx) {
-// 		var quiz models.Quiz
-// 		if err := cursor.Decode(&quiz); err != nil {
-// 			return nil, fmt.Errorf("error decoding quiz document: %w", err)
-// 		}
-
-// 		if earning, err := strconv.Atoi(strings.TrimSpace(quiz.Earning)); err == nil {
-// 			totalEarning += earning
-// 		}
-
-// 		quizResponses = append(quizResponses, QuizResponse{
-// 			ID:        quiz.ID.Hex(),
-// 			TestQuiz:  quiz.TestQuiz,
-// 			Earning:   quiz.Earning,
-// 			Subject:   quiz.Subject,
-// 			TestLevel: quiz.TestLevel,
-// 			Question:  quiz.Question,
-// 			ImageLink: quiz.ImageLink,
-// 			Options:   quiz.Options,
-// 		})
-// 	}
-
-// 	if err := cursor.Err(); err != nil {
-// 		return nil, fmt.Errorf("cursor error: %w", err)
-// 	}
-
-// 	if len(quizResponses) == 0 {
-// 		return nil, errors.New("no quizzes found")
-// 	}
-
-// 	return map[string]interface{}{
-// 		"totalQuestions": len(quizResponses),
-// 		"totalTime":      totalTimeMinutes,
-// 		"totalEarning":   totalEarning,
-// 		"quizzes":        quizResponses,
-// 	}, nil
-// }
+	return list, nil
+}
 
 func (u *QuizServiceImpl) GetQuizByPreferences(
 	languagePreference string,
@@ -1189,6 +975,24 @@ func (u *QuizServiceImpl) GetQuizByPreferences(
 	testLevel string,
 	questionPreference string,
 	timePreference string,
+) (map[string]interface{}, error) {
+	return u.GetQuizByPreferencesWithExclusions(
+		languagePreference,
+		subjectPreference,
+		testLevel,
+		questionPreference,
+		timePreference,
+		nil,
+	)
+}
+
+func (u *QuizServiceImpl) GetQuizByPreferencesWithExclusions(
+	languagePreference string,
+	subjectPreference string,
+	testLevel string,
+	questionPreference string,
+	timePreference string,
+	excludeIDs []string,
 ) (map[string]interface{}, error) {
 
 	// --- Parse Question Limit (default: 25) ---
@@ -1216,7 +1020,6 @@ func (u *QuizServiceImpl) GetQuizByPreferences(
 	}
 
 	// --- Build Filter ---
-	// Store individual conditions separately so $match is airtight
 	matchConditions := bson.D{}
 
 	lang := strings.ToLower(strings.TrimSpace(languagePreference))
@@ -1242,7 +1045,6 @@ func (u *QuizServiceImpl) GetQuizByPreferences(
 		})
 	}
 
-	// Build the filter for CountDocuments
 	filter := bson.D{}
 	if len(matchConditions) > 0 {
 		filter = matchConditions
@@ -1265,79 +1067,96 @@ func (u *QuizServiceImpl) GetQuizByPreferences(
 				lang, subj, level))
 	}
 
-	// Cap to available count
 	if int64(questionLimit) > count {
 		questionLimit = int(count)
 	}
 
-	// --- Pipeline: $match THEN $sample ---
-	// Using bson.D (ordered) guarantees $match always runs before $sample
-	var pipeline mongo.Pipeline
-
-	if len(matchConditions) > 0 {
-		pipeline = mongo.Pipeline{
-			// Stage 1: filter strictly
-			bson.D{{Key: "$match", Value: matchConditions}},
-			// Stage 2: random sample from filtered set only
-			bson.D{{Key: "$sample", Value: bson.D{{Key: "size", Value: questionLimit}}}},
+	// --- Resolve Exclusions ---
+	var validExcludeObjectIDs []bson.ObjectID
+	seenValid := make(map[bson.ObjectID]struct{})
+	for _, rawID := range excludeIDs {
+		trimmed := strings.TrimSpace(rawID)
+		if trimmed == "" {
+			continue
 		}
-	} else {
-		// No filters = full random quiz
-		pipeline = mongo.Pipeline{
-			bson.D{{Key: "$sample", Value: bson.D{{Key: "size", Value: questionLimit}}}},
+		if objID, err := bson.ObjectIDFromHex(trimmed); err == nil {
+			if _, exists := seenValid[objID]; !exists {
+				seenValid[objID] = struct{}{}
+				validExcludeObjectIDs = append(validExcludeObjectIDs, objID)
+			}
 		}
-	}
-
-	cursor, err := u.quizcollection.Aggregate(u.ctx, pipeline)
-	if err != nil {
-		return nil, utils.NewAppError(http.StatusInternalServerError, "DB_ERROR",
-			fmt.Sprintf("aggregation error: %v", err))
-	}
-	defer cursor.Close(u.ctx)
-
-	type QuizResponse struct {
-		ID        string      `json:"id"`
-		TestQuiz  string      `json:"testQuiz"`
-		Earning   string      `json:"earning"`
-		Subject   string      `json:"subject"`
-		TestLevel string      `json:"testLevel"`
-		Question  string      `json:"question"`
-		ImageLink []string    `json:"imageLink"`
-		Options   interface{} `json:"options"`
 	}
 
 	var quizResponses []QuizResponse
-	totalEarning := 0
 
-	for cursor.Next(u.ctx) {
-		var quiz models.Quiz
-		if err := cursor.Decode(&quiz); err != nil {
-			return nil, utils.NewAppError(http.StatusInternalServerError, "DECODE_ERROR",
-				fmt.Sprintf("failed to decode quiz: %v", err))
-		}
-		if earning, err := strconv.Atoi(strings.TrimSpace(quiz.Earning)); err == nil {
-			totalEarning += earning
-		}
-		quizResponses = append(quizResponses, QuizResponse{
-			ID:        quiz.ID.Hex(),
-			TestQuiz:  quiz.TestQuiz,
-			Earning:   quiz.Earning,
-			Subject:   quiz.Subject,
-			TestLevel: quiz.TestLevel,
-			Question:  quiz.Question,
-			ImageLink: quiz.ImageLink,
-			Options:   quiz.Options,
+	// If exclusions exist, first attempt to sample from unseen questions
+	if len(validExcludeObjectIDs) > 0 {
+		unseenConditions := append(bson.D{}, matchConditions...)
+		unseenConditions = append(unseenConditions, bson.E{
+			Key:   "_id",
+			Value: bson.M{"$nin": validExcludeObjectIDs},
 		})
+
+		unseenCount, err := u.quizcollection.CountDocuments(u.ctx, unseenConditions)
+		if err == nil && unseenCount > 0 {
+			targetUnseen := questionLimit
+			if int64(targetUnseen) > unseenCount {
+				targetUnseen = int(unseenCount)
+			}
+			sampledUnseen, err := u.sampleQuizzes(unseenConditions, targetUnseen)
+			if err == nil && len(sampledUnseen) > 0 {
+				quizResponses = append(quizResponses, sampledUnseen...)
+			}
+		}
+
+		// If unseen questions alone did not fill questionLimit, fill the remainder
+		if len(quizResponses) < questionLimit {
+			var alreadyChosenIDs []bson.ObjectID
+			for _, q := range quizResponses {
+				if objID, err := bson.ObjectIDFromHex(q.ID); err == nil {
+					alreadyChosenIDs = append(alreadyChosenIDs, objID)
+				}
+			}
+
+			fallbackConditions := append(bson.D{}, matchConditions...)
+			if len(alreadyChosenIDs) > 0 {
+				fallbackConditions = append(fallbackConditions, bson.E{
+					Key:   "_id",
+					Value: bson.M{"$nin": alreadyChosenIDs},
+				})
+			}
+			needed := questionLimit - len(quizResponses)
+			fallbackSampled, err := u.sampleQuizzes(fallbackConditions, needed)
+			if err == nil && len(fallbackSampled) > 0 {
+				quizResponses = append(quizResponses, fallbackSampled...)
+			}
+		}
 	}
 
-	if err := cursor.Err(); err != nil {
-		return nil, utils.NewAppError(http.StatusInternalServerError, "CURSOR_ERROR",
-			fmt.Sprintf("cursor error: %v", err))
+	// If no exclusions or sampling above didn't yield questions, sample normally
+	if len(quizResponses) == 0 {
+		sampled, err := u.sampleQuizzes(matchConditions, questionLimit)
+		if err != nil {
+			return nil, err
+		}
+		quizResponses = sampled
 	}
 
 	if len(quizResponses) == 0 {
 		return nil, utils.NewAppError(http.StatusUnprocessableEntity, "NO_QUIZZES",
 			"no quizzes found after sampling")
+	}
+
+	// --- Shuffle In-Memory so order is genuinely random ---
+	rand.Shuffle(len(quizResponses), func(i, j int) {
+		quizResponses[i], quizResponses[j] = quizResponses[j], quizResponses[i]
+	})
+
+	totalEarning := 0
+	for _, quiz := range quizResponses {
+		if earning, err := strconv.Atoi(strings.TrimSpace(quiz.Earning)); err == nil {
+			totalEarning += earning
+		}
 	}
 
 	return map[string]interface{}{

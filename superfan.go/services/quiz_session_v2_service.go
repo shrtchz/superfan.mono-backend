@@ -226,12 +226,14 @@ func (s *QuizSessionV2Service) createNewSession(req models.CreateSessionV2Reques
 		return nil, err
 	}
 
-	pack, err := s.quizService.GetQuizByPreferences(
+	excludeIDs := s.getRecentUserQuestionIDs(req.UserID)
+	pack, err := s.quizService.GetQuizByPreferencesWithExclusions(
 		resolved.language,
 		resolved.subject,
 		resolved.level,
 		resolved.questionPreference,
 		resolved.timePreference,
+		excludeIDs,
 	)
 	if err != nil {
 		return mapQuizPackError(err)
@@ -495,12 +497,14 @@ func (s *QuizSessionV2Service) buildPreviewSession(
 		return models.SessionV2{}, err
 	}
 
-	pack, err := s.quizService.GetQuizByPreferences(
+	excludeIDs := s.getRecentUserQuestionIDs(req.UserID)
+	pack, err := s.quizService.GetQuizByPreferencesWithExclusions(
 		resolved.language,
 		resolved.subject,
 		resolved.level,
 		resolved.questionPreference,
 		resolved.timePreference,
+		excludeIDs,
 	)
 	if err != nil {
 		return models.SessionV2{}, err
@@ -588,6 +592,48 @@ func (s *QuizSessionV2Service) guardDailyLimit(user *models.User) error {
 	)
 }
 
+func (s *QuizSessionV2Service) getRecentUserQuestionIDs(userID int) []string {
+	if utils.DB == nil || userID <= 0 {
+		return nil
+	}
+
+	var records []models.OngoingQuiz
+	err := utils.DB.Model(&models.OngoingQuiz{}).
+		Select("questions").
+		Where(`"userId" = ?`, userID).
+		Order(`"createdAt" DESC`).
+		Limit(20).
+		Find(&records).Error
+	if err != nil {
+		return nil
+	}
+
+	seenIDs := make(map[string]struct{})
+	var result []string
+
+	for _, rec := range records {
+		if len(rec.Questions) == 0 {
+			continue
+		}
+		var questions []struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(rec.Questions, &questions); err != nil {
+			continue
+		}
+		for _, q := range questions {
+			id := strings.TrimSpace(q.ID)
+			if id != "" {
+				if _, exists := seenIDs[id]; !exists {
+					seenIDs[id] = struct{}{}
+					result = append(result, id)
+				}
+			}
+		}
+	}
+	return result
+}
+
 func (s *QuizSessionV2Service) resolvePreferences(
 	mode string,
 	user *models.User,
@@ -601,7 +647,8 @@ func (s *QuizSessionV2Service) resolvePreferences(
 		timePreference:     "5",
 	}
 
-	if mode == sessionModeRandom && preferences == nil {
+	// 1. Baseline from user profile settings if available
+	if user != nil {
 		if user.LanguagePreference != nil && strings.TrimSpace(*user.LanguagePreference) != "" {
 			resolved.language = strings.TrimSpace(*user.LanguagePreference)
 		}
@@ -611,9 +658,26 @@ func (s *QuizSessionV2Service) resolvePreferences(
 		if user.TestLevel != nil && strings.TrimSpace(*user.TestLevel) != "" {
 			resolved.level = strings.TrimSpace(*user.TestLevel)
 		}
-		return resolved, nil
+		if user.QuestionPreference != nil && strings.TrimSpace(*user.QuestionPreference) != "" {
+			q := strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(*user.QuestionPreference)), "Q")
+			if q != "" {
+				resolved.questionPreference = q
+			}
+		}
+		if user.TimePreference != nil && strings.TrimSpace(*user.TimePreference) != "" {
+			t := strings.TrimSpace(*user.TimePreference)
+			if strings.EqualFold(t, "unlimited") || strings.EqualFold(t, "timefree") {
+				resolved.timefree = true
+			} else {
+				t = strings.TrimPrefix(strings.ToUpper(t), "T")
+				if t != "" {
+					resolved.timePreference = t
+				}
+			}
+		}
 	}
 
+	// 2. Overrides from explicit request preferences
 	if preferences != nil {
 		if lang := strings.TrimSpace(preferences.Language); lang != "" {
 			resolved.language = lang
@@ -627,27 +691,13 @@ func (s *QuizSessionV2Service) resolvePreferences(
 		if preferences.QuestionCount > 0 {
 			resolved.questionPreference = strconv.Itoa(preferences.QuestionCount)
 		}
-		if preferences.TimerMinutes == nil {
-			resolved.timefree = true
-		} else if *preferences.TimerMinutes <= 0 {
-			resolved.timefree = true
-		} else {
-			resolved.timePreference = strconv.Itoa(*preferences.TimerMinutes)
-		}
-	}
-
-	if preferences == nil ||
-		strings.TrimSpace(preferences.Language) == "" ||
-		strings.TrimSpace(preferences.Subject) == "" ||
-		strings.TrimSpace(preferences.Level) == "" {
-		if user.LanguagePreference != nil && strings.TrimSpace(*user.LanguagePreference) != "" {
-			resolved.language = strings.TrimSpace(*user.LanguagePreference)
-		}
-		if user.SubjectPreference != nil && strings.TrimSpace(*user.SubjectPreference) != "" {
-			resolved.subject = strings.TrimSpace(*user.SubjectPreference)
-		}
-		if user.TestLevel != nil && strings.TrimSpace(*user.TestLevel) != "" {
-			resolved.level = strings.TrimSpace(*user.TestLevel)
+		if preferences.TimerMinutes != nil {
+			if *preferences.TimerMinutes <= 0 {
+				resolved.timefree = true
+			} else {
+				resolved.timefree = false
+				resolved.timePreference = strconv.Itoa(*preferences.TimerMinutes)
+			}
 		}
 	}
 
@@ -658,7 +708,6 @@ func (s *QuizSessionV2Service) resolvePreferences(
 
 	return resolved, nil
 }
-
 func extractQuizPack(pack map[string]interface{}) ([]map[string]interface{}, int, int, int, error) {
 	rawQuizzes, ok := pack["quizzes"]
 	if !ok {
