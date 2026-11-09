@@ -104,7 +104,8 @@ func (s *QuizSessionV2Service) GetSession(sessionID string, userID int) (*models
 	return &session, nil
 }
 
-// BeginSession starts the timer for a random session for PATCH /v2/quiz/sessions/:sessionId/begin.
+// BeginSession starts the session timer and marks it in progress for PATCH /v2/quiz/sessions/:sessionId/begin.
+// Any session (custom or random) can begin, and already-started sessions return idempotently.
 func (s *QuizSessionV2Service) BeginSession(sessionID string, userID int) (*models.SessionV2, error) {
 	if utils.DB == nil {
 		return nil, utils.NewAppError(http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "postgres is not configured")
@@ -128,16 +129,14 @@ func (s *QuizSessionV2Service) BeginSession(sessionID string, userID int) (*mode
 		return nil, utils.NewAppError(http.StatusGone, "SESSION_EXPIRED", "Quiz session has expired.")
 	}
 
-	if !record.IsRandom {
-		return nil, utils.NewAppError(http.StatusBadRequest, "SESSION_NOT_READY", "Only random quiz sessions require begin.")
+	// Idempotent return if session is already in progress
+	if record.QuizAttempt != nil && record.QuizAttempt.IsStarted {
+		session := mapOngoingQuizToSessionV2(record, false)
+		return &session, nil
 	}
-
-	if record.QuizAttempt == nil {
-		return nil, utils.NewAppError(http.StatusBadRequest, "SESSION_NOT_READY", "Quiz session is missing start metadata.")
-	}
-
-	if record.QuizAttempt.IsStarted {
-		return nil, utils.NewAppError(http.StatusBadRequest, "SESSION_NOT_READY", "Session is already in progress.")
+	if record.StartedAt != nil {
+		session := mapOngoingQuizToSessionV2(record, false)
+		return &session, nil
 	}
 
 	now, err := lagosNow()
@@ -157,14 +156,32 @@ func (s *QuizSessionV2Service) BeginSession(sessionID string, userID int) (*mode
 	}
 
 	if err := utils.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&models.QuizAttempt{}).
-			Where(`"quizId" = ? AND "userId" = ? AND "isStarted" = ?`, sessionID, userID, false).
-			Updates(map[string]interface{}{
-				"isStarted": true,
-				"startedAt": now,
-				"expiresAt": expiresAt,
-			}).Error; err != nil {
-			return fmt.Errorf("update quiz attempt: %w", err)
+		var attempt models.QuizAttempt
+		attemptErr := tx.Where(`"quizId" = ? AND "userId" = ?`, sessionID, userID).First(&attempt).Error
+		if errors.Is(attemptErr, gorm.ErrRecordNotFound) {
+			newAttempt := models.QuizAttempt{
+				UserID:      userID,
+				QuizID:      sessionID,
+				IsStarted:   true,
+				IsCompleted: false,
+				StartedAt:   &now,
+				ExpiresAt:   expiresAt,
+			}
+			if err := tx.Create(&newAttempt).Error; err != nil {
+				return fmt.Errorf("create quiz attempt: %w", err)
+			}
+		} else if attemptErr != nil {
+			return fmt.Errorf("find quiz attempt: %w", attemptErr)
+		} else {
+			if err := tx.Model(&models.QuizAttempt{}).
+				Where(`"quizId" = ? AND "userId" = ?`, sessionID, userID).
+				Updates(map[string]interface{}{
+					"isStarted": true,
+					"startedAt": now,
+					"expiresAt": expiresAt,
+				}).Error; err != nil {
+				return fmt.Errorf("update quiz attempt: %w", err)
+			}
 		}
 
 		if err := tx.Model(&models.OngoingQuiz{}).
@@ -266,14 +283,10 @@ func (s *QuizSessionV2Service) createNewSession(req models.CreateSessionV2Reques
 	} else {
 		minutes := totalTimeMinutes
 		sessionTotalTime = &minutes
-		if !isRandom {
-			expiry := now.Add(time.Duration(minutes) * time.Minute)
-			expiresAt = &expiry
-		}
 	}
 
-	// Custom sessions start when user actually begins the test
-	// startedAt remains nil until session starts
+	// For both random and custom sessions, startedAt and expiresAt remain nil
+	// until the user begins the session.
 
 	timeRemaining := 0
 	if sessionTotalTime != nil {
@@ -313,16 +326,14 @@ func (s *QuizSessionV2Service) createNewSession(req models.CreateSessionV2Reques
 			return fmt.Errorf("create ongoing quiz: %w", err)
 		}
 
-		if isRandom {
-			attempt := models.QuizAttempt{
-				UserID:      req.UserID,
-				QuizID:      ongoingQuiz.ID,
-				IsStarted:   false,
-				IsCompleted: false,
-			}
-			if err := tx.Create(&attempt).Error; err != nil {
-				return fmt.Errorf("create quiz attempt: %w", err)
-			}
+		attempt := models.QuizAttempt{
+			UserID:      req.UserID,
+			QuizID:      ongoingQuiz.ID,
+			IsStarted:   false,
+			IsCompleted: false,
+		}
+		if err := tx.Create(&attempt).Error; err != nil {
+			return fmt.Errorf("create quiz attempt: %w", err)
 		}
 
 		return nil
@@ -427,19 +438,25 @@ func loadIncompleteSession(userID int) (*activeSessionLookup, error) {
 }
 
 func isSessionExpired(record *models.OngoingQuiz) bool {
+	if record == nil {
+		return false
+	}
 	now, err := lagosNow()
 	if err != nil {
 		return false
 	}
 
-	if record.IsRandom {
-		if record.QuizAttempt == nil {
+	// A session that has not started yet cannot be expired
+	if record.QuizAttempt != nil {
+		attempt := record.QuizAttempt
+		if !attempt.IsStarted {
 			return false
 		}
-		attempt := record.QuizAttempt
-		return attempt.IsStarted &&
-			attempt.ExpiresAt != nil &&
-			!attempt.ExpiresAt.After(now)
+		return attempt.ExpiresAt != nil && !attempt.ExpiresAt.After(now)
+	}
+
+	if record.StartedAt == nil {
+		return false
 	}
 
 	return record.ExpiresAt != nil && !record.ExpiresAt.After(now)

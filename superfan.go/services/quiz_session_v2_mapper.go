@@ -120,6 +120,9 @@ func mapOngoingQuizToSessionV2(record *models.OngoingQuiz, expired bool) models.
 }
 
 func deriveSessionStatus(record *models.OngoingQuiz, expired bool) string {
+	if record.IsCompleted {
+		return "completed"
+	}
 	if expired {
 		return "expired"
 	}
@@ -127,6 +130,9 @@ func deriveSessionStatus(record *models.OngoingQuiz, expired bool) string {
 		return "in_progress"
 	}
 	if record.QuizAttempt != nil && record.QuizAttempt.IsStarted {
+		return "in_progress"
+	}
+	if record.StartedAt != nil {
 		return "in_progress"
 	}
 	return "ready"
@@ -141,21 +147,15 @@ func sessionTimeLimitSeconds(totalTime *int) *int {
 }
 
 func sessionStartedAt(record *models.OngoingQuiz) *string {
-	if record.IsRandom {
-		if record.QuizAttempt != nil && record.QuizAttempt.IsStarted {
-			return isoTimePtr(record.QuizAttempt.StartedAt)
-		}
-		return nil
+	if record.QuizAttempt != nil && record.QuizAttempt.IsStarted && record.QuizAttempt.StartedAt != nil {
+		return isoTimePtr(record.QuizAttempt.StartedAt)
 	}
 	return isoTimePtr(record.StartedAt)
 }
 
 func sessionExpiresAt(record *models.OngoingQuiz) *string {
-	if record.IsRandom {
-		if record.QuizAttempt != nil && record.QuizAttempt.IsStarted {
-			return isoTimePtr(record.QuizAttempt.ExpiresAt)
-		}
-		return nil
+	if record.QuizAttempt != nil && record.QuizAttempt.IsStarted && record.QuizAttempt.ExpiresAt != nil {
+		return isoTimePtr(record.QuizAttempt.ExpiresAt)
 	}
 	return isoTimePtr(record.ExpiresAt)
 }

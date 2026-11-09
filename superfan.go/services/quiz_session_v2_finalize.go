@@ -187,17 +187,13 @@ func (s *QuizSessionV2Service) finalizeSession(
 			return err
 		}
 
-		if lookup.record.IsRandom {
-			if err := tx.Model(&models.QuizAttempt{}).
-				Where(`"quizId" = ? AND "userId" = ?`, sessionID, req.UserID).
-				Updates(map[string]interface{}{
-					"isCompleted": true,
-					"completedAt": now,
-					"startedAt":   now,
-					"expiresAt":   now,
-				}).Error; err != nil {
-				return err
-			}
+		if err := tx.Model(&models.QuizAttempt{}).
+			Where(`"quizId" = ? AND "userId" = ?`, sessionID, req.UserID).
+			Updates(map[string]interface{}{
+				"isCompleted": true,
+				"completedAt": now,
+			}).Error; err != nil {
+			return err
 		}
 
 		for _, item := range submission.Responses {
@@ -335,17 +331,13 @@ func (s *QuizSessionV2Service) completeSessionWithZeroAnswers(
 			return err
 		}
 
-		if lookup.record.IsRandom {
-			if err := tx.Model(&models.QuizAttempt{}).
-				Where(`"quizId" = ? AND "userId" = ?`, sessionID, req.UserID).
-				Updates(map[string]interface{}{
-					"isCompleted": true,
-					"completedAt": now,
-					"startedAt":   now,
-					"expiresAt":   now,
-				}).Error; err != nil {
-				return err
-			}
+		if err := tx.Model(&models.QuizAttempt{}).
+			Where(`"quizId" = ? AND "userId" = ?`, sessionID, req.UserID).
+			Updates(map[string]interface{}{
+				"isCompleted": true,
+				"completedAt": now,
+			}).Error; err != nil {
+			return err
 		}
 
 		if err := creditQuizReward(tx, req.UserID, amountInNaira, testSubject, 0, totalPoints, now); err != nil {
