@@ -57,19 +57,14 @@ func (s *QuizSessionV2Service) CreateSession(req models.CreateSessionV2Request) 
 			}, nil
 		}
 
-		if sessionHasStarted(active.record) {
-			session := mapOngoingQuizToSessionV2(active.record, false)
-			return &models.CreateSessionV2Result{
-				Session:        session,
-				HasOngoingQuiz: true,
-				Created:        false,
-			}, nil
-		}
-
-		// Ready sessions that were never started get a fresh question set on each request.
-		if err := deleteIncompleteSession(active.record.ID, req.UserID); err != nil {
-			return nil, err
-		}
+		// Preserve the existing active session (ready or in-progress) so questions
+		// are not swapped or deleted unexpectedly when beginning or refreshing.
+		session := mapOngoingQuizToSessionV2(active.record, false)
+		return &models.CreateSessionV2Result{
+			Session:        session,
+			HasOngoingQuiz: sessionHasStarted(active.record),
+			Created:        false,
+		}, nil
 	}
 
 	if active != nil && req.ReplaceExisting {
@@ -468,15 +463,19 @@ func SessionHasStarted(record *models.OngoingQuiz) bool {
 		return false
 	}
 
+	if record.StartedAt != nil {
+		return true
+	}
+
+	if record.QuizAttempt != nil && record.QuizAttempt.IsStarted {
+		return true
+	}
+
 	if len(normalizeStoredAnswers(record.Answers)) > 0 {
 		return true
 	}
 
 	if record.CurrentIndex > 0 {
-		return true
-	}
-
-	if record.QuizAttempt != nil && record.QuizAttempt.IsStarted {
 		return true
 	}
 
