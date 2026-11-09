@@ -111,21 +111,19 @@ func init() {
 	get := utils.GetEnvWithKey
 
 	sentryDsn := get("SENTRY_DSN")
-	if sentryDsn != "" {
-		err := sentry.Init(sentry.ClientOptions{
-			Dsn:              sentryDsn,
-			EnableTracing:    true,
-			TracesSampleRate: 1.0,
-			AttachStacktrace: true,
-			Environment:      os.Getenv("GIN_MODE"),
-		})
-		if err != nil {
-			log.Printf("sentry.Init failed: %v", err)
-		} else {
-			log.Println("Sentry initialized successfully")
-		}
+	if sentryDsn == "" {
+		sentryDsn = "https://0360f935e5e9bfa34391b62032924049@o4511109559877632.ingest.us.sentry.io/4512402171953152"
+	}
+	if err := sentry.Init(sentry.ClientOptions{
+		Dsn:              sentryDsn,
+		EnableTracing:    true,
+		TracesSampleRate: 1.0,
+		AttachStacktrace: true,
+		Environment:      os.Getenv("GIN_MODE"),
+	}); err != nil {
+		log.Printf("sentry.Init failed: %v", err)
 	} else {
-		log.Println("SENTRY_DSN not set; skipping Sentry initialization")
+		log.Println("Sentry initialized successfully")
 	}
 
 	posthogKey := get("POSTHOG_API_KEY")
@@ -272,14 +270,27 @@ func main() {
 	defer sentry.Flush(2 * time.Second)
 	defer utils.ClosePostHog()
 
+	// Verify Sentry integration
+	sentry.CaptureMessage("It works!")
+	meter := sentry.NewMeter(context.Background())
+	meter.Count("checkout.failed", 1)
+	meter.Gauge("queue.depth", 42)
+	meter.Distribution("cart.amount_usd", 187.5)
+
 	server.GET("/health", func(c *gin.Context) {
 		utils.Success(c, http.StatusOK, "UP", nil)
 	})
 
 	server.GET("/health/debug-sentry", func(c *gin.Context) {
-		err := errors.New("Go Sentry test error")
-		sentry.CaptureException(err)
-		panic("Go Sentry panic test")
+		sentry.CaptureMessage("Sentry debug check: It works!")
+		m := sentry.NewMeter(c.Request.Context())
+		m.Count("checkout.failed", 1)
+		m.Gauge("queue.depth", 42)
+		m.Distribution("cart.amount_usd", 187.5)
+		c.JSON(http.StatusOK, gin.H{
+			"status":  "ok",
+			"message": "sentry message and metrics captured",
+		})
 	})
 
 	basepath := server.Group("/v1")
