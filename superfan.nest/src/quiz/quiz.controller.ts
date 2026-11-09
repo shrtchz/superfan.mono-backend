@@ -257,6 +257,12 @@ export class QuizController {
     }
   }
 
+  @Get('subject-statistics')
+  async getSubjectStatistics(@Req() req: any) {
+    const userId = req.user?.id;
+    return await this.quizService.getUserSubjectStatistics(userId);
+  }
+
       @Public()
       @Get('gq-leaderboard')
   async getGeneralQuizLeaderboard(

@@ -331,6 +331,11 @@ export class UserController {
     return this.userService.getUserStreak(userId);
   }
 
+  @Get('/tier-statistics')
+  getUserTierStatistics(@Req() req: any): Promise<any> {
+    return this.userService.getUserTierStatistics(Number(req.user?.id));
+  }
+
       @Get('/user-badge/:userId')
   getUserBadge(@Param('userId', ParseIntPipe) userId: number): Promise<any> {
     return this.userService.getUserBadge(userId);
