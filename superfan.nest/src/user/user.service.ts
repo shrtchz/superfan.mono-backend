@@ -320,6 +320,11 @@ export class UserService {
       location: user.location,
       profilePicture: user.profilePicture,
       clerkUserId: user.clerkUserId,
+      languagePreference: user.languagePreference,
+      subjectPreference: user.subjectPreference,
+      testLevel: user.testLevel,
+      questionPreference: user.questionPreference,
+      timePreference: user.timePreference,
       onboarded,
       isOnboarded: onboarded,
     };

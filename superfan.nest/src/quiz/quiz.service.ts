@@ -2208,16 +2208,16 @@ async hasSubmittedLiveQuizForStream(
       const endOfDay = new Date(startOfDay);
       endOfDay.setDate(endOfDay.getDate() + 1);
 
-      const completedToday = await prisma.ongoingQuiz.count({
-        where: {
-          userId: Number(userId),
-          isCompleted: true,
-          completedAt: {
-            gte: startOfDay,
-            lt: endOfDay,
-          },
-        },
-      });
+      const completedTodayResult = await prisma.$queryRaw<Array<{ count: bigint | number }>>`
+        SELECT COUNT(*) as count 
+        FROM "ongoing_quizzes" 
+        WHERE "userId" = ${Number(userId)} 
+          AND "isCompleted" = true 
+          AND "completedAt" >= ${startOfDay} 
+          AND "completedAt" < ${endOfDay}
+          AND ("attemptedAnswers" > 0 OR ("answers" IS NOT NULL AND "answers"::text != '[]' AND "answers"::text != 'null'))
+      `;
+      const completedToday = Number(completedTodayResult[0]?.count ?? 0);
 
       // 🎯 "2 Test(s) Left Today" — warn when the FREE daily test pool runs low.
       const testsRemaining = 5 - completedToday;
