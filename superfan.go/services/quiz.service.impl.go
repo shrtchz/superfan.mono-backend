@@ -147,7 +147,7 @@ func BuildLiveQuizCountdownLabel(startAt, finishAt time.Time, now time.Time, ove
 		)
 		phase = "before"
 	case "live":
-		defaultLabel = "Select an answer by clicking on the 3 dots in front of the live quiz."
+		defaultLabel = "To answer, tap the three dots next to the live quiz."
 		phase = "during"
 	default:
 		defaultLabel = fmt.Sprintf(
