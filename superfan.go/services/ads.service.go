@@ -53,6 +53,10 @@ func campaignHasEnded(campaign *models.AdCampaign, now time.Time) bool {
 	if campaign == nil {
 		return false
 	}
+	// Pending campaigns or campaigns not yet approved by an admin have not started and cannot have ended
+	if strings.ToLower(string(campaign.Status)) == "pending" || !campaign.ApprovedByAdmin {
+		return false
+	}
 	if campaign.RunContinuously && (campaign.EndDate == nil || campaign.EndDate.IsZero()) {
 		return false
 	}
@@ -79,10 +83,11 @@ func (s *adsServiceImpl) completeEndedCampaigns(ctx context.Context, now time.Ti
 		return nil
 	}
 
-	// 1. Mark expired campaigns as COMPLETED
+	// 1. Mark expired ACTIVE campaigns as COMPLETED.
+	// Never mark PENDING or unapproved campaigns as COMPLETED; they are awaiting moderation.
 	var campaigns []models.AdCampaign
 	if err := s.db.WithContext(ctx).
-		Where("LOWER(status::text) NOT IN (?, ?)", "completed", "ended").
+		Where("LOWER(status::text) = ?", "active").
 		Find(&campaigns).Error; err == nil {
 		endedIDs := make([]int, 0)
 		for _, campaign := range campaigns {
@@ -97,14 +102,15 @@ func (s *adsServiceImpl) completeEndedCampaigns(ctx context.Context, now time.Ti
 		}
 	}
 
-	// 2. Self-heal: If an ad was approved by admin, not paused, and has a future end date, ensure it is ACTIVE
-	var pendingApprovedCampaigns []models.AdCampaign
+	// 2. Self-heal: If an ad was previously marked COMPLETED but was approved and its end date is still in the future, ensure it is ACTIVE.
+	// Never touch PENDING campaigns here; approval must be explicit via ApproveCampaign.
+	var completedCampaigns []models.AdCampaign
 	if err := s.db.WithContext(ctx).
-		Where("LOWER(status::text) IN (?, ?)", "pending", "completed").
+		Where("LOWER(status::text) = ?", "completed").
 		Where(`"pausedByAdmin" IS NOT TRUE AND "approvedByAdmin" IS TRUE`).
-		Find(&pendingApprovedCampaigns).Error; err == nil {
+		Find(&completedCampaigns).Error; err == nil {
 		activeIDs := make([]int, 0)
-		for _, campaign := range pendingApprovedCampaigns {
+		for _, campaign := range completedCampaigns {
 			if !campaignHasEnded(&campaign, now) {
 				activeIDs = append(activeIDs, campaign.ID)
 			}
@@ -1441,14 +1447,30 @@ func (s *adsServiceImpl) ApproveCampaign(ctx context.Context, id int) (*models.A
 
 	// Approve campaign and set status to ACTIVE (ad server rotation schedules it from its startDate)
 	now := time.Now()
+	updates := map[string]interface{}{
+		"status":          models.AdStatusActive,
+		"approvedByAdmin": true,
+		"pausedByAdmin":   false,
+		"updatedAt":       now,
+	}
+
+	// If the campaign's scheduled startDate has passed, restart the run window from now
+	// so the campaign does not instantly expire and the advertiser gets their full duration
+	if campaign.StartDate.Before(now) {
+		updates["startDate"] = now
+		if !campaign.RunContinuously {
+			days := campaign.Days
+			if days < 1 {
+				days = 1
+			}
+			newEnd := now.AddDate(0, 0, days)
+			updates["endDate"] = newEnd
+		}
+	}
+
 	if err := s.db.WithContext(ctx).Model(&models.AdCampaign{}).
 		Where("id = ?", id).
-		Updates(map[string]interface{}{
-			"status":          models.AdStatusActive,
-			"approvedByAdmin": true,
-			"pausedByAdmin":   false,
-			"updatedAt":       now,
-		}).Error; err != nil {
+		Updates(updates).Error; err != nil {
 		return nil, fmt.Errorf("failed to approve campaign: %w", err)
 	}
 
