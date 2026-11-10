@@ -378,8 +378,12 @@ func resolveCorrectOptionIndex(correctAnswer string, options []string) int {
 		}
 	}
 
-	if len(normalizedCorrect) == 1 {
-		letter := normalizedCorrect[0]
+	trimmed := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(normalizedCorrect, "option"), " "))
+	if len(trimmed) == 1 {
+		letter := trimmed[0]
+		if letter == 'e' && len(options) == 4 {
+			return 3
+		}
 		if letter >= 'a' && letter <= 'z' {
 			index := int(letter - 'a')
 			if index >= 0 && index < len(options) {
