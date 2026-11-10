@@ -132,7 +132,8 @@ func (s *QuizSessionV2Service) BeginSession(sessionID string, userID int) (*mode
 		return nil, utils.NewAppError(http.StatusBadRequest, "INVALID_REQUEST", "sessionId is required")
 	}
 
-	if _, err := s.loadUser(userID); err != nil {
+	user, err := s.loadUser(userID)
+	if err != nil {
 		return nil, err
 	}
 
@@ -231,14 +232,6 @@ func (s *QuizSessionV2Service) BeginSession(sessionID string, userID int) (*mode
 }
 
 func (s *QuizSessionV2Service) createNewSession(req models.CreateSessionV2Request) (*models.CreateSessionV2Result, error) {
-	mode := strings.ToLower(strings.TrimSpace(req.Mode))
-	if mode != sessionModeRandom && mode != sessionModeCustom {
-		return nil, utils.NewAppError(http.StatusBadRequest, "INVALID_REQUEST", "mode must be random or custom when starting a new session")
-	}
-	if mode == sessionModeCustom && req.Preferences == nil {
-		return nil, utils.NewAppError(http.StatusBadRequest, "INVALID_REQUEST", "preferences are required when mode is custom")
-	}
-
 	user, err := s.loadUser(req.UserID)
 	if err != nil {
 		return nil, err
@@ -259,7 +252,7 @@ func (s *QuizSessionV2Service) createNewSession(req models.CreateSessionV2Reques
 		)
 	}
 
-	resolved, err := s.resolvePreferences(mode, user, req.Preferences)
+	resolved, err := s.resolvePreferences(user, req.Preferences)
 	if err != nil {
 		return nil, err
 	}
@@ -287,7 +280,7 @@ func (s *QuizSessionV2Service) createNewSession(req models.CreateSessionV2Reques
 		return nil, utils.NewAppError(http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to resolve timezone")
 	}
 
-	isRandom := mode == sessionModeRandom
+	isRandom := false
 	questionsJSON, err := json.Marshal(quizzes)
 	if err != nil {
 		return nil, utils.NewAppError(http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to serialize quiz questions")
@@ -529,12 +522,7 @@ func (s *QuizSessionV2Service) buildPreviewSession(
 	req models.CreateSessionV2Request,
 	user *models.User,
 ) (models.SessionV2, error) {
-	mode := strings.ToLower(strings.TrimSpace(req.Mode))
-	if mode != sessionModeRandom && mode != sessionModeCustom {
-		mode = sessionModeRandom
-	}
-
-	resolved, err := s.resolvePreferences(mode, user, req.Preferences)
+	resolved, err := s.resolvePreferences(user, req.Preferences)
 	if err != nil {
 		return models.SessionV2{}, err
 	}
@@ -567,7 +555,7 @@ func (s *QuizSessionV2Service) buildPreviewSession(
 		return models.SessionV2{}, err
 	}
 
-	isRandom := mode == sessionModeRandom
+	isRandom := false
 	var sessionTotalTime *int
 	if !resolved.timefree {
 		minutes := totalTimeMinutes
@@ -677,7 +665,6 @@ func (s *QuizSessionV2Service) getRecentUserQuestionIDs(userID int) []string {
 }
 
 func (s *QuizSessionV2Service) resolvePreferences(
-	mode string,
 	user *models.User,
 	preferences *models.SessionV2Preferences,
 ) (*resolvedSessionPreferences, error) {
