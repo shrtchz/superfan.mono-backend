@@ -2390,24 +2390,30 @@ async getQuizWithPreferences(dto: GetQuizWithPreferencesDto, userId: number) {
     let actualLanguagePreference = dto.languagePreference;
     let actualSubjectPreference = dto.subjectPreference;
     let actualTestLevel = dto.testLevel;
+    let actualQuestionPreference = dto.questionPreference;
+    let actualTimePreference = dto.timePreference;
 
     if (
-      !dto.isRandom &&
-      (!actualLanguagePreference ||
-        !actualSubjectPreference ||
-        !actualTestLevel)
+      !actualLanguagePreference ||
+      !actualSubjectPreference ||
+      !actualTestLevel ||
+      !actualQuestionPreference ||
+      !actualTimePreference
     ) {
       try {
         const onboardingDetails =
           await this.userService.fetchOnboardingdetails(userId);
-        const { languagePreference, subjectPreference, testLevel } =
-          onboardingDetails.data;
+        const obData = onboardingDetails?.data || onboardingDetails || {};
 
         actualLanguagePreference =
-          actualLanguagePreference || languagePreference;
+          actualLanguagePreference || obData.languagePreference;
         actualSubjectPreference =
-          actualSubjectPreference || subjectPreference;
-        actualTestLevel = actualTestLevel || testLevel;
+          actualSubjectPreference || obData.subjectPreference;
+        actualTestLevel = actualTestLevel || obData.testLevel;
+        actualQuestionPreference =
+          actualQuestionPreference || obData.questionPreference;
+        actualTimePreference =
+          actualTimePreference || obData.timePreference;
       } catch (error) {
         console.warn('Failed to fetch onboarding details:', error?.message);
       }
@@ -2421,13 +2427,12 @@ async getQuizWithPreferences(dto: GetQuizWithPreferencesDto, userId: number) {
           languagePreference: actualLanguagePreference,
           subjectPreference: actualSubjectPreference,
           testLevel: actualTestLevel,
-          questionPreference: dto.questionPreference,
-          timePreference: dto.timePreference,
+          questionPreference: actualQuestionPreference,
+          timePreference: actualTimePreference,
           isRandom: dto.isRandom === true ? 'true' : 'false',
         },
       }),
     );
-
     const pack = response.data?.data || response.data || {};
     return this.startQuickQuizSession(userId, pack, !!dto.isRandom);
   } catch (error) {
