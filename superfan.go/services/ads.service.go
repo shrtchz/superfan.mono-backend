@@ -96,6 +96,26 @@ func (s *adsServiceImpl) completeEndedCampaigns(ctx context.Context, now time.Ti
 			return err
 		}
 	}
+
+	// Reactivate campaigns that were erroneously marked COMPLETED but whose end date is strictly in the future
+	var completedCampaigns []models.AdCampaign
+	if err := s.db.WithContext(ctx).
+		Where("LOWER(status::text) = ?", "completed").
+		Where(`"pausedByAdmin" IS NOT TRUE AND "approvedByAdmin" IS TRUE`).
+		Find(&completedCampaigns).Error; err == nil {
+		reactivateIDs := make([]int, 0)
+		for _, campaign := range completedCampaigns {
+			if !campaignHasEnded(&campaign, now) {
+				reactivateIDs = append(reactivateIDs, campaign.ID)
+			}
+		}
+		if len(reactivateIDs) > 0 {
+			_ = s.db.WithContext(ctx).Model(&models.AdCampaign{}).
+				Where("id IN ?", reactivateIDs).
+				Update("status", models.AdStatusActive).Error
+		}
+	}
+
 	return nil
 }
 
@@ -975,15 +995,42 @@ func (s *adsServiceImpl) CreateCampaign(ctx context.Context, req *CreateCampaign
 		totalFee = calculatedTotalFee
 	}
 
-	parsedStart, err := time.Parse("2006-01-02", req.StartDate)
-	if err != nil {
+	parseFlexibleDate := func(val string) (time.Time, bool) {
+		val = strings.TrimSpace(val)
+		if val == "" {
+			return time.Time{}, false
+		}
+		layouts := []string{
+			"2006-01-02",
+			time.RFC3339,
+			"2006-01-02T15:04:05Z07:00",
+			"2006-01-02T15:04:05",
+			"2006-01-02 15:04:05",
+			"02/01/2006",
+			"02-01-2006",
+		}
+		for _, layout := range layouts {
+			if t, err := time.Parse(layout, val); err == nil {
+				return t, true
+			}
+		}
+		return time.Time{}, false
+	}
+
+	parsedStart, ok := parseFlexibleDate(req.StartDate)
+	if !ok {
 		parsedStart = time.Now()
 	}
 
 	var parsedEnd *time.Time
-	if !req.RunContinuously && req.EndDate != nil && *req.EndDate != "" {
-		pe, err := time.Parse("2006-01-02", *req.EndDate)
-		if err == nil {
+	if !req.RunContinuously {
+		if req.EndDate != nil && *req.EndDate != "" {
+			if pe, ok := parseFlexibleDate(*req.EndDate); ok {
+				parsedEnd = &pe
+			}
+		}
+		if parsedEnd == nil && days > 0 {
+			pe := parsedStart.AddDate(0, 0, days)
 			parsedEnd = &pe
 		}
 	}
