@@ -10,7 +10,7 @@ type CreateSessionV2Result struct {
 // CreateSessionV2Request is the body for POST /v2/quiz/sessions.
 type CreateSessionV2Request struct {
 	UserID          int                   `json:"userId" binding:"required,min=1"`
-	Mode            string                `json:"mode" binding:"omitempty,oneof=random custom"`
+	Mode            string                `json:"mode" binding:"omitempty"`
 	SubmissionMode  string                `json:"submissionMode" binding:"omitempty,oneof=interval end_of_quiz"`
 	Preferences     *SessionV2Preferences `json:"preferences"`
 	ReplaceExisting bool                  `json:"replaceExisting"`
