@@ -53,10 +53,6 @@ func campaignHasEnded(campaign *models.AdCampaign, now time.Time) bool {
 	if campaign == nil {
 		return false
 	}
-	// Pending campaigns or campaigns not yet approved by an admin have not started and cannot have ended
-	if strings.ToLower(string(campaign.Status)) == "pending" || !campaign.ApprovedByAdmin {
-		return false
-	}
 	if campaign.RunContinuously && (campaign.EndDate == nil || campaign.EndDate.IsZero()) {
 		return false
 	}
@@ -83,11 +79,10 @@ func (s *adsServiceImpl) completeEndedCampaigns(ctx context.Context, now time.Ti
 		return nil
 	}
 
-	// 1. Mark expired ACTIVE campaigns as COMPLETED.
-	// Never mark PENDING or unapproved campaigns as COMPLETED; they are awaiting moderation.
+	// 1. Mark expired campaigns as COMPLETED if their date has ended
 	var campaigns []models.AdCampaign
 	if err := s.db.WithContext(ctx).
-		Where("LOWER(status::text) = ?", "active").
+		Where("LOWER(status::text) NOT IN (?, ?)", "completed", "ended").
 		Find(&campaigns).Error; err == nil {
 		endedIDs := make([]int, 0)
 		for _, campaign := range campaigns {
