@@ -132,7 +132,8 @@ func (s *QuizSessionV2Service) BeginSession(sessionID string, userID int) (*mode
 		return nil, utils.NewAppError(http.StatusBadRequest, "INVALID_REQUEST", "sessionId is required")
 	}
 
-	if _, err := s.loadUser(userID); err != nil {
+	user, err := s.loadUser(userID)
+	if err != nil {
 		return nil, err
 	}
 
@@ -554,7 +555,7 @@ func (s *QuizSessionV2Service) buildPreviewSession(
 		return models.SessionV2{}, err
 	}
 
-	isRandom := mode == sessionModeRandom
+	isRandom := false
 	var sessionTotalTime *int
 	if !resolved.timefree {
 		minutes := totalTimeMinutes
