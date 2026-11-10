@@ -15,7 +15,7 @@ type OngoingQuiz struct {
 	TotalEarning        int             `gorm:"column:totalEarning" json:"totalEarning"`
 	TotalEarninginUSDC  *int            `gorm:"column:totalEarninginUSDC" json:"totalEarninginUSDC"`
 	TotalEarninginUSDT  *int            `gorm:"column:totalEarninginUSDT" json:"totalEarninginUSDT"`
-	TotalEarninginNaira *int            `gorm:"column:totalEarninginNaira" json:"totalEarninginNaira"`
+	TotalEarninginNaira *float64        `gorm:"column:totalEarninginNaira" json:"totalEarninginNaira"`
 	TotalQuestions      int             `gorm:"column:totalQuestions" json:"totalQuestions"`
 	TotalTime           *int            `gorm:"column:totalTime" json:"totalTime"`
 	BaseScore           *int            `gorm:"column:baseScore" json:"baseScore"`
