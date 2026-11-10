@@ -22,14 +22,14 @@ func TestResolveQuizCountdownLabelFallsBackToDefaultWhenNoOverrideExists(t *test
 	t.Parallel()
 
 	got := resolveQuizCountdownLabel(
-		"Select an answer by clicking on the 3 dots in front of the live quiz.",
+		"To answer, tap the three dots next to the live quiz.",
 		"during",
 		"",
 		"",
 		"",
 	)
 
-	if got != "Select an answer by clicking on the 3 dots in front of the live quiz." {
+	if got != "To answer, tap the three dots next to the live quiz." {
 		t.Fatalf("expected default label when no override exists, got %q", got)
 	}
 }
