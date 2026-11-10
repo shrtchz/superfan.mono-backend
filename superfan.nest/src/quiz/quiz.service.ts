@@ -2209,7 +2209,7 @@ async hasSubmittedLiveQuizForStream(
           AND "isCompleted" = true 
           AND "completedAt" >= ${startOfDay} 
           AND "completedAt" < ${endOfDay}
-          AND ("attemptedAnswers" > 0 OR ("answers" IS NOT NULL AND "answers"::text != '[]' AND "answers"::text != 'null'))
+          AND ("startedAt" IS NOT NULL OR "attemptedAnswers" > 0 OR ("answers" IS NOT NULL AND "answers"::text != '[]' AND "answers"::text != 'null'))
       `;
       const completedToday = Number(completedTodayResult[0]?.count ?? 0);
 
