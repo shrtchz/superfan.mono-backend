@@ -50,7 +50,10 @@ type adsServiceImpl struct {
 }
 
 func campaignHasEnded(campaign *models.AdCampaign, now time.Time) bool {
-	if campaign == nil || campaign.RunContinuously {
+	if campaign == nil {
+		return false
+	}
+	if campaign.RunContinuously && (campaign.EndDate == nil || campaign.EndDate.IsZero()) {
 		return false
 	}
 
@@ -76,42 +79,39 @@ func (s *adsServiceImpl) completeEndedCampaigns(ctx context.Context, now time.Ti
 		return nil
 	}
 
+	// 1. Mark expired campaigns as COMPLETED
 	var campaigns []models.AdCampaign
 	if err := s.db.WithContext(ctx).
-		Where("LOWER(status::text) <> ?", "completed").
-		Find(&campaigns).Error; err != nil {
-		return err
-	}
-
-	endedIDs := make([]int, 0)
-	for _, campaign := range campaigns {
-		if campaignHasEnded(&campaign, now) {
-			endedIDs = append(endedIDs, campaign.ID)
-		}
-	}
-	if len(endedIDs) > 0 {
-		if err := s.db.WithContext(ctx).Model(&models.AdCampaign{}).
-			Where("id IN ?", endedIDs).
-			Update("status", models.AdStatusCompleted).Error; err != nil {
-			return err
-		}
-	}
-
-	// Reactivate campaigns that were erroneously marked COMPLETED but whose end date is strictly in the future
-	var completedCampaigns []models.AdCampaign
-	if err := s.db.WithContext(ctx).
-		Where("LOWER(status::text) = ?", "completed").
-		Where(`"pausedByAdmin" IS NOT TRUE AND "approvedByAdmin" IS TRUE`).
-		Find(&completedCampaigns).Error; err == nil {
-		reactivateIDs := make([]int, 0)
-		for _, campaign := range completedCampaigns {
-			if !campaignHasEnded(&campaign, now) {
-				reactivateIDs = append(reactivateIDs, campaign.ID)
+		Where("LOWER(status::text) NOT IN (?, ?)", "completed", "ended").
+		Find(&campaigns).Error; err == nil {
+		endedIDs := make([]int, 0)
+		for _, campaign := range campaigns {
+			if campaignHasEnded(&campaign, now) {
+				endedIDs = append(endedIDs, campaign.ID)
 			}
 		}
-		if len(reactivateIDs) > 0 {
+		if len(endedIDs) > 0 {
 			_ = s.db.WithContext(ctx).Model(&models.AdCampaign{}).
-				Where("id IN ?", reactivateIDs).
+				Where("id IN ?", endedIDs).
+				Update("status", models.AdStatusCompleted).Error
+		}
+	}
+
+	// 2. Self-heal: If an ad was approved by admin, not paused, and has a future end date, ensure it is ACTIVE
+	var pendingApprovedCampaigns []models.AdCampaign
+	if err := s.db.WithContext(ctx).
+		Where("LOWER(status::text) IN (?, ?)", "pending", "completed").
+		Where(`"pausedByAdmin" IS NOT TRUE AND "approvedByAdmin" IS TRUE`).
+		Find(&pendingApprovedCampaigns).Error; err == nil {
+		activeIDs := make([]int, 0)
+		for _, campaign := range pendingApprovedCampaigns {
+			if !campaignHasEnded(&campaign, now) {
+				activeIDs = append(activeIDs, campaign.ID)
+			}
+		}
+		if len(activeIDs) > 0 {
+			_ = s.db.WithContext(ctx).Model(&models.AdCampaign{}).
+				Where("id IN ?", activeIDs).
 				Update("status", models.AdStatusActive).Error
 		}
 	}
@@ -119,7 +119,7 @@ func (s *adsServiceImpl) completeEndedCampaigns(ctx context.Context, now time.Ti
 	return nil
 }
 
-const activeCampaignDateCondition = `("AdCampaign"."runContinuously" = TRUE OR (CASE WHEN "AdCampaign"."endDate" IS NOT NULL THEN "AdCampaign"."endDate" + INTERVAL '1 day' ELSE "AdCampaign"."startDate" + GREATEST("AdCampaign"."days", 1) * INTERVAL '1 day' END) > NOW()) AND ("AdCampaign"."pausedByAdmin" IS NOT TRUE)`
+const activeCampaignDateCondition = `("AdCampaign"."approvedByAdmin" IS TRUE) AND ("AdCampaign"."pausedByAdmin" IS NOT TRUE) AND ("AdCampaign"."runContinuously" = TRUE OR (CASE WHEN "AdCampaign"."endDate" IS NOT NULL THEN "AdCampaign"."endDate" + INTERVAL '1 day' ELSE "AdCampaign"."startDate" + GREATEST("AdCampaign"."days", 1) * INTERVAL '1 day' END) > NOW())`
 
 func NewAdsService(db *gorm.DB) AdsService {
 	if db != nil {
