@@ -2114,6 +2114,9 @@ async hasSubmittedLiveQuizForStream(
       },
     }); 
 
+    const pointsToNairaRate =
+      (await this.pointsConversionUtil.getConversionRate().catch(() => 2000)) || 2000;
+
     return completedQuiz.map((q) => {
       const fullName = [q.user?.firstName, q.user?.lastName]
         .filter(Boolean)
@@ -2137,8 +2140,30 @@ async hasSubmittedLiveQuizForStream(
         return false;
       }).length;
 
+      const totalPoints =
+        typeof q.totalEarning === "number" && q.totalEarning > 0
+          ? q.totalEarning
+          : (q.baseScore || 0) +
+            (q.accuracyBonus || 0) +
+            (q.speedBonus || 0) +
+            (q.streakMultiplier || 0) +
+            (q.adBonuses || 0);
+
+      const calculatedAmountInNaira = pointsToNairaRate > 0 ? totalPoints / pointsToNairaRate : 0;
+
+      const exactAmountInNaira =
+        typeof q.totalEarninginNaira === "number" &&
+        q.totalEarninginNaira > 0 &&
+        q.totalEarninginNaira !== Math.floor(q.totalEarninginNaira)
+          ? q.totalEarninginNaira
+          : (calculatedAmountInNaira > 0 ? calculatedAmountInNaira : (q.totalEarninginNaira ?? 0));
+
       return {
         ...q,
+        totalPoints,
+        totalEarninginNaira: exactAmountInNaira,
+        amountCredited: exactAmountInNaira,
+        rewardType: (q as any).rewardType || "Cash",
         username: q.user?.username ?? String(q.userId),
         fullName: fullName || undefined,
         quizTime: formatSecondsToMMSS((q as any).quizTime),

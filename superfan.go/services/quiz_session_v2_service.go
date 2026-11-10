@@ -316,7 +316,7 @@ func (s *QuizSessionV2Service) createNewSession(req models.CreateSessionV2Reques
 		Subject:             stringField(quizzes[0], "subject"),
 		TestLevel:           stringField(quizzes[0], "testLevel"),
 		TotalEarning:        totalEarning,
-		TotalEarninginNaira: intPtr(amountInNaira),
+		TotalEarninginNaira: float64Ptr(float64(totalEarning) / float64(getPointsToNairaRate())),
 		TotalEarninginUSDC:  intPtr(amountInUSDC),
 		TotalEarninginUSDT:  intPtr(amountInUSDT),
 		TotalQuestions:      totalQuestions,
@@ -849,5 +849,9 @@ func mapQuizPackError(err error) (*models.CreateSessionV2Result, error) {
 }
 
 func intPtr(value int) *int {
+	return &value
+}
+
+func float64Ptr(value float64) *float64 {
 	return &value
 }
