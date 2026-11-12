@@ -151,7 +151,7 @@ func BuildLiveQuizCountdownLabel(startAt, finishAt time.Time, now time.Time, ove
 		phase = "during"
 	default:
 		defaultLabel = fmt.Sprintf(
-			"The quiz window closed %s",
+			"The quiz window closed %s.",
 			formatLiveQuizElapsed(finishAt, now),
 		)
 		phase = "after"
