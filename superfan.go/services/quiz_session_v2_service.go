@@ -286,7 +286,7 @@ func (s *QuizSessionV2Service) createNewSession(req models.CreateSessionV2Reques
 		return nil, utils.NewAppError(http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to serialize quiz questions")
 	}
 
-	amountInNaira, amountInUSDC, amountInUSDT := computeSessionEarnings(totalEarning)
+	_, amountInUSDC, amountInUSDT := computeSessionEarnings(totalEarning)
 
 	var startedAt *time.Time
 	var expiresAt *time.Time
