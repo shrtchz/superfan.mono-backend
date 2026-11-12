@@ -56,8 +56,9 @@ export class StreamUserController {
       true,
       Number(req.user?.id),
     );
-    this.streamGateway.broadcastChat('chatLockChanged', result);
-    return result;
+    const { unlockedComments: _unlockedComments, ...lockResult } = result;
+    this.streamGateway.broadcastChat('chatLockChanged', lockResult);
+    return lockResult;
   }
 
   @UseGuards(RoleGuard)
@@ -69,8 +70,14 @@ export class StreamUserController {
       false,
       Number(req.user?.id),
     );
-    this.streamGateway.broadcastChat('chatLockChanged', result);
-    return result;
+    const { unlockedComments = [], ...lockResult } = result;
+    this.streamGateway.broadcastChat('chatLockChanged', lockResult);
+    for (const comment of unlockedComments) {
+      const payload = { ...comment, streamId: dto.streamId };
+      this.streamGateway.broadcastChat('newComment', payload);
+      this.streamGateway.broadcastChat('streamMessage', payload);
+    }
+    return lockResult;
   }
 
   @Post('chat/comment')

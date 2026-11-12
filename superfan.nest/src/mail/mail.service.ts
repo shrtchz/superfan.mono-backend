@@ -122,7 +122,7 @@ export class MailService implements OnModuleInit {
     }
   }
 
-  async welcomeUserEmail(email: string, firstName: string, magicLink: string) {
+  async welcomeUserEmail(email: string, firstName: string, loginUrl?: string) {
     try {
       const senderEmail =
         this.configService.get<string>('LOCAL_SENDER_EMAIL') ||
@@ -133,6 +133,12 @@ export class MailService implements OnModuleInit {
         this.configService.get<string>('PROD_SENDER_NAME') ||
         'Superfan';
 
+      const frontendUrl =
+        this.configService.get<string>('FRONTEND_URL') ||
+        this.configService.get<string>('PROD_FRONTEND_URL') ||
+        'https://superfan.ng';
+      const resolvedLoginUrl = loginUrl || `${frontendUrl.replace(/\/+$/, '')}/login`;
+
       this.logger.log(`[MailService] Adding 'send_email' (welcome) job to BullMQ queue "mail" for ${email}...`);
 
       const job = await this.mailQueue.add(
@@ -142,7 +148,12 @@ export class MailService implements OnModuleInit {
           from: `"${senderName}" <${senderEmail}>`,
           subject: 'Welcome to Superfan!',
           template: './welcome-superfan',
-          context: { email, firstName, start_quiz_url: magicLink },
+          context: {
+            email,
+            firstName,
+            login_url: resolvedLoginUrl,
+            start_quiz_url: resolvedLoginUrl,
+          },
         },
         {
           attempts: 5,
