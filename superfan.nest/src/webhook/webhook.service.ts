@@ -1160,7 +1160,7 @@ if (bankTransfer) {
       }
 
       const frontendUrl = process.env.FRONTEND_URL || 'https://superfan.ng';
-      const loginUrl = `${frontendUrl.replace(/\/+$/, '')}/login`;
+      const loginUrl = `${frontendUrl.replace(/\/+$/, '')}/sign-in`;
 
       this.logger.log(`[Clerk Webhook] Queueing welcome email for ${toEmail}...`);
       const job = await this.mailService.welcomeUserEmail(toEmail, firstName, loginUrl);

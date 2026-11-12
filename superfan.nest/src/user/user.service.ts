@@ -275,7 +275,7 @@ export class UserService {
       });
 
       const frontendUrl = process.env.FRONTEND_URL || 'https://superfan.ng';
-      const loginUrl = `${frontendUrl.replace(/\/+$/, '')}/login`;
+      const loginUrl = `${frontendUrl.replace(/\/+$/, '')}/sign-in`;
 
       await this.mail.welcomeUserEmail(
         dto.email,
@@ -488,7 +488,7 @@ export class UserService {
       if (isEmailVerified && !clerkUser.publicMetadata?.welcomeEmailSent) {
         try {
           const frontendUrl = process.env.FRONTEND_URL || 'https://superfan.ng';
-          const loginUrl = `${frontendUrl.replace(/\/+$/, '')}/login`;
+          const loginUrl = `${frontendUrl.replace(/\/+$/, '')}/sign-in`;
           await this.mail.welcomeUserEmail(
             user.email,
             user.firstName || clerkUser.firstName || 'Superfan',
