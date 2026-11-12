@@ -2411,7 +2411,9 @@ private async publishLockedQuizAnswerComments(
 ): Promise<any[]> {
   try {
     const ongoingQuizzes = await prisma.ongoingLiveQuiz.findMany({
-      where: { streamId },
+      where: lockedSince
+        ? { OR: [{ streamId }, { streamId: null }] }
+        : { streamId },
       select: {
         userId: true,
         questions: true,
