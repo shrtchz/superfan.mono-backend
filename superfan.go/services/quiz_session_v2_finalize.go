@@ -152,7 +152,7 @@ func (s *QuizSessionV2Service) finalizeSession(
 	speedGain := int(math.Round(float64(baseScore) * (float64(speedBonusPercent) / 100.0)))
 	adBonusPoints := req.AdBonuses
 	totalPoints := baseScore + accuracyGain + speedGain + adBonusPoints + streakBonus
-	amountInNaira, finalNairaAmount, finalUSDCAmount, finalUSDTAmount := convertTotalEarningToRewardAmounts(totalPoints)
+	amountInNaira, _, finalUSDCAmount, finalUSDTAmount := convertTotalEarningToRewardAmounts(totalPoints)
 
 	testLevel := lookup.record.TestLevel
 	status := "completed"
@@ -300,7 +300,7 @@ func (s *QuizSessionV2Service) completeSessionWithZeroAnswers(
 	}
 	streakBonus := getStreakBonusPoints(dailyStreak)
 	totalPoints := streakBonus + req.AdBonuses
-	amountInNaira, finalNairaAmount, finalUSDCAmount, finalUSDTAmount := convertTotalEarningToRewardAmounts(totalPoints)
+	amountInNaira, _, finalUSDCAmount, finalUSDTAmount := convertTotalEarningToRewardAmounts(totalPoints)
 
 	testSubject := lookup.record.Subject
 
