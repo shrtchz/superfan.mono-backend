@@ -2426,7 +2426,9 @@ private async publishLockedQuizAnswerComments(
     }
 
     const pendingSubmissions: Array<{
+      quizId: string;
       userId: number;
+      selectedAnswer: string;
       message: string;
       createdAt: Date;
     }> = [];
@@ -2467,7 +2469,9 @@ private async publishLockedQuizAnswerComments(
             : selectedAnswer;
 
         pendingSubmissions.push({
+          quizId,
           userId,
+          selectedAnswer,
           message,
           createdAt: hasValidSubmittedAt ? submittedAt : new Date(),
         });
@@ -2482,17 +2486,26 @@ private async publishLockedQuizAnswerComments(
       (a, b) => a.createdAt.getTime() - b.createdAt.getTime(),
     );
 
+    // Scope to the particular live quiz most recently answered during this lock window.
+    const latestQuizId = pendingSubmissions[pendingSubmissions.length - 1]?.quizId;
+    const scopedSubmissions = latestQuizId
+      ? pendingSubmissions.filter((item) => item.quizId === latestQuizId)
+      : pendingSubmissions;
+
     const createdPayloads: any[] = [];
     const authorCache = new Map<number, any>();
 
-    for (const item of pendingSubmissions) {
+    for (const item of scopedSubmissions) {
       const existing = await prisma.streamComment.findFirst({
         where: {
           streamId,
           userId: item.userId,
           parentId: null,
           isDeleted: false,
-          message: { equals: item.message, mode: 'insensitive' },
+          OR: [
+            { message: { equals: item.message, mode: 'insensitive' } },
+            { message: { endsWith: `. ${item.selectedAnswer}`, mode: 'insensitive' } },
+          ],
           ...(lockedSince ? { createdAt: { gte: lockedSince } } : {}),
         },
         select: { id: true },
