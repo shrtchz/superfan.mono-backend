@@ -20,6 +20,8 @@ type User struct {
 	LanguagePreference *string    `gorm:"column:languagePreference" json:"languagePreference"`
 	SubjectPreference  *string    `gorm:"column:subjectPreference" json:"subjectPreference"`
 	TestLevel          *string    `gorm:"column:testLevel" json:"testLevel"`
+	QuestionPreference *string    `gorm:"column:questionPreference" json:"questionPreference"`
+	TimePreference     *string    `gorm:"column:timePreference" json:"timePreference"`
 	DailyStreak        int        `gorm:"column:dailyStreak" json:"dailyStreak"`
 	LastStreakDate     *time.Time `gorm:"column:lastStreakDate" json:"lastStreakDate"`
 	KycStatus          *string    `gorm:"column:kyc_status;default:UNVERIFIED" json:"kyc_status"`

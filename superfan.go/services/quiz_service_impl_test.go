@@ -33,6 +33,27 @@ func TestBuildTopWinnerCandidatesFromAttempts(t *testing.T) {
 	}
 }
 
+func TestBuildParticipantCandidatesFromAttemptsAssignsZeroToNonWinners(t *testing.T) {
+	attempts := []models.LiveQuizAttempt{
+		{UserID: "user-1", IsWinner: false},
+		{UserID: "user-2", IsWinner: true},
+		{UserID: "user-3", IsWinner: false},
+		{UserID: "user-4", IsWinner: true},
+	}
+
+	participants := buildParticipantCandidatesFromAttempts(attempts)
+	if len(participants) != len(attempts) {
+		t.Fatalf("expected %d participants, got %d", len(attempts), len(participants))
+	}
+
+	expectedRanks := []int{0, 1, 0, 2}
+	for i, participant := range participants {
+		if participant["rank"] != expectedRanks[i] {
+			t.Errorf("participant %d rank = %v, want %d", i, participant["rank"], expectedRanks[i])
+		}
+	}
+}
+
 func TestAllValidCDNUrls(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -80,4 +101,3 @@ func TestAllValidCDNUrls(t *testing.T) {
 		})
 	}
 }
-

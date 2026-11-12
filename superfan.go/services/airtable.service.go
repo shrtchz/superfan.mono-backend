@@ -158,6 +158,7 @@ func SyncFromAirtable(qs QuizService) {
 			optionB := strings.TrimSpace(firstStringField(fields, "Option B", "optionB"))
 			optionC := strings.TrimSpace(firstStringField(fields, "Option C", "optionC"))
 			optionD := strings.TrimSpace(firstStringField(fields, "Option D", "optionD"))
+			optionE := strings.TrimSpace(firstStringField(fields, "Option E", "optionE"))
 			correctAnswer := strings.TrimSpace(firstStringField(fields, "Correct Answer", "correctAnswer", "Answer"))
 			subject := strings.TrimSpace(firstStringField(fields, "Subject", "subject"))
 			levelRaw := strings.ToLower(strings.TrimSpace(firstStringField(fields, "Difficulty Level", "difficulty", "Difficulty")))
@@ -193,6 +194,9 @@ func SyncFromAirtable(qs QuizService) {
 			if optionD != "" {
 				options = append(options, optionD)
 			}
+			if optionE != "" {
+				options = append(options, optionE)
+			}
 			log.Printf(
 				"[Airtable Sync] record=%s question=%q level=%s subject=%s options=%d images=%d",
 				record.ID,
@@ -222,6 +226,21 @@ func SyncFromAirtable(qs QuizService) {
 			}
 			earning := earningForLevel(level)
 
+			resolvedAnswer := correctAnswer
+			normAnswer := strings.ToLower(correctAnswer)
+			trimmedAnswer := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(normAnswer, "option"), " "))
+			if trimmedAnswer == "a" && optionA != "" {
+				resolvedAnswer = optionA
+			} else if trimmedAnswer == "b" && optionB != "" {
+				resolvedAnswer = optionB
+			} else if trimmedAnswer == "c" && optionC != "" {
+				resolvedAnswer = optionC
+			} else if trimmedAnswer == "d" && optionD != "" {
+				resolvedAnswer = optionD
+			} else if trimmedAnswer == "e" && optionE != "" {
+				resolvedAnswer = optionE
+			}
+
 			upsertQuiz := &models.Quiz{
 				TestQuiz:         testQuiz,
 				TestLevel:        level,
@@ -229,7 +248,7 @@ func SyncFromAirtable(qs QuizService) {
 				Earning:          earning,
 				Question:         questionText,
 				Options:          options,
-				Answer:           correctAnswer,
+				Answer:           resolvedAnswer,
 				IsTypedAnswer:    false,
 				ImageLink:        imageLinks,
 				AirtableRecordID: record.ID,
@@ -324,6 +343,7 @@ func PushToAirtable(quiz *models.Quiz, qs ...QuizService) {
 		"Educational Product/Purpose": quiz.TestQuiz,
 	}
 
+	isYoruba := strings.EqualFold(strings.TrimSpace(quiz.TestQuiz), "yoruba")
 	if len(quiz.Options) > 0 {
 		fields["Option A"] = quiz.Options[0]
 	}
@@ -331,10 +351,18 @@ func PushToAirtable(quiz *models.Quiz, qs ...QuizService) {
 		fields["Option B"] = quiz.Options[1]
 	}
 	if len(quiz.Options) > 2 {
-		fields["Option C"] = quiz.Options[2]
+		if isYoruba {
+			fields["Option D"] = quiz.Options[2]
+		} else {
+			fields["Option C"] = quiz.Options[2]
+		}
 	}
 	if len(quiz.Options) > 3 {
-		fields["Option D"] = quiz.Options[3]
+		if isYoruba {
+			fields["Option E"] = quiz.Options[3]
+		} else {
+			fields["Option D"] = quiz.Options[3]
+		}
 	}
 
 	imageFieldName := strings.TrimSpace(os.Getenv("AIRTABLE_IMAGE_FIELD"))

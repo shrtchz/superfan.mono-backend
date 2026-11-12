@@ -93,3 +93,20 @@ func TestShouldCreateLiveQuizRecord(t *testing.T) {
 		t.Fatal("expected existing record lookup to update instead of create")
 	}
 }
+
+func TestYorubaOptionsGrading(t *testing.T) {
+	options := []string{"Option A text", "Option B text", "Option D text", "Option E text"}
+
+	if idx := resolveCorrectOptionIndex("Option E", options); idx != 3 {
+		t.Fatalf("expected Option E to map to index 3, got %d", idx)
+	}
+	if idx := resolveCorrectOptionIndex("E", options); idx != 3 {
+		t.Fatalf("expected E to map to index 3, got %d", idx)
+	}
+	if !gradeAnswer("Option E text", "Option E", options) {
+		t.Fatalf("expected Option E answer to grade correctly")
+	}
+	if !gradeAnswer("Option E text", "Option E text", options) {
+		t.Fatalf("expected Option E full text match to grade correctly")
+	}
+}

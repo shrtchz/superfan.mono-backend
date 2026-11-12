@@ -87,6 +87,9 @@ export const NotificationTriggers = {
   VERSUS_MATCH_WIN: 'versus_match_win',
   VERSUS_MATCH_DRAW: 'versus_match_draw',
   VERSUS_MATCH_LOSS: 'versus_match_loss',
+  QUIZ_INVITATION_SENT: 'quiz_invitation_sent',
+  QUIZ_INVITATION_ACCEPTED: 'quiz_invitation_accepted',
+  QUIZ_INVITATION_DECLINED: 'quiz_invitation_declined',
 } as const;
 
 export type NotificationTrigger =
@@ -108,7 +111,29 @@ export class NotificationService {
     title: string,
     message: string,
   ) {
-    const since = new Date(Date.now() - 10 * 60 * 1000);
+    // Transactional events (quiz earnings, live quiz winnings, wallet credits, ad rewards)
+    // must only be debounced for 3 seconds to catch accidental duplicate network packets/clicks,
+    // so every completed quiz or reward reliably shows each time it is triggered.
+    const isTransactional = type && [
+      NotificationTriggers.TEST_QUIZ_REWARD,
+      NotificationTriggers.LIVE_QUIZ_REWARD,
+      NotificationTriggers.LIVE_QUIZ_CONSOLATION,
+      NotificationTriggers.LIVE_QUIZ_JACKPOT,
+      NotificationTriggers.AD_REWARD_CREDITED,
+      NotificationTriggers.MID_QUIZ_AD_POINTS,
+      NotificationTriggers.WALLET_CREDITED,
+      NotificationTriggers.MANUAL_CREDIT_APPLIED,
+      NotificationTriggers.STREAM_MANUAL_CREDIT,
+      NotificationTriggers.STREAM_LIVE_QUIZ_JACKPOT,
+      NotificationTriggers.WITHDRAWAL_REQUESTED,
+      NotificationTriggers.WITHDRAWAL_COMPLETED,
+      NotificationTriggers.SAVINGS_CHECKING_TRANSFER,
+      NotificationTriggers.REFERRAL_FIRST_TEST_BONUS,
+      NotificationTriggers.REFERRAL_SIGNUP_BONUS,
+    ].includes(type as any);
+
+    const debounceMs = isTransactional ? 3 * 1000 : 30 * 1000;
+    const since = new Date(Date.now() - debounceMs);
     const normalizedTitle = this.sanitizeText(title);
     const normalizedMessage = this.sanitizeText(message);
 
@@ -129,6 +154,7 @@ export class NotificationService {
     message: string,
     type?: string,
     createdAt?: Date,
+    amount?: number,
   ) {
     const sanitizedTitle = this.sanitizeText(title);
     const sanitizedMessage = this.sanitizeText(message);
@@ -146,6 +172,7 @@ export class NotificationService {
         title: sanitizedTitle,
         message: sanitizedMessage,
         type,
+        ...(typeof amount === 'number' && !isNaN(amount) ? { amount } : {}),
         ...(createdAt ? { createdAt } : {}),
       },
     });
@@ -165,8 +192,9 @@ export class NotificationService {
     title: string,
     message: string,
     createdAt?: Date,
+    amount?: number,
   ) {
-    return this.createNotification(userId, title, message, type, createdAt);
+    return this.createNotification(userId, title, message, type, createdAt, amount);
   }
 
   async referralSignupBonus(referrerId: number, refereeUsername: string) {
@@ -221,6 +249,50 @@ export class NotificationService {
     return this.notify(
       senderId,
       NotificationTriggers.CHALLENGE_INVITE_DECLINED,
+      msg,
+      msg,
+    );
+  }
+
+  async quizInvitationSent(
+    recipientId: number,
+    senderName: string,
+    quizTitle: string,
+    invitationId: string,
+    sessionId: string,
+  ) {
+    const msg = `${senderName} has invited you to participate in ${quizTitle}.`;
+    return this.notify(
+      recipientId,
+      NotificationTriggers.QUIZ_INVITATION_SENT,
+      msg,
+      msg,
+    );
+  }
+
+  async quizInvitationAccepted(
+    senderId: number,
+    recipientName: string,
+    quizTitle: string,
+  ) {
+    const msg = `${recipientName} accepted your invitation to participate in ${quizTitle}.`;
+    return this.notify(
+      senderId,
+      NotificationTriggers.QUIZ_INVITATION_ACCEPTED,
+      msg,
+      msg,
+    );
+  }
+
+  async quizInvitationDeclined(
+    senderId: number,
+    recipientName: string,
+    quizTitle: string,
+  ) {
+    const msg = `${recipientName} declined your invitation to participate in ${quizTitle}.`;
+    return this.notify(
+      senderId,
+      NotificationTriggers.QUIZ_INVITATION_DECLINED,
       msg,
       msg,
     );
@@ -615,9 +687,26 @@ export class NotificationService {
     );
   }
 
+  private formatNairaAmount(amount: number | string): string {
+    const num = Number(amount);
+    if (isNaN(num)) return '0.00';
+    return num.toLocaleString('en-US', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+  }
+
   async testQuizReward(userId: number, points: number, amountNaira: number) {
-    const msg = `You earned ${Number(points).toLocaleString()} pts (₦${amountNaira}).`;
-    return this.notify(userId, NotificationTriggers.TEST_QUIZ_REWARD, msg, msg);
+    const formattedAmount = this.formatNairaAmount(amountNaira);
+    const msg = `You earned ₦${formattedAmount} from your Test Quiz! It has been credited to your Savings Vault.`;
+    return this.notify(
+      userId,
+      NotificationTriggers.TEST_QUIZ_REWARD,
+      msg,
+      msg,
+      undefined,
+      typeof amountNaira === 'number' && !isNaN(amountNaira) ? Number(amountNaira) : undefined,
+    );
   }
 
   async liveQuizReward(userId: number, amountNaira: number, createdAt?: Date) {

@@ -1160,21 +1160,10 @@ if (bankTransfer) {
       }
 
       const frontendUrl = process.env.FRONTEND_URL || 'https://superfan.ng';
-      let startQuizUrl = `${frontendUrl}/get-started`;
-
-      if (clerkUserId && this.clerkService) {
-        try {
-          const ticket = await this.clerkService.createSignInTicket(clerkUserId);
-          if (ticket) {
-            startQuizUrl = `${frontendUrl}/auth/magic?token=${ticket}&email=${encodeURIComponent(toEmail)}`;
-          }
-        } catch (err: any) {
-          this.logger.warn(`[Clerk Webhook] Could not create sign-in ticket for welcome email: ${err?.message}`);
-        }
-      }
+      const loginUrl = `${frontendUrl.replace(/\/+$/, '')}/login`;
 
       this.logger.log(`[Clerk Webhook] Queueing welcome email for ${toEmail}...`);
-      const job = await this.mailService.welcomeUserEmail(toEmail, firstName, startQuizUrl);
+      const job = await this.mailService.welcomeUserEmail(toEmail, firstName, loginUrl);
 
       if (clerkUserId && this.clerkService) {
         try {

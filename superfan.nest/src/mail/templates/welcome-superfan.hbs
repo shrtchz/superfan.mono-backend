@@ -113,7 +113,7 @@
                 </tr>
               </table>
               <div align="center" style="text-align: center; margin: 0 0 16px;">
-                <a href="{{start_quiz_url}}" style="display: inline-block; background-color: #000000; color: #ffffff; text-decoration: none; font-size: 14px; line-height: 1; font-weight: 700; padding: 10px 24px; border-radius: 999px;">
+                <a href="{{#if login_url}}{{login_url}}{{else if start_quiz_url}}{{start_quiz_url}}{{else}}https://superfan.ng/login{{/if}}" style="display: inline-block; background-color: #000000; color: #ffffff; text-decoration: none; font-size: 14px; line-height: 1; font-weight: 700; padding: 10px 24px; border-radius: 999px;">
                   Start Your First Quiz
                 </a>
               </div>

@@ -56,8 +56,9 @@ export class StreamUserController {
       true,
       Number(req.user?.id),
     );
-    this.streamGateway.broadcastChat('chatLockChanged', result);
-    return result;
+    const { unlockedComments: _unlockedComments, ...lockResult } = result;
+    this.streamGateway.broadcastChat('chatLockChanged', lockResult);
+    return lockResult;
   }
 
   @UseGuards(RoleGuard)
@@ -69,8 +70,14 @@ export class StreamUserController {
       false,
       Number(req.user?.id),
     );
-    this.streamGateway.broadcastChat('chatLockChanged', result);
-    return result;
+    const { unlockedComments = [], ...lockResult } = result;
+    this.streamGateway.broadcastChat('chatLockChanged', lockResult);
+    for (const comment of unlockedComments) {
+      const payload = { ...comment, streamId: dto.streamId };
+      this.streamGateway.broadcastChat('newComment', payload);
+      this.streamGateway.broadcastChat('streamMessage', payload);
+    }
+    return lockResult;
   }
 
   @Post('chat/comment')
@@ -152,14 +159,24 @@ export class StreamUserController {
     @Req() req,
   ) {
     const userId = Number(req.user?.id);
-    await this.streamingService.reportComment(
+    const result = await this.streamingService.reportComment(
       commentId,
       userId,
       userId,
       dto.reason,
     );
 
-    return { received: true };
+    const streamId = await this.streamingService.getCommentStreamId(commentId);
+    if (streamId) {
+      this.streamGateway.broadcastChat('reportComment', {
+        commentId,
+        streamId,
+        userId,
+        reportsCount: result?.reportsCount,
+      });
+    }
+
+    return result || { received: true };
   }
 
   @Delete('chat/comment/:id')

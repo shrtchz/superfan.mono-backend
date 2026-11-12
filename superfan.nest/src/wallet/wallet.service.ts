@@ -419,13 +419,6 @@ export class WalletService {
 
     // Send notification — 🎉 You earned 20 pts (₦2).
     await this.notificationService.testQuizReward(userId, points, amount);
-
-    await this.notificationService.createNotification(
-      userId,
-      `you earned ${points}PTS`,
-      `from ${subject} Quiz`,
-      'quiz_reward'
-    );
   }
 
   /**

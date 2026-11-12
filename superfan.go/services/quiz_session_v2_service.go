@@ -57,19 +57,36 @@ func (s *QuizSessionV2Service) CreateSession(req models.CreateSessionV2Request) 
 			}, nil
 		}
 
-		if sessionHasStarted(active.record) {
-			session := mapOngoingQuizToSessionV2(active.record, false)
-			return &models.CreateSessionV2Result{
-				Session:        session,
-				HasOngoingQuiz: true,
-				Created:        false,
-			}, nil
+		// If the session has not started yet and the user reached their daily limit,
+		// enforce the daily limit so unstarted sessions don't bypass the non-pro limit.
+		if !sessionHasStarted(active.record) {
+			user, userErr := s.loadUser(req.UserID)
+			if userErr == nil && user != nil {
+				if limitErr := s.guardDailyLimit(user); limitErr != nil {
+					preview, previewErr := s.buildPreviewSession(req, user)
+					if previewErr != nil {
+						return nil, limitErr
+					}
+					return nil, utils.NewAppErrorWithData(
+						http.StatusTooManyRequests,
+						"DAILY_LIMIT_REACHED",
+						"Daily quiz limit reached. Upgrade your plan to get more tests.",
+						map[string]interface{}{
+							"previewSession": preview,
+						},
+					)
+				}
+			}
 		}
 
-		// Ready sessions that were never started get a fresh question set on each request.
-		if err := deleteIncompleteSession(active.record.ID, req.UserID); err != nil {
-			return nil, err
-		}
+		// Preserve the existing active session (ready or in-progress) so questions
+		// are not swapped or deleted unexpectedly when beginning or refreshing.
+		session := mapOngoingQuizToSessionV2(active.record, false)
+		return &models.CreateSessionV2Result{
+			Session:        session,
+			HasOngoingQuiz: sessionHasStarted(active.record),
+			Created:        false,
+		}, nil
 	}
 
 	if active != nil && req.ReplaceExisting {
@@ -104,7 +121,8 @@ func (s *QuizSessionV2Service) GetSession(sessionID string, userID int) (*models
 	return &session, nil
 }
 
-// BeginSession starts the timer for a random session for PATCH /v2/quiz/sessions/:sessionId/begin.
+// BeginSession starts the session timer and marks it in progress for PATCH /v2/quiz/sessions/:sessionId/begin.
+// Any session (custom or random) can begin, and already-started sessions return idempotently.
 func (s *QuizSessionV2Service) BeginSession(sessionID string, userID int) (*models.SessionV2, error) {
 	if utils.DB == nil {
 		return nil, utils.NewAppError(http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "postgres is not configured")
@@ -114,7 +132,8 @@ func (s *QuizSessionV2Service) BeginSession(sessionID string, userID int) (*mode
 		return nil, utils.NewAppError(http.StatusBadRequest, "INVALID_REQUEST", "sessionId is required")
 	}
 
-	if _, err := s.loadUser(userID); err != nil {
+	user, err := s.loadUser(userID)
+	if err != nil {
 		return nil, err
 	}
 
@@ -128,16 +147,18 @@ func (s *QuizSessionV2Service) BeginSession(sessionID string, userID int) (*mode
 		return nil, utils.NewAppError(http.StatusGone, "SESSION_EXPIRED", "Quiz session has expired.")
 	}
 
-	if !record.IsRandom {
-		return nil, utils.NewAppError(http.StatusBadRequest, "SESSION_NOT_READY", "Only random quiz sessions require begin.")
+	// Idempotent return if session is already in progress
+	if record.QuizAttempt != nil && record.QuizAttempt.IsStarted {
+		session := mapOngoingQuizToSessionV2(record, false)
+		return &session, nil
+	}
+	if record.StartedAt != nil {
+		session := mapOngoingQuizToSessionV2(record, false)
+		return &session, nil
 	}
 
-	if record.QuizAttempt == nil {
-		return nil, utils.NewAppError(http.StatusBadRequest, "SESSION_NOT_READY", "Quiz session is missing start metadata.")
-	}
-
-	if record.QuizAttempt.IsStarted {
-		return nil, utils.NewAppError(http.StatusBadRequest, "SESSION_NOT_READY", "Session is already in progress.")
+	if err := s.guardDailyLimit(user); err != nil {
+		return nil, err
 	}
 
 	now, err := lagosNow()
@@ -157,14 +178,32 @@ func (s *QuizSessionV2Service) BeginSession(sessionID string, userID int) (*mode
 	}
 
 	if err := utils.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&models.QuizAttempt{}).
-			Where(`"quizId" = ? AND "userId" = ? AND "isStarted" = ?`, sessionID, userID, false).
-			Updates(map[string]interface{}{
-				"isStarted": true,
-				"startedAt": now,
-				"expiresAt": expiresAt,
-			}).Error; err != nil {
-			return fmt.Errorf("update quiz attempt: %w", err)
+		var attempt models.QuizAttempt
+		attemptErr := tx.Where(`"quizId" = ? AND "userId" = ?`, sessionID, userID).First(&attempt).Error
+		if errors.Is(attemptErr, gorm.ErrRecordNotFound) {
+			newAttempt := models.QuizAttempt{
+				UserID:      userID,
+				QuizID:      sessionID,
+				IsStarted:   true,
+				IsCompleted: false,
+				StartedAt:   &now,
+				ExpiresAt:   expiresAt,
+			}
+			if err := tx.Create(&newAttempt).Error; err != nil {
+				return fmt.Errorf("create quiz attempt: %w", err)
+			}
+		} else if attemptErr != nil {
+			return fmt.Errorf("find quiz attempt: %w", attemptErr)
+		} else {
+			if err := tx.Model(&models.QuizAttempt{}).
+				Where(`"quizId" = ? AND "userId" = ?`, sessionID, userID).
+				Updates(map[string]interface{}{
+					"isStarted": true,
+					"startedAt": now,
+					"expiresAt": expiresAt,
+				}).Error; err != nil {
+				return fmt.Errorf("update quiz attempt: %w", err)
+			}
 		}
 
 		if err := tx.Model(&models.OngoingQuiz{}).
@@ -193,14 +232,6 @@ func (s *QuizSessionV2Service) BeginSession(sessionID string, userID int) (*mode
 }
 
 func (s *QuizSessionV2Service) createNewSession(req models.CreateSessionV2Request) (*models.CreateSessionV2Result, error) {
-	mode := strings.ToLower(strings.TrimSpace(req.Mode))
-	if mode != sessionModeRandom && mode != sessionModeCustom {
-		return nil, utils.NewAppError(http.StatusBadRequest, "INVALID_REQUEST", "mode must be random or custom when starting a new session")
-	}
-	if mode == sessionModeCustom && req.Preferences == nil {
-		return nil, utils.NewAppError(http.StatusBadRequest, "INVALID_REQUEST", "preferences are required when mode is custom")
-	}
-
 	user, err := s.loadUser(req.UserID)
 	if err != nil {
 		return nil, err
@@ -221,17 +252,19 @@ func (s *QuizSessionV2Service) createNewSession(req models.CreateSessionV2Reques
 		)
 	}
 
-	resolved, err := s.resolvePreferences(mode, user, req.Preferences)
+	resolved, err := s.resolvePreferences(user, req.Preferences)
 	if err != nil {
 		return nil, err
 	}
 
-	pack, err := s.quizService.GetQuizByPreferences(
+	excludeIDs := s.getRecentUserQuestionIDs(req.UserID)
+	pack, err := s.quizService.GetQuizByPreferencesWithExclusions(
 		resolved.language,
 		resolved.subject,
 		resolved.level,
 		resolved.questionPreference,
 		resolved.timePreference,
+		excludeIDs,
 	)
 	if err != nil {
 		return mapQuizPackError(err)
@@ -247,7 +280,7 @@ func (s *QuizSessionV2Service) createNewSession(req models.CreateSessionV2Reques
 		return nil, utils.NewAppError(http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to resolve timezone")
 	}
 
-	isRandom := mode == sessionModeRandom
+	isRandom := false
 	questionsJSON, err := json.Marshal(quizzes)
 	if err != nil {
 		return nil, utils.NewAppError(http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to serialize quiz questions")
@@ -264,15 +297,10 @@ func (s *QuizSessionV2Service) createNewSession(req models.CreateSessionV2Reques
 	} else {
 		minutes := totalTimeMinutes
 		sessionTotalTime = &minutes
-		if !isRandom {
-			expiry := now.Add(time.Duration(minutes) * time.Minute)
-			expiresAt = &expiry
-		}
 	}
 
-	if !isRandom {
-		startedAt = &now
-	}
+	// For both random and custom sessions, startedAt and expiresAt remain nil
+	// until the user begins the session.
 
 	timeRemaining := 0
 	if sessionTotalTime != nil {
@@ -288,7 +316,7 @@ func (s *QuizSessionV2Service) createNewSession(req models.CreateSessionV2Reques
 		Subject:             stringField(quizzes[0], "subject"),
 		TestLevel:           stringField(quizzes[0], "testLevel"),
 		TotalEarning:        totalEarning,
-		TotalEarninginNaira: intPtr(amountInNaira),
+		TotalEarninginNaira: float64Ptr(float64(totalEarning) / float64(getPointsToNairaRate())),
 		TotalEarninginUSDC:  intPtr(amountInUSDC),
 		TotalEarninginUSDT:  intPtr(amountInUSDT),
 		TotalQuestions:      totalQuestions,
@@ -312,16 +340,14 @@ func (s *QuizSessionV2Service) createNewSession(req models.CreateSessionV2Reques
 			return fmt.Errorf("create ongoing quiz: %w", err)
 		}
 
-		if isRandom {
-			attempt := models.QuizAttempt{
-				UserID:      req.UserID,
-				QuizID:      ongoingQuiz.ID,
-				IsStarted:   false,
-				IsCompleted: false,
-			}
-			if err := tx.Create(&attempt).Error; err != nil {
-				return fmt.Errorf("create quiz attempt: %w", err)
-			}
+		attempt := models.QuizAttempt{
+			UserID:      req.UserID,
+			QuizID:      ongoingQuiz.ID,
+			IsStarted:   false,
+			IsCompleted: false,
+		}
+		if err := tx.Create(&attempt).Error; err != nil {
+			return fmt.Errorf("create quiz attempt: %w", err)
 		}
 
 		return nil
@@ -426,27 +452,42 @@ func loadIncompleteSession(userID int) (*activeSessionLookup, error) {
 }
 
 func isSessionExpired(record *models.OngoingQuiz) bool {
+	if record == nil {
+		return false
+	}
 	now, err := lagosNow()
 	if err != nil {
 		return false
 	}
 
-	if record.IsRandom {
-		if record.QuizAttempt == nil {
+	// A session that has not started yet cannot be expired
+	if record.QuizAttempt != nil {
+		attempt := record.QuizAttempt
+		if !attempt.IsStarted {
 			return false
 		}
-		attempt := record.QuizAttempt
-		return attempt.IsStarted &&
-			attempt.ExpiresAt != nil &&
-			!attempt.ExpiresAt.After(now)
+		return attempt.ExpiresAt != nil && !attempt.ExpiresAt.After(now)
+	}
+
+	if record.StartedAt == nil {
+		return false
 	}
 
 	return record.ExpiresAt != nil && !record.ExpiresAt.After(now)
 }
 
-func sessionHasStarted(record *models.OngoingQuiz) bool {
+// SessionHasStarted evaluates whether an ongoing quiz session has actually begun.
+func SessionHasStarted(record *models.OngoingQuiz) bool {
 	if record == nil {
 		return false
+	}
+
+	if record.StartedAt != nil {
+		return true
+	}
+
+	if record.QuizAttempt != nil && record.QuizAttempt.IsStarted {
+		return true
 	}
 
 	if len(normalizeStoredAnswers(record.Answers)) > 0 {
@@ -457,11 +498,11 @@ func sessionHasStarted(record *models.OngoingQuiz) bool {
 		return true
 	}
 
-	if record.IsRandom {
-		return record.QuizAttempt != nil && record.QuizAttempt.IsStarted
-	}
+	return false
+}
 
-	return record.StartedAt != nil
+func sessionHasStarted(record *models.OngoingQuiz) bool {
+	return SessionHasStarted(record)
 }
 
 func deleteIncompleteSession(sessionID string, userID int) error {
@@ -481,22 +522,19 @@ func (s *QuizSessionV2Service) buildPreviewSession(
 	req models.CreateSessionV2Request,
 	user *models.User,
 ) (models.SessionV2, error) {
-	mode := strings.ToLower(strings.TrimSpace(req.Mode))
-	if mode != sessionModeRandom && mode != sessionModeCustom {
-		mode = sessionModeRandom
-	}
-
-	resolved, err := s.resolvePreferences(mode, user, req.Preferences)
+	resolved, err := s.resolvePreferences(user, req.Preferences)
 	if err != nil {
 		return models.SessionV2{}, err
 	}
 
-	pack, err := s.quizService.GetQuizByPreferences(
+	excludeIDs := s.getRecentUserQuestionIDs(req.UserID)
+	pack, err := s.quizService.GetQuizByPreferencesWithExclusions(
 		resolved.language,
 		resolved.subject,
 		resolved.level,
 		resolved.questionPreference,
 		resolved.timePreference,
+		excludeIDs,
 	)
 	if err != nil {
 		return models.SessionV2{}, err
@@ -517,7 +555,7 @@ func (s *QuizSessionV2Service) buildPreviewSession(
 		return models.SessionV2{}, err
 	}
 
-	isRandom := mode == sessionModeRandom
+	isRandom := false
 	var sessionTotalTime *int
 	if !resolved.timefree {
 		minutes := totalTimeMinutes
@@ -567,7 +605,7 @@ func (s *QuizSessionV2Service) guardDailyLimit(user *models.User) error {
 
 	var completedToday int64
 	if err := utils.DB.Model(&models.OngoingQuiz{}).
-		Where(`"userId" = ? AND "isCompleted" = ? AND "completedAt" >= ? AND "completedAt" < ?`,
+		Where(`"userId" = ? AND "isCompleted" = ? AND "completedAt" >= ? AND "completedAt" < ? AND ("startedAt" IS NOT NULL OR "attemptedAnswers" > 0 OR ("answers" IS NOT NULL AND "answers"::text != '[]' AND "answers"::text != 'null'))`,
 			user.ID, true, startOfDay, endOfDay).
 		Count(&completedToday).Error; err != nil {
 		return utils.NewAppError(http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to check daily quiz limit")
@@ -584,8 +622,49 @@ func (s *QuizSessionV2Service) guardDailyLimit(user *models.User) error {
 	)
 }
 
+func (s *QuizSessionV2Service) getRecentUserQuestionIDs(userID int) []string {
+	if utils.DB == nil || userID <= 0 {
+		return nil
+	}
+
+	var records []models.OngoingQuiz
+	err := utils.DB.Model(&models.OngoingQuiz{}).
+		Select("questions").
+		Where(`"userId" = ?`, userID).
+		Order(`"createdAt" DESC`).
+		Limit(20).
+		Find(&records).Error
+	if err != nil {
+		return nil
+	}
+
+	seenIDs := make(map[string]struct{})
+	var result []string
+
+	for _, rec := range records {
+		if len(rec.Questions) == 0 {
+			continue
+		}
+		var questions []struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(rec.Questions, &questions); err != nil {
+			continue
+		}
+		for _, q := range questions {
+			id := strings.TrimSpace(q.ID)
+			if id != "" {
+				if _, exists := seenIDs[id]; !exists {
+					seenIDs[id] = struct{}{}
+					result = append(result, id)
+				}
+			}
+		}
+	}
+	return result
+}
+
 func (s *QuizSessionV2Service) resolvePreferences(
-	mode string,
 	user *models.User,
 	preferences *models.SessionV2Preferences,
 ) (*resolvedSessionPreferences, error) {
@@ -597,7 +676,8 @@ func (s *QuizSessionV2Service) resolvePreferences(
 		timePreference:     "5",
 	}
 
-	if mode == sessionModeRandom && preferences == nil {
+	// 1. Baseline from user profile settings if available
+	if user != nil {
 		if user.LanguagePreference != nil && strings.TrimSpace(*user.LanguagePreference) != "" {
 			resolved.language = strings.TrimSpace(*user.LanguagePreference)
 		}
@@ -607,9 +687,26 @@ func (s *QuizSessionV2Service) resolvePreferences(
 		if user.TestLevel != nil && strings.TrimSpace(*user.TestLevel) != "" {
 			resolved.level = strings.TrimSpace(*user.TestLevel)
 		}
-		return resolved, nil
+		if user.QuestionPreference != nil && strings.TrimSpace(*user.QuestionPreference) != "" {
+			q := strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(*user.QuestionPreference)), "Q")
+			if q != "" {
+				resolved.questionPreference = q
+			}
+		}
+		if user.TimePreference != nil && strings.TrimSpace(*user.TimePreference) != "" {
+			t := strings.TrimSpace(*user.TimePreference)
+			if strings.EqualFold(t, "unlimited") || strings.EqualFold(t, "timefree") {
+				resolved.timefree = true
+			} else {
+				t = strings.TrimPrefix(strings.ToUpper(t), "T")
+				if t != "" {
+					resolved.timePreference = t
+				}
+			}
+		}
 	}
 
+	// 2. Overrides from explicit request preferences
 	if preferences != nil {
 		if lang := strings.TrimSpace(preferences.Language); lang != "" {
 			resolved.language = lang
@@ -623,27 +720,13 @@ func (s *QuizSessionV2Service) resolvePreferences(
 		if preferences.QuestionCount > 0 {
 			resolved.questionPreference = strconv.Itoa(preferences.QuestionCount)
 		}
-		if preferences.TimerMinutes == nil {
-			resolved.timefree = true
-		} else if *preferences.TimerMinutes <= 0 {
-			resolved.timefree = true
-		} else {
-			resolved.timePreference = strconv.Itoa(*preferences.TimerMinutes)
-		}
-	}
-
-	if preferences == nil ||
-		strings.TrimSpace(preferences.Language) == "" ||
-		strings.TrimSpace(preferences.Subject) == "" ||
-		strings.TrimSpace(preferences.Level) == "" {
-		if user.LanguagePreference != nil && strings.TrimSpace(*user.LanguagePreference) != "" {
-			resolved.language = strings.TrimSpace(*user.LanguagePreference)
-		}
-		if user.SubjectPreference != nil && strings.TrimSpace(*user.SubjectPreference) != "" {
-			resolved.subject = strings.TrimSpace(*user.SubjectPreference)
-		}
-		if user.TestLevel != nil && strings.TrimSpace(*user.TestLevel) != "" {
-			resolved.level = strings.TrimSpace(*user.TestLevel)
+		if preferences.TimerMinutes != nil {
+			if *preferences.TimerMinutes <= 0 {
+				resolved.timefree = true
+			} else {
+				resolved.timefree = false
+				resolved.timePreference = strconv.Itoa(*preferences.TimerMinutes)
+			}
 		}
 	}
 
@@ -654,7 +737,6 @@ func (s *QuizSessionV2Service) resolvePreferences(
 
 	return resolved, nil
 }
-
 func extractQuizPack(pack map[string]interface{}) ([]map[string]interface{}, int, int, int, error) {
 	rawQuizzes, ok := pack["quizzes"]
 	if !ok {
@@ -767,5 +849,9 @@ func mapQuizPackError(err error) (*models.CreateSessionV2Result, error) {
 }
 
 func intPtr(value int) *int {
+	return &value
+}
+
+func float64Ptr(value float64) *float64 {
 	return &value
 }

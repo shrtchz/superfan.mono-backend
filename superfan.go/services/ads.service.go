@@ -50,7 +50,10 @@ type adsServiceImpl struct {
 }
 
 func campaignHasEnded(campaign *models.AdCampaign, now time.Time) bool {
-	if campaign == nil || campaign.RunContinuously {
+	if campaign == nil {
+		return false
+	}
+	if campaign.RunContinuously && (campaign.EndDate == nil || campaign.EndDate.IsZero()) {
 		return false
 	}
 
@@ -76,30 +79,48 @@ func (s *adsServiceImpl) completeEndedCampaigns(ctx context.Context, now time.Ti
 		return nil
 	}
 
+	// 1. Mark expired campaigns as COMPLETED if their date has ended
 	var campaigns []models.AdCampaign
 	if err := s.db.WithContext(ctx).
-		Where("LOWER(status::text) <> ?", "completed").
-		Find(&campaigns).Error; err != nil {
-		return err
+		Where("LOWER(status::text) NOT IN (?, ?)", "completed", "ended").
+		Find(&campaigns).Error; err == nil {
+		endedIDs := make([]int, 0)
+		for _, campaign := range campaigns {
+			if campaignHasEnded(&campaign, now) {
+				endedIDs = append(endedIDs, campaign.ID)
+			}
+		}
+		if len(endedIDs) > 0 {
+			_ = s.db.WithContext(ctx).Model(&models.AdCampaign{}).
+				Where("id IN ?", endedIDs).
+				Update("status", models.AdStatusCompleted).Error
+		}
 	}
 
-	endedIDs := make([]int, 0)
-	for _, campaign := range campaigns {
-		if campaignHasEnded(&campaign, now) {
-			endedIDs = append(endedIDs, campaign.ID)
+	// 2. Self-heal: If an ad was previously marked COMPLETED but was approved and its end date is still in the future, ensure it is ACTIVE.
+	// Never touch PENDING campaigns here; approval must be explicit via ApproveCampaign.
+	var completedCampaigns []models.AdCampaign
+	if err := s.db.WithContext(ctx).
+		Where("LOWER(status::text) = ?", "completed").
+		Where(`"pausedByAdmin" IS NOT TRUE AND "approvedByAdmin" IS TRUE`).
+		Find(&completedCampaigns).Error; err == nil {
+		activeIDs := make([]int, 0)
+		for _, campaign := range completedCampaigns {
+			if !campaignHasEnded(&campaign, now) {
+				activeIDs = append(activeIDs, campaign.ID)
+			}
+		}
+		if len(activeIDs) > 0 {
+			_ = s.db.WithContext(ctx).Model(&models.AdCampaign{}).
+				Where("id IN ?", activeIDs).
+				Update("status", models.AdStatusActive).Error
 		}
 	}
-	if len(endedIDs) > 0 {
-		if err := s.db.WithContext(ctx).Model(&models.AdCampaign{}).
-			Where("id IN ?", endedIDs).
-			Update("status", models.AdStatusCompleted).Error; err != nil {
-			return err
-		}
-	}
+
 	return nil
 }
 
-const activeCampaignDateCondition = `("AdCampaign"."runContinuously" = TRUE OR (CASE WHEN "AdCampaign"."endDate" IS NOT NULL THEN "AdCampaign"."endDate" + INTERVAL '1 day' ELSE "AdCampaign"."startDate" + GREATEST("AdCampaign"."days", 1) * INTERVAL '1 day' END) > NOW()) AND ("AdCampaign"."pausedByAdmin" IS NOT TRUE)`
+const activeCampaignDateCondition = `("AdCampaign"."approvedByAdmin" IS TRUE) AND ("AdCampaign"."pausedByAdmin" IS NOT TRUE) AND ("AdCampaign"."runContinuously" = TRUE OR (CASE WHEN "AdCampaign"."endDate" IS NOT NULL THEN "AdCampaign"."endDate" + INTERVAL '1 day' ELSE "AdCampaign"."startDate" + GREATEST("AdCampaign"."days", 1) * INTERVAL '1 day' END) > NOW())`
 
 func NewAdsService(db *gorm.DB) AdsService {
 	if db != nil {
@@ -706,8 +727,12 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 	}
 
 	// 3. Platform daily reward ad cap quota check (Max 5 rewarded ads per user per day = 1,000 PTS/day)
-	now := time.Now()
-	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	lagosLoc, errLoc := time.LoadLocation("Africa/Lagos")
+	if errLoc != nil {
+		lagosLoc = time.FixedZone("WAT", 1*60*60)
+	}
+	now := time.Now().In(lagosLoc)
+	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, lagosLoc)
 
 	var todayRewardCount int64
 	s.db.WithContext(ctx).Model(&models.AdEvent{}).
@@ -831,6 +856,13 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 				Where("id = ?", *req.CampaignID).
 				Find(&exists).Error; err == nil && exists {
 				cid := *req.CampaignID
+				campaignIDPtr = &cid
+			}
+		}
+		if campaignIDPtr == nil {
+			var fallbackCamp models.AdCampaign
+			if err := tx.Model(&models.AdCampaign{}).Order("id asc").First(&fallbackCamp).Error; err == nil && fallbackCamp.ID > 0 {
+				cid := fallbackCamp.ID
 				campaignIDPtr = &cid
 			}
 		}
@@ -964,15 +996,42 @@ func (s *adsServiceImpl) CreateCampaign(ctx context.Context, req *CreateCampaign
 		totalFee = calculatedTotalFee
 	}
 
-	parsedStart, err := time.Parse("2006-01-02", req.StartDate)
-	if err != nil {
+	parseFlexibleDate := func(val string) (time.Time, bool) {
+		val = strings.TrimSpace(val)
+		if val == "" {
+			return time.Time{}, false
+		}
+		layouts := []string{
+			"2006-01-02",
+			time.RFC3339,
+			"2006-01-02T15:04:05Z07:00",
+			"2006-01-02T15:04:05",
+			"2006-01-02 15:04:05",
+			"02/01/2006",
+			"02-01-2006",
+		}
+		for _, layout := range layouts {
+			if t, err := time.Parse(layout, val); err == nil {
+				return t, true
+			}
+		}
+		return time.Time{}, false
+	}
+
+	parsedStart, ok := parseFlexibleDate(req.StartDate)
+	if !ok {
 		parsedStart = time.Now()
 	}
 
 	var parsedEnd *time.Time
-	if !req.RunContinuously && req.EndDate != nil && *req.EndDate != "" {
-		pe, err := time.Parse("2006-01-02", *req.EndDate)
-		if err == nil {
+	if !req.RunContinuously {
+		if req.EndDate != nil && *req.EndDate != "" {
+			if pe, ok := parseFlexibleDate(*req.EndDate); ok {
+				parsedEnd = &pe
+			}
+		}
+		if parsedEnd == nil && days > 0 {
+			pe := parsedStart.AddDate(0, 0, days)
 			parsedEnd = &pe
 		}
 	}
@@ -1383,14 +1442,30 @@ func (s *adsServiceImpl) ApproveCampaign(ctx context.Context, id int) (*models.A
 
 	// Approve campaign and set status to ACTIVE (ad server rotation schedules it from its startDate)
 	now := time.Now()
+	updates := map[string]interface{}{
+		"status":          models.AdStatusActive,
+		"approvedByAdmin": true,
+		"pausedByAdmin":   false,
+		"updatedAt":       now,
+	}
+
+	// If the campaign's scheduled startDate has passed, restart the run window from now
+	// so the campaign does not instantly expire and the advertiser gets their full duration
+	if campaign.StartDate.Before(now) {
+		updates["startDate"] = now
+		if !campaign.RunContinuously {
+			days := campaign.Days
+			if days < 1 {
+				days = 1
+			}
+			newEnd := now.AddDate(0, 0, days)
+			updates["endDate"] = newEnd
+		}
+	}
+
 	if err := s.db.WithContext(ctx).Model(&models.AdCampaign{}).
 		Where("id = ?", id).
-		Updates(map[string]interface{}{
-			"status":          models.AdStatusActive,
-			"approvedByAdmin": true,
-			"pausedByAdmin":   false,
-			"updatedAt":       now,
-		}).Error; err != nil {
+		Updates(updates).Error; err != nil {
 		return nil, fmt.Errorf("failed to approve campaign: %w", err)
 	}
 

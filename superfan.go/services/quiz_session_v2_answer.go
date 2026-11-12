@@ -287,15 +287,9 @@ func ensureSessionAcceptsAnswers(lookup *activeSessionLookup) error {
 	}
 
 	record := lookup.record
-	if record.IsRandom {
-		if record.QuizAttempt == nil || !record.QuizAttempt.IsStarted {
-			return utils.NewAppError(http.StatusBadRequest, "SESSION_NOT_IN_PROGRESS", "Please begin the quiz before submitting answers.")
-		}
-		return nil
-	}
-
-	if record.StartedAt == nil {
-		return utils.NewAppError(http.StatusBadRequest, "SESSION_NOT_IN_PROGRESS", "Quiz session is not in progress.")
+	hasStarted := sessionHasStarted(record) || record.StartedAt != nil || (record.QuizAttempt != nil && record.QuizAttempt.IsStarted)
+	if !hasStarted {
+		return utils.NewAppError(http.StatusBadRequest, "SESSION_NOT_IN_PROGRESS", "Please begin the quiz before submitting answers.")
 	}
 
 	return nil
@@ -384,8 +378,12 @@ func resolveCorrectOptionIndex(correctAnswer string, options []string) int {
 		}
 	}
 
-	if len(normalizedCorrect) == 1 {
-		letter := normalizedCorrect[0]
+	trimmed := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(normalizedCorrect, "option"), " "))
+	if len(trimmed) == 1 {
+		letter := trimmed[0]
+		if letter == 'e' && len(options) == 4 {
+			return 3
+		}
 		if letter >= 'a' && letter <= 'z' {
 			index := int(letter - 'a')
 			if index >= 0 && index < len(options) {

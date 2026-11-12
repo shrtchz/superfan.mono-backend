@@ -13,6 +13,7 @@ const (
 	AdStatusActive    AdStatus = "ACTIVE"
 	AdStatusPaused    AdStatus = "PAUSED"
 	AdStatusCompleted AdStatus = "COMPLETED"
+	AdStatusEnded     AdStatus = "ENDED"
 )
 
 type AdEventType string
@@ -52,7 +53,7 @@ type AdCampaign struct {
 	Days            int            `gorm:"column:days;default:1" json:"days"`
 	StartDate       time.Time      `gorm:"column:startDate" json:"startDate"`
 	EndDate         *time.Time     `gorm:"column:endDate" json:"endDate,omitempty"`
-	RunContinuously bool           `gorm:"column:runContinuously;default:true" json:"runContinuously"`
+	RunContinuously bool           `gorm:"column:runContinuously" json:"runContinuously"`
 	AgeRange        *string        `gorm:"column:ageRange" json:"ageRange,omitempty"`
 	PlacementType   *string        `gorm:"column:placementType" json:"placementType,omitempty"`
 	PricingModel    *string        `gorm:"column:pricingModel" json:"pricingModel,omitempty"`

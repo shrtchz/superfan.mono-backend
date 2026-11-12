@@ -274,14 +274,13 @@ export class UserService {
         role: user.roleName,
       });
 
-      const magicLink = await this.generateMagicLink(user).catch(() => null);
       const frontendUrl = process.env.FRONTEND_URL || 'https://superfan.ng';
-      const startQuizUrl = magicLink?.magicLinkURI || `${frontendUrl}/get-started`;
+      const loginUrl = `${frontendUrl.replace(/\/+$/, '')}/login`;
 
       await this.mail.welcomeUserEmail(
         dto.email,
         user.firstName || 'Superfan',
-        startQuizUrl,
+        loginUrl,
       );
 
       return { message: 'Email verified successfully', id: user.id };
@@ -320,6 +319,11 @@ export class UserService {
       location: user.location,
       profilePicture: user.profilePicture,
       clerkUserId: user.clerkUserId,
+      languagePreference: user.languagePreference,
+      subjectPreference: user.subjectPreference,
+      testLevel: user.testLevel,
+      questionPreference: user.questionPreference,
+      timePreference: user.timePreference,
       onboarded,
       isOnboarded: onboarded,
     };
@@ -483,13 +487,12 @@ export class UserService {
 
       if (isEmailVerified && !clerkUser.publicMetadata?.welcomeEmailSent) {
         try {
-          const magicLink = await this.generateMagicLink(user).catch(() => null);
           const frontendUrl = process.env.FRONTEND_URL || 'https://superfan.ng';
-          const startQuizUrl = magicLink?.magicLinkURI || `${frontendUrl}/get-started`;
+          const loginUrl = `${frontendUrl.replace(/\/+$/, '')}/login`;
           await this.mail.welcomeUserEmail(
             user.email,
             user.firstName || clerkUser.firstName || 'Superfan',
-            startQuizUrl,
+            loginUrl,
           );
           await this.clerkService
             .getClient()
@@ -578,6 +581,7 @@ export class UserService {
       '45': 'T45',
       '60': 'T60',
       unlimited: 'UNLIMITED',
+      timefree: 'UNLIMITED',
     } as const;
 
     const user = await prisma.user.findUnique({

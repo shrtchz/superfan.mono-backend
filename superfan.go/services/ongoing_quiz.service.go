@@ -47,15 +47,7 @@ func FetchOngoingQuiz(userID int) (*OngoingQuizFetchResult, error) {
 		return nil, err
 	}
 
-	if ongoingQuiz.IsRandom {
-		if ongoingQuiz.QuizAttempt == nil {
-			return &OngoingQuizFetchResult{
-				MissingQuizAttempt: true,
-				QuizID:             ongoingQuiz.ID,
-				OngoingQuiz:        &ongoingQuiz,
-			}, nil
-		}
-
+	if ongoingQuiz.QuizAttempt != nil {
 		attempt := ongoingQuiz.QuizAttempt
 		if attempt.IsStarted &&
 			attempt.ExpiresAt != nil &&
@@ -65,11 +57,10 @@ func FetchOngoingQuiz(userID int) (*OngoingQuizFetchResult, error) {
 				ExpiredMessage: "Your quiz has expired. Please start a new quiz.",
 			}, nil
 		}
-
 		return &OngoingQuizFetchResult{OngoingQuiz: &ongoingQuiz}, nil
 	}
 
-	if ongoingQuiz.ExpiresAt != nil && !ongoingQuiz.ExpiresAt.After(now) {
+	if ongoingQuiz.StartedAt != nil && ongoingQuiz.ExpiresAt != nil && !ongoingQuiz.ExpiresAt.After(now) {
 		return &OngoingQuizFetchResult{
 			Expired:        true,
 			ExpiredMessage: "Your quiz has expired. Please start a new quiz.",

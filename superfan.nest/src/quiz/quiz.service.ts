@@ -974,10 +974,8 @@ async submitQuiz(
     streakMultiplier: streakBonus,
     adBonuses: adBonusPoints,
     earnedAmount: amountInNaira,
-    ...(checkQuiz?.isRandom && {
-      startedAt: now,
-      expiresAt: now,
-    }),
+    startedAt: checkQuiz?.startedAt ?? now,
+    expiresAt: now,
   },
 });
 
@@ -999,17 +997,13 @@ async submitQuiz(
   //   });
   // }
 
-  if (checkQuiz?.isRandom) {
-  await prisma.quizAttempt.update({
+  await prisma.quizAttempt.updateMany({
     where: { quizId: checkQuiz?.id },
     data: {
       isCompleted: true,
       completedAt: now,
-      startedAt: now,
-      expiresAt: now,
     },
   });
-}
 
   // 8. Create wallet reward - pass points, convert to NGN internally
   //    (this sends the 🎉 test-quiz reward notification via wallet.service.ts)
@@ -2120,6 +2114,9 @@ async hasSubmittedLiveQuizForStream(
       },
     }); 
 
+    const pointsToNairaRate =
+      (await this.pointsConversionUtil.getConversionRate().catch(() => 2000)) || 2000;
+
     return completedQuiz.map((q) => {
       const fullName = [q.user?.firstName, q.user?.lastName]
         .filter(Boolean)
@@ -2143,8 +2140,30 @@ async hasSubmittedLiveQuizForStream(
         return false;
       }).length;
 
+      const totalPoints =
+        typeof q.totalEarning === "number" && q.totalEarning > 0
+          ? q.totalEarning
+          : (q.baseScore || 0) +
+            (q.accuracyBonus || 0) +
+            (q.speedBonus || 0) +
+            (q.streakMultiplier || 0) +
+            (q.adBonuses || 0);
+
+      const calculatedAmountInNaira = pointsToNairaRate > 0 ? totalPoints / pointsToNairaRate : 0;
+
+      const exactAmountInNaira =
+        typeof q.totalEarninginNaira === "number" &&
+        q.totalEarninginNaira > 0 &&
+        q.totalEarninginNaira !== Math.floor(q.totalEarninginNaira)
+          ? q.totalEarninginNaira
+          : (calculatedAmountInNaira > 0 ? calculatedAmountInNaira : (q.totalEarninginNaira ?? 0));
+
       return {
         ...q,
+        totalPoints,
+        totalEarninginNaira: exactAmountInNaira,
+        amountCredited: exactAmountInNaira,
+        rewardType: (q as any).rewardType || "Cash",
         username: q.user?.username ?? String(q.userId),
         fullName: fullName || undefined,
         quizTime: formatSecondsToMMSS((q as any).quizTime),
@@ -2208,16 +2227,16 @@ async hasSubmittedLiveQuizForStream(
       const endOfDay = new Date(startOfDay);
       endOfDay.setDate(endOfDay.getDate() + 1);
 
-      const completedToday = await prisma.ongoingQuiz.count({
-        where: {
-          userId: Number(userId),
-          isCompleted: true,
-          completedAt: {
-            gte: startOfDay,
-            lt: endOfDay,
-          },
-        },
-      });
+      const completedTodayResult = await prisma.$queryRaw<Array<{ count: bigint | number }>>`
+        SELECT COUNT(*) as count 
+        FROM "ongoing_quizzes" 
+        WHERE "userId" = ${Number(userId)} 
+          AND "isCompleted" = true 
+          AND "completedAt" >= ${startOfDay} 
+          AND "completedAt" < ${endOfDay}
+          AND ("startedAt" IS NOT NULL OR "attemptedAnswers" > 0 OR ("answers" IS NOT NULL AND "answers"::text != '[]' AND "answers"::text != 'null'))
+      `;
+      const completedToday = Number(completedTodayResult[0]?.count ?? 0);
 
       // 🎯 "2 Test(s) Left Today" — warn when the FREE daily test pool runs low.
       const testsRemaining = 5 - completedToday;
@@ -2322,25 +2341,17 @@ async hasSubmittedLiveQuizForStream(
         timeRemaining: totalTime,
         questions: JSON.parse(JSON.stringify(quizzes)),
         answers: JSON.parse('[]'),
-        ...(!isRandom && {
-          startedAt: now,
-          expiresAt,
-        }),
       },
     });
 
-    if (isRandom) {
-      await prisma.quizAttempt.create({
-        data: {
-          quizId: quizAttempt.id,
-          userId: Number(userId),
-          isStarted: false,
-          isCompleted: false,
-          startedAt: now,
-          expiresAt,
-        },
-      });
-    }
+    await prisma.quizAttempt.create({
+      data: {
+        quizId: quizAttempt.id,
+        userId: Number(userId),
+        isStarted: false,
+        isCompleted: false,
+      },
+    });
 
     return {
       data: {
@@ -2379,24 +2390,30 @@ async getQuizWithPreferences(dto: GetQuizWithPreferencesDto, userId: number) {
     let actualLanguagePreference = dto.languagePreference;
     let actualSubjectPreference = dto.subjectPreference;
     let actualTestLevel = dto.testLevel;
+    let actualQuestionPreference = dto.questionPreference;
+    let actualTimePreference = dto.timePreference;
 
     if (
-      !dto.isRandom &&
-      (!actualLanguagePreference ||
-        !actualSubjectPreference ||
-        !actualTestLevel)
+      !actualLanguagePreference ||
+      !actualSubjectPreference ||
+      !actualTestLevel ||
+      !actualQuestionPreference ||
+      !actualTimePreference
     ) {
       try {
         const onboardingDetails =
           await this.userService.fetchOnboardingdetails(userId);
-        const { languagePreference, subjectPreference, testLevel } =
-          onboardingDetails.data;
+        const obData = onboardingDetails?.data || onboardingDetails || {};
 
         actualLanguagePreference =
-          actualLanguagePreference || languagePreference;
+          actualLanguagePreference || obData.languagePreference;
         actualSubjectPreference =
-          actualSubjectPreference || subjectPreference;
-        actualTestLevel = actualTestLevel || testLevel;
+          actualSubjectPreference || obData.subjectPreference;
+        actualTestLevel = actualTestLevel || obData.testLevel;
+        actualQuestionPreference =
+          actualQuestionPreference || obData.questionPreference;
+        actualTimePreference =
+          actualTimePreference || obData.timePreference;
       } catch (error) {
         console.warn('Failed to fetch onboarding details:', error?.message);
       }
@@ -2410,13 +2427,12 @@ async getQuizWithPreferences(dto: GetQuizWithPreferencesDto, userId: number) {
           languagePreference: actualLanguagePreference,
           subjectPreference: actualSubjectPreference,
           testLevel: actualTestLevel,
-          questionPreference: dto.questionPreference,
-          timePreference: dto.timePreference,
+          questionPreference: actualQuestionPreference,
+          timePreference: actualTimePreference,
           isRandom: dto.isRandom === true ? 'true' : 'false',
         },
       }),
     );
-
     const pack = response.data?.data || response.data || {};
     return this.startQuickQuizSession(userId, pack, !!dto.isRandom);
   } catch (error) {
@@ -2557,12 +2573,11 @@ async fetchOngoingQuiz(userId: number) {
     })
   );
 
-  // NORMAL QUIZ FLOW
+  // NORMAL QUIZ FLOW - only expires if actually started
   if (
+    ongoingQuiz.startedAt &&
     ongoingQuiz.expiresAt &&
     ongoingQuiz.expiresAt <= now
-    
-    // new Date()
   ) {
     return {
       expired: true,
@@ -2673,22 +2688,27 @@ async recordAnswer(userId: number, dto: RecordAnswerDto) {
       );
     }
 
-    if (ongoingQuiz.isRandom) {
+    if (ongoingQuiz.quizAttempt) {
       const quizAttempt = ongoingQuiz.quizAttempt;
 
       if (!quizAttempt.isStarted) {
         throw new HttpException(
-          'Please start random quiz before submitting answers.',
+          'Please start quiz before submitting answers.',
           HttpStatus.BAD_REQUEST,
         );
       }
 
       if (quizAttempt.expiresAt && quizAttempt.expiresAt <= now) {
         throw new HttpException(
-          'Your random quiz session has expired.',
+          'Your quiz session has expired.',
           HttpStatus.GONE,
         );
       }
+    } else if (!ongoingQuiz.startedAt) {
+      throw new HttpException(
+        'Please start quiz before submitting answers.',
+        HttpStatus.BAD_REQUEST,
+      );
     }
 
     const questions = ongoingQuiz.questions as unknown as QuizQuestion[];
