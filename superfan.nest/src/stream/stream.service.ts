@@ -2405,6 +2405,152 @@ async getStreamChatStatus(streamId: number) {
   };
 }
 
+private async publishLockedQuizAnswerComments(
+  streamId: number,
+  lockedSince?: Date,
+): Promise<any[]> {
+  try {
+    const ongoingQuizzes = await prisma.ongoingLiveQuiz.findMany({
+      where: { streamId },
+      select: {
+        userId: true,
+        questions: true,
+        answers: true,
+      },
+    });
+
+    if (!ongoingQuizzes.length) {
+      return [];
+    }
+
+    const pendingSubmissions: Array<{
+      userId: number;
+      message: string;
+      createdAt: Date;
+    }> = [];
+
+    for (const ongoing of ongoingQuizzes) {
+      const userId = Number(ongoing.userId);
+      if (!Number.isFinite(userId) || userId <= 0) continue;
+
+      const questions = Array.isArray(ongoing.questions)
+        ? (ongoing.questions as Array<Record<string, any>>)
+        : [];
+      const answers = Array.isArray(ongoing.answers)
+        ? (ongoing.answers as Array<Record<string, any>>)
+        : [];
+
+      for (const ans of answers) {
+        const quizId = String(ans?.quizId ?? '').trim();
+        const selectedAnswer = String(ans?.selectedAnswer ?? '').trim();
+        if (!quizId || !selectedAnswer) continue;
+
+        const submittedAt = ans?.submittedAt ? new Date(ans.submittedAt) : null;
+        const hasValidSubmittedAt =
+          submittedAt !== null && !Number.isNaN(submittedAt.getTime());
+
+        if (lockedSince && hasValidSubmittedAt && submittedAt < lockedSince) {
+          continue;
+        }
+
+        const question = questions.find((q) => String(q?.quizId ?? '').trim() === quizId);
+        const options = Array.isArray(question?.options) ? question.options : [];
+        const optionIndex = options.findIndex(
+          (opt: unknown) =>
+            String(opt ?? '').trim().toLowerCase() === selectedAnswer.toLowerCase(),
+        );
+        const message =
+          optionIndex >= 0
+            ? `${String.fromCharCode(65 + optionIndex)}. ${selectedAnswer}`
+            : selectedAnswer;
+
+        pendingSubmissions.push({
+          userId,
+          message,
+          createdAt: hasValidSubmittedAt ? submittedAt : new Date(),
+        });
+      }
+    }
+
+    if (!pendingSubmissions.length) {
+      return [];
+    }
+
+    pendingSubmissions.sort(
+      (a, b) => a.createdAt.getTime() - b.createdAt.getTime(),
+    );
+
+    const createdPayloads: any[] = [];
+    const authorCache = new Map<number, any>();
+
+    for (const item of pendingSubmissions) {
+      const existing = await prisma.streamComment.findFirst({
+        where: {
+          streamId,
+          userId: item.userId,
+          parentId: null,
+          isDeleted: false,
+          message: { equals: item.message, mode: 'insensitive' },
+          ...(lockedSince ? { createdAt: { gte: lockedSince } } : {}),
+        },
+        select: { id: true },
+      });
+
+      if (existing) {
+        continue;
+      }
+
+      const createdComment = await prisma.streamComment.create({
+        data: {
+          streamId,
+          message: item.message,
+          userId: item.userId,
+          isDeleted: false,
+          depth: 0,
+          createdAt: item.createdAt,
+        },
+      });
+
+      const streamComment = await prisma.streamComment.update({
+        where: { id: createdComment.id },
+        data: {
+          rootId: createdComment.id,
+          createdAt: item.createdAt,
+        },
+      });
+
+      try {
+        await this.elasticSearch.indexComment({
+          id: streamComment.id,
+          streamId,
+          content: item.message,
+          parentId: null,
+          createdAt: streamComment.createdAt,
+        });
+      } catch (indexError: any) {
+        this.logger.warn(
+          `Failed to index unlocked quiz comment ${streamComment.id}: ${indexError?.message || indexError}`,
+        );
+      }
+
+      let author = authorCache.get(item.userId);
+      if (!author) {
+        author = await this.getUserPublicProfile(item.userId);
+        authorCache.set(item.userId, author);
+      }
+
+      createdPayloads.push(this.toCommentBroadcastPayload(streamComment, author));
+    }
+
+    return createdPayloads;
+  } catch (error: any) {
+    this.logger.warn(
+      `Failed to publish locked quiz answer comments for stream ${streamId}: ${error?.message || error}`,
+    );
+    return [];
+  }
+}
+
 async setStreamChatLock(streamId: number, locked: boolean, adminId: number) {
   try {
     const stream = await prisma.stream.findUnique({
@@ -2415,6 +2561,14 @@ async setStreamChatLock(streamId: number, locked: boolean, adminId: number) {
     if (!stream) {
       throw new NotFoundException(`Stream with ID ${streamId} not found.`);
     }
+
+    const lastLockLog = !locked
+      ? await prisma.streamChatLockLog.findFirst({
+          where: { streamId, action: 'lock' },
+          orderBy: { createdAt: 'desc' },
+          select: { createdAt: true },
+        })
+      : null;
 
     const updated = await prisma.stream.update({
       where: { id: streamId },
@@ -2430,8 +2584,11 @@ async setStreamChatLock(streamId: number, locked: boolean, adminId: number) {
       },
     });
 
-    await this.redis.del(`stream:${streamId}:comments`);
-    await this.redis.del('stream:global:comments');
+    const unlockedComments = !locked
+      ? await this.publishLockedQuizAnswerComments(streamId, lastLockLog?.createdAt)
+      : [];
+
+    await this.invalidateCommentCaches(streamId);
 
     const timestamp = new Date().toISOString();
 
@@ -2463,6 +2620,7 @@ async setStreamChatLock(streamId: number, locked: boolean, adminId: number) {
       action: locked ? 'lock' : 'unlock',
       adminId,
       timestamp,
+      unlockedComments,
     };
   } catch (error) {
     if (

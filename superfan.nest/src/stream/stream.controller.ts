@@ -177,10 +177,16 @@ export class StreamingController {
       Boolean(lock),
       Number(req.user?.id),
     );
-    this.streamGateway.broadcastChat('chatLockChanged', result);
+    const { unlockedComments = [], ...lockResult } = result;
+    this.streamGateway.broadcastChat('chatLockChanged', lockResult);
+    for (const comment of unlockedComments) {
+      const payload = { ...comment, streamId: Number(streamId) };
+      this.streamGateway.broadcastChat('newComment', payload);
+      this.streamGateway.broadcastChat('streamMessage', payload);
+    }
     return {
-      lock_chat: result.locked,
-      ...result,
+      lock_chat: lockResult.locked,
+      ...lockResult,
     };
   }
 
