@@ -137,7 +137,7 @@ export class MailService implements OnModuleInit {
         this.configService.get<string>('FRONTEND_URL') ||
         this.configService.get<string>('PROD_FRONTEND_URL') ||
         'https://superfan.ng';
-      const resolvedLoginUrl = loginUrl || `${frontendUrl.replace(/\/+$/, '')}/login`;
+      const resolvedLoginUrl = loginUrl || `${frontendUrl.replace(/\/+$/, '')}/sign-in`;
 
       this.logger.log(`[MailService] Adding 'send_email' (welcome) job to BullMQ queue "mail" for ${email}...`);
 
