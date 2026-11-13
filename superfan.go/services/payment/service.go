@@ -1239,20 +1239,11 @@ func (s *PaymentService) TogglePaymentProcessor(ctx context.Context, id int) (*m
 	nextState := !processor.IsEnabled
 	now := time.Now()
 
-	fiatNames := []string{"monnify", "flutterwave", "bachs"}
-	nameLower := strings.ToLower(processor.Name)
-	isFiat := false
-	for _, fn := range fiatNames {
-		if fn == nameLower {
-			isFiat = true
-			break
-		}
-	}
-
-	if nextState && isFiat {
+	if nextState {
+		// Only one processor should be available at any time
 		_ = s.db.WithContext(ctx).
 			Model(&models.PaymentProcessor{}).
-			Where("id != ? AND LOWER(name) IN ('monnify', 'flutterwave', 'bachs')", id).
+			Where("id != ?", id).
 			Updates(map[string]interface{}{
 				"isEnabled":   false,
 				"isConnected": false,
