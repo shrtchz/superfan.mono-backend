@@ -100,14 +100,10 @@ export class PaymentProcessorService implements OnModuleInit {
     const nextState = !processor.isEnabled;
     const procNameLower = processor.name.toLowerCase();
 
-    // If enabling a fiat processor, turn off other fiat card/transfer processors
-    // so exactly this one processor is used to accept payments for cards & transfers
-    if (nextState && FIAT_GATEWAYS.includes(procNameLower)) {
+    // Only one processor should be available / enabled at any time across the platform
+    if (nextState) {
       await prisma.paymentProcessor.updateMany({
-        where: {
-          id: { not: id },
-          name: { in: FIAT_GATEWAYS, mode: 'insensitive' },
-        },
+        where: { id: { not: id } },
         data: {
           isEnabled: false,
           isConnected: false,
@@ -177,6 +173,16 @@ export class PaymentProcessorService implements OnModuleInit {
     const dataToUpdate: any = {
       lastSync: new Date(),
     };
+
+    if (dto.isEnabled === true) {
+      await prisma.paymentProcessor.updateMany({
+        where: { id: { not: target.id } },
+        data: {
+          isEnabled: false,
+          isConnected: false,
+        },
+      });
+    }
 
     if (dto.publicKey !== undefined) dataToUpdate.publicKey = dto.publicKey;
     if (dto.secretKey !== undefined) dataToUpdate.secretKey = dto.secretKey;
