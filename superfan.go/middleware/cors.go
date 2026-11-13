@@ -20,6 +20,8 @@ func CORSMiddleware() gin.HandlerFunc {
 		"http://127.0.0.1:9050",
 		"http://127.0.0.1:3000",
 		"https://api.superfan.ng",
+		"https://manager.superfan.ng",
+		"https://superfan.ng",
 		"https://superfan-admin.vercel.app",
 		"https://superfan-client.vercel.app",
 		"https://sn1.superfan.ng",
