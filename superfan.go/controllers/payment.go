@@ -112,6 +112,8 @@ func RegisterPaymentRoutes(rg *gin.RouterGroup, pc *PaymentController) {
 	paymentGroup.POST("/wallet-withdrawal", pc.WalletWithdrawal)
 	paymentGroup.POST("/debit", pc.DebitWallet)
 	paymentGroup.POST("/validate-otp", pc.ValidateOTP)
+	paymentGroup.GET("/processors", pc.GetProcessors)
+	paymentGroup.PATCH("/processors/:id/toggle", pc.ToggleProcessor)
 }
 
 // GetWalletTransactions handles GET /v1/payment/wallet-transactions
@@ -297,8 +299,39 @@ func (pc *PaymentController) InitPaymentByTransfer(c *gin.Context) {
 	}
 
 	txRef, _ := req["transactionReference"].(string)
-	if txRef == "" {
-		txRef = fmt.Sprintf("MNFY-TRF-%d", time.Now().UnixNano())
+
+	activeProc, _ := pc.paymentService.GetActivePaymentProcessor(c.Request.Context())
+	procName := "monnify"
+	if activeProc != nil && activeProc.Name != "" {
+		procName = strings.ToLower(activeProc.Name)
+	}
+
+	bankName := "Moniepoint MFB / Wema Bank"
+	bankCode := "035"
+	accountName := "Superfan - User"
+
+	switch procName {
+	case "flutterwave":
+		bankName = "Flutterwave / Sterling Bank"
+		bankCode = "232"
+		accountName = "Superfan NG - Flutterwave"
+		if txRef == "" {
+			txRef = fmt.Sprintf("FLW-TRF-%d", time.Now().UnixNano())
+		}
+	case "bachs":
+		bankName = "Bachs / Providus Bank"
+		bankCode = "101"
+		accountName = "Superfan NG - Bachs"
+		if txRef == "" {
+			txRef = fmt.Sprintf("BACHS-TRF-%d", time.Now().UnixNano())
+		}
+	default:
+		bankName = "Moniepoint MFB / Wema Bank"
+		bankCode = "035"
+		accountName = "Superfan - User"
+		if txRef == "" {
+			txRef = fmt.Sprintf("MNFY-TRF-%d", time.Now().UnixNano())
+		}
 	}
 
 	mockAccNumber := fmt.Sprintf("971%d", time.Now().UnixNano()%10000000)
@@ -309,17 +342,46 @@ func (pc *PaymentController) InitPaymentByTransfer(c *gin.Context) {
 		"responseCode":      "0",
 		"responseMessage":   "Virtual Account Generated Successfully",
 		"responseBody": map[string]interface{}{
-			"accountNumber": mockAccNumber,
-			"accountName":   "Superfan - User",
-			"bankName":      "Moniepoint MFB / Wema Bank",
-			"bankCode":      "035",
-			"expiresOn":     expiryDate,
-			"totalPayable":  1050,
-			"fee":           50,
+			"accountNumber":        mockAccNumber,
+			"accountName":          accountName,
+			"bankName":             bankName,
+			"bankCode":             bankCode,
+			"expiresOn":            expiryDate,
+			"totalPayable":         1050,
+			"fee":                  50,
+			"transactionReference": txRef,
+			"processor":            procName,
 		},
 	}
 
 	c.JSON(http.StatusOK, res)
+}
+
+// GetProcessors handles GET /v1/payment/processors
+func (pc *PaymentController) GetProcessors(c *gin.Context) {
+	processors, err := pc.paymentService.GetAllPaymentProcessors(c.Request.Context())
+	if err != nil {
+		sendDetailedError(c, http.StatusInternalServerError, "FETCH_PROCESSORS_FAILED", "Failed to fetch payment processors", err)
+		return
+	}
+	c.JSON(http.StatusOK, processors)
+}
+
+// ToggleProcessor handles PATCH /v1/payment/processors/:id/toggle
+func (pc *PaymentController) ToggleProcessor(c *gin.Context) {
+	idStr := c.Param("id")
+	var id int
+	if _, err := fmt.Sscanf(idStr, "%d", &id); err != nil || id <= 0 {
+		sendDetailedError(c, http.StatusBadRequest, "BAD_REQUEST", "Invalid processor id", nil)
+		return
+	}
+
+	processor, err := pc.paymentService.TogglePaymentProcessor(c.Request.Context(), id)
+	if err != nil {
+		sendDetailedError(c, http.StatusInternalServerError, "TOGGLE_PROCESSOR_FAILED", "Failed to toggle processor", err)
+		return
+	}
+	c.JSON(http.StatusOK, processor)
 }
 
 // SimulateAddressDeposit handles POST /v1/payment/simulate-address-deposit
