@@ -79,10 +79,10 @@ func (s *adsServiceImpl) completeEndedCampaigns(ctx context.Context, now time.Ti
 		return nil
 	}
 
-	// 1. Mark expired campaigns as COMPLETED if their date has ended
+	// 1. Mark expired campaigns as COMPLETED if their date has ended (including unapproved/pending campaigns)
 	var campaigns []models.AdCampaign
 	if err := s.db.WithContext(ctx).
-		Where("LOWER(status::text) NOT IN (?, ?)", "completed", "ended").
+		Where(`LOWER(status::text) NOT IN (?, ?)`, "completed", "ended").
 		Find(&campaigns).Error; err == nil {
 		endedIDs := make([]int, 0)
 		for _, campaign := range campaigns {
@@ -97,15 +97,14 @@ func (s *adsServiceImpl) completeEndedCampaigns(ctx context.Context, now time.Ti
 		}
 	}
 
-	// 2. Self-heal: If an ad was previously marked COMPLETED but was approved and its end date is still in the future, ensure it is ACTIVE.
-	// Never touch PENDING campaigns here; approval must be explicit via ApproveCampaign.
-	var completedCampaigns []models.AdCampaign
+	// 2. Self-heal: If an ad was approved by admin, is not paused, and its end date is still in the future, ensure it is ACTIVE.
+	var nonActiveApprovedCampaigns []models.AdCampaign
 	if err := s.db.WithContext(ctx).
-		Where("LOWER(status::text) = ?", "completed").
+		Where(`LOWER(status::text) IN (?, ?)`, "completed", "pending").
 		Where(`"pausedByAdmin" IS NOT TRUE AND "approvedByAdmin" IS TRUE`).
-		Find(&completedCampaigns).Error; err == nil {
+		Find(&nonActiveApprovedCampaigns).Error; err == nil {
 		activeIDs := make([]int, 0)
-		for _, campaign := range completedCampaigns {
+		for _, campaign := range nonActiveApprovedCampaigns {
 			if !campaignHasEnded(&campaign, now) {
 				activeIDs = append(activeIDs, campaign.ID)
 			}
@@ -1178,6 +1177,8 @@ func (s *adsServiceImpl) GetCampaigns(ctx context.Context, q *CampaignListQuery)
 			orderClause = "views " + dir
 		case "clicks":
 			orderClause = "clicks " + dir
+		case "days", "duration":
+			orderClause = "days " + dir
 		case "status":
 			orderClause = "status " + dir
 		default:

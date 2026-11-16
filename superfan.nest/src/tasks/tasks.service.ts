@@ -54,9 +54,10 @@ export class TaskService {
 
     // ✅ Validate assignment date
     const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const assignmentDate = new Date(dto.assignmentDate);
 
-    if (assignmentDate < now) {
+    if (assignmentDate < todayStart) {
       throw new BadRequestException('Assignment date cannot be in the past');
     }
 
@@ -76,12 +77,12 @@ export class TaskService {
         description: dto.description,
         priority: dto.priority,
         status: dto.status,
-        dueDate: dto.dueDate,
+        dueDate: dto.dueDate ? new Date(dto.dueDate) : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
         assignmentDate: dto.assignmentDate,
         userId: dto.userId,
         assignerId: dto.assignerId,
         assignerFirstName: assigner.firstName,
-        assignerLastName: assigner.lastName,
+        assignerLastName: assigner.lastName || '',
         assignerUserName: assigner.username,
         isDeleted: false,
         assignTo: user.firstName,
@@ -100,14 +101,9 @@ export class TaskService {
     // 🔥 Emit task assignment
     const socketId = this.gateway.getUserSocket(dto.userId);
 
-    if (socketId) {
+    if (socketId && this.gateway.server) {
       this.gateway.server.to(socketId).emit('taskAssigned', create_task);
     }
-
-    // 🔥 Notify assigned user
-    this.gateway.server
-      .to(this.gateway['users'].get(dto.userId))
-      .emit('taskAssigned', create_task);
 
     return {
       create_task,

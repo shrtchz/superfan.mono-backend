@@ -97,7 +97,7 @@ export class TaskController {
   @Public()
   @Delete('/tasks')
   deleteAllTasks() {
-    return this.taskService.deleteAllActivities();
+    return this.taskService.deleteAllTasks();
   }
 
   @Public()
@@ -411,8 +411,14 @@ async exportUserPayouts(
   }
 
   @Public()
+  @Delete('/delete-task/:id')
+  deleteTaskById(@Param('id', ParseIntPipe) id: number) {
+    return this.taskService.deleteTasks(id);
+  }
+
+  @Public()
   @Delete('/tasks/:id')
-  deleteTask(@Param('id') id: number) {
+  deleteTask(@Param('id', ParseIntPipe) id: number) {
     return this.taskService.deleteTasks(id);
   }
 }
