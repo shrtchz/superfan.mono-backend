@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -20,8 +21,27 @@ type MonnifyProvider struct {
 }
 
 func NewMonnifyProvider(apiKey, secretKey, baseURL, contractCode string) *MonnifyProvider {
+	if apiKey == "" {
+		apiKey = os.Getenv("PROD_MONNIFY_API_KEY")
+		if apiKey == "" {
+			apiKey = os.Getenv("MONNIFY_API_KEY")
+		}
+	}
+	if secretKey == "" {
+		secretKey = os.Getenv("PROD_MONNIFY_SECRET_KEY")
+		if secretKey == "" {
+			secretKey = os.Getenv("MONNIFY_SECRET_KEY")
+		}
+	}
 	if baseURL == "" {
-		baseURL = "https://sandbox.monnify.com"
+		baseURL = os.Getenv("MONNIFY_URI")
+	}
+	if baseURL == "" {
+		if strings.HasPrefix(apiKey, "MK_PROD_") {
+			baseURL = "https://api.monnify.com"
+		} else {
+			baseURL = "https://sandbox.monnify.com"
+		}
 	}
 	if contractCode == "" {
 		contractCode = os.Getenv("PROD_MONNIFY_CONTRACT_CODE")
