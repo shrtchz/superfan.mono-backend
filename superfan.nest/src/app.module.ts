@@ -40,6 +40,7 @@ import { WaitlistModule } from './waitlist/waitlist.module';
 import { ShopModule } from './shop/shop.module';
 import { PodcastModule } from './podcast/podcast.module';
 import { FriendInviteModule } from './friend-invite/friend-invite.module';
+import { PaymentProcessorModule } from './payment-processor/payment-processor.module';
 import { VersusModule } from './versus/versus.module';
 
 @Module({
@@ -92,6 +93,7 @@ ShopModule,
     PodcastModule,
     FriendInviteModule,
     VersusModule,
+    PaymentProcessorModule,
     BullModule.forRootAsync({
       imports: [ConfigModule],
       useFactory: (configService: ConfigService) => {

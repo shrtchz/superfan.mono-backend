@@ -135,7 +135,7 @@ if (!existingRole) {
   console.log("Permissions seeded");
 
   // ✅ Seed payment processors
-  const processors = ["monnify", "flutterwave", "busha"];
+  const processors = ["monnify", "flutterwave", "busha", "cngn", "bachs"];
 
   for (const name of processors) {
     const existing = await prisma.paymentProcessor.findFirst({
