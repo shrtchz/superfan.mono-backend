@@ -130,12 +130,32 @@ export class TaskService {
       },
     });
 
-    // 🔥 Emit to task room (real-time)
-    this.gateway.server
-      .to(`task-${data.taskId}`)
-      .emit('newMessage', newMessage);
+    const sender = await this.userService.findUserById(data.senderId);
+    const senderName = sender
+      ? `${sender.firstName || ''} ${sender.lastName || ''}`.trim() || sender.username
+      : 'User';
 
-    return newMessage;
+    const enrichedMessage = {
+      ...newMessage,
+      sender: sender
+        ? {
+            id: sender.id,
+            firstName: sender.firstName,
+            lastName: sender.lastName,
+            username: sender.username,
+          }
+        : null,
+      senderName,
+    };
+
+    // 🔥 Emit to task room (real-time)
+    if (this.gateway?.server) {
+      this.gateway.server
+        .to(`task-${data.taskId}`)
+        .emit('newMessage', enrichedMessage);
+    }
+
+    return enrichedMessage;
   }
 
   // async fetchMessages(taskId: number) {
@@ -165,6 +185,9 @@ export class TaskService {
     const enrichedMessages = await Promise.all(
       messages.map(async (msg) => {
         const sender = await this.userService.findUserById(msg.senderId);
+        const senderName = sender
+          ? `${sender.firstName || ''} ${sender.lastName || ''}`.trim() || sender.username
+          : 'User';
 
         return {
           ...msg,
@@ -176,6 +199,7 @@ export class TaskService {
                 username: sender.username,
               }
             : null,
+          senderName,
         };
       }),
     );
@@ -203,23 +227,31 @@ export class TaskService {
     });
 
     // 🔥 Emit real-time update
-    this.gateway.server
-      .to(`task-${existingMessage.taskId}`)
-      .emit('messageEdited', updatedMessage);
+    if (this.gateway?.server) {
+      this.gateway.server
+        .to(`task-${existingMessage.taskId}`)
+        .emit('messageEdited', {
+          id: String(updatedMessage.id),
+          message: updatedMessage.message,
+          updatedAt: new Date().toISOString(),
+        });
+    }
 
     return updatedMessage;
   }
 
   // 🗑 Delete Message
   async deleteMessage(messageId: string) {
-    let existingTask = await prisma.taskMessage.delete({
+    const existingTask = await prisma.taskMessage.delete({
       where: { id: Number(messageId) },
     });
 
     // 🔥 Emit real-time delete
-    this.gateway.server
-      .to(`task-${existingTask.taskId}`)
-      .emit('messageDeleted', { id: messageId });
+    if (this.gateway?.server) {
+      this.gateway.server
+        .to(`task-${existingTask.taskId}`)
+        .emit('messageDeleted', { id: String(messageId) });
+    }
 
     return {
       message: 'Message deleted successfully',
