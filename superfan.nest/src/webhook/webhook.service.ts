@@ -243,7 +243,7 @@ const bankTransfer = await prisma.bankTransfer.findFirst({
 
 if (bankTransfer) {
   this.logger.log(
-    `Matched BankTransfer | User: ${bankTransfer.userId}`,
+    `Matched BankTransfer | User: ${bankTransfer.userId} | PaymentStatus: ${eventData.paymentStatus}`,
   );
 
   if (bankTransfer.status === 'PAID') {
@@ -252,54 +252,62 @@ if (bankTransfer) {
   }
 
   const paymentStatus = eventData.paymentStatus;
-  // Map payment status to valid BankTransferStatus enum values
-  // Note: 'SUCCESS' requires migration 20260603124718 to be applied
   const mappedStatus = paymentStatus === 'PAID' ? 'PAID' : (paymentStatus || 'PENDING');
 
-  await prisma.$transaction([
-    prisma.bankTransfer.update({
-      where: { id: bankTransfer.id },
-      data: {
-        status: mappedStatus,
-        paidAt: paymentStatus === 'PAID' ? (eventData.paidOn ? new Date(eventData.paidOn) : new Date()) : null,
-        completedAt: paymentStatus === 'PAID' ? new Date() : null,
-      },
-    }),
-
-    prisma.walletTransaction.create({
-      data: {
-        userId: bankTransfer.userId,
-        amount: amount,
-        type: 'credit',
-        transactionType: 'FUNDING',
-        status: paymentStatus === 'PAID' ? 'SUCCESS' : 'PENDING',
-        reference: eventData.paymentReference,
-        payment_method: eventData.paymentMethod,
-        account_name: bankTransfer.accountName,
-        bank_name: bankTransfer.bankName,
-        account_no: bankTransfer.accountNumber,
-        account_type: 'checking',
-        trx_ref: `${generateFiveUniqueRandomNumbers()}`
-      },
-    }),
-
-    prisma.activityWallet.create({
-      data: {
-        userId: bankTransfer.userId,
-        type: 'credit',
-        title: 'Deposit - Bank Transfer',
-        description: 'Deposit - Bank Transfer',
-        amount: amount,
-        currency: currency,
-        reference: eventData.paymentReference,
-        status: paymentStatus === 'PAID' ? 'SUCCESS' : 'PENDING',
-        metadata: {
-          bankName: bankTransfer.bankName,
-          accountNumber: bankTransfer.accountNumber,
+  if (paymentStatus === 'PAID') {
+    await prisma.$transaction([
+      prisma.bankTransfer.update({
+        where: { id: bankTransfer.id },
+        data: {
+          status: 'PAID',
+          paidAt: eventData.paidOn ? new Date(eventData.paidOn) : new Date(),
+          completedAt: new Date(),
         },
-      },
-    }),
-  ]);
+      }),
+
+      prisma.wallet.update({
+        where: { userId: bankTransfer.userId },
+        data: {
+          balance: { increment: amount },
+          personalBalance: { increment: amount },
+          checkingBalance: { increment: amount },
+        },
+      }),
+
+      prisma.walletTransaction.create({
+        data: {
+          userId: bankTransfer.userId,
+          amount: amount,
+          type: 'credit',
+          transactionType: 'FUNDING',
+          status: 'SUCCESS',
+          reference: eventData.paymentReference,
+          payment_method: eventData.paymentMethod || 'ACCOUNT_TRANSFER',
+          account_name: bankTransfer.accountName,
+          bank_name: bankTransfer.bankName,
+          account_no: bankTransfer.accountNumber,
+          account_type: 'checking',
+          trx_ref: `${generateFiveUniqueRandomNumbers()}`
+        },
+      }),
+
+      prisma.activityWallet.create({
+        data: {
+          userId: bankTransfer.userId,
+          type: 'credit',
+          title: 'Deposit - Bank Transfer',
+          description: 'Deposit - Bank Transfer',
+          amount: amount,
+          currency: currency,
+          reference: eventData.paymentReference,
+          status: 'SUCCESS',
+          metadata: {
+            bankName: bankTransfer.bankName,
+            accountNumber: bankTransfer.accountNumber,
+          },
+        },
+      }),
+    ]);
 
     await this.notificationService.createNotification(
       bankTransfer.userId,
@@ -307,6 +315,15 @@ if (bankTransfer) {
       `Your wallet has been credited with ${currency} ${amount}`,
       'wallet_credited'
     );
+  } else {
+    this.logger.warn(`BankTransfer not paid (status: ${paymentStatus}), updating status without crediting wallet`);
+    await prisma.bankTransfer.update({
+      where: { id: bankTransfer.id },
+      data: {
+        status: mappedStatus,
+      },
+    });
+  }
 
   return;
 }

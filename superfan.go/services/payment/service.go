@@ -1276,8 +1276,15 @@ func (s *PaymentService) InitializeTransaction(ctx context.Context, payload map[
 
 	activeProc, _ := s.GetActivePaymentProcessor(ctx)
 	procName := "monnify"
+	var customPubKey, customSecKey string
 	if activeProc != nil && activeProc.Name != "" {
 		procName = strings.ToLower(activeProc.Name)
+		if activeProc.PublicKey != nil {
+			customPubKey = *activeProc.PublicKey
+		}
+		if activeProc.SecretKey != nil {
+			customSecKey = *activeProc.SecretKey
+		}
 	}
 
 	log.Printf("[PaymentService] Active processor for InitializeTransaction: %s", procName)
@@ -1322,7 +1329,22 @@ func (s *PaymentService) InitializeTransaction(ctx context.Context, payload map[
 		return res, nil
 
 	default:
-		result, err := s.monnifyProvider.InitializeTransaction(ctx, payload)
+		provider := s.monnifyProvider
+		if customPubKey != "" && customSecKey != "" {
+			mUri := "https://api.monnify.com"
+			if !strings.HasPrefix(customPubKey, "MK_PROD_") {
+				mUri = "https://sandbox.monnify.com"
+			}
+			mContract := os.Getenv("PROD_MONNIFY_CONTRACT_CODE")
+			if mContract == "" {
+				mContract = os.Getenv("MONNIFY_CONTRACT_CODE")
+			}
+			if mContract == "" {
+				mContract = "943294313374"
+			}
+			provider = providers.NewMonnifyProvider(customPubKey, customSecKey, mUri, mContract)
+		}
+		result, err := provider.InitializeTransaction(ctx, payload)
 		if err != nil {
 			log.Printf("[PaymentService] InitializeTransaction failed: %v", err)
 			return nil, err
@@ -1745,8 +1767,15 @@ func (s *PaymentService) ChargeCardAndCreditWallet(ctx context.Context, userID i
 
 	activeProc, _ := s.GetActivePaymentProcessor(ctx)
 	procName := "monnify"
+	var customPubKey, customSecKey string
 	if activeProc != nil && activeProc.Name != "" {
 		procName = strings.ToLower(activeProc.Name)
+		if activeProc.PublicKey != nil {
+			customPubKey = *activeProc.PublicKey
+		}
+		if activeProc.SecretKey != nil {
+			customSecKey = *activeProc.SecretKey
+		}
 	}
 	log.Printf("[PaymentService] Active processor for ChargeCardAndCreditWallet: %s", procName)
 
@@ -1785,8 +1814,23 @@ func (s *PaymentService) ChargeCardAndCreditWallet(ctx context.Context, userID i
 	default:
 		// Step 1: Call Monnify charge-card API
 		log.Printf("[PaymentService] Step 1: Calling Monnify ChargeCard...")
+		provider := s.monnifyProvider
+		if customPubKey != "" && customSecKey != "" {
+			mUri := "https://api.monnify.com"
+			if !strings.HasPrefix(customPubKey, "MK_PROD_") {
+				mUri = "https://sandbox.monnify.com"
+			}
+			mContract := os.Getenv("PROD_MONNIFY_CONTRACT_CODE")
+			if mContract == "" {
+				mContract = os.Getenv("MONNIFY_CONTRACT_CODE")
+			}
+			if mContract == "" {
+				mContract = "943294313374"
+			}
+			provider = providers.NewMonnifyProvider(customPubKey, customSecKey, mUri, mContract)
+		}
 		var err error
-		chargeResult, err = s.monnifyProvider.ChargeCard(ctx, chargePayload)
+		chargeResult, err = provider.ChargeCard(ctx, chargePayload)
 		if err != nil {
 			log.Printf("[PaymentService] ChargeCard FAILED: %v", err)
 			return nil, fmt.Errorf("card charge failed: %w", err)
@@ -1816,8 +1860,10 @@ func (s *PaymentService) ChargeCardAndCreditWallet(ctx context.Context, userID i
 		return nil, fmt.Errorf("card charge was not successful: %s", msg)
 	}
 
-	if statusUpper != "SUCCESS" && statusUpper != "PAID" && statusUpper != "COMPLETED" {
-		log.Printf("[PaymentService] Unexpected charge status: %s - proceeding only if requestSuccessful=true", statusUpper)
+	// Only credit wallet if status is strictly confirmed SUCCESS or PAID
+	if statusUpper != "SUCCESS" && statusUpper != "PAID" {
+		log.Printf("[PaymentService] Card charge status is '%s' (not SUCCESS/PAID) - wallet will NOT be credited", chargeStatus)
+		return nil, fmt.Errorf("card charge was not completed (status: %s); wallet was not credited", chargeStatus)
 	}
 
 	cardMeta, metaErr := extractCardMetadataFromChargeResponse(chargePayload, chargeResult)
@@ -2067,7 +2113,23 @@ func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amoun
 // QueryTransaction queries the status of a Monnify transaction.
 func (s *PaymentService) QueryTransaction(ctx context.Context, transactionReference string) (map[string]interface{}, error) {
 	log.Printf("[PaymentService] QueryTransaction - txRef=%s", transactionReference)
-	return s.monnifyProvider.QueryTransaction(ctx, transactionReference)
+	activeProc, _ := s.GetActivePaymentProcessor(ctx)
+	provider := s.monnifyProvider
+	if activeProc != nil && activeProc.PublicKey != nil && activeProc.SecretKey != nil && *activeProc.PublicKey != "" && *activeProc.SecretKey != "" {
+		mUri := "https://api.monnify.com"
+		if !strings.HasPrefix(*activeProc.PublicKey, "MK_PROD_") {
+			mUri = "https://sandbox.monnify.com"
+		}
+		mContract := os.Getenv("PROD_MONNIFY_CONTRACT_CODE")
+		if mContract == "" {
+			mContract = os.Getenv("MONNIFY_CONTRACT_CODE")
+		}
+		if mContract == "" {
+			mContract = "943294313374"
+		}
+		provider = providers.NewMonnifyProvider(*activeProc.PublicKey, *activeProc.SecretKey, mUri, mContract)
+	}
+	return provider.QueryTransaction(ctx, transactionReference)
 }
 
 // CreditUserWallet is used for bank transfer and webhook-based credits.
