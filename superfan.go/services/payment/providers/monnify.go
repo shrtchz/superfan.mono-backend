@@ -49,6 +49,9 @@ func NewMonnifyProvider(apiKey, secretKey, baseURL, contractCode string) *Monnif
 	if contractCode == "" {
 		contractCode = os.Getenv("MONNIFY_CONTRACT_CODE")
 	}
+	if contractCode == "" {
+		contractCode = "943294313374"
+	}
 	return &MonnifyProvider{
 		ApiKey:       apiKey,
 		SecretKey:    secretKey,
@@ -183,6 +186,9 @@ func (m *MonnifyProvider) InitializeTransaction(ctx context.Context, payload map
 	if contractCode == "" {
 		contractCode = os.Getenv("MONNIFY_CONTRACT_CODE")
 	}
+	if contractCode == "" {
+		contractCode = "943294313374"
+	}
 	payload["contractCode"] = contractCode
 
 	if _, ok := payload["currencyCode"]; !ok {
@@ -261,6 +267,9 @@ func (m *MonnifyProvider) InitPaymentByTransfer(ctx context.Context, payload map
 	}
 	if contractCode == "" {
 		contractCode = os.Getenv("MONNIFY_CONTRACT_CODE")
+	}
+	if contractCode == "" {
+		contractCode = "943294313374"
 	}
 
 	amount, _ := payload["amount"].(float64)
