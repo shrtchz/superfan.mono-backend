@@ -160,26 +160,7 @@ func (m *MonnifyProvider) InitializeTransaction(ctx context.Context, payload map
 
 	token, err := m.getAccessToken(ctx)
 	if err != nil {
-		log.Printf("[MONNIFY] Auth failed: %v - using sandbox fallback", err)
-		ref, _ := payload["paymentReference"].(string)
-		if ref == "" {
-			ref = fmt.Sprintf("MNFY-%d", time.Now().UnixNano())
-		}
-		amount, _ := payload["amount"].(float64)
-		sandboxResp := map[string]interface{}{
-			"requestSuccessful": true,
-			"responseCode":      "0",
-			"responseMessage":   "Transaction Initialized (Sandbox Fallback)",
-			"responseBody": map[string]interface{}{
-				"transactionReference": ref,
-				"paymentReference":     ref,
-				"amount":               amount,
-				"currencyCode":         "NGN",
-				"checkoutUrl":          "",
-			},
-		}
-		log.Printf("[MONNIFY] Sandbox fallback response: %+v", sandboxResp)
-		return sandboxResp, nil
+		return nil, fmt.Errorf("monnify authentication failed: %w", err)
 	}
 
 	// Inject required fields
@@ -424,25 +405,7 @@ func (m *MonnifyProvider) ChargeCard(ctx context.Context, payload map[string]int
 
 	token, err := m.getAccessToken(ctx)
 	if err != nil {
-		log.Printf("[MONNIFY] Auth failed for ChargeCard: %v - using sandbox fallback", err)
-		txRef, _ := payload["transactionReference"].(string)
-		if txRef == "" {
-			txRef = fmt.Sprintf("MNFY-CARD-%d", time.Now().UnixNano())
-		}
-		sandboxResp := map[string]interface{}{
-			"requestSuccessful": true,
-			"responseCode":      "0",
-			"responseMessage":   "success",
-			"responseBody": map[string]interface{}{
-				"status":               "SUCCESS",
-				"message":              "Transaction Successful (Sandbox)",
-				"transactionReference": txRef,
-				"paymentReference":     txRef,
-				"authorizedAmount":     payload["amount"],
-			},
-		}
-		log.Printf("[MONNIFY] ChargeCard sandbox fallback response: %+v", sandboxResp)
-		return sandboxResp, nil
+		return nil, fmt.Errorf("monnify authentication failed: %w", err)
 	}
 
 	// Extract and validate required fields
@@ -545,20 +508,7 @@ func (m *MonnifyProvider) QueryTransaction(ctx context.Context, transactionRefer
 
 	token, err := m.getAccessToken(ctx)
 	if err != nil {
-		log.Printf("[MONNIFY] Auth failed for QueryTransaction: %v - using sandbox fallback", err)
-		sandboxResp := map[string]interface{}{
-			"requestSuccessful": true,
-			"responseCode":      "0",
-			"responseMessage":   "success",
-			"responseBody": map[string]interface{}{
-				"transactionReference": transactionReference,
-				"paymentStatus":        "PAID",
-				"amountPaid":           "1000.00",
-				"totalPayable":         "1000.00",
-			},
-		}
-		log.Printf("[MONNIFY] QueryTransaction sandbox fallback: %+v", sandboxResp)
-		return sandboxResp, nil
+		return nil, fmt.Errorf("monnify authentication failed: %w", err)
 	}
 
 	url := fmt.Sprintf("%s/api/v2/transactions/%s", m.BaseURL, transactionReference)
@@ -642,28 +592,7 @@ func (m *MonnifyProvider) DisburseSingle(ctx context.Context, payload map[string
 
 	token, err := m.getAccessToken(ctx)
 	if err != nil {
-		log.Printf("[MONNIFY] Auth failed for DisburseSingle: %v - using sandbox fallback", err)
-		ref, _ := payload["reference"].(string)
-		if ref == "" {
-			ref = fmt.Sprintf("DISB-%d", time.Now().UnixNano())
-		}
-		sandboxResp := map[string]interface{}{
-			"requestSuccessful": true,
-			"responseCode":      "0",
-			"responseMessage":   "success",
-			"responseBody": map[string]interface{}{
-				"amount":                   payload["amount"],
-				"reference":                ref,
-				"status":                   "SUCCESS",
-				"date":                     time.Now().Format(time.RFC3339),
-				"narration":                payload["narration"],
-				"destinationAccountNumber": payload["destinationAccountNumber"],
-				"destinationAccountName":   payload["destinationAccountName"],
-				"destinationBankCode":      payload["destinationBankCode"],
-			},
-		}
-		log.Printf("[MONNIFY] DisburseSingle sandbox fallback: %+v", sandboxResp)
-		return sandboxResp, nil
+		return nil, fmt.Errorf("monnify authentication failed: %w", err)
 	}
 
 	url := fmt.Sprintf("%s/api/v2/disbursements/single", m.BaseURL)
@@ -703,16 +632,7 @@ func (m *MonnifyProvider) ValidateDisbursementOTP(ctx context.Context, reference
 
 	token, err := m.getAccessToken(ctx)
 	if err != nil {
-		log.Printf("[MONNIFY] Auth failed for OTP validation: %v - sandbox success fallback", err)
-		return map[string]interface{}{
-			"requestSuccessful": true,
-			"responseCode":      "0",
-			"responseMessage":   "Withdrawal authorized successfully",
-			"responseBody": map[string]interface{}{
-				"reference": reference,
-				"status":    "SUCCESS",
-			},
-		}, nil
+		return nil, fmt.Errorf("monnify authentication failed: %w", err)
 	}
 
 	url := fmt.Sprintf("%s/api/v2/disbursements/single/validate-otp", m.BaseURL)
@@ -754,17 +674,7 @@ func (m *MonnifyProvider) ValidateBankAccount(ctx context.Context, accountNumber
 
 	token, err := m.getAccessToken(ctx)
 	if err != nil {
-		log.Printf("[MONNIFY] Auth failed for account validation: %v - returning sandbox preview", err)
-		return map[string]interface{}{
-			"requestSuccessful": true,
-			"responseCode":      "0",
-			"responseMessage":   "success",
-			"responseBody": map[string]interface{}{
-				"accountNumber": accountNumber,
-				"accountName":   "SAMPLE BENEFICIARY",
-				"bankCode":      bankCode,
-			},
-		}, nil
+		return nil, fmt.Errorf("monnify authentication failed: %w", err)
 	}
 
 	url := fmt.Sprintf("%s/api/v1/disbursements/account/validate?accountNumber=%s&bankCode=%s", m.BaseURL, accountNumber, bankCode)
