@@ -1628,7 +1628,19 @@ func (s *PaymentService) InitPaymentByTransfer(ctx context.Context, payload map[
 	default: // Monnify
 		provider := s.monnifyProvider
 		if customPubKey != "" && customSecKey != "" {
-			provider = providers.NewMonnifyProvider(customPubKey, customSecKey, os.Getenv("MONNIFY_URI"), os.Getenv("PROD_MONNIFY_CONTRACT_CODE"))
+			mUri := os.Getenv("MONNIFY_URI")
+			if mUri == "" {
+				if strings.HasPrefix(customPubKey, "MK_PROD_") {
+					mUri = "https://api.monnify.com"
+				} else {
+					mUri = "https://sandbox.monnify.com"
+				}
+			}
+			mContract := os.Getenv("PROD_MONNIFY_CONTRACT_CODE")
+			if mContract == "" {
+				mContract = os.Getenv("MONNIFY_CONTRACT_CODE")
+			}
+			provider = providers.NewMonnifyProvider(customPubKey, customSecKey, mUri, mContract)
 		}
 
 		monnifyPayload := map[string]interface{}{
