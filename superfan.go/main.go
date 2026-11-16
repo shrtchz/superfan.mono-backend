@@ -205,7 +205,23 @@ func init() {
 	qc = controllers.NewQuizController(qs)
 
 	// Wire Payment
-	monnify := providers.NewMonnifyProvider(get("PROD_MONNIFY_API_KEY"), get("PROD_MONNIFY_SECRET_KEY"), get("MONNIFY_URI"), get("MONNIFY_CONTRACT_CODE"))
+	monnifyContractCode := get("PROD_MONNIFY_CONTRACT_CODE")
+	if monnifyContractCode == "" {
+		monnifyContractCode = get("MONNIFY_CONTRACT_CODE")
+	}
+	if monnifyContractCode == "" {
+		monnifyContractCode = "943294313374"
+	}
+	monnifyAPIKey := get("PROD_MONNIFY_API_KEY")
+	if monnifyAPIKey == "" {
+		monnifyAPIKey = get("MONNIFY_API_KEY")
+	}
+	monnifySecretKey := get("PROD_MONNIFY_SECRET_KEY")
+	if monnifySecretKey == "" {
+		monnifySecretKey = get("MONNIFY_SECRET_KEY")
+	}
+	monnifyURI := get("MONNIFY_URI")
+	monnify := providers.NewMonnifyProvider(monnifyAPIKey, monnifySecretKey, monnifyURI, monnifyContractCode)
 	bitnobURL := get("BITNOB_URL")
 	if bitnobURL == "" {
 		bitnobURL = "https://api.bitnob.co"

@@ -33,14 +33,14 @@ func NewMonnifyProvider(apiKey, secretKey, baseURL, contractCode string) *Monnif
 			secretKey = os.Getenv("MONNIFY_SECRET_KEY")
 		}
 	}
-	if baseURL == "" {
+	if strings.HasPrefix(apiKey, "MK_PROD_") {
+		baseURL = "https://api.monnify.com"
+	} else if strings.HasPrefix(apiKey, "MK_TEST_") {
+		baseURL = "https://sandbox.monnify.com"
+	} else if baseURL == "" {
 		baseURL = os.Getenv("MONNIFY_URI")
-	}
-	if baseURL == "" {
-		if strings.HasPrefix(apiKey, "MK_PROD_") {
+		if baseURL == "" {
 			baseURL = "https://api.monnify.com"
-		} else {
-			baseURL = "https://sandbox.monnify.com"
 		}
 	}
 	if contractCode == "" {
@@ -48,6 +48,9 @@ func NewMonnifyProvider(apiKey, secretKey, baseURL, contractCode string) *Monnif
 	}
 	if contractCode == "" {
 		contractCode = os.Getenv("MONNIFY_CONTRACT_CODE")
+	}
+	if contractCode == "" {
+		contractCode = "943294313374"
 	}
 	return &MonnifyProvider{
 		ApiKey:       apiKey,
@@ -98,8 +101,15 @@ func (m *MonnifyProvider) getAccessToken(ctx context.Context) (string, error) {
 		return "", errors.New("monnify API key or secret key not configured")
 	}
 
-	url := fmt.Sprintf("%s/api/v1/auth/login", m.BaseURL)
-	log.Printf("[MONNIFY] Authenticating with %s", url)
+	targetURL := m.BaseURL
+	if strings.HasPrefix(m.ApiKey, "MK_PROD_") {
+		targetURL = "https://api.monnify.com"
+	} else if strings.HasPrefix(m.ApiKey, "MK_TEST_") {
+		targetURL = "https://sandbox.monnify.com"
+	}
+	m.BaseURL = targetURL
+	url := fmt.Sprintf("%s/api/v1/auth/login", targetURL)
+	log.Printf("[MONNIFY] Authenticating with %s (apiKey prefix=%s)", url, m.ApiKey[:min(7, len(m.ApiKey))])
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, nil)
 	if err != nil {
@@ -183,6 +193,9 @@ func (m *MonnifyProvider) InitializeTransaction(ctx context.Context, payload map
 	if contractCode == "" {
 		contractCode = os.Getenv("MONNIFY_CONTRACT_CODE")
 	}
+	if contractCode == "" {
+		contractCode = "943294313374"
+	}
 	payload["contractCode"] = contractCode
 
 	if _, ok := payload["currencyCode"]; !ok {
@@ -261,6 +274,9 @@ func (m *MonnifyProvider) InitPaymentByTransfer(ctx context.Context, payload map
 	}
 	if contractCode == "" {
 		contractCode = os.Getenv("MONNIFY_CONTRACT_CODE")
+	}
+	if contractCode == "" {
+		contractCode = "943294313374"
 	}
 
 	amount, _ := payload["amount"].(float64)
