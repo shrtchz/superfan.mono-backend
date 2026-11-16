@@ -7,6 +7,7 @@ import {
   Patch,
   Post,
   Put,
+  Query,
 } from '@nestjs/common';
 import { Public } from '../common/decorators/public.decorator';
 import { ConfigurePaymentProcessorDto } from './dto/payment-processor.dto';
@@ -23,8 +24,8 @@ export class PaymentProcessorController {
   }
 
   @Get('active')
-  async getActive() {
-    return this.processorService.getActiveProcessor();
+  async getActive(@Query('channel') channel?: string) {
+    return this.processorService.getActiveProcessor(channel);
   }
 
   @Patch('cngn/toggle')
