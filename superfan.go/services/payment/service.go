@@ -9,6 +9,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -1329,6 +1330,394 @@ func (s *PaymentService) InitializeTransaction(ctx context.Context, payload map[
 		log.Printf("[PaymentService] InitializeTransaction success: %+v", result)
 		return result, nil
 	}
+}
+
+// InitPaymentByTransfer initializes a bank transfer virtual account using the currently active processor.
+func (s *PaymentService) InitPaymentByTransfer(ctx context.Context, payload map[string]interface{}) (map[string]interface{}, error) {
+	log.Printf("[PaymentService] InitPaymentByTransfer - payload: %+v", payload)
+
+	var userID int
+	if uidFloat, ok := payload["userId"].(float64); ok && uidFloat > 0 {
+		userID = int(uidFloat)
+	} else if uidInt, ok := payload["userId"].(int); ok && uidInt > 0 {
+		userID = uidInt
+	}
+
+	amount, _ := payload["amount"].(float64)
+	if amount <= 0 {
+		if amtInt, ok := payload["amount"].(int); ok {
+			amount = float64(amtInt)
+		}
+	}
+	if amount <= 0 {
+		amount = 1000
+	}
+
+	if userID > 0 {
+		if err := s.ValidateTransactionLimits(ctx, userID, amount, "DEPOSIT"); err != nil {
+			return nil, err
+		}
+	}
+
+	activeProc, _ := s.GetActivePaymentProcessor(ctx)
+	procName := "monnify"
+	var customPubKey, customSecKey string
+	if activeProc != nil && activeProc.Name != "" {
+		procName = strings.ToLower(activeProc.Name)
+		if activeProc.PublicKey != nil {
+			customPubKey = *activeProc.PublicKey
+		}
+		if activeProc.SecretKey != nil {
+			customSecKey = *activeProc.SecretKey
+		}
+	}
+	log.Printf("[PaymentService] Active processor for InitPaymentByTransfer: %s", procName)
+
+	customerEmail, _ := payload["customerEmail"].(string)
+	if customerEmail == "" {
+		customerEmail = "user@superfan.ng"
+	}
+	customerName, _ := payload["customerName"].(string)
+	if customerName == "" {
+		customerName = customerEmail
+	}
+	paymentRef, _ := payload["paymentReference"].(string)
+	if paymentRef == "" {
+		paymentRef = fmt.Sprintf("PAY-%d", time.Now().UnixNano())
+	}
+	paymentDesc, _ := payload["paymentDescription"].(string)
+	if paymentDesc == "" {
+		paymentDesc = "Wallet Bank Transfer Top-up"
+	}
+
+	var res map[string]interface{}
+	var bankTx models.BankTransfer
+
+	switch procName {
+	case "flutterwave":
+		secKey := customSecKey
+		if secKey == "" {
+			secKey = os.Getenv("FLW_SECRET_KEY")
+		}
+		if secKey == "" {
+			return nil, errors.New("flutterwave secret key is not configured")
+		}
+
+		flwReqBody := map[string]interface{}{
+			"tx_ref":       paymentRef,
+			"amount":       fmt.Sprintf("%.2f", amount),
+			"currency":     "NGN",
+			"email":        customerEmail,
+			"fullname":     customerName,
+			"is_permanent": false,
+		}
+		bodyBytes, _ := json.Marshal(flwReqBody)
+
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", "https://api.flutterwave.com/v3/charges?type=bank_transfer", bytes.NewBuffer(bodyBytes))
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("Authorization", "Bearer "+secKey)
+		httpReq.Header.Set("Content-Type", "application/json")
+
+		client := &http.Client{Timeout: 20 * time.Second}
+		resp, err := client.Do(httpReq)
+		if err != nil {
+			return nil, fmt.Errorf("flutterwave charge request failed: %w", err)
+		}
+		defer resp.Body.Close()
+
+		var flwRes map[string]interface{}
+		if err := json.NewDecoder(resp.Body).Decode(&flwRes); err != nil {
+			return nil, fmt.Errorf("failed to decode flutterwave response: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("flutterwave request failed with status %d: %v", resp.StatusCode, flwRes)
+		}
+
+		meta, _ := flwRes["meta"].(map[string]interface{})
+		auth, _ := meta["authorization"].(map[string]interface{})
+		data, _ := flwRes["data"].(map[string]interface{})
+
+		accNum := ""
+		bankName := "Flutterwave MFB"
+		accName := customerName
+		expiresOn := time.Now().Add(60 * time.Minute).Format(time.RFC3339)
+		txRef := paymentRef
+		totalPayable := amount
+
+		if auth != nil {
+			if a, ok := auth["transfer_account"].(string); ok && a != "" {
+				accNum = a
+			}
+			if b, ok := auth["transfer_bank"].(string); ok && b != "" {
+				bankName = b
+			}
+			if n, ok := auth["transfer_note"].(string); ok && n != "" {
+				accName = n
+			}
+			if exp, ok := auth["account_expiration"].(string); ok && exp != "" {
+				expiresOn = exp
+			}
+			if amtStr, ok := auth["transfer_amount"].(string); ok {
+				fmt.Sscanf(amtStr, "%f", &totalPayable)
+			}
+			if trfRef, ok := auth["transfer_reference"].(string); ok && trfRef != "" {
+				txRef = trfRef
+			}
+		}
+		if accNum == "" && data != nil {
+			if a, ok := data["account_number"].(string); ok && a != "" {
+				accNum = a
+			}
+			if b, ok := data["bank_name"].(string); ok && b != "" {
+				bankName = b
+			}
+			if r, ok := data["tx_ref"].(string); ok && r != "" {
+				txRef = r
+			}
+		}
+
+		if accNum == "" {
+			return nil, fmt.Errorf("flutterwave did not return virtual account details: %v", flwRes)
+		}
+
+		res = map[string]interface{}{
+			"requestSuccessful": true,
+			"responseCode":      "0",
+			"responseMessage":   "Virtual Account Generated Successfully",
+			"responseBody": map[string]interface{}{
+				"accountNumber":        accNum,
+				"accountName":          accName,
+				"bankName":             bankName,
+				"bankCode":             "232",
+				"expiresOn":            expiresOn,
+				"totalPayable":         totalPayable,
+				"fee":                  0,
+				"transactionReference": txRef,
+				"paymentReference":     paymentRef,
+				"processor":            "flutterwave",
+			},
+		}
+
+		bankTx = models.BankTransfer{
+			UserID:                 userID,
+			TransactionReference:   txRef,
+			PaymentReference:       paymentRef,
+			AccountNumber:          accNum,
+			AccountName:            accName,
+			BankName:               bankName,
+			BankCode:               "232",
+			Amount:                 amount,
+			Fee:                    0,
+			TotalPayable:           totalPayable,
+			Status:                 "PENDING",
+			RequestTime:            time.Now(),
+			ExpiresOn:              time.Now().Add(60 * time.Minute),
+			AccountDurationSeconds: 3600,
+			CreatedAt:              time.Now(),
+			UpdatedAt:              time.Now(),
+		}
+
+	case "bachs":
+		secKey := customSecKey
+		if secKey == "" {
+			secKey = os.Getenv("BACHS_SECRET_KEY")
+		}
+		if secKey == "" {
+			return nil, errors.New("bachs secret key is not configured")
+		}
+
+		bachsReqBody := map[string]interface{}{
+			"currency":  "NGN",
+			"reference": paymentRef,
+			"amount":    amount,
+			"customer": map[string]interface{}{
+				"email": customerEmail,
+				"name":  customerName,
+			},
+		}
+		bodyBytes, _ := json.Marshal(bachsReqBody)
+
+		bachsUrl := "https://api.bachs.io/v1/virtual-accounts"
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", bachsUrl, bytes.NewBuffer(bodyBytes))
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("Authorization", "Bearer "+secKey)
+		httpReq.Header.Set("Content-Type", "application/json")
+
+		client := &http.Client{Timeout: 20 * time.Second}
+		resp, err := client.Do(httpReq)
+		if err != nil {
+			return nil, fmt.Errorf("bachs virtual account request failed: %w", err)
+		}
+		defer resp.Body.Close()
+
+		var bachsRes map[string]interface{}
+		if err := json.NewDecoder(resp.Body).Decode(&bachsRes); err != nil {
+			return nil, fmt.Errorf("failed to decode bachs response: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+			return nil, fmt.Errorf("bachs request failed with status %d: %v", resp.StatusCode, bachsRes)
+		}
+
+		data, _ := bachsRes["data"].(map[string]interface{})
+		if data == nil {
+			data = bachsRes
+		}
+
+		accNum, _ := data["account_number"].(string)
+		bankName, _ := data["bank_name"].(string)
+		if bankName == "" {
+			bankName = "Providus Bank"
+		}
+		accName, _ := data["account_name"].(string)
+		if accName == "" {
+			accName = customerName
+		}
+		txRef, _ := data["reference"].(string)
+		if txRef == "" {
+			txRef = paymentRef
+		}
+
+		if accNum == "" {
+			return nil, fmt.Errorf("bachs did not return virtual account details: %v", bachsRes)
+		}
+
+		expiresOn := time.Now().Add(60 * time.Minute).Format(time.RFC3339)
+		res = map[string]interface{}{
+			"requestSuccessful": true,
+			"responseCode":      "0",
+			"responseMessage":   "Virtual Account Generated Successfully",
+			"responseBody": map[string]interface{}{
+				"accountNumber":        accNum,
+				"accountName":          accName,
+				"bankName":             bankName,
+				"bankCode":             "101",
+				"expiresOn":            expiresOn,
+				"totalPayable":         amount,
+				"fee":                  0,
+				"transactionReference": txRef,
+				"paymentReference":     paymentRef,
+				"processor":            "bachs",
+			},
+		}
+
+		bankTx = models.BankTransfer{
+			UserID:                 userID,
+			TransactionReference:   txRef,
+			PaymentReference:       paymentRef,
+			AccountNumber:          accNum,
+			AccountName:            accName,
+			BankName:               bankName,
+			BankCode:               "101",
+			Amount:                 amount,
+			Fee:                    0,
+			TotalPayable:           amount,
+			Status:                 "PENDING",
+			RequestTime:            time.Now(),
+			ExpiresOn:              time.Now().Add(60 * time.Minute),
+			AccountDurationSeconds: 3600,
+			CreatedAt:              time.Now(),
+			UpdatedAt:              time.Now(),
+		}
+
+	default: // Monnify
+		provider := s.monnifyProvider
+		if customPubKey != "" && customSecKey != "" {
+			provider = providers.NewMonnifyProvider(customPubKey, customSecKey, os.Getenv("MONNIFY_URI"), os.Getenv("PROD_MONNIFY_CONTRACT_CODE"))
+		}
+
+		monnifyPayload := map[string]interface{}{
+			"amount":             amount,
+			"customerName":       customerName,
+			"customerEmail":      customerEmail,
+			"paymentReference":   paymentRef,
+			"paymentDescription": paymentDesc,
+			"currencyCode":       "NGN",
+		}
+		mResult, err := provider.InitPaymentByTransfer(ctx, monnifyPayload)
+		if err != nil {
+			return nil, err
+		}
+
+		mBody, _ := mResult["responseBody"].(map[string]interface{})
+		if mBody == nil {
+			return nil, errors.New("monnify returned empty response body")
+		}
+
+		accNum, _ := mBody["accountNumber"].(string)
+		accName, _ := mBody["accountName"].(string)
+		bankName, _ := mBody["bankName"].(string)
+		bankCode, _ := mBody["bankCode"].(string)
+		expiresOn, _ := mBody["expiresOn"].(string)
+		mTxRef, _ := mBody["transactionReference"].(string)
+		mPayRef, _ := mBody["paymentReference"].(string)
+		if mPayRef == "" {
+			mPayRef = paymentRef
+		}
+		totalPayable, _ := mBody["totalPayable"].(float64)
+		if totalPayable <= 0 {
+			totalPayable = amount
+		}
+		fee, _ := mBody["fee"].(float64)
+		ussd, _ := mBody["ussdPayment"].(string)
+
+		res = map[string]interface{}{
+			"requestSuccessful": true,
+			"responseCode":      "0",
+			"responseMessage":   "Virtual Account Generated Successfully",
+			"responseBody": map[string]interface{}{
+				"accountNumber":        accNum,
+				"accountName":          accName,
+				"bankName":             bankName,
+				"bankCode":             bankCode,
+				"expiresOn":            expiresOn,
+				"totalPayable":         totalPayable,
+				"fee":                  fee,
+				"transactionReference": mTxRef,
+				"paymentReference":     mPayRef,
+				"ussdPayment":          ussd,
+				"processor":            "monnify",
+			},
+		}
+
+		bankTx = models.BankTransfer{
+			UserID:                 userID,
+			TransactionReference:   mTxRef,
+			PaymentReference:       mPayRef,
+			AccountNumber:          accNum,
+			AccountName:            accName,
+			BankName:               bankName,
+			BankCode:               bankCode,
+			Amount:                 amount,
+			Fee:                    fee,
+			TotalPayable:           totalPayable,
+			Status:                 "PENDING",
+			RequestTime:            time.Now(),
+			ExpiresOn:              time.Now().Add(40 * time.Minute),
+			AccountDurationSeconds: 2400,
+			CreatedAt:              time.Now(),
+			UpdatedAt:              time.Now(),
+		}
+		if ussd != "" {
+			bankTx.UssdPayment = &ussd
+		}
+	}
+
+	// Persist BankTransfer if userID is available
+	if s.db != nil && userID > 0 && bankTx.AccountNumber != "" {
+		if err := s.db.WithContext(ctx).Create(&bankTx).Error; err != nil {
+			log.Printf("[PaymentService] Warning: Failed to record BankTransfer in DB: %v", err)
+		} else {
+			log.Printf("[PaymentService] BankTransfer recorded in DB with ID=%d, UserID=%d, ref=%s", bankTx.ID, userID, bankTx.TransactionReference)
+		}
+	}
+
+	return res, nil
 }
 
 // ChargeCardAndCreditWallet charges a card via the active processor (Monnify, Flutterwave, Bachs) and, on SUCCESS,

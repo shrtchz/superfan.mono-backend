@@ -298,60 +298,10 @@ func (pc *PaymentController) InitPaymentByTransfer(c *gin.Context) {
 		return
 	}
 
-	txRef, _ := req["transactionReference"].(string)
-
-	activeProc, _ := pc.paymentService.GetActivePaymentProcessor(c.Request.Context())
-	procName := "monnify"
-	if activeProc != nil && activeProc.Name != "" {
-		procName = strings.ToLower(activeProc.Name)
-	}
-
-	bankName := "Moniepoint MFB / Wema Bank"
-	bankCode := "035"
-	accountName := "Superfan - User"
-
-	switch procName {
-	case "flutterwave":
-		bankName = "Flutterwave / Sterling Bank"
-		bankCode = "232"
-		accountName = "Superfan NG - Flutterwave"
-		if txRef == "" {
-			txRef = fmt.Sprintf("FLW-TRF-%d", time.Now().UnixNano())
-		}
-	case "bachs":
-		bankName = "Bachs / Providus Bank"
-		bankCode = "101"
-		accountName = "Superfan NG - Bachs"
-		if txRef == "" {
-			txRef = fmt.Sprintf("BACHS-TRF-%d", time.Now().UnixNano())
-		}
-	default:
-		bankName = "Moniepoint MFB / Wema Bank"
-		bankCode = "035"
-		accountName = "Superfan - User"
-		if txRef == "" {
-			txRef = fmt.Sprintf("MNFY-TRF-%d", time.Now().UnixNano())
-		}
-	}
-
-	mockAccNumber := fmt.Sprintf("971%d", time.Now().UnixNano()%10000000)
-	expiryDate := time.Now().Add(30 * time.Minute).Format(time.RFC3339)
-
-	res := map[string]interface{}{
-		"requestSuccessful": true,
-		"responseCode":      "0",
-		"responseMessage":   "Virtual Account Generated Successfully",
-		"responseBody": map[string]interface{}{
-			"accountNumber":        mockAccNumber,
-			"accountName":          accountName,
-			"bankName":             bankName,
-			"bankCode":             bankCode,
-			"expiresOn":            expiryDate,
-			"totalPayable":         1050,
-			"fee":                  50,
-			"transactionReference": txRef,
-			"processor":            procName,
-		},
+	res, err := pc.paymentService.InitPaymentByTransfer(c.Request.Context(), req)
+	if err != nil {
+		sendDetailedError(c, http.StatusInternalServerError, "INIT_TRANSFER_FAILED", err.Error(), err)
+		return
 	}
 
 	c.JSON(http.StatusOK, res)

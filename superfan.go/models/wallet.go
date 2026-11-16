@@ -234,3 +234,32 @@ type Payout struct {
 func (Payout) TableName() string {
 	return "Payout"
 }
+
+type BankTransfer struct {
+	ID                     int        `gorm:"column:id;primaryKey" json:"id"`
+	UserID                 int        `gorm:"column:userId" json:"userId"`
+	TransactionReference   string     `gorm:"column:transactionReference;unique" json:"transactionReference"`
+	PaymentReference       string     `gorm:"column:paymentReference;unique" json:"paymentReference"`
+	AccountNumber          string     `gorm:"column:accountNumber" json:"accountNumber"`
+	AccountName            string     `gorm:"column:accountName" json:"accountName"`
+	BankName               string     `gorm:"column:bankName" json:"bankName"`
+	BankCode               string     `gorm:"column:bankCode" json:"bankCode"`
+	Amount                 float64    `gorm:"column:amount" json:"amount"`
+	Fee                    float64    `gorm:"column:fee;default:0" json:"fee"`
+	TotalPayable           float64    `gorm:"column:totalPayable" json:"totalPayable"`
+	UssdPayment            *string    `gorm:"column:ussdPayment" json:"ussdPayment"`
+	CollectionChannel      *string    `gorm:"column:collectionChannel" json:"collectionChannel"`
+	ProductInformation     *string    `gorm:"column:productInformation" json:"productInformation"`
+	Status                 string     `gorm:"column:status;default:PENDING" json:"status"`
+	RequestTime            time.Time  `gorm:"column:requestTime" json:"requestTime"`
+	ExpiresOn              time.Time  `gorm:"column:expiresOn" json:"expiresOn"`
+	AccountDurationSeconds int        `gorm:"column:accountDurationSeconds" json:"accountDurationSeconds"`
+	PaidAt                 *time.Time `gorm:"column:paidAt" json:"paidAt"`
+	CompletedAt            *time.Time `gorm:"column:completedAt" json:"completedAt"`
+	CreatedAt              time.Time  `gorm:"column:createdAt" json:"createdAt"`
+	UpdatedAt              time.Time  `gorm:"column:updatedAt" json:"updatedAt"`
+}
+
+func (BankTransfer) TableName() string {
+	return "BankTransfer"
+}
