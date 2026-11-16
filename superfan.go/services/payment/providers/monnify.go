@@ -223,6 +223,155 @@ func (m *MonnifyProvider) InitializeTransaction(ctx context.Context, payload map
 	return result, nil
 }
 
+// InitPaymentByTransfer initializes an ACCOUNT_TRANSFER transaction and requests a dynamic virtual account.
+func (m *MonnifyProvider) InitPaymentByTransfer(ctx context.Context, payload map[string]interface{}) (map[string]interface{}, error) {
+	log.Printf("[MONNIFY] InitPaymentByTransfer - Input payload: %+v", payload)
+
+	token, err := m.getAccessToken(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("monnify authentication failed: %w", err)
+	}
+
+	contractCode, _ := payload["contractCode"].(string)
+	if contractCode == "" {
+		contractCode = m.ContractCode
+	}
+	if contractCode == "" {
+		contractCode = os.Getenv("PROD_MONNIFY_CONTRACT_CODE")
+	}
+	if contractCode == "" {
+		contractCode = os.Getenv("MONNIFY_CONTRACT_CODE")
+	}
+
+	amount, _ := payload["amount"].(float64)
+	if amount <= 0 {
+		if amtInt, ok := payload["amount"].(int); ok {
+			amount = float64(amtInt)
+		}
+	}
+
+	customerEmail, _ := payload["customerEmail"].(string)
+	if customerEmail == "" {
+		customerEmail = "user@superfan.ng"
+	}
+
+	customerName, _ := payload["customerName"].(string)
+	if customerName == "" {
+		customerName = customerEmail
+	}
+
+	paymentRef, _ := payload["paymentReference"].(string)
+	if paymentRef == "" {
+		paymentRef = fmt.Sprintf("MNFY-TRF-%d", time.Now().UnixNano())
+	}
+
+	paymentDesc, _ := payload["paymentDescription"].(string)
+	if paymentDesc == "" {
+		paymentDesc = "Wallet Bank Transfer Top-up"
+	}
+
+	// 1. Initialize transaction for ACCOUNT_TRANSFER
+	initPayload := map[string]interface{}{
+		"amount":             amount,
+		"customerName":       customerName,
+		"customerEmail":      customerEmail,
+		"paymentReference":   paymentRef,
+		"paymentDescription": paymentDesc,
+		"currencyCode":       "NGN",
+		"contractCode":       contractCode,
+		"paymentMethods":     []string{"ACCOUNT_TRANSFER"},
+		"redirectUrl":        "https://superfan.ng",
+	}
+
+	initUrl := fmt.Sprintf("%s/api/v1/merchant/transactions/init-transaction", m.BaseURL)
+	initBytes, _ := json.Marshal(initPayload)
+	log.Printf("[MONNIFY] InitPaymentByTransfer POST %s - Body: %s", initUrl, string(initBytes))
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", initUrl, bytes.NewBuffer(initBytes))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+token)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("monnify init-transaction request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var initResult map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&initResult); err != nil {
+		return nil, fmt.Errorf("failed to decode monnify init-transaction response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("monnify init-transaction failed with status %d: %v", resp.StatusCode, initResult)
+	}
+
+	success, _ := initResult["requestSuccessful"].(bool)
+	if !success {
+		msg, _ := initResult["responseMessage"].(string)
+		return nil, fmt.Errorf("monnify init-transaction unsuccessful: %s", msg)
+	}
+
+	responseBody, _ := initResult["responseBody"].(map[string]interface{})
+	if responseBody == nil {
+		return nil, errors.New("monnify init-transaction response missing responseBody")
+	}
+
+	monnifyTxRef, _ := responseBody["transactionReference"].(string)
+	if monnifyTxRef == "" {
+		return nil, errors.New("monnify transactionReference not found in init-transaction response")
+	}
+
+	// 2. Request virtual account details
+	bankCode, _ := payload["bankCode"].(string)
+	if bankCode == "" {
+		bankCode = "035" // Wema Bank default for Monnify dynamic transfer
+	}
+
+	bankTransferPayload := map[string]interface{}{
+		"transactionReference": monnifyTxRef,
+		"bankCode":             bankCode,
+	}
+
+	bankTransferUrl := fmt.Sprintf("%s/api/v1/merchant/bank-transfer/init-payment", m.BaseURL)
+	bankBytes, _ := json.Marshal(bankTransferPayload)
+	log.Printf("[MONNIFY] InitPaymentByTransfer POST %s - Body: %s", bankTransferUrl, string(bankBytes))
+
+	bankReq, err := http.NewRequestWithContext(ctx, "POST", bankTransferUrl, bytes.NewBuffer(bankBytes))
+	if err != nil {
+		return nil, err
+	}
+	bankReq.Header.Set("Authorization", "Bearer "+token)
+	bankReq.Header.Set("Content-Type", "application/json")
+
+	bankResp, err := client.Do(bankReq)
+	if err != nil {
+		return nil, fmt.Errorf("monnify bank-transfer/init-payment request failed: %w", err)
+	}
+	defer bankResp.Body.Close()
+
+	var bankResult map[string]interface{}
+	if err := json.NewDecoder(bankResp.Body).Decode(&bankResult); err != nil {
+		return nil, fmt.Errorf("failed to decode monnify bank-transfer response: %w", err)
+	}
+
+	if bankResp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("monnify bank-transfer failed with status %d: %v", bankResp.StatusCode, bankResult)
+	}
+
+	bankSuccess, _ := bankResult["requestSuccessful"].(bool)
+	if !bankSuccess {
+		msg, _ := bankResult["responseMessage"].(string)
+		return nil, fmt.Errorf("monnify bank-transfer unsuccessful: %s", msg)
+	}
+
+	return bankResult, nil
+}
+
 // ChargeCardResult is the structured result of a charge card operation.
 type ChargeCardResult struct {
 	TransactionReference string
