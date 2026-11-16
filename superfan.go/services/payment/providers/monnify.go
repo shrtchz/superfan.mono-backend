@@ -196,8 +196,9 @@ func (m *MonnifyProvider) InitializeTransaction(ctx context.Context, payload map
 	if ref, ok := payload["paymentReference"].(string); !ok || ref == "" {
 		payload["paymentReference"] = fmt.Sprintf("WALLET-%d", time.Now().UnixNano())
 	}
-	if _, ok := payload["redirectUrl"]; !ok {
-		payload["redirectUrl"] = "http://localhost:3000/en/payment-success"
+	redirectUrl, _ := payload["redirectUrl"].(string)
+	if redirectUrl == "" || strings.HasPrefix(redirectUrl, "http://localhost") || strings.HasPrefix(redirectUrl, "http://127.0.0.1") {
+		payload["redirectUrl"] = "https://superfan.ng"
 	}
 
 	url := fmt.Sprintf("%s/api/v1/merchant/transactions/init-transaction", m.BaseURL)

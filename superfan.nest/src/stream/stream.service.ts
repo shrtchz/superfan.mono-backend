@@ -2492,10 +2492,16 @@ private async publishLockedQuizAnswerComments(
       ? pendingSubmissions.filter((item) => item.quizId === latestQuizId)
       : pendingSubmissions;
 
+    // Deduplicate by user to ensure each participant only ever has one answer comment
+    const uniqueUserSubmissions = new Map<number, (typeof pendingSubmissions)[0]>();
+    for (const item of scopedSubmissions) {
+      uniqueUserSubmissions.set(item.userId, item);
+    }
+
     const createdPayloads: any[] = [];
     const authorCache = new Map<number, any>();
 
-    for (const item of scopedSubmissions) {
+    for (const item of uniqueUserSubmissions.values()) {
       const existing = await prisma.streamComment.findFirst({
         where: {
           streamId,
@@ -2504,9 +2510,10 @@ private async publishLockedQuizAnswerComments(
           isDeleted: false,
           OR: [
             { message: { equals: item.message, mode: 'insensitive' } },
+            { message: { equals: item.selectedAnswer, mode: 'insensitive' } },
             { message: { endsWith: `. ${item.selectedAnswer}`, mode: 'insensitive' } },
+            { message: { contains: item.selectedAnswer, mode: 'insensitive' } },
           ],
-          ...(lockedSince ? { createdAt: { gte: lockedSince } } : {}),
         },
         select: { id: true },
       });

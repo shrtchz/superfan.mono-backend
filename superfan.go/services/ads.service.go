@@ -79,10 +79,10 @@ func (s *adsServiceImpl) completeEndedCampaigns(ctx context.Context, now time.Ti
 		return nil
 	}
 
-	// 1. Mark expired campaigns as COMPLETED if their date has ended
+	// 1. Mark expired campaigns as COMPLETED if their date has ended (including unapproved/pending campaigns)
 	var campaigns []models.AdCampaign
 	if err := s.db.WithContext(ctx).
-		Where("LOWER(status::text) NOT IN (?, ?)", "completed", "ended").
+		Where(`LOWER(status::text) NOT IN (?, ?)`, "completed", "ended").
 		Find(&campaigns).Error; err == nil {
 		endedIDs := make([]int, 0)
 		for _, campaign := range campaigns {
@@ -1178,6 +1178,8 @@ func (s *adsServiceImpl) GetCampaigns(ctx context.Context, q *CampaignListQuery)
 			orderClause = "views " + dir
 		case "clicks":
 			orderClause = "clicks " + dir
+		case "days", "duration":
+			orderClause = "days " + dir
 		case "status":
 			orderClause = "status " + dir
 		default:
