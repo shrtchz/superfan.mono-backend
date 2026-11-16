@@ -389,7 +389,22 @@ func (s *PaymentService) InitiateDeposit(ctx context.Context, req providers.Depo
 	case "NGN":
 		provider = s.monnifyProvider
 	case "USDC", "USDT":
-		provider = s.bitnobProvider
+		activeStable, _ := s.GetActivePaymentProcessorForChannel(ctx, "stable_coin")
+		if activeStable != nil && strings.EqualFold(activeStable.Name, "bitnob") {
+			secKey := ""
+			if activeStable.SecretKey != nil && *activeStable.SecretKey != "" {
+				secKey = *activeStable.SecretKey
+			} else if activeStable.PublicKey != nil && *activeStable.PublicKey != "" {
+				secKey = *activeStable.PublicKey
+			}
+			if secKey != "" {
+				provider = providers.NewBitnobProvider(secKey, "https://api.bitnob.co")
+			} else {
+				provider = s.bitnobProvider
+			}
+		} else {
+			provider = s.bitnobProvider
+		}
 	default:
 		return nil, fmt.Errorf("unsupported currency: %s", req.Currency)
 	}
@@ -1191,6 +1206,42 @@ func (s *PaymentService) SimulateAddressDeposit(ctx context.Context, req provide
 	return s.bitnobProvider.SimulateAddressDeposit(ctx, req)
 }
 
+var processorCapabilities = map[string][]string{
+	"monnify":     {"card", "bank_transfer"},
+	"flutterwave": {"card", "bank_transfer", "stable_coin"},
+	"busha":       {"stable_coin"},
+	"cngn":        {"stable_coin"},
+	"bitnob":      {"stable_coin"},
+	"bachs":       {"card", "bank_transfer", "stable_coin"},
+}
+
+// GetActivePaymentProcessorForChannel returns the active payment processor assigned to a given channel ("card", "bank_transfer", "stable_coin")
+func (s *PaymentService) GetActivePaymentProcessorForChannel(ctx context.Context, channel string) (*models.PaymentProcessor, error) {
+	if s.db == nil {
+		return nil, errors.New("database not initialized")
+	}
+
+	var enabled []models.PaymentProcessor
+	err := s.db.WithContext(ctx).
+		Where("\"isEnabled\" = ?", true).
+		Order("\"updatedAt\" DESC, id DESC").
+		Find(&enabled).Error
+	if err != nil {
+		return nil, err
+	}
+
+	for _, proc := range enabled {
+		caps := processorCapabilities[strings.ToLower(proc.Name)]
+		for _, cap := range caps {
+			if cap == channel {
+				return &proc, nil
+			}
+		}
+	}
+
+	return s.GetActivePaymentProcessor(ctx)
+}
+
 // GetActivePaymentProcessor returns the currently enabled fiat payment processor from DB (monnify, flutterwave, bachs)
 func (s *PaymentService) GetActivePaymentProcessor(ctx context.Context) (*models.PaymentProcessor, error) {
 	if s.db == nil {
@@ -1201,7 +1252,7 @@ func (s *PaymentService) GetActivePaymentProcessor(ctx context.Context) (*models
 	// Check for enabled fiat card/transfer processors first, ordered by latest update
 	err := s.db.WithContext(ctx).
 		Where("\"isEnabled\" = ? AND LOWER(name) IN ('monnify', 'flutterwave', 'bachs')", true).
-		Order("\"updatedAt\" DESC").
+		Order("\"updatedAt\" DESC, id DESC").
 		First(&processor).Error
 	if err == nil {
 		return &processor, nil
@@ -1210,7 +1261,7 @@ func (s *PaymentService) GetActivePaymentProcessor(ctx context.Context) (*models
 	// Fallback to any enabled processor
 	err = s.db.WithContext(ctx).
 		Where("\"isEnabled\" = ?", true).
-		Order("\"updatedAt\" DESC").
+		Order("\"updatedAt\" DESC, id DESC").
 		First(&processor).Error
 	if err == nil {
 		return &processor, nil
@@ -1240,18 +1291,6 @@ func (s *PaymentService) TogglePaymentProcessor(ctx context.Context, id int) (*m
 	nextState := !processor.IsEnabled
 	now := time.Now()
 
-	if nextState {
-		// Only one processor should be available at any time
-		_ = s.db.WithContext(ctx).
-			Model(&models.PaymentProcessor{}).
-			Where("id != ?", id).
-			Updates(map[string]interface{}{
-				"isEnabled":   false,
-				"isConnected": false,
-				"updatedAt":   now,
-			}).Error
-	}
-
 	processor.IsEnabled = nextState
 	processor.IsConnected = nextState
 	processor.LastSync = &now
@@ -1260,6 +1299,48 @@ func (s *PaymentService) TogglePaymentProcessor(ctx context.Context, id int) (*m
 	if err := s.db.WithContext(ctx).Save(&processor).Error; err != nil {
 		return nil, err
 	}
+
+	// When toggled ON, resolve slot conflicts:
+	// The newly activated processor claims all its supported channels.
+	// Any other active processor that has 0 remaining unique channels is deactivated.
+	if nextState {
+		var otherEnabled []models.PaymentProcessor
+		_ = s.db.WithContext(ctx).
+			Where("\"isEnabled\" = ? AND id != ?", true, id).
+			Order("\"updatedAt\" DESC, id DESC").
+			Find(&otherEnabled).Error
+
+		assignedSlots := make(map[string]bool)
+		for _, ch := range processorCapabilities[strings.ToLower(processor.Name)] {
+			assignedSlots[ch] = true
+		}
+
+		for _, other := range otherEnabled {
+			otherCaps := processorCapabilities[strings.ToLower(other.Name)]
+			remainingCount := 0
+			for _, ch := range otherCaps {
+				if !assignedSlots[ch] {
+					remainingCount++
+				}
+			}
+
+			if remainingCount == 0 {
+				_ = s.db.WithContext(ctx).
+					Model(&models.PaymentProcessor{}).
+					Where("id = ?", other.ID).
+					Updates(map[string]interface{}{
+						"isEnabled":   false,
+						"isConnected": false,
+						"updatedAt":   now,
+					}).Error
+			} else {
+				for _, ch := range otherCaps {
+					assignedSlots[ch] = true
+				}
+			}
+		}
+	}
+
 	return &processor, nil
 }
 
@@ -1274,7 +1355,7 @@ func (s *PaymentService) InitializeTransaction(ctx context.Context, payload map[
 		}
 	}
 
-	activeProc, _ := s.GetActivePaymentProcessor(ctx)
+	activeProc, _ := s.GetActivePaymentProcessorForChannel(ctx, "card")
 	procName := "monnify"
 	var customPubKey, customSecKey string
 	if activeProc != nil && activeProc.Name != "" {
@@ -1381,7 +1462,7 @@ func (s *PaymentService) InitPaymentByTransfer(ctx context.Context, payload map[
 		}
 	}
 
-	activeProc, _ := s.GetActivePaymentProcessor(ctx)
+	activeProc, _ := s.GetActivePaymentProcessorForChannel(ctx, "bank_transfer")
 	procName := "monnify"
 	var customPubKey, customSecKey string
 	if activeProc != nil && activeProc.Name != "" {
@@ -1765,7 +1846,7 @@ func (s *PaymentService) ChargeCardAndCreditWallet(ctx context.Context, userID i
 		return nil, fmt.Errorf("minimum deposit amount is NGN 1,000")
 	}
 
-	activeProc, _ := s.GetActivePaymentProcessor(ctx)
+	activeProc, _ := s.GetActivePaymentProcessorForChannel(ctx, "card")
 	procName := "monnify"
 	var customPubKey, customSecKey string
 	if activeProc != nil && activeProc.Name != "" {
@@ -2113,7 +2194,7 @@ func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amoun
 // QueryTransaction queries the status of a Monnify transaction.
 func (s *PaymentService) QueryTransaction(ctx context.Context, transactionReference string) (map[string]interface{}, error) {
 	log.Printf("[PaymentService] QueryTransaction - txRef=%s", transactionReference)
-	activeProc, _ := s.GetActivePaymentProcessor(ctx)
+	activeProc, _ := s.GetActivePaymentProcessorForChannel(ctx, "card")
 	provider := s.monnifyProvider
 	if activeProc != nil && activeProc.PublicKey != nil && activeProc.SecretKey != nil && *activeProc.PublicKey != "" && *activeProc.SecretKey != "" {
 		mUri := "https://api.monnify.com"
