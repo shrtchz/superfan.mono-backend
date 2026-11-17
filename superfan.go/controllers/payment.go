@@ -93,6 +93,7 @@ func RegisterPaymentRoutes(rg *gin.RouterGroup, pc *PaymentController) {
 	paymentGroup.POST("/initialize-transaction", pc.InitializeTransaction)
 	paymentGroup.POST("/init-payment-by-transfer", pc.InitPaymentByTransfer)
 	paymentGroup.POST("/charge-card", pc.ChargeCard)
+	paymentGroup.POST("/authorize-card-otp", pc.AuthorizeCardOTP)
 	paymentGroup.GET("/query-transaction", pc.QueryTransaction)
 	paymentGroup.POST("/simulate-address-deposit", pc.SimulateAddressDeposit)
 	paymentGroup.POST("/webhook/:provider", pc.Webhook)
@@ -270,6 +271,61 @@ func (pc *PaymentController) ChargeCard(c *gin.Context) {
 	c.JSON(http.StatusOK, res)
 }
 
+// AuthorizeCardOTP handles POST /v1/payment/authorize-card-otp
+// Accepts: {
+//   transactionReference: string,
+//   tokenId: string,
+//   token: string, (or otp)
+//   userId: number,
+//   amount: number,
+//   currency: string
+// }
+func (pc *PaymentController) AuthorizeCardOTP(c *gin.Context) {
+	log.Printf("[PaymentController] POST /v1/payment/authorize-card-otp")
+
+	var req map[string]interface{}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		sendDetailedError(c, http.StatusBadRequest, "BAD_REQUEST", "Invalid request payload", err)
+		return
+	}
+
+	txRef, _ := req["transactionReference"].(string)
+	if txRef == "" {
+		txRef, _ = req["reference"].(string)
+	}
+	if txRef == "" {
+		sendDetailedError(c, http.StatusBadRequest, "BAD_REQUEST", "transactionReference is required", nil)
+		return
+	}
+
+	userIDFloat, _ := req["userId"].(float64)
+	userID := int(userIDFloat)
+	if userID <= 0 {
+		sendDetailedError(c, http.StatusBadRequest, "BAD_REQUEST", "userId must be a positive integer", nil)
+		return
+	}
+
+	amount, _ := req["amount"].(float64)
+	if amount <= 0 {
+		sendDetailedError(c, http.StatusBadRequest, "BAD_REQUEST", "amount must be greater than 0", nil)
+		return
+	}
+
+	currency, _ := req["currency"].(string)
+	if currency == "" {
+		currency = "NGN"
+	}
+
+	res, err := pc.paymentService.AuthorizeCardOTPAndCreditWallet(c.Request.Context(), userID, amount, currency, req)
+	if err != nil {
+		sendDetailedError(c, http.StatusBadRequest, "AUTHORIZE_OTP_FAILED", err.Error(), err)
+		return
+	}
+
+	log.Printf("[PaymentController] AuthorizeCardOTP success - userID=%d txRef=%s", userID, txRef)
+	c.JSON(http.StatusOK, res)
+}
+
 // QueryTransaction handles GET /v1/payment/query-transaction?transactionReference=...
 func (pc *PaymentController) QueryTransaction(c *gin.Context) {
 	txRef := c.Query("transactionReference")
@@ -284,6 +340,45 @@ func (pc *PaymentController) QueryTransaction(c *gin.Context) {
 	if err != nil {
 		sendDetailedError(c, http.StatusInternalServerError, "QUERY_TRANSACTION_FAILED", "Failed to query transaction", err)
 		return
+	}
+
+	// Auto-credit wallet if payment is confirmed PAID/SUCCESS and userId is provided or in metadata
+	if body, ok := res["responseBody"].(map[string]interface{}); ok && body != nil {
+		payStatus, _ := body["paymentStatus"].(string)
+		if payStatus == "" {
+			payStatus, _ = body["status"].(string)
+		}
+		if strings.EqualFold(payStatus, "PAID") || strings.EqualFold(payStatus, "SUCCESS") {
+			userID := 0
+			if uidStr := c.Query("userId"); uidStr != "" {
+				fmt.Sscanf(uidStr, "%d", &userID)
+			}
+			if userID <= 0 {
+				if meta, ok := body["metaData"].(map[string]interface{}); ok && meta != nil {
+					if uidFloat, ok := meta["userId"].(float64); ok {
+						userID = int(uidFloat)
+					}
+				}
+			}
+			if userID > 0 {
+				amountPaid := 0.0
+				if amtFloat, ok := body["amountPaid"].(float64); ok {
+					amountPaid = amtFloat
+				} else if amtStr, ok := body["amountPaid"].(string); ok {
+					fmt.Sscanf(amtStr, "%f", &amountPaid)
+				}
+				currency, _ := body["currency"].(string)
+				if currency == "" {
+					currency = "NGN"
+				}
+				if amountPaid > 0 {
+					log.Printf("[PaymentController] Confirmed PAID query for txRef=%s: ensuring wallet credit for userID=%d amount=%.2f", txRef, userID, amountPaid)
+					if _, creditErr := pc.paymentService.CreditUserWallet(c.Request.Context(), userID, amountPaid, txRef, "card", currency); creditErr != nil {
+						log.Printf("[PaymentController] WARNING: QueryTransaction auto-credit failed: %v", creditErr)
+					}
+				}
+			}
+		}
 	}
 
 	log.Printf("[PaymentController] QueryTransaction result: %+v", res)
@@ -686,6 +781,28 @@ func (pc *PaymentController) ValidateOTP(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		sendDetailedError(c, http.StatusBadRequest, "BAD_REQUEST", "Invalid request payload", err)
 		return
+	}
+
+	// If tokenId or transactionReference is provided, route to card OTP authorization
+	_, hasTokenId := req["tokenId"]
+	_, hasTxRef := req["transactionReference"]
+	if hasTokenId || hasTxRef {
+		userIDFloat, _ := req["userId"].(float64)
+		userID := int(userIDFloat)
+		amount, _ := req["amount"].(float64)
+		currency, _ := req["currency"].(string)
+		if currency == "" {
+			currency = "NGN"
+		}
+		if userID > 0 && amount > 0 {
+			res, err := pc.paymentService.AuthorizeCardOTPAndCreditWallet(c.Request.Context(), userID, amount, currency, req)
+			if err != nil {
+				sendDetailedError(c, http.StatusBadRequest, "AUTHORIZE_OTP_FAILED", err.Error(), err)
+				return
+			}
+			c.JSON(http.StatusOK, res)
+			return
+		}
 	}
 
 	ref, _ := req["reference"].(string)
