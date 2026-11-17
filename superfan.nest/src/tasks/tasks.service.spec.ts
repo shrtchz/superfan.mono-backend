@@ -19,6 +19,7 @@ jest.mock('../prisma/prisma', () => ({
     },
     taskMessage: {
       create: jest.fn(),
+      findUnique: jest.fn(),
       findMany: jest.fn(),
       delete: jest.fn(),
       update: jest.fn(),
@@ -223,6 +224,87 @@ describe('TaskService', () => {
       const res = await service.deleteAllTasks();
       expect(prisma.task.deleteMany).toHaveBeenCalled();
       expect(res).toEqual({ count: 5 });
+    });
+  });
+
+  describe('Chat functionality (sendMessage, fetchMessages, editMessage, deleteMessage)', () => {
+    it('should send a message, enrich senderName, and broadcast to task room', async () => {
+      (prisma.task.findUnique as jest.Mock).mockResolvedValueOnce({ id: 10 });
+      (prisma.taskMessage.create as jest.Mock).mockResolvedValueOnce({
+        id: 101,
+        taskId: 10,
+        senderId: 1,
+        message: 'Hello subadmin',
+        createdAt: new Date(),
+      });
+      userService.findUserById = jest.fn().mockResolvedValueOnce({
+        id: 1,
+        firstName: 'Super',
+        lastName: 'Admin',
+        username: 'superadmin1',
+      });
+
+      const res = await service.sendMessage({
+        taskId: 10,
+        senderId: 1,
+        message: 'Hello subadmin',
+      });
+
+      expect(res.senderName).toBe('Super Admin');
+      expect(res.sender).toEqual({
+        id: 1,
+        firstName: 'Super',
+        lastName: 'Admin',
+        username: 'superadmin1',
+      });
+      expect(gateway.server?.to).toHaveBeenCalledWith('task-10');
+    });
+
+    it('should fetch messages and enrich all items with senderName', async () => {
+      (prisma.taskMessage.findMany as jest.Mock).mockResolvedValueOnce([
+        { id: 1, taskId: 10, senderId: 1, message: 'Message 1', createdAt: new Date() },
+        { id: 2, taskId: 10, senderId: 2, message: 'Message 2', createdAt: new Date() },
+      ]);
+      userService.findUserById = jest
+        .fn()
+        .mockResolvedValueOnce({ id: 1, firstName: 'Super', lastName: 'Admin', username: 'super' })
+        .mockResolvedValueOnce({ id: 2, firstName: 'Sub', lastName: 'Admin', username: 'sub' });
+
+      const res = await service.fetchMessages(10);
+      expect(res).toHaveLength(2);
+      expect(res[0].senderName).toBe('Super Admin');
+      expect(res[1].senderName).toBe('Sub Admin');
+    });
+
+    it('should edit message and broadcast messageEdited event', async () => {
+      (prisma.taskMessage.findUnique as jest.Mock).mockResolvedValueOnce({
+        id: 5,
+        taskId: 10,
+        senderId: 1,
+        message: 'Old text',
+      });
+      (prisma.taskMessage.update as jest.Mock).mockResolvedValueOnce({
+        id: 5,
+        taskId: 10,
+        senderId: 1,
+        message: 'New edited text',
+      });
+
+      const res = await service.editMessage(5, 1, 'New edited text');
+      expect(res.message).toBe('New edited text');
+      expect(gateway.server?.to).toHaveBeenCalledWith('task-10');
+    });
+
+    it('should delete message and broadcast messageDeleted event', async () => {
+      (prisma.taskMessage.delete as jest.Mock).mockResolvedValueOnce({
+        id: 5,
+        taskId: 10,
+        senderId: 1,
+      });
+
+      const res = await service.deleteMessage('5');
+      expect(res.message).toBe('Message deleted successfully');
+      expect(gateway.server?.to).toHaveBeenCalledWith('task-10');
     });
   });
 });
