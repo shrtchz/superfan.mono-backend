@@ -198,7 +198,7 @@ func (m *MonnifyProvider) InitializeTransaction(ctx context.Context, payload map
 	}
 	redirectUrl, _ := payload["redirectUrl"].(string)
 	if redirectUrl == "" || strings.HasPrefix(redirectUrl, "http://localhost") || strings.HasPrefix(redirectUrl, "http://127.0.0.1") {
-		payload["redirectUrl"] = "https://superfan.ng"
+		payload["redirectUrl"] = "https://superfan.ng/en/payment-success"
 	}
 
 	url := fmt.Sprintf("%s/api/v1/merchant/transactions/init-transaction", m.BaseURL)
@@ -498,6 +498,91 @@ func (m *MonnifyProvider) ChargeCard(ctx context.Context, payload map[string]int
 	if !success {
 		msg, _ := result["responseMessage"].(string)
 		return nil, fmt.Errorf("monnify charge-card unsuccessful: %s", msg)
+	}
+
+	return result, nil
+}
+
+// AuthorizeCardOTP calls POST /api/v1/merchant/cards/otp/authorize
+// Submits card OTP digits for a transaction requiring OTP authorization.
+func (m *MonnifyProvider) AuthorizeCardOTP(ctx context.Context, payload map[string]interface{}) (map[string]interface{}, error) {
+	log.Printf("[MONNIFY] AuthorizeCardOTP - txRef=%v tokenId=%v", payload["transactionReference"], payload["tokenId"])
+
+	token, err := m.getAccessToken(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("monnify authentication failed: %w", err)
+	}
+
+	txRef, _ := payload["transactionReference"].(string)
+	if txRef == "" {
+		return nil, errors.New("transactionReference is required for card OTP authorization")
+	}
+
+	tokenId, _ := payload["tokenId"].(string)
+	if tokenId == "" {
+		if otpData, ok := payload["otpData"].(map[string]interface{}); ok {
+			tokenId, _ = otpData["id"].(string)
+		}
+	}
+
+	otpToken, _ := payload["token"].(string)
+	if otpToken == "" {
+		otpToken, _ = payload["otp"].(string)
+	}
+	if otpToken == "" {
+		otpToken, _ = payload["authorizationCode"].(string)
+	}
+	if otpToken == "" {
+		return nil, errors.New("token (OTP) is required for card OTP authorization")
+	}
+
+	reqBody := map[string]interface{}{
+		"transactionReference": txRef,
+		"collectionChannel":    "API_NOTIFICATION",
+		"tokenId":              tokenId,
+		"token":                otpToken,
+	}
+	if cardMap, ok := payload["card"].(map[string]interface{}); ok && cardMap != nil {
+		reqBody["card"] = cardMap
+	}
+
+	url := fmt.Sprintf("%s/api/v1/merchant/cards/otp/authorize", m.BaseURL)
+	bodyBytes, _ := json.Marshal(reqBody)
+	log.Printf("[MONNIFY] AuthorizeCardOTP POST %s - Body: %s", url, string(bodyBytes))
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+
+	httpReq.Header.Set("Authorization", "Bearer "+token)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("monnify authorize-otp request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode monnify authorize-otp response: %w", err)
+	}
+
+	log.Printf("[MONNIFY] AuthorizeCardOTP response (HTTP %d): %+v", resp.StatusCode, result)
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("monnify authorize-otp failed with HTTP %d: %v", resp.StatusCode, result)
+	}
+
+	success, _ := result["requestSuccessful"].(bool)
+	if !success {
+		msg, _ := result["responseMessage"].(string)
+		if msg == "" {
+			msg = "OTP authorization failed"
+		}
+		return nil, fmt.Errorf("monnify authorize-otp unsuccessful: %s", msg)
 	}
 
 	return result, nil

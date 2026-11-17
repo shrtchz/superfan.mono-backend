@@ -1941,6 +1941,55 @@ func (s *PaymentService) ChargeCardAndCreditWallet(ctx context.Context, userID i
 		return nil, fmt.Errorf("card charge was not successful: %s", msg)
 	}
 
+	// Flatten secure3dData redirectUrl if present
+	if sec3d, ok := body["secure3dData"].(map[string]interface{}); ok && sec3d != nil {
+		if rUrl, ok := sec3d["redirectUrl"].(string); ok && rUrl != "" {
+			if _, hasRedirect := body["redirectUrl"]; !hasRedirect {
+				body["redirectUrl"] = rUrl
+			}
+		}
+	}
+
+	// Check if customer authorization (OTP or 3DS redirect) is required
+	isOtpRequired := statusUpper == "OTP_AUTHORIZATION_REQUIRED" ||
+		statusUpper == "PENDING_OTP" ||
+		statusUpper == "REQUIRES_OTP" ||
+		statusUpper == "OTP_REQUIRED" ||
+		body["otpData"] != nil
+
+	is3dsRequired := statusUpper == "BANK_AUTHORIZATION_REQUIRED" ||
+		statusUpper == "3DS_AUTHORIZATION_REQUIRED" ||
+		statusUpper == "PENDING_3DS" ||
+		statusUpper == "REDIRECT" ||
+		body["secure3dData"] != nil ||
+		body["redirectUrl"] != nil ||
+		body["authorizedUrl"] != nil
+
+	if isOtpRequired || is3dsRequired {
+		log.Printf("[PaymentService] Card charge requires customer authorization (status=%s, otp=%v, 3ds=%v). Returning authorization details to client.", chargeStatus, isOtpRequired, is3dsRequired)
+		authMessage := "Customer authorization required"
+		if isOtpRequired {
+			authMessage = "OTP authorization required"
+			if otpMap, ok := body["otpData"].(map[string]interface{}); ok {
+				if msg, ok := otpMap["message"].(string); ok && msg != "" {
+					authMessage = msg
+				}
+			}
+		} else if is3dsRequired {
+			authMessage = "3DS bank authorization required"
+		}
+		if msg, ok := chargeResult["responseMessage"].(string); ok && msg != "" && msg != "success" {
+			authMessage = msg
+		}
+
+		return map[string]interface{}{
+			"requestSuccessful": true,
+			"responseCode":      "0",
+			"responseMessage":   authMessage,
+			"responseBody":      body,
+		}, nil
+	}
+
 	// Only credit wallet if status is strictly confirmed SUCCESS or PAID
 	if statusUpper != "SUCCESS" && statusUpper != "PAID" {
 		log.Printf("[PaymentService] Card charge status is '%s' (not SUCCESS/PAID) - wallet will NOT be credited", chargeStatus)
@@ -1997,6 +2046,146 @@ func (s *PaymentService) ChargeCardAndCreditWallet(ctx context.Context, userID i
 	}, nil
 }
 
+// AuthorizeCardOTPAndCreditWallet authorizes an OTP challenge for a pending Monnify card charge and credits the wallet on success.
+func (s *PaymentService) AuthorizeCardOTPAndCreditWallet(ctx context.Context, userID int, amount float64, currency string, authPayload map[string]interface{}) (map[string]interface{}, error) {
+	log.Printf("[PaymentService] AuthorizeCardOTPAndCreditWallet: userID=%d amount=%.2f currency=%s", userID, amount, currency)
+
+	activeProc, _ := s.GetActivePaymentProcessorForChannel(ctx, "card")
+	var customPubKey, customSecKey string
+	if activeProc != nil {
+		if activeProc.PublicKey != nil {
+			customPubKey = *activeProc.PublicKey
+		}
+		if activeProc.SecretKey != nil {
+			customSecKey = *activeProc.SecretKey
+		}
+	}
+	if customPubKey == "" {
+		customPubKey = os.Getenv("PROD_MONNIFY_API_KEY")
+		if customPubKey == "" {
+			customPubKey = os.Getenv("MONNIFY_API_KEY")
+		}
+	}
+	if customSecKey == "" {
+		customSecKey = os.Getenv("PROD_MONNIFY_SECRET_KEY")
+		if customSecKey == "" {
+			customSecKey = os.Getenv("MONNIFY_SECRET_KEY")
+		}
+	}
+
+	mUri := "https://api.monnify.com"
+	if !strings.HasPrefix(customPubKey, "MK_PROD_") {
+		mUri = "https://sandbox.monnify.com"
+	}
+	mContract := os.Getenv("PROD_MONNIFY_CONTRACT_CODE")
+	if mContract == "" {
+		mContract = os.Getenv("MONNIFY_CONTRACT_CODE")
+	}
+	if mContract == "" {
+		mContract = "943294313374"
+	}
+	monnifyProv := providers.NewMonnifyProvider(customPubKey, customSecKey, mUri, mContract)
+
+	authResult, err := monnifyProv.AuthorizeCardOTP(ctx, authPayload)
+	if err != nil {
+		log.Printf("[PaymentService] AuthorizeCardOTP FAILED: %v", err)
+		return nil, fmt.Errorf("card OTP authorization failed: %w", err)
+	}
+
+	log.Printf("[PaymentService] AuthorizeCardOTP result: %+v", authResult)
+
+	body, _ := authResult["responseBody"].(map[string]interface{})
+	if body == nil {
+		body = authResult
+	}
+
+	monnifyTxRef, _ := body["transactionReference"].(string)
+	if monnifyTxRef == "" {
+		monnifyTxRef, _ = authPayload["transactionReference"].(string)
+	}
+
+	paymentStatus, _ := body["paymentStatus"].(string)
+	if paymentStatus == "" {
+		paymentStatus, _ = body["status"].(string)
+	}
+	statusUpper := strings.ToUpper(paymentStatus)
+	requestSuccessful, _ := authResult["requestSuccessful"].(bool)
+
+	if !requestSuccessful {
+		msg, _ := authResult["responseMessage"].(string)
+		if msg == "" {
+			msg = "OTP authorization failed"
+		}
+		return nil, fmt.Errorf("card OTP authorization unsuccessful: %s", msg)
+	}
+
+	// Flatten secure3dData redirectUrl if present
+	if sec3d, ok := body["secure3dData"].(map[string]interface{}); ok && sec3d != nil {
+		if rUrl, ok := sec3d["redirectUrl"].(string); ok && rUrl != "" {
+			if _, hasRedirect := body["redirectUrl"]; !hasRedirect {
+				body["redirectUrl"] = rUrl
+			}
+		}
+	}
+
+	// If 3DS redirect is needed after OTP
+	if statusUpper == "BANK_AUTHORIZATION_REQUIRED" || statusUpper == "3DS_AUTHORIZATION_REQUIRED" || body["secure3dData"] != nil || body["redirectUrl"] != nil {
+		return map[string]interface{}{
+			"requestSuccessful": true,
+			"responseCode":      "0",
+			"responseMessage":   "3DS authorization required",
+			"responseBody":      body,
+		}, nil
+	}
+
+	if statusUpper != "SUCCESS" && statusUpper != "PAID" {
+		return nil, fmt.Errorf("card OTP authorization was not completed (status: %s); wallet was not credited", paymentStatus)
+	}
+
+	// Extract card metadata if present
+	cardMeta, _ := extractCardMetadataFromChargeResponse(authPayload, authResult)
+	if cardMeta.CardType == "" {
+		cardMeta.CardType = "Card"
+	}
+	if cardMeta.MaskedPan == "" && cardMeta.First6 != "" && cardMeta.Last4 != "" {
+		cardMeta.MaskedPan = buildMaskedPan(cardMeta.First6, cardMeta.Last4)
+	}
+
+	// Credit wallet atomically
+	log.Printf("[PaymentService] Crediting wallet after successful OTP authorization: userID=%d amount=%.2f txRef=%s", userID, amount, monnifyTxRef)
+	wallet, err := s.creditWalletInDB(ctx, userID, amount, monnifyTxRef, "card", currency, &cardMeta)
+	if err != nil {
+		log.Printf("[PaymentService] CRITICAL: Card OTP authorized but wallet credit FAILED for userID=%d txRef=%s: %v", userID, monnifyTxRef, err)
+		return nil, fmt.Errorf("wallet credit failed after successful card charge (txRef: %s): %w", monnifyTxRef, err)
+	}
+
+	return map[string]interface{}{
+		"requestSuccessful": true,
+		"responseCode":      "0",
+		"responseMessage":   "Card payment authorized and wallet credited successfully",
+		"responseBody": map[string]interface{}{
+			"transactionReference": monnifyTxRef,
+			"status":               "SUCCESS",
+			"amount":               amount,
+			"currency":             currency,
+			"wallet": map[string]interface{}{
+				"id":              wallet.ID,
+				"balance":         wallet.Balance,
+				"checkingBalance": wallet.CheckingBalance,
+				"personalBalance": wallet.PersonalBalance,
+				"goldBalance":     wallet.GoldBalance,
+				"usdcBalance":     wallet.UsdcBalance,
+				"usdtBalance":     wallet.UsdtBalance,
+			},
+			"cardDetails": map[string]interface{}{
+				"cardType":  cardMeta.CardType,
+				"maskedPan": cardMeta.MaskedPan,
+				"cardToken": cardMeta.CardToken,
+			},
+		},
+	}, nil
+}
+
 // creditWalletInDB atomically updates Wallet, WalletTransaction, ActivityWallet, CardFunding, and UserCard.
 func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amount float64, txRef, paymentMethod, currency string, cardMeta *savedCardMetadata) (*models.Wallet, error) {
 	if userID <= 0 {
@@ -2041,6 +2230,14 @@ func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amoun
 			} else {
 				return fmt.Errorf("failed to fetch wallet: %w", err)
 			}
+		}
+
+		// Idempotency: check if WalletTransaction for txRef already completed to avoid duplicate crediting
+		var existingCount int64
+		if err := tx.Model(&models.WalletTransaction{}).Where("\"trxRef\" = ? AND \"status\" = ?", txRef, "Completed").Count(&existingCount).Error; err == nil && existingCount > 0 {
+			log.Printf("[DB] WalletTransaction for txRef=%s already completed, skipping duplicate balance increment", txRef)
+			updatedWallet = wallet
+			return nil
 		}
 		log.Printf("[DB] Wallet before credit: balance=%.2f personalBalance=%.2f", wallet.Balance, wallet.PersonalBalance)
 
