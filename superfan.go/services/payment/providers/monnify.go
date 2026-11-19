@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -20,14 +21,36 @@ type MonnifyProvider struct {
 }
 
 func NewMonnifyProvider(apiKey, secretKey, baseURL, contractCode string) *MonnifyProvider {
-	if baseURL == "" {
+	if apiKey == "" {
+		apiKey = os.Getenv("PROD_MONNIFY_API_KEY")
+		if apiKey == "" {
+			apiKey = os.Getenv("MONNIFY_API_KEY")
+		}
+	}
+	if secretKey == "" {
+		secretKey = os.Getenv("PROD_MONNIFY_SECRET_KEY")
+		if secretKey == "" {
+			secretKey = os.Getenv("MONNIFY_SECRET_KEY")
+		}
+	}
+	if strings.HasPrefix(apiKey, "MK_PROD_") {
+		baseURL = "https://api.monnify.com"
+	} else if strings.HasPrefix(apiKey, "MK_TEST_") {
 		baseURL = "https://sandbox.monnify.com"
+	} else if baseURL == "" {
+		baseURL = os.Getenv("MONNIFY_URI")
+		if baseURL == "" {
+			baseURL = "https://api.monnify.com"
+		}
 	}
 	if contractCode == "" {
 		contractCode = os.Getenv("PROD_MONNIFY_CONTRACT_CODE")
 	}
 	if contractCode == "" {
 		contractCode = os.Getenv("MONNIFY_CONTRACT_CODE")
+	}
+	if contractCode == "" {
+		contractCode = "943294313374"
 	}
 	return &MonnifyProvider{
 		ApiKey:       apiKey,
@@ -78,8 +101,15 @@ func (m *MonnifyProvider) getAccessToken(ctx context.Context) (string, error) {
 		return "", errors.New("monnify API key or secret key not configured")
 	}
 
-	url := fmt.Sprintf("%s/api/v1/auth/login", m.BaseURL)
-	log.Printf("[MONNIFY] Authenticating with %s", url)
+	targetURL := m.BaseURL
+	if strings.HasPrefix(m.ApiKey, "MK_PROD_") {
+		targetURL = "https://api.monnify.com"
+	} else if strings.HasPrefix(m.ApiKey, "MK_TEST_") {
+		targetURL = "https://sandbox.monnify.com"
+	}
+	m.BaseURL = targetURL
+	url := fmt.Sprintf("%s/api/v1/auth/login", targetURL)
+	log.Printf("[MONNIFY] Authenticating with %s (apiKey prefix=%s)", url, m.ApiKey[:min(7, len(m.ApiKey))])
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, nil)
 	if err != nil {
@@ -130,26 +160,7 @@ func (m *MonnifyProvider) InitializeTransaction(ctx context.Context, payload map
 
 	token, err := m.getAccessToken(ctx)
 	if err != nil {
-		log.Printf("[MONNIFY] Auth failed: %v - using sandbox fallback", err)
-		ref, _ := payload["paymentReference"].(string)
-		if ref == "" {
-			ref = fmt.Sprintf("MNFY-%d", time.Now().UnixNano())
-		}
-		amount, _ := payload["amount"].(float64)
-		sandboxResp := map[string]interface{}{
-			"requestSuccessful": true,
-			"responseCode":      "0",
-			"responseMessage":   "Transaction Initialized (Sandbox Fallback)",
-			"responseBody": map[string]interface{}{
-				"transactionReference": ref,
-				"paymentReference":     ref,
-				"amount":               amount,
-				"currencyCode":         "NGN",
-				"checkoutUrl":          "",
-			},
-		}
-		log.Printf("[MONNIFY] Sandbox fallback response: %+v", sandboxResp)
-		return sandboxResp, nil
+		return nil, fmt.Errorf("monnify authentication failed: %w", err)
 	}
 
 	// Inject required fields
@@ -162,6 +173,9 @@ func (m *MonnifyProvider) InitializeTransaction(ctx context.Context, payload map
 	}
 	if contractCode == "" {
 		contractCode = os.Getenv("MONNIFY_CONTRACT_CODE")
+	}
+	if contractCode == "" {
+		contractCode = "943294313374"
 	}
 	payload["contractCode"] = contractCode
 
@@ -182,8 +196,9 @@ func (m *MonnifyProvider) InitializeTransaction(ctx context.Context, payload map
 	if ref, ok := payload["paymentReference"].(string); !ok || ref == "" {
 		payload["paymentReference"] = fmt.Sprintf("WALLET-%d", time.Now().UnixNano())
 	}
-	if _, ok := payload["redirectUrl"]; !ok {
-		payload["redirectUrl"] = "http://localhost:3000/en/payment-success"
+	redirectUrl, _ := payload["redirectUrl"].(string)
+	if redirectUrl == "" || strings.HasPrefix(redirectUrl, "http://localhost") || strings.HasPrefix(redirectUrl, "http://127.0.0.1") {
+		payload["redirectUrl"] = "https://superfan.ng/en/payment-success"
 	}
 
 	url := fmt.Sprintf("%s/api/v1/merchant/transactions/init-transaction", m.BaseURL)
@@ -223,6 +238,158 @@ func (m *MonnifyProvider) InitializeTransaction(ctx context.Context, payload map
 	return result, nil
 }
 
+// InitPaymentByTransfer initializes an ACCOUNT_TRANSFER transaction and requests a dynamic virtual account.
+func (m *MonnifyProvider) InitPaymentByTransfer(ctx context.Context, payload map[string]interface{}) (map[string]interface{}, error) {
+	log.Printf("[MONNIFY] InitPaymentByTransfer - Input payload: %+v", payload)
+
+	token, err := m.getAccessToken(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("monnify authentication failed: %w", err)
+	}
+
+	contractCode, _ := payload["contractCode"].(string)
+	if contractCode == "" {
+		contractCode = m.ContractCode
+	}
+	if contractCode == "" {
+		contractCode = os.Getenv("PROD_MONNIFY_CONTRACT_CODE")
+	}
+	if contractCode == "" {
+		contractCode = os.Getenv("MONNIFY_CONTRACT_CODE")
+	}
+	if contractCode == "" {
+		contractCode = "943294313374"
+	}
+
+	amount, _ := payload["amount"].(float64)
+	if amount <= 0 {
+		if amtInt, ok := payload["amount"].(int); ok {
+			amount = float64(amtInt)
+		}
+	}
+
+	customerEmail, _ := payload["customerEmail"].(string)
+	if customerEmail == "" {
+		customerEmail = "user@superfan.ng"
+	}
+
+	customerName, _ := payload["customerName"].(string)
+	if customerName == "" {
+		customerName = customerEmail
+	}
+
+	paymentRef, _ := payload["paymentReference"].(string)
+	if paymentRef == "" {
+		paymentRef = fmt.Sprintf("MNFY-TRF-%d", time.Now().UnixNano())
+	}
+
+	paymentDesc, _ := payload["paymentDescription"].(string)
+	if paymentDesc == "" {
+		paymentDesc = "Wallet Bank Transfer Top-up"
+	}
+
+	// 1. Initialize transaction for ACCOUNT_TRANSFER
+	initPayload := map[string]interface{}{
+		"amount":             amount,
+		"customerName":       customerName,
+		"customerEmail":      customerEmail,
+		"paymentReference":   paymentRef,
+		"paymentDescription": paymentDesc,
+		"currencyCode":       "NGN",
+		"contractCode":       contractCode,
+		"paymentMethods":     []string{"ACCOUNT_TRANSFER"},
+		"redirectUrl":        "https://superfan.ng",
+	}
+
+	initUrl := fmt.Sprintf("%s/api/v1/merchant/transactions/init-transaction", m.BaseURL)
+	initBytes, _ := json.Marshal(initPayload)
+	log.Printf("[MONNIFY] InitPaymentByTransfer POST %s - Body: %s", initUrl, string(initBytes))
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", initUrl, bytes.NewBuffer(initBytes))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+token)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("monnify init-transaction request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var initResult map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&initResult); err != nil {
+		return nil, fmt.Errorf("failed to decode monnify init-transaction response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("monnify init-transaction failed with status %d: %v", resp.StatusCode, initResult)
+	}
+
+	success, _ := initResult["requestSuccessful"].(bool)
+	if !success {
+		msg, _ := initResult["responseMessage"].(string)
+		return nil, fmt.Errorf("monnify init-transaction unsuccessful: %s", msg)
+	}
+
+	responseBody, _ := initResult["responseBody"].(map[string]interface{})
+	if responseBody == nil {
+		return nil, errors.New("monnify init-transaction response missing responseBody")
+	}
+
+	monnifyTxRef, _ := responseBody["transactionReference"].(string)
+	if monnifyTxRef == "" {
+		return nil, errors.New("monnify transactionReference not found in init-transaction response")
+	}
+
+	// 2. Request virtual account details
+	bankCode, _ := payload["bankCode"].(string)
+	if bankCode == "" {
+		bankCode = "035" // Wema Bank default for Monnify dynamic transfer
+	}
+
+	bankTransferPayload := map[string]interface{}{
+		"transactionReference": monnifyTxRef,
+		"bankCode":             bankCode,
+	}
+
+	bankTransferUrl := fmt.Sprintf("%s/api/v1/merchant/bank-transfer/init-payment", m.BaseURL)
+	bankBytes, _ := json.Marshal(bankTransferPayload)
+	log.Printf("[MONNIFY] InitPaymentByTransfer POST %s - Body: %s", bankTransferUrl, string(bankBytes))
+
+	bankReq, err := http.NewRequestWithContext(ctx, "POST", bankTransferUrl, bytes.NewBuffer(bankBytes))
+	if err != nil {
+		return nil, err
+	}
+	bankReq.Header.Set("Authorization", "Bearer "+token)
+	bankReq.Header.Set("Content-Type", "application/json")
+
+	bankResp, err := client.Do(bankReq)
+	if err != nil {
+		return nil, fmt.Errorf("monnify bank-transfer/init-payment request failed: %w", err)
+	}
+	defer bankResp.Body.Close()
+
+	var bankResult map[string]interface{}
+	if err := json.NewDecoder(bankResp.Body).Decode(&bankResult); err != nil {
+		return nil, fmt.Errorf("failed to decode monnify bank-transfer response: %w", err)
+	}
+
+	if bankResp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("monnify bank-transfer failed with status %d: %v", bankResp.StatusCode, bankResult)
+	}
+
+	bankSuccess, _ := bankResult["requestSuccessful"].(bool)
+	if !bankSuccess {
+		msg, _ := bankResult["responseMessage"].(string)
+		return nil, fmt.Errorf("monnify bank-transfer unsuccessful: %s", msg)
+	}
+
+	return bankResult, nil
+}
+
 // ChargeCardResult is the structured result of a charge card operation.
 type ChargeCardResult struct {
 	TransactionReference string
@@ -239,25 +406,7 @@ func (m *MonnifyProvider) ChargeCard(ctx context.Context, payload map[string]int
 
 	token, err := m.getAccessToken(ctx)
 	if err != nil {
-		log.Printf("[MONNIFY] Auth failed for ChargeCard: %v - using sandbox fallback", err)
-		txRef, _ := payload["transactionReference"].(string)
-		if txRef == "" {
-			txRef = fmt.Sprintf("MNFY-CARD-%d", time.Now().UnixNano())
-		}
-		sandboxResp := map[string]interface{}{
-			"requestSuccessful": true,
-			"responseCode":      "0",
-			"responseMessage":   "success",
-			"responseBody": map[string]interface{}{
-				"status":               "SUCCESS",
-				"message":              "Transaction Successful (Sandbox)",
-				"transactionReference": txRef,
-				"paymentReference":     txRef,
-				"authorizedAmount":     payload["amount"],
-			},
-		}
-		log.Printf("[MONNIFY] ChargeCard sandbox fallback response: %+v", sandboxResp)
-		return sandboxResp, nil
+		return nil, fmt.Errorf("monnify authentication failed: %w", err)
 	}
 
 	// Extract and validate required fields
@@ -354,26 +503,98 @@ func (m *MonnifyProvider) ChargeCard(ctx context.Context, payload map[string]int
 	return result, nil
 }
 
+// AuthorizeCardOTP calls POST /api/v1/merchant/cards/otp/authorize
+// Submits card OTP digits for a transaction requiring OTP authorization.
+func (m *MonnifyProvider) AuthorizeCardOTP(ctx context.Context, payload map[string]interface{}) (map[string]interface{}, error) {
+	log.Printf("[MONNIFY] AuthorizeCardOTP - txRef=%v tokenId=%v", payload["transactionReference"], payload["tokenId"])
+
+	token, err := m.getAccessToken(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("monnify authentication failed: %w", err)
+	}
+
+	txRef, _ := payload["transactionReference"].(string)
+	if txRef == "" {
+		return nil, errors.New("transactionReference is required for card OTP authorization")
+	}
+
+	tokenId, _ := payload["tokenId"].(string)
+	if tokenId == "" {
+		if otpData, ok := payload["otpData"].(map[string]interface{}); ok {
+			tokenId, _ = otpData["id"].(string)
+		}
+	}
+
+	otpToken, _ := payload["token"].(string)
+	if otpToken == "" {
+		otpToken, _ = payload["otp"].(string)
+	}
+	if otpToken == "" {
+		otpToken, _ = payload["authorizationCode"].(string)
+	}
+	if otpToken == "" {
+		return nil, errors.New("token (OTP) is required for card OTP authorization")
+	}
+
+	reqBody := map[string]interface{}{
+		"transactionReference": txRef,
+		"collectionChannel":    "API_NOTIFICATION",
+		"tokenId":              tokenId,
+		"token":                otpToken,
+	}
+	if cardMap, ok := payload["card"].(map[string]interface{}); ok && cardMap != nil {
+		reqBody["card"] = cardMap
+	}
+
+	url := fmt.Sprintf("%s/api/v1/merchant/cards/otp/authorize", m.BaseURL)
+	bodyBytes, _ := json.Marshal(reqBody)
+	log.Printf("[MONNIFY] AuthorizeCardOTP POST %s - Body: %s", url, string(bodyBytes))
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+
+	httpReq.Header.Set("Authorization", "Bearer "+token)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("monnify authorize-otp request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode monnify authorize-otp response: %w", err)
+	}
+
+	log.Printf("[MONNIFY] AuthorizeCardOTP response (HTTP %d): %+v", resp.StatusCode, result)
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("monnify authorize-otp failed with HTTP %d: %v", resp.StatusCode, result)
+	}
+
+	success, _ := result["requestSuccessful"].(bool)
+	if !success {
+		msg, _ := result["responseMessage"].(string)
+		if msg == "" {
+			msg = "OTP authorization failed"
+		}
+		return nil, fmt.Errorf("monnify authorize-otp unsuccessful: %s", msg)
+	}
+
+	return result, nil
+}
+
 // QueryTransaction calls GET /api/v2/transactions/{transactionReference}
 func (m *MonnifyProvider) QueryTransaction(ctx context.Context, transactionReference string) (map[string]interface{}, error) {
 	log.Printf("[MONNIFY] QueryTransaction - transactionReference: %s", transactionReference)
 
 	token, err := m.getAccessToken(ctx)
 	if err != nil {
-		log.Printf("[MONNIFY] Auth failed for QueryTransaction: %v - using sandbox fallback", err)
-		sandboxResp := map[string]interface{}{
-			"requestSuccessful": true,
-			"responseCode":      "0",
-			"responseMessage":   "success",
-			"responseBody": map[string]interface{}{
-				"transactionReference": transactionReference,
-				"paymentStatus":        "PAID",
-				"amountPaid":           "1000.00",
-				"totalPayable":         "1000.00",
-			},
-		}
-		log.Printf("[MONNIFY] QueryTransaction sandbox fallback: %+v", sandboxResp)
-		return sandboxResp, nil
+		return nil, fmt.Errorf("monnify authentication failed: %w", err)
 	}
 
 	url := fmt.Sprintf("%s/api/v2/transactions/%s", m.BaseURL, transactionReference)
@@ -457,28 +678,7 @@ func (m *MonnifyProvider) DisburseSingle(ctx context.Context, payload map[string
 
 	token, err := m.getAccessToken(ctx)
 	if err != nil {
-		log.Printf("[MONNIFY] Auth failed for DisburseSingle: %v - using sandbox fallback", err)
-		ref, _ := payload["reference"].(string)
-		if ref == "" {
-			ref = fmt.Sprintf("DISB-%d", time.Now().UnixNano())
-		}
-		sandboxResp := map[string]interface{}{
-			"requestSuccessful": true,
-			"responseCode":      "0",
-			"responseMessage":   "success",
-			"responseBody": map[string]interface{}{
-				"amount":                   payload["amount"],
-				"reference":                ref,
-				"status":                   "SUCCESS",
-				"date":                     time.Now().Format(time.RFC3339),
-				"narration":                payload["narration"],
-				"destinationAccountNumber": payload["destinationAccountNumber"],
-				"destinationAccountName":   payload["destinationAccountName"],
-				"destinationBankCode":      payload["destinationBankCode"],
-			},
-		}
-		log.Printf("[MONNIFY] DisburseSingle sandbox fallback: %+v", sandboxResp)
-		return sandboxResp, nil
+		return nil, fmt.Errorf("monnify authentication failed: %w", err)
 	}
 
 	url := fmt.Sprintf("%s/api/v2/disbursements/single", m.BaseURL)
@@ -518,16 +718,7 @@ func (m *MonnifyProvider) ValidateDisbursementOTP(ctx context.Context, reference
 
 	token, err := m.getAccessToken(ctx)
 	if err != nil {
-		log.Printf("[MONNIFY] Auth failed for OTP validation: %v - sandbox success fallback", err)
-		return map[string]interface{}{
-			"requestSuccessful": true,
-			"responseCode":      "0",
-			"responseMessage":   "Withdrawal authorized successfully",
-			"responseBody": map[string]interface{}{
-				"reference": reference,
-				"status":    "SUCCESS",
-			},
-		}, nil
+		return nil, fmt.Errorf("monnify authentication failed: %w", err)
 	}
 
 	url := fmt.Sprintf("%s/api/v2/disbursements/single/validate-otp", m.BaseURL)
@@ -569,17 +760,7 @@ func (m *MonnifyProvider) ValidateBankAccount(ctx context.Context, accountNumber
 
 	token, err := m.getAccessToken(ctx)
 	if err != nil {
-		log.Printf("[MONNIFY] Auth failed for account validation: %v - returning sandbox preview", err)
-		return map[string]interface{}{
-			"requestSuccessful": true,
-			"responseCode":      "0",
-			"responseMessage":   "success",
-			"responseBody": map[string]interface{}{
-				"accountNumber": accountNumber,
-				"accountName":   "SAMPLE BENEFICIARY",
-				"bankCode":      bankCode,
-			},
-		}, nil
+		return nil, fmt.Errorf("monnify authentication failed: %w", err)
 	}
 
 	url := fmt.Sprintf("%s/api/v1/disbursements/account/validate?accountNumber=%s&bankCode=%s", m.BaseURL, accountNumber, bankCode)

@@ -9,6 +9,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -388,7 +389,22 @@ func (s *PaymentService) InitiateDeposit(ctx context.Context, req providers.Depo
 	case "NGN":
 		provider = s.monnifyProvider
 	case "USDC", "USDT":
-		provider = s.bitnobProvider
+		activeStable, _ := s.GetActivePaymentProcessorForChannel(ctx, "stable_coin")
+		if activeStable != nil && strings.EqualFold(activeStable.Name, "bitnob") {
+			secKey := ""
+			if activeStable.SecretKey != nil && *activeStable.SecretKey != "" {
+				secKey = *activeStable.SecretKey
+			} else if activeStable.PublicKey != nil && *activeStable.PublicKey != "" {
+				secKey = *activeStable.PublicKey
+			}
+			if secKey != "" {
+				provider = providers.NewBitnobProvider(secKey, "https://api.bitnob.co")
+			} else {
+				provider = s.bitnobProvider
+			}
+		} else {
+			provider = s.bitnobProvider
+		}
 	default:
 		return nil, fmt.Errorf("unsupported currency: %s", req.Currency)
 	}
@@ -1190,6 +1206,42 @@ func (s *PaymentService) SimulateAddressDeposit(ctx context.Context, req provide
 	return s.bitnobProvider.SimulateAddressDeposit(ctx, req)
 }
 
+var processorCapabilities = map[string][]string{
+	"monnify":     {"card", "bank_transfer"},
+	"flutterwave": {"card", "bank_transfer", "stable_coin"},
+	"busha":       {"stable_coin"},
+	"cngn":        {"stable_coin"},
+	"bitnob":      {"stable_coin"},
+	"bachs":       {"card", "bank_transfer", "stable_coin"},
+}
+
+// GetActivePaymentProcessorForChannel returns the active payment processor assigned to a given channel ("card", "bank_transfer", "stable_coin")
+func (s *PaymentService) GetActivePaymentProcessorForChannel(ctx context.Context, channel string) (*models.PaymentProcessor, error) {
+	if s.db == nil {
+		return nil, errors.New("database not initialized")
+	}
+
+	var enabled []models.PaymentProcessor
+	err := s.db.WithContext(ctx).
+		Where("\"isEnabled\" = ?", true).
+		Order("\"updatedAt\" DESC, id DESC").
+		Find(&enabled).Error
+	if err != nil {
+		return nil, err
+	}
+
+	for _, proc := range enabled {
+		caps := processorCapabilities[strings.ToLower(proc.Name)]
+		for _, cap := range caps {
+			if cap == channel {
+				return &proc, nil
+			}
+		}
+	}
+
+	return s.GetActivePaymentProcessor(ctx)
+}
+
 // GetActivePaymentProcessor returns the currently enabled fiat payment processor from DB (monnify, flutterwave, bachs)
 func (s *PaymentService) GetActivePaymentProcessor(ctx context.Context) (*models.PaymentProcessor, error) {
 	if s.db == nil {
@@ -1200,7 +1252,7 @@ func (s *PaymentService) GetActivePaymentProcessor(ctx context.Context) (*models
 	// Check for enabled fiat card/transfer processors first, ordered by latest update
 	err := s.db.WithContext(ctx).
 		Where("\"isEnabled\" = ? AND LOWER(name) IN ('monnify', 'flutterwave', 'bachs')", true).
-		Order("\"updatedAt\" DESC").
+		Order("\"updatedAt\" DESC, id DESC").
 		First(&processor).Error
 	if err == nil {
 		return &processor, nil
@@ -1209,7 +1261,7 @@ func (s *PaymentService) GetActivePaymentProcessor(ctx context.Context) (*models
 	// Fallback to any enabled processor
 	err = s.db.WithContext(ctx).
 		Where("\"isEnabled\" = ?", true).
-		Order("\"updatedAt\" DESC").
+		Order("\"updatedAt\" DESC, id DESC").
 		First(&processor).Error
 	if err == nil {
 		return &processor, nil
@@ -1239,18 +1291,6 @@ func (s *PaymentService) TogglePaymentProcessor(ctx context.Context, id int) (*m
 	nextState := !processor.IsEnabled
 	now := time.Now()
 
-	if nextState {
-		// Only one processor should be available at any time
-		_ = s.db.WithContext(ctx).
-			Model(&models.PaymentProcessor{}).
-			Where("id != ?", id).
-			Updates(map[string]interface{}{
-				"isEnabled":   false,
-				"isConnected": false,
-				"updatedAt":   now,
-			}).Error
-	}
-
 	processor.IsEnabled = nextState
 	processor.IsConnected = nextState
 	processor.LastSync = &now
@@ -1259,6 +1299,48 @@ func (s *PaymentService) TogglePaymentProcessor(ctx context.Context, id int) (*m
 	if err := s.db.WithContext(ctx).Save(&processor).Error; err != nil {
 		return nil, err
 	}
+
+	// When toggled ON, resolve slot conflicts:
+	// The newly activated processor claims all its supported channels.
+	// Any other active processor that has 0 remaining unique channels is deactivated.
+	if nextState {
+		var otherEnabled []models.PaymentProcessor
+		_ = s.db.WithContext(ctx).
+			Where("\"isEnabled\" = ? AND id != ?", true, id).
+			Order("\"updatedAt\" DESC, id DESC").
+			Find(&otherEnabled).Error
+
+		assignedSlots := make(map[string]bool)
+		for _, ch := range processorCapabilities[strings.ToLower(processor.Name)] {
+			assignedSlots[ch] = true
+		}
+
+		for _, other := range otherEnabled {
+			otherCaps := processorCapabilities[strings.ToLower(other.Name)]
+			remainingCount := 0
+			for _, ch := range otherCaps {
+				if !assignedSlots[ch] {
+					remainingCount++
+				}
+			}
+
+			if remainingCount == 0 {
+				_ = s.db.WithContext(ctx).
+					Model(&models.PaymentProcessor{}).
+					Where("id = ?", other.ID).
+					Updates(map[string]interface{}{
+						"isEnabled":   false,
+						"isConnected": false,
+						"updatedAt":   now,
+					}).Error
+			} else {
+				for _, ch := range otherCaps {
+					assignedSlots[ch] = true
+				}
+			}
+		}
+	}
+
 	return &processor, nil
 }
 
@@ -1273,10 +1355,17 @@ func (s *PaymentService) InitializeTransaction(ctx context.Context, payload map[
 		}
 	}
 
-	activeProc, _ := s.GetActivePaymentProcessor(ctx)
+	activeProc, _ := s.GetActivePaymentProcessorForChannel(ctx, "card")
 	procName := "monnify"
+	var customPubKey, customSecKey string
 	if activeProc != nil && activeProc.Name != "" {
 		procName = strings.ToLower(activeProc.Name)
+		if activeProc.PublicKey != nil {
+			customPubKey = *activeProc.PublicKey
+		}
+		if activeProc.SecretKey != nil {
+			customSecKey = *activeProc.SecretKey
+		}
 	}
 
 	log.Printf("[PaymentService] Active processor for InitializeTransaction: %s", procName)
@@ -1321,7 +1410,22 @@ func (s *PaymentService) InitializeTransaction(ctx context.Context, payload map[
 		return res, nil
 
 	default:
-		result, err := s.monnifyProvider.InitializeTransaction(ctx, payload)
+		provider := s.monnifyProvider
+		if customPubKey != "" && customSecKey != "" {
+			mUri := "https://api.monnify.com"
+			if !strings.HasPrefix(customPubKey, "MK_PROD_") {
+				mUri = "https://sandbox.monnify.com"
+			}
+			mContract := os.Getenv("PROD_MONNIFY_CONTRACT_CODE")
+			if mContract == "" {
+				mContract = os.Getenv("MONNIFY_CONTRACT_CODE")
+			}
+			if mContract == "" {
+				mContract = "943294313374"
+			}
+			provider = providers.NewMonnifyProvider(customPubKey, customSecKey, mUri, mContract)
+		}
+		result, err := provider.InitializeTransaction(ctx, payload)
 		if err != nil {
 			log.Printf("[PaymentService] InitializeTransaction failed: %v", err)
 			return nil, err
@@ -1329,6 +1433,406 @@ func (s *PaymentService) InitializeTransaction(ctx context.Context, payload map[
 		log.Printf("[PaymentService] InitializeTransaction success: %+v", result)
 		return result, nil
 	}
+}
+
+// InitPaymentByTransfer initializes a bank transfer virtual account using the currently active processor.
+func (s *PaymentService) InitPaymentByTransfer(ctx context.Context, payload map[string]interface{}) (map[string]interface{}, error) {
+	log.Printf("[PaymentService] InitPaymentByTransfer - payload: %+v", payload)
+
+	var userID int
+	if uidFloat, ok := payload["userId"].(float64); ok && uidFloat > 0 {
+		userID = int(uidFloat)
+	} else if uidInt, ok := payload["userId"].(int); ok && uidInt > 0 {
+		userID = uidInt
+	}
+
+	amount, _ := payload["amount"].(float64)
+	if amount <= 0 {
+		if amtInt, ok := payload["amount"].(int); ok {
+			amount = float64(amtInt)
+		}
+	}
+	if amount <= 0 {
+		amount = 1000
+	}
+
+	if userID > 0 {
+		if err := s.ValidateTransactionLimits(ctx, userID, amount, "DEPOSIT"); err != nil {
+			return nil, err
+		}
+	}
+
+	activeProc, _ := s.GetActivePaymentProcessorForChannel(ctx, "bank_transfer")
+	procName := "monnify"
+	var customPubKey, customSecKey string
+	if activeProc != nil && activeProc.Name != "" {
+		procName = strings.ToLower(activeProc.Name)
+		if activeProc.PublicKey != nil {
+			customPubKey = *activeProc.PublicKey
+		}
+		if activeProc.SecretKey != nil {
+			customSecKey = *activeProc.SecretKey
+		}
+	}
+	log.Printf("[PaymentService] Active processor for InitPaymentByTransfer: %s", procName)
+
+	customerEmail, _ := payload["customerEmail"].(string)
+	if customerEmail == "" {
+		customerEmail = "user@superfan.ng"
+	}
+	customerName, _ := payload["customerName"].(string)
+	if customerName == "" {
+		customerName = customerEmail
+	}
+	paymentRef, _ := payload["paymentReference"].(string)
+	if paymentRef == "" {
+		paymentRef = fmt.Sprintf("PAY-%d", time.Now().UnixNano())
+	}
+	paymentDesc, _ := payload["paymentDescription"].(string)
+	if paymentDesc == "" {
+		paymentDesc = "Wallet Bank Transfer Top-up"
+	}
+
+	var res map[string]interface{}
+	var bankTx models.BankTransfer
+
+	switch procName {
+	case "flutterwave":
+		secKey := customSecKey
+		if secKey == "" {
+			secKey = os.Getenv("FLW_SECRET_KEY")
+		}
+		if secKey == "" {
+			return nil, errors.New("flutterwave secret key is not configured")
+		}
+
+		flwReqBody := map[string]interface{}{
+			"tx_ref":       paymentRef,
+			"amount":       fmt.Sprintf("%.2f", amount),
+			"currency":     "NGN",
+			"email":        customerEmail,
+			"fullname":     customerName,
+			"is_permanent": false,
+		}
+		bodyBytes, _ := json.Marshal(flwReqBody)
+
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", "https://api.flutterwave.com/v3/charges?type=bank_transfer", bytes.NewBuffer(bodyBytes))
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("Authorization", "Bearer "+secKey)
+		httpReq.Header.Set("Content-Type", "application/json")
+
+		client := &http.Client{Timeout: 20 * time.Second}
+		resp, err := client.Do(httpReq)
+		if err != nil {
+			return nil, fmt.Errorf("flutterwave charge request failed: %w", err)
+		}
+		defer resp.Body.Close()
+
+		var flwRes map[string]interface{}
+		if err := json.NewDecoder(resp.Body).Decode(&flwRes); err != nil {
+			return nil, fmt.Errorf("failed to decode flutterwave response: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("flutterwave request failed with status %d: %v", resp.StatusCode, flwRes)
+		}
+
+		meta, _ := flwRes["meta"].(map[string]interface{})
+		auth, _ := meta["authorization"].(map[string]interface{})
+		data, _ := flwRes["data"].(map[string]interface{})
+
+		accNum := ""
+		bankName := "Flutterwave MFB"
+		accName := customerName
+		expiresOn := time.Now().Add(60 * time.Minute).Format(time.RFC3339)
+		txRef := paymentRef
+		totalPayable := amount
+
+		if auth != nil {
+			if a, ok := auth["transfer_account"].(string); ok && a != "" {
+				accNum = a
+			}
+			if b, ok := auth["transfer_bank"].(string); ok && b != "" {
+				bankName = b
+			}
+			if n, ok := auth["transfer_note"].(string); ok && n != "" {
+				accName = n
+			}
+			if exp, ok := auth["account_expiration"].(string); ok && exp != "" {
+				expiresOn = exp
+			}
+			if amtStr, ok := auth["transfer_amount"].(string); ok {
+				fmt.Sscanf(amtStr, "%f", &totalPayable)
+			}
+			if trfRef, ok := auth["transfer_reference"].(string); ok && trfRef != "" {
+				txRef = trfRef
+			}
+		}
+		if accNum == "" && data != nil {
+			if a, ok := data["account_number"].(string); ok && a != "" {
+				accNum = a
+			}
+			if b, ok := data["bank_name"].(string); ok && b != "" {
+				bankName = b
+			}
+			if r, ok := data["tx_ref"].(string); ok && r != "" {
+				txRef = r
+			}
+		}
+
+		if accNum == "" {
+			return nil, fmt.Errorf("flutterwave did not return virtual account details: %v", flwRes)
+		}
+
+		res = map[string]interface{}{
+			"requestSuccessful": true,
+			"responseCode":      "0",
+			"responseMessage":   "Virtual Account Generated Successfully",
+			"responseBody": map[string]interface{}{
+				"accountNumber":        accNum,
+				"accountName":          accName,
+				"bankName":             bankName,
+				"bankCode":             "232",
+				"expiresOn":            expiresOn,
+				"totalPayable":         totalPayable,
+				"fee":                  0,
+				"transactionReference": txRef,
+				"paymentReference":     paymentRef,
+				"processor":            "flutterwave",
+			},
+		}
+
+		bankTx = models.BankTransfer{
+			UserID:                 userID,
+			TransactionReference:   txRef,
+			PaymentReference:       paymentRef,
+			AccountNumber:          accNum,
+			AccountName:            accName,
+			BankName:               bankName,
+			BankCode:               "232",
+			Amount:                 amount,
+			Fee:                    0,
+			TotalPayable:           totalPayable,
+			Status:                 "PENDING",
+			RequestTime:            time.Now(),
+			ExpiresOn:              time.Now().Add(60 * time.Minute),
+			AccountDurationSeconds: 3600,
+			CreatedAt:              time.Now(),
+			UpdatedAt:              time.Now(),
+		}
+
+	case "bachs":
+		secKey := customSecKey
+		if secKey == "" {
+			secKey = os.Getenv("BACHS_SECRET_KEY")
+		}
+		if secKey == "" {
+			return nil, errors.New("bachs secret key is not configured")
+		}
+
+		bachsReqBody := map[string]interface{}{
+			"currency":  "NGN",
+			"reference": paymentRef,
+			"amount":    amount,
+			"customer": map[string]interface{}{
+				"email": customerEmail,
+				"name":  customerName,
+			},
+		}
+		bodyBytes, _ := json.Marshal(bachsReqBody)
+
+		bachsUrl := "https://api.bachs.io/v1/virtual-accounts"
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", bachsUrl, bytes.NewBuffer(bodyBytes))
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("Authorization", "Bearer "+secKey)
+		httpReq.Header.Set("Content-Type", "application/json")
+
+		client := &http.Client{Timeout: 20 * time.Second}
+		resp, err := client.Do(httpReq)
+		if err != nil {
+			return nil, fmt.Errorf("bachs virtual account request failed: %w", err)
+		}
+		defer resp.Body.Close()
+
+		var bachsRes map[string]interface{}
+		if err := json.NewDecoder(resp.Body).Decode(&bachsRes); err != nil {
+			return nil, fmt.Errorf("failed to decode bachs response: %w", err)
+		}
+
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+			return nil, fmt.Errorf("bachs request failed with status %d: %v", resp.StatusCode, bachsRes)
+		}
+
+		data, _ := bachsRes["data"].(map[string]interface{})
+		if data == nil {
+			data = bachsRes
+		}
+
+		accNum, _ := data["account_number"].(string)
+		bankName, _ := data["bank_name"].(string)
+		if bankName == "" {
+			bankName = "Providus Bank"
+		}
+		accName, _ := data["account_name"].(string)
+		if accName == "" {
+			accName = customerName
+		}
+		txRef, _ := data["reference"].(string)
+		if txRef == "" {
+			txRef = paymentRef
+		}
+
+		if accNum == "" {
+			return nil, fmt.Errorf("bachs did not return virtual account details: %v", bachsRes)
+		}
+
+		expiresOn := time.Now().Add(60 * time.Minute).Format(time.RFC3339)
+		res = map[string]interface{}{
+			"requestSuccessful": true,
+			"responseCode":      "0",
+			"responseMessage":   "Virtual Account Generated Successfully",
+			"responseBody": map[string]interface{}{
+				"accountNumber":        accNum,
+				"accountName":          accName,
+				"bankName":             bankName,
+				"bankCode":             "101",
+				"expiresOn":            expiresOn,
+				"totalPayable":         amount,
+				"fee":                  0,
+				"transactionReference": txRef,
+				"paymentReference":     paymentRef,
+				"processor":            "bachs",
+			},
+		}
+
+		bankTx = models.BankTransfer{
+			UserID:                 userID,
+			TransactionReference:   txRef,
+			PaymentReference:       paymentRef,
+			AccountNumber:          accNum,
+			AccountName:            accName,
+			BankName:               bankName,
+			BankCode:               "101",
+			Amount:                 amount,
+			Fee:                    0,
+			TotalPayable:           amount,
+			Status:                 "PENDING",
+			RequestTime:            time.Now(),
+			ExpiresOn:              time.Now().Add(60 * time.Minute),
+			AccountDurationSeconds: 3600,
+			CreatedAt:              time.Now(),
+			UpdatedAt:              time.Now(),
+		}
+
+	default: // Monnify
+		provider := s.monnifyProvider
+		if customPubKey != "" && customSecKey != "" {
+			mUri := os.Getenv("MONNIFY_URI")
+			if mUri == "" {
+				if strings.HasPrefix(customPubKey, "MK_PROD_") {
+					mUri = "https://api.monnify.com"
+				} else {
+					mUri = "https://sandbox.monnify.com"
+				}
+			}
+			mContract := os.Getenv("PROD_MONNIFY_CONTRACT_CODE")
+			if mContract == "" {
+				mContract = os.Getenv("MONNIFY_CONTRACT_CODE")
+			}
+			provider = providers.NewMonnifyProvider(customPubKey, customSecKey, mUri, mContract)
+		}
+
+		monnifyPayload := map[string]interface{}{
+			"amount":             amount,
+			"customerName":       customerName,
+			"customerEmail":      customerEmail,
+			"paymentReference":   paymentRef,
+			"paymentDescription": paymentDesc,
+			"currencyCode":       "NGN",
+		}
+		mResult, err := provider.InitPaymentByTransfer(ctx, monnifyPayload)
+		if err != nil {
+			return nil, err
+		}
+
+		mBody, _ := mResult["responseBody"].(map[string]interface{})
+		if mBody == nil {
+			return nil, errors.New("monnify returned empty response body")
+		}
+
+		accNum, _ := mBody["accountNumber"].(string)
+		accName, _ := mBody["accountName"].(string)
+		bankName, _ := mBody["bankName"].(string)
+		bankCode, _ := mBody["bankCode"].(string)
+		expiresOn, _ := mBody["expiresOn"].(string)
+		mTxRef, _ := mBody["transactionReference"].(string)
+		mPayRef, _ := mBody["paymentReference"].(string)
+		if mPayRef == "" {
+			mPayRef = paymentRef
+		}
+		totalPayable, _ := mBody["totalPayable"].(float64)
+		if totalPayable <= 0 {
+			totalPayable = amount
+		}
+		fee, _ := mBody["fee"].(float64)
+		ussd, _ := mBody["ussdPayment"].(string)
+
+		res = map[string]interface{}{
+			"requestSuccessful": true,
+			"responseCode":      "0",
+			"responseMessage":   "Virtual Account Generated Successfully",
+			"responseBody": map[string]interface{}{
+				"accountNumber":        accNum,
+				"accountName":          accName,
+				"bankName":             bankName,
+				"bankCode":             bankCode,
+				"expiresOn":            expiresOn,
+				"totalPayable":         totalPayable,
+				"fee":                  fee,
+				"transactionReference": mTxRef,
+				"paymentReference":     mPayRef,
+				"ussdPayment":          ussd,
+				"processor":            "monnify",
+			},
+		}
+
+		bankTx = models.BankTransfer{
+			UserID:                 userID,
+			TransactionReference:   mTxRef,
+			PaymentReference:       mPayRef,
+			AccountNumber:          accNum,
+			AccountName:            accName,
+			BankName:               bankName,
+			BankCode:               bankCode,
+			Amount:                 amount,
+			Fee:                    fee,
+			TotalPayable:           totalPayable,
+			Status:                 "PENDING",
+			RequestTime:            time.Now(),
+			ExpiresOn:              time.Now().Add(40 * time.Minute),
+			AccountDurationSeconds: 2400,
+			CreatedAt:              time.Now(),
+			UpdatedAt:              time.Now(),
+		}
+		if ussd != "" {
+			bankTx.UssdPayment = &ussd
+		}
+	}
+
+	// Persist BankTransfer if userID is available
+	if s.db != nil && userID > 0 && bankTx.AccountNumber != "" {
+		if err := s.db.WithContext(ctx).Create(&bankTx).Error; err != nil {
+			log.Printf("[PaymentService] Warning: Failed to record BankTransfer in DB: %v", err)
+		} else {
+			log.Printf("[PaymentService] BankTransfer recorded in DB with ID=%d, UserID=%d, ref=%s", bankTx.ID, userID, bankTx.TransactionReference)
+		}
+	}
+
+	return res, nil
 }
 
 // ChargeCardAndCreditWallet charges a card via the active processor (Monnify, Flutterwave, Bachs) and, on SUCCESS,
@@ -1342,10 +1846,17 @@ func (s *PaymentService) ChargeCardAndCreditWallet(ctx context.Context, userID i
 		return nil, fmt.Errorf("minimum deposit amount is NGN 1,000")
 	}
 
-	activeProc, _ := s.GetActivePaymentProcessor(ctx)
+	activeProc, _ := s.GetActivePaymentProcessorForChannel(ctx, "card")
 	procName := "monnify"
+	var customPubKey, customSecKey string
 	if activeProc != nil && activeProc.Name != "" {
 		procName = strings.ToLower(activeProc.Name)
+		if activeProc.PublicKey != nil {
+			customPubKey = *activeProc.PublicKey
+		}
+		if activeProc.SecretKey != nil {
+			customSecKey = *activeProc.SecretKey
+		}
 	}
 	log.Printf("[PaymentService] Active processor for ChargeCardAndCreditWallet: %s", procName)
 
@@ -1384,8 +1895,23 @@ func (s *PaymentService) ChargeCardAndCreditWallet(ctx context.Context, userID i
 	default:
 		// Step 1: Call Monnify charge-card API
 		log.Printf("[PaymentService] Step 1: Calling Monnify ChargeCard...")
+		provider := s.monnifyProvider
+		if customPubKey != "" && customSecKey != "" {
+			mUri := "https://api.monnify.com"
+			if !strings.HasPrefix(customPubKey, "MK_PROD_") {
+				mUri = "https://sandbox.monnify.com"
+			}
+			mContract := os.Getenv("PROD_MONNIFY_CONTRACT_CODE")
+			if mContract == "" {
+				mContract = os.Getenv("MONNIFY_CONTRACT_CODE")
+			}
+			if mContract == "" {
+				mContract = "943294313374"
+			}
+			provider = providers.NewMonnifyProvider(customPubKey, customSecKey, mUri, mContract)
+		}
 		var err error
-		chargeResult, err = s.monnifyProvider.ChargeCard(ctx, chargePayload)
+		chargeResult, err = provider.ChargeCard(ctx, chargePayload)
 		if err != nil {
 			log.Printf("[PaymentService] ChargeCard FAILED: %v", err)
 			return nil, fmt.Errorf("card charge failed: %w", err)
@@ -1415,8 +1941,59 @@ func (s *PaymentService) ChargeCardAndCreditWallet(ctx context.Context, userID i
 		return nil, fmt.Errorf("card charge was not successful: %s", msg)
 	}
 
-	if statusUpper != "SUCCESS" && statusUpper != "PAID" && statusUpper != "COMPLETED" {
-		log.Printf("[PaymentService] Unexpected charge status: %s - proceeding only if requestSuccessful=true", statusUpper)
+	// Flatten secure3dData redirectUrl if present
+	if sec3d, ok := body["secure3dData"].(map[string]interface{}); ok && sec3d != nil {
+		if rUrl, ok := sec3d["redirectUrl"].(string); ok && rUrl != "" {
+			if _, hasRedirect := body["redirectUrl"]; !hasRedirect {
+				body["redirectUrl"] = rUrl
+			}
+		}
+	}
+
+	// Check if customer authorization (OTP or 3DS redirect) is required
+	isOtpRequired := statusUpper == "OTP_AUTHORIZATION_REQUIRED" ||
+		statusUpper == "PENDING_OTP" ||
+		statusUpper == "REQUIRES_OTP" ||
+		statusUpper == "OTP_REQUIRED" ||
+		body["otpData"] != nil
+
+	is3dsRequired := statusUpper == "BANK_AUTHORIZATION_REQUIRED" ||
+		statusUpper == "3DS_AUTHORIZATION_REQUIRED" ||
+		statusUpper == "PENDING_3DS" ||
+		statusUpper == "REDIRECT" ||
+		body["secure3dData"] != nil ||
+		body["redirectUrl"] != nil ||
+		body["authorizedUrl"] != nil
+
+	if isOtpRequired || is3dsRequired {
+		log.Printf("[PaymentService] Card charge requires customer authorization (status=%s, otp=%v, 3ds=%v). Returning authorization details to client.", chargeStatus, isOtpRequired, is3dsRequired)
+		authMessage := "Customer authorization required"
+		if isOtpRequired {
+			authMessage = "OTP authorization required"
+			if otpMap, ok := body["otpData"].(map[string]interface{}); ok {
+				if msg, ok := otpMap["message"].(string); ok && msg != "" {
+					authMessage = msg
+				}
+			}
+		} else if is3dsRequired {
+			authMessage = "3DS bank authorization required"
+		}
+		if msg, ok := chargeResult["responseMessage"].(string); ok && msg != "" && msg != "success" {
+			authMessage = msg
+		}
+
+		return map[string]interface{}{
+			"requestSuccessful": true,
+			"responseCode":      "0",
+			"responseMessage":   authMessage,
+			"responseBody":      body,
+		}, nil
+	}
+
+	// Only credit wallet if status is strictly confirmed SUCCESS or PAID
+	if statusUpper != "SUCCESS" && statusUpper != "PAID" {
+		log.Printf("[PaymentService] Card charge status is '%s' (not SUCCESS/PAID) - wallet will NOT be credited", chargeStatus)
+		return nil, fmt.Errorf("card charge was not completed (status: %s); wallet was not credited", chargeStatus)
 	}
 
 	cardMeta, metaErr := extractCardMetadataFromChargeResponse(chargePayload, chargeResult)
@@ -1469,6 +2046,146 @@ func (s *PaymentService) ChargeCardAndCreditWallet(ctx context.Context, userID i
 	}, nil
 }
 
+// AuthorizeCardOTPAndCreditWallet authorizes an OTP challenge for a pending Monnify card charge and credits the wallet on success.
+func (s *PaymentService) AuthorizeCardOTPAndCreditWallet(ctx context.Context, userID int, amount float64, currency string, authPayload map[string]interface{}) (map[string]interface{}, error) {
+	log.Printf("[PaymentService] AuthorizeCardOTPAndCreditWallet: userID=%d amount=%.2f currency=%s", userID, amount, currency)
+
+	activeProc, _ := s.GetActivePaymentProcessorForChannel(ctx, "card")
+	var customPubKey, customSecKey string
+	if activeProc != nil {
+		if activeProc.PublicKey != nil {
+			customPubKey = *activeProc.PublicKey
+		}
+		if activeProc.SecretKey != nil {
+			customSecKey = *activeProc.SecretKey
+		}
+	}
+	if customPubKey == "" {
+		customPubKey = os.Getenv("PROD_MONNIFY_API_KEY")
+		if customPubKey == "" {
+			customPubKey = os.Getenv("MONNIFY_API_KEY")
+		}
+	}
+	if customSecKey == "" {
+		customSecKey = os.Getenv("PROD_MONNIFY_SECRET_KEY")
+		if customSecKey == "" {
+			customSecKey = os.Getenv("MONNIFY_SECRET_KEY")
+		}
+	}
+
+	mUri := "https://api.monnify.com"
+	if !strings.HasPrefix(customPubKey, "MK_PROD_") {
+		mUri = "https://sandbox.monnify.com"
+	}
+	mContract := os.Getenv("PROD_MONNIFY_CONTRACT_CODE")
+	if mContract == "" {
+		mContract = os.Getenv("MONNIFY_CONTRACT_CODE")
+	}
+	if mContract == "" {
+		mContract = "943294313374"
+	}
+	monnifyProv := providers.NewMonnifyProvider(customPubKey, customSecKey, mUri, mContract)
+
+	authResult, err := monnifyProv.AuthorizeCardOTP(ctx, authPayload)
+	if err != nil {
+		log.Printf("[PaymentService] AuthorizeCardOTP FAILED: %v", err)
+		return nil, fmt.Errorf("card OTP authorization failed: %w", err)
+	}
+
+	log.Printf("[PaymentService] AuthorizeCardOTP result: %+v", authResult)
+
+	body, _ := authResult["responseBody"].(map[string]interface{})
+	if body == nil {
+		body = authResult
+	}
+
+	monnifyTxRef, _ := body["transactionReference"].(string)
+	if monnifyTxRef == "" {
+		monnifyTxRef, _ = authPayload["transactionReference"].(string)
+	}
+
+	paymentStatus, _ := body["paymentStatus"].(string)
+	if paymentStatus == "" {
+		paymentStatus, _ = body["status"].(string)
+	}
+	statusUpper := strings.ToUpper(paymentStatus)
+	requestSuccessful, _ := authResult["requestSuccessful"].(bool)
+
+	if !requestSuccessful {
+		msg, _ := authResult["responseMessage"].(string)
+		if msg == "" {
+			msg = "OTP authorization failed"
+		}
+		return nil, fmt.Errorf("card OTP authorization unsuccessful: %s", msg)
+	}
+
+	// Flatten secure3dData redirectUrl if present
+	if sec3d, ok := body["secure3dData"].(map[string]interface{}); ok && sec3d != nil {
+		if rUrl, ok := sec3d["redirectUrl"].(string); ok && rUrl != "" {
+			if _, hasRedirect := body["redirectUrl"]; !hasRedirect {
+				body["redirectUrl"] = rUrl
+			}
+		}
+	}
+
+	// If 3DS redirect is needed after OTP
+	if statusUpper == "BANK_AUTHORIZATION_REQUIRED" || statusUpper == "3DS_AUTHORIZATION_REQUIRED" || body["secure3dData"] != nil || body["redirectUrl"] != nil {
+		return map[string]interface{}{
+			"requestSuccessful": true,
+			"responseCode":      "0",
+			"responseMessage":   "3DS authorization required",
+			"responseBody":      body,
+		}, nil
+	}
+
+	if statusUpper != "SUCCESS" && statusUpper != "PAID" {
+		return nil, fmt.Errorf("card OTP authorization was not completed (status: %s); wallet was not credited", paymentStatus)
+	}
+
+	// Extract card metadata if present
+	cardMeta, _ := extractCardMetadataFromChargeResponse(authPayload, authResult)
+	if cardMeta.CardType == "" {
+		cardMeta.CardType = "Card"
+	}
+	if cardMeta.MaskedPan == "" && cardMeta.First6 != "" && cardMeta.Last4 != "" {
+		cardMeta.MaskedPan = buildMaskedPan(cardMeta.First6, cardMeta.Last4)
+	}
+
+	// Credit wallet atomically
+	log.Printf("[PaymentService] Crediting wallet after successful OTP authorization: userID=%d amount=%.2f txRef=%s", userID, amount, monnifyTxRef)
+	wallet, err := s.creditWalletInDB(ctx, userID, amount, monnifyTxRef, "card", currency, &cardMeta)
+	if err != nil {
+		log.Printf("[PaymentService] CRITICAL: Card OTP authorized but wallet credit FAILED for userID=%d txRef=%s: %v", userID, monnifyTxRef, err)
+		return nil, fmt.Errorf("wallet credit failed after successful card charge (txRef: %s): %w", monnifyTxRef, err)
+	}
+
+	return map[string]interface{}{
+		"requestSuccessful": true,
+		"responseCode":      "0",
+		"responseMessage":   "Card payment authorized and wallet credited successfully",
+		"responseBody": map[string]interface{}{
+			"transactionReference": monnifyTxRef,
+			"status":               "SUCCESS",
+			"amount":               amount,
+			"currency":             currency,
+			"wallet": map[string]interface{}{
+				"id":              wallet.ID,
+				"balance":         wallet.Balance,
+				"checkingBalance": wallet.CheckingBalance,
+				"personalBalance": wallet.PersonalBalance,
+				"goldBalance":     wallet.GoldBalance,
+				"usdcBalance":     wallet.UsdcBalance,
+				"usdtBalance":     wallet.UsdtBalance,
+			},
+			"cardDetails": map[string]interface{}{
+				"cardType":  cardMeta.CardType,
+				"maskedPan": cardMeta.MaskedPan,
+				"cardToken": cardMeta.CardToken,
+			},
+		},
+	}, nil
+}
+
 // creditWalletInDB atomically updates Wallet, WalletTransaction, ActivityWallet, CardFunding, and UserCard.
 func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amount float64, txRef, paymentMethod, currency string, cardMeta *savedCardMetadata) (*models.Wallet, error) {
 	if userID <= 0 {
@@ -1513,6 +2230,14 @@ func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amoun
 			} else {
 				return fmt.Errorf("failed to fetch wallet: %w", err)
 			}
+		}
+
+		// Idempotency: check if WalletTransaction for txRef already completed to avoid duplicate crediting
+		var existingCount int64
+		if err := tx.Model(&models.WalletTransaction{}).Where("\"trxRef\" = ? AND \"status\" = ?", txRef, "Completed").Count(&existingCount).Error; err == nil && existingCount > 0 {
+			log.Printf("[DB] WalletTransaction for txRef=%s already completed, skipping duplicate balance increment", txRef)
+			updatedWallet = wallet
+			return nil
 		}
 		log.Printf("[DB] Wallet before credit: balance=%.2f personalBalance=%.2f", wallet.Balance, wallet.PersonalBalance)
 
@@ -1666,7 +2391,23 @@ func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amoun
 // QueryTransaction queries the status of a Monnify transaction.
 func (s *PaymentService) QueryTransaction(ctx context.Context, transactionReference string) (map[string]interface{}, error) {
 	log.Printf("[PaymentService] QueryTransaction - txRef=%s", transactionReference)
-	return s.monnifyProvider.QueryTransaction(ctx, transactionReference)
+	activeProc, _ := s.GetActivePaymentProcessorForChannel(ctx, "card")
+	provider := s.monnifyProvider
+	if activeProc != nil && activeProc.PublicKey != nil && activeProc.SecretKey != nil && *activeProc.PublicKey != "" && *activeProc.SecretKey != "" {
+		mUri := "https://api.monnify.com"
+		if !strings.HasPrefix(*activeProc.PublicKey, "MK_PROD_") {
+			mUri = "https://sandbox.monnify.com"
+		}
+		mContract := os.Getenv("PROD_MONNIFY_CONTRACT_CODE")
+		if mContract == "" {
+			mContract = os.Getenv("MONNIFY_CONTRACT_CODE")
+		}
+		if mContract == "" {
+			mContract = "943294313374"
+		}
+		provider = providers.NewMonnifyProvider(*activeProc.PublicKey, *activeProc.SecretKey, mUri, mContract)
+	}
+	return provider.QueryTransaction(ctx, transactionReference)
 }
 
 // CreditUserWallet is used for bank transfer and webhook-based credits.
