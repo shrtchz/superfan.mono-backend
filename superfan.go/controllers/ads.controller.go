@@ -32,6 +32,15 @@ func (ac *AdsController) CreateCampaign(c *gin.Context) {
 		return
 	}
 
+	authUserId := c.GetInt(middleware.ContextUserIDKey)
+	if !middleware.IsAdmin(c) || req.UserID == nil || *req.UserID <= 0 {
+		req.UserID = &authUserId
+	}
+	if req.UserID == nil || *req.UserID <= 0 {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "userId must be a positive integer")
+		return
+	}
+
 	campaign, err := ac.adsService.CreateCampaign(c.Request.Context(), &req)
 	if err != nil {
 		utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
@@ -47,6 +56,11 @@ func (ac *AdsController) GetCampaigns(c *gin.Context) {
 	if err := c.ShouldBindQuery(&query); err != nil {
 		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "invalid query parameters")
 		return
+	}
+
+	// If not an admin, restrict query to active campaigns only
+	if !middleware.IsAdmin(c) {
+		query.Status = "active"
 	}
 
 	res, err := ac.adsService.GetCampaigns(c.Request.Context(), &query)
@@ -248,9 +262,21 @@ func (ac *AdsController) DeleteCampaign(c *gin.Context) {
 		return
 	}
 
-	if err := ac.adsService.DeleteCampaign(c.Request.Context(), id); err != nil {
+	var userID int
+	if userIDValue, ok := c.Get(middleware.ContextUserIDKey); ok {
+		if uid, ok := userIDValue.(int); ok {
+			userID = uid
+		}
+	}
+	isAdmin := middleware.IsAdmin(c)
+
+	if err := ac.adsService.DeleteCampaign(c.Request.Context(), id, userID, isAdmin); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			utils.SendError(c, http.StatusNotFound, "NOT_FOUND", err.Error())
+			return
+		}
+		if strings.Contains(err.Error(), "forbidden") {
+			utils.SendError(c, http.StatusForbidden, "FORBIDDEN", err.Error())
 			return
 		}
 		utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
@@ -444,6 +470,15 @@ func (ac *AdsController) AwardMidQuizReward(c *gin.Context) {
 		return
 	}
 
+	authUserId := c.GetInt(middleware.ContextUserIDKey)
+	if !middleware.IsAdmin(c) || req.UserID <= 0 {
+		req.UserID = authUserId
+	}
+	if req.UserID <= 0 {
+		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "userId must be a positive integer")
+		return
+	}
+
 	res, err := ac.adsService.AwardMidQuizAdReward(c.Request.Context(), &req)
 	if err != nil {
 		utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
@@ -457,23 +492,29 @@ func (ac *AdsController) AwardMidQuizReward(c *gin.Context) {
 func RegisterAdsRoutes(rg *gin.RouterGroup, ac *AdsController) {
 	adsGroup := rg.Group("/ads")
 	{
+		// Public informational / placement endpoints
 		adsGroup.GET("/placements", ac.GetPlacements)
 		adsGroup.GET("/reward-quota", ac.GetRewardAdQuota)
 		adsGroup.POST("/estimate", ac.EstimateAdCost)
-		adsGroup.POST("/reward", ac.AwardMidQuizReward)
-		adsGroup.POST("/campaigns", ac.CreateCampaign)
-		adsGroup.GET("/campaigns", ac.GetCampaigns)
+		adsGroup.GET("/campaigns", middleware.OptionalAuth(), ac.GetCampaigns)
 		adsGroup.POST("/test-link", ac.TestLink)
 		adsGroup.POST("/campaigns/:id/test-link", ac.TestCampaignLink)
-		authenticatedAdsGroup := rg.Group("/ads", middleware.OptionalAuth())
-		authenticatedAdsGroup.GET("/campaigns/mine", ac.GetMyCampaigns)
-		authenticatedAdsGroup.GET("/campaigns/mine/insights", ac.GetMyInsights)
-		adsGroup.GET("/inventory/stats", ac.GetInventoryStats)
-		adsGroup.PATCH("/campaigns/:id/status", middleware.AuthRequired(), ac.UpdateCampaignStatus)
-		adsGroup.DELETE("/campaigns/:id", ac.DeleteCampaign)
-		adsGroup.POST("/campaigns/:id/approve", ac.ApproveCampaign)
-		adsGroup.POST("/campaigns/:id/reject", ac.RejectCampaign)
 		adsGroup.POST("/events", ac.LogAdEvent)
 		adsGroup.GET("/placement/:key/eligibility", ac.GetPlacementEligibility)
+
+		// Authenticated user endpoints
+		authed := adsGroup.Group("", middleware.AuthRequired())
+		authed.POST("/reward", ac.AwardMidQuizReward)
+		authed.POST("/campaigns", ac.CreateCampaign)
+		authed.GET("/campaigns/mine", ac.GetMyCampaigns)
+		authed.GET("/campaigns/mine/insights", ac.GetMyInsights)
+		authed.PATCH("/campaigns/:id/status", ac.UpdateCampaignStatus)
+		authed.DELETE("/campaigns/:id", ac.DeleteCampaign)
+
+		// Admin only endpoints
+		adminOnly := adsGroup.Group("", middleware.AuthRequired(), middleware.AdminRequired())
+		adminOnly.GET("/inventory/stats", ac.GetInventoryStats)
+		adminOnly.POST("/campaigns/:id/approve", ac.ApproveCampaign)
+		adminOnly.POST("/campaigns/:id/reject", ac.RejectCampaign)
 	}
 }

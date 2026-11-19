@@ -30,7 +30,7 @@ type AdsService interface {
 	GetMyInsights(ctx context.Context, query *AdInsightsQuery) (*AdInsightsResponse, error)
 	GetInventoryStats(ctx context.Context) (*InventoryStatsResponse, error)
 	UpdateCampaignStatus(ctx context.Context, id int, status models.AdStatus, pausedByAdmin *bool, userID int, isAdmin bool) (*models.AdCampaign, error)
-	DeleteCampaign(ctx context.Context, id int) error
+	DeleteCampaign(ctx context.Context, id int, userID int, isAdmin bool) error
 	ApproveCampaign(ctx context.Context, id int) (*models.AdCampaign, error)
 	RejectAndRefundCampaign(ctx context.Context, id int, req *RejectCampaignRequest) (*models.AdCampaign, error)
 	TestLink(ctx context.Context, rawURL string, campaignID *int) (*TestLinkResponse, error)
@@ -150,7 +150,14 @@ func (s *adsServiceImpl) notifyNest(path string, payload map[string]interface{})
 		return
 	}
 	url := fmt.Sprintf("%s/api/v1/notification/triggers/%s", strings.TrimRight(s.nestBaseURL, "/"), path)
-	resp, err := s.httpClient.Post(url, "application/json", bytes.NewReader(body))
+	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-internal-service-key", utils.GetInternalServiceKey())
+
+	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return
 	}
@@ -389,6 +396,7 @@ type PlacementEligibilityResponse struct {
 	Eligible             bool                `json:"eligible"`
 	Reason               string              `json:"reason,omitempty"`
 	Campaign             *models.AdCampaign  `json:"campaign,omitempty"`
+	Campaigns            []models.AdCampaign `json:"campaigns,omitempty"`
 	Placement            *models.AdPlacement `json:"placement,omitempty"`
 	GuaranteedDailyViews int                 `json:"guaranteedDailyViews,omitempty"`
 	TodayViews           int                 `json:"todayViews,omitempty"`
@@ -1420,10 +1428,14 @@ func (s *adsServiceImpl) UpdateCampaignStatus(ctx context.Context, id int, statu
 	return &campaign, nil
 }
 
-func (s *adsServiceImpl) DeleteCampaign(ctx context.Context, id int) error {
+func (s *adsServiceImpl) DeleteCampaign(ctx context.Context, id int, userID int, isAdmin bool) error {
 	var campaign models.AdCampaign
 	if err := s.db.WithContext(ctx).First(&campaign, id).Error; err != nil {
 		return fmt.Errorf("campaign not found: %w", err)
+	}
+
+	if !isAdmin && (campaign.UserID == nil || *campaign.UserID != userID) {
+		return fmt.Errorf("forbidden: only administrators or the campaign owner can delete this campaign")
 	}
 
 	_ = s.db.WithContext(ctx).Where(`"campaignId" = ?`, id).Delete(&models.AdEvent{}).Error
@@ -2334,6 +2346,17 @@ func (s *adsServiceImpl) GetPlacementEligibility(ctx context.Context, userId int
 		}
 	}
 
+	// Retrieve all active/approved campaigns in database to return the complete pool of active ads
+	var allActiveCampaigns []models.AdCampaign
+	_ = s.db.WithContext(ctx).
+		Where(`LOWER(status::text) IN ('active', 'approved', 'paid') AND ` + activeCampaignDateCondition).
+		Order(`id DESC`).
+		Find(&allActiveCampaigns).Error
+
+	for i := range allActiveCampaigns {
+		s.enrichCampaignUser(ctx, &allActiveCampaigns[i])
+	}
+
 	// No eligible campaigns available in serving pool
 	if selectedCandidate == nil {
 		reason := "No active campaign found in serving pool"
@@ -2343,6 +2366,7 @@ func (s *adsServiceImpl) GetPlacementEligibility(ctx context.Context, userId int
 		return &PlacementEligibilityResponse{
 			Eligible:      false,
 			Reason:        reason,
+			Campaigns:     allActiveCampaigns,
 			CycleResetsAt: &resetsAt,
 		}, nil
 	}
@@ -2350,6 +2374,14 @@ func (s *adsServiceImpl) GetPlacementEligibility(ctx context.Context, userId int
 	// Prepare and return the winning candidate
 	s.enrichCampaignUser(ctx, &selectedCandidate.campaign)
 	camp := selectedCandidate.campaign
+
+	campaignsList := make([]models.AdCampaign, 0, len(allActiveCampaigns)+1)
+	campaignsList = append(campaignsList, camp)
+	for _, c := range allActiveCampaigns {
+		if c.ID != camp.ID {
+			campaignsList = append(campaignsList, c)
+		}
+	}
 
 	media := ""
 	if selectedCandidate.placement != nil && strings.TrimSpace(selectedCandidate.placement.MediaURL) != "" {
@@ -2403,8 +2435,9 @@ func (s *adsServiceImpl) GetPlacementEligibility(ctx context.Context, userId int
 	}
 
 	return &PlacementEligibilityResponse{
-		Eligible: true,
-		Campaign: &camp,
+		Eligible:  true,
+		Campaign:  &camp,
+		Campaigns: campaignsList,
 		Placement: &models.AdPlacement{
 			ID:                placementID,
 			CampaignID:        camp.ID,
