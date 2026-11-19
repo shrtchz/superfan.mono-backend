@@ -489,12 +489,13 @@ func (s *PaymentService) HandleDepositWebhook(ctx context.Context, currency stri
 
 // VerifyBachsSignature checks the HMAC-SHA256 signature from Bachs.
 // Returns an error if secret is configured and signature does not match.
+// Credentials configured in superfan.admin -> payment -> processor (PaymentProcessor table)
+// take precedence over environment variables.
 func (s *PaymentService) VerifyBachsSignature(ctx context.Context, signature string, rawBody []byte) error {
-	secret := strings.TrimSpace(os.Getenv("BACHS_WEBHOOK_SECRET"))
-	if secret == "" {
-		secret = strings.TrimSpace(os.Getenv("BACHS_SECRET_KEY"))
-	}
-	if secret == "" && s.db != nil {
+	var secret string
+
+	// 1. Primary source: database PaymentProcessor record managed via superfan.admin
+	if s.db != nil {
 		var proc models.PaymentProcessor
 		if err := s.db.WithContext(ctx).Where("LOWER(name) = ?", "bachs").First(&proc).Error; err == nil {
 			if proc.SecretKey != nil && *proc.SecretKey != "" {
@@ -503,8 +504,16 @@ func (s *PaymentService) VerifyBachsSignature(ctx context.Context, signature str
 		}
 	}
 
+	// 2. Secondary fallback: environment variables
 	if secret == "" {
-		log.Printf("[PaymentService] Warning: Bachs webhook secret / secret key not configured; skipping signature verification")
+		secret = strings.TrimSpace(os.Getenv("BACHS_WEBHOOK_SECRET"))
+		if secret == "" {
+			secret = strings.TrimSpace(os.Getenv("BACHS_SECRET_KEY"))
+		}
+	}
+
+	if secret == "" {
+		log.Printf("[PaymentService] Warning: Bachs secret key not configured in Admin (PaymentProcessor) or env; skipping signature verification")
 		return nil
 	}
 
@@ -1925,11 +1934,19 @@ func (s *PaymentService) InitPaymentByTransfer(ctx context.Context, payload map[
 
 	case "bachs":
 		secKey := customSecKey
+		if secKey == "" && s.db != nil {
+			var proc models.PaymentProcessor
+			if err := s.db.WithContext(ctx).Where("LOWER(name) = ?", "bachs").First(&proc).Error; err == nil {
+				if proc.SecretKey != nil && *proc.SecretKey != "" {
+					secKey = strings.TrimSpace(*proc.SecretKey)
+				}
+			}
+		}
 		if secKey == "" {
 			secKey = os.Getenv("BACHS_SECRET_KEY")
 		}
 		if secKey == "" {
-			return nil, errors.New("bachs secret key is not configured")
+			return nil, errors.New("bachs secret key is not configured in Admin (PaymentProcessor) or env")
 		}
 
 		bachsReqBody := map[string]interface{}{

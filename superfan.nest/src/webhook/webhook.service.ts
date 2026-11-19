@@ -1211,8 +1211,14 @@ if (bankTransfer) {
     signature?: string,
     rawBody?: string,
   ): Promise<void> {
+    // 1. Primary source: PaymentProcessor record configured via superfan.admin
+    const dbProcessor = await prisma.paymentProcessor.findFirst({
+      where: { name: { equals: 'bachs', mode: 'insensitive' } },
+    });
     const bachsSecret =
-      process.env.BACHS_WEBHOOK_SECRET || process.env.BACHS_SECRET_KEY;
+      dbProcessor?.secretKey ||
+      process.env.BACHS_WEBHOOK_SECRET ||
+      process.env.BACHS_SECRET_KEY;
     if (bachsSecret && signature && rawBody) {
       const crypto = require('crypto');
       const hash = crypto
