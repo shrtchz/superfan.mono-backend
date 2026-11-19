@@ -3,6 +3,9 @@ package payment
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -158,6 +161,30 @@ func stringFromAny(value interface{}) string {
 		return ""
 	default:
 		return strings.TrimSpace(fmt.Sprint(v))
+	}
+}
+
+func floatFromAny(value interface{}) float64 {
+	switch v := value.(type) {
+	case float64:
+		return v
+	case float32:
+		return float64(v)
+	case int:
+		return float64(v)
+	case int64:
+		return float64(v)
+	case int32:
+		return float64(v)
+	case json.Number:
+		f, _ := v.Float64()
+		return f
+	case string:
+		var f float64
+		fmt.Sscanf(strings.TrimSpace(v), "%f", &f)
+		return f
+	default:
+		return 0
 	}
 }
 
@@ -458,6 +485,279 @@ func (s *PaymentService) HandleDepositWebhook(ctx context.Context, currency stri
 		}
 		return nil
 	})
+}
+
+// VerifyBachsSignature checks the HMAC-SHA256 signature from Bachs.
+// Returns an error if secret is configured and signature does not match.
+func (s *PaymentService) VerifyBachsSignature(ctx context.Context, signature string, rawBody []byte) error {
+	secret := strings.TrimSpace(os.Getenv("BACHS_WEBHOOK_SECRET"))
+	if secret == "" {
+		secret = strings.TrimSpace(os.Getenv("BACHS_SECRET_KEY"))
+	}
+	if secret == "" && s.db != nil {
+		var proc models.PaymentProcessor
+		if err := s.db.WithContext(ctx).Where("LOWER(name) = ?", "bachs").First(&proc).Error; err == nil {
+			if proc.SecretKey != nil && *proc.SecretKey != "" {
+				secret = strings.TrimSpace(*proc.SecretKey)
+			}
+		}
+	}
+
+	if secret == "" {
+		log.Printf("[PaymentService] Warning: Bachs webhook secret / secret key not configured; skipping signature verification")
+		return nil
+	}
+
+	if signature == "" {
+		log.Printf("[PaymentService] Warning: Bachs webhook received without signature header")
+		return errors.New("missing X-Bachs-Signature header")
+	}
+
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(rawBody)
+	expectedHex := hex.EncodeToString(mac.Sum(nil))
+
+	cleanSig := strings.TrimSpace(signature)
+	if strings.HasPrefix(strings.ToLower(cleanSig), "sha256=") {
+		cleanSig = cleanSig[7:]
+	}
+
+	if !hmac.Equal([]byte(expectedHex), []byte(cleanSig)) && !strings.EqualFold(expectedHex, cleanSig) {
+		log.Printf("[PaymentService] Bachs webhook signature mismatch: expected=%s, received=%s", expectedHex, cleanSig)
+		return errors.New("invalid webhook signature")
+	}
+
+	log.Printf("[PaymentService] Bachs webhook signature verified successfully")
+	return nil
+}
+
+// findBankTransfer looks up a BankTransfer by account number and/or reference
+func (s *PaymentService) findBankTransfer(ctx context.Context, accNum, ref string, out *models.BankTransfer) bool {
+	if s.db == nil {
+		return false
+	}
+
+	// 1. Both account number and reference
+	if accNum != "" && ref != "" {
+		if err := s.db.WithContext(ctx).
+			Where("\"accountNumber\" = ? AND (\"paymentReference\" = ? OR \"transactionReference\" = ?)", accNum, ref, ref).
+			First(out).Error; err == nil {
+			return true
+		}
+	}
+
+	// 2. Reference alone
+	if ref != "" {
+		if err := s.db.WithContext(ctx).
+			Where("\"paymentReference\" = ? OR \"transactionReference\" = ?", ref, ref).
+			First(out).Error; err == nil {
+			return true
+		}
+	}
+
+	// 3. Account number alone (most recent transfer for that virtual account)
+	if accNum != "" {
+		if err := s.db.WithContext(ctx).
+			Where("\"accountNumber\" = ?", accNum).
+			Order("\"createdAt\" DESC").
+			First(out).Error; err == nil {
+			return true
+		}
+	}
+
+	return false
+}
+
+// HandleBachsWebhook processes an incoming webhook from Bachs.
+// It verifies the signature, resolves the BankTransfer (or User), marks the transfer PAID,
+// and atomically credits the user's wallet with idempotency.
+func (s *PaymentService) HandleBachsWebhook(ctx context.Context, signature string, rawBody []byte, payload map[string]interface{}) error {
+	if err := s.VerifyBachsSignature(ctx, signature, rawBody); err != nil {
+		return err
+	}
+
+	log.Printf("[PaymentService] HandleBachsWebhook payload: %+v", payload)
+
+	event := stringFromAny(payload["event"])
+	if event == "" {
+		event = stringFromAny(payload["type"])
+	}
+	if event == "" {
+		event = stringFromAny(payload["action"])
+	}
+
+	data, _ := payload["data"].(map[string]interface{})
+	if data == nil {
+		data = payload
+	}
+
+	ref := stringFromAny(data["reference"])
+	if ref == "" {
+		ref = stringFromAny(data["payment_reference"])
+	}
+	if ref == "" {
+		ref = stringFromAny(data["paymentReference"])
+	}
+	if ref == "" {
+		ref = stringFromAny(data["transaction_reference"])
+	}
+	if ref == "" {
+		ref = stringFromAny(data["transactionReference"])
+	}
+	if ref == "" {
+		ref = stringFromAny(data["txRef"])
+	}
+	if ref == "" {
+		ref = stringFromAny(data["tx_ref"])
+	}
+
+	accNum := stringFromAny(data["account_number"])
+	if accNum == "" {
+		accNum = stringFromAny(data["accountNumber"])
+	}
+	if accNum == "" {
+		accNum = stringFromAny(data["virtual_account_number"])
+	}
+	if accNum == "" {
+		accNum = stringFromAny(data["destination_account_number"])
+	}
+
+	amount := floatFromAny(data["amount"])
+	if amount <= 0 {
+		amount = floatFromAny(data["amount_paid"])
+	}
+	if amount <= 0 {
+		amount = floatFromAny(data["amountPaid"])
+	}
+	if amount <= 0 {
+		amount = floatFromAny(data["totalPayable"])
+	}
+
+	currency := stringFromAny(data["currency"])
+	if currency == "" {
+		currency = "NGN"
+	}
+
+	status := stringFromAny(data["status"])
+	if status == "" {
+		status = stringFromAny(data["payment_status"])
+	}
+	if status == "" {
+		status = stringFromAny(data["paymentStatus"])
+	}
+
+	lowerEvent := strings.ToLower(event)
+	lowerStatus := strings.ToLower(status)
+
+	// Check if this event indicates failure
+	if strings.Contains(lowerEvent, "fail") || strings.Contains(lowerStatus, "fail") || strings.Contains(lowerStatus, "cancel") {
+		log.Printf("[PaymentService] Bachs webhook reported failure: event=%s status=%s ref=%s accNum=%s", event, status, ref, accNum)
+		var bankTx models.BankTransfer
+		if s.findBankTransfer(ctx, accNum, ref, &bankTx) {
+			bankTx.Status = "FAILED"
+			_ = s.db.WithContext(ctx).Save(&bankTx).Error
+		}
+		return nil
+	}
+
+	// Check if this event indicates success
+	isSuccess := false
+	if strings.Contains(lowerEvent, "success") || strings.Contains(lowerEvent, "succeeded") ||
+		strings.Contains(lowerEvent, "credited") || strings.Contains(lowerEvent, "paid") {
+		isSuccess = true
+	}
+	if lowerStatus == "succeeded" || lowerStatus == "success" || lowerStatus == "paid" ||
+		lowerStatus == "completed" || lowerStatus == "successful" {
+		isSuccess = true
+	}
+
+	if !isSuccess {
+		log.Printf("[PaymentService] Bachs webhook non-success event ignored: event=%s, status=%s", event, status)
+		return nil
+	}
+
+	// 1. First: Try matching a BankTransfer record
+	var bankTx models.BankTransfer
+	if s.findBankTransfer(ctx, accNum, ref, &bankTx) {
+		// Idempotency check: already paid
+		if strings.EqualFold(bankTx.Status, "PAID") {
+			log.Printf("[PaymentService] Bachs webhook duplicate ignored: BankTransfer ID=%d already PAID (txRef=%s)", bankTx.ID, bankTx.TransactionReference)
+			return nil
+		}
+
+		if amount <= 0 {
+			amount = bankTx.Amount
+		}
+		if amount <= 0 {
+			amount = bankTx.TotalPayable
+		}
+
+		now := time.Now()
+		bankTx.Status = "PAID"
+		bankTx.PaidAt = &now
+		bankTx.CompletedAt = &now
+		if err := s.db.WithContext(ctx).Save(&bankTx).Error; err != nil {
+			log.Printf("[PaymentService] Warning: Failed to update BankTransfer record ID=%d: %v", bankTx.ID, err)
+		}
+
+		txRef := bankTx.TransactionReference
+		if txRef == "" {
+			txRef = bankTx.PaymentReference
+		}
+		if txRef == "" {
+			txRef = ref
+		}
+		if txRef == "" {
+			txRef = fmt.Sprintf("BACHS-TX-%d", time.Now().UnixNano())
+		}
+
+		wallet, err := s.CreditUserWallet(ctx, bankTx.UserID, amount, txRef, "bankTransfer", currency)
+		if err != nil {
+			log.Printf("[PaymentService] ERROR: Failed to credit wallet for userID=%d txRef=%s: %v", bankTx.UserID, txRef, err)
+			return fmt.Errorf("failed to credit wallet: %w", err)
+		}
+
+		log.Printf("[PaymentService] Bachs BankTransfer credited successfully: userID=%d amount=%.2f balance=%.2f personalBalance=%.2f",
+			bankTx.UserID, amount, wallet.Balance, wallet.PersonalBalance)
+		return nil
+	}
+
+	// 2. Fallback: Check if account number belongs to a User directly
+	var user models.User
+	userFound := false
+	if accNum != "" {
+		if err := s.db.WithContext(ctx).Where("\"accountNumber\" = ?", accNum).First(&user).Error; err == nil {
+			userFound = true
+		}
+	}
+	if !userFound {
+		customer, _ := data["customer"].(map[string]interface{})
+		custEmail := ""
+		if customer != nil {
+			custEmail = stringFromAny(customer["email"])
+		}
+		if custEmail == "" {
+			custEmail = stringFromAny(data["email"])
+		}
+		if custEmail != "" {
+			if err := s.db.WithContext(ctx).Where("LOWER(email) = ?", strings.ToLower(custEmail)).First(&user).Error; err == nil {
+				userFound = true
+			}
+		}
+	}
+
+	if userFound && amount > 0 {
+		txRef := ref
+		if txRef == "" {
+			txRef = fmt.Sprintf("BACHS-DEP-%d", time.Now().UnixNano())
+		}
+		log.Printf("[PaymentService] Bachs webhook matched User ID=%d directly: crediting amount=%.2f txRef=%s", user.ID, amount, txRef)
+		_, err := s.CreditUserWallet(ctx, user.ID, amount, txRef, "bankTransfer", currency)
+		return err
+	}
+
+	log.Printf("[PaymentService] Bachs webhook unhandled: no matching BankTransfer or User found (ref=%s, accNum=%s, amount=%.2f)", ref, accNum, amount)
+	return nil
 }
 
 // GetWalletByUserID returns the wallet for a given user.

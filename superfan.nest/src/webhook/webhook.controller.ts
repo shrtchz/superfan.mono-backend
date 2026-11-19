@@ -166,6 +166,24 @@ async handleBitnobWebhook(
   return { status: 'success' };
 }
 
+  @Post(['bachs', '/api/v1/payment/webhook/bachs', '/v1/payment/webhook/bachs', '/payment/webhook/bachs'])
+  @HttpCode(HttpStatus.OK)
+  async handleBachsWebhook(
+    @Headers('x-bachs-signature') signatureHeader: string,
+    @Body() payload: any,
+    @Req() req: RawBodyRequest<Request>,
+  ): Promise<{ status: string }> {
+    this.logger.log('Received Bachs webhook');
+    const signature =
+      signatureHeader ||
+      (req.headers['x-bachs-signature'] as string) ||
+      (req.headers['bachs-signature'] as string);
+    const rawBody = req.rawBody?.toString('utf-8') || JSON.stringify(payload);
+
+    await this.webhookService.handleBachsWebhookEvent(payload, signature, rawBody);
+    return { status: 'success' };
+  }
+
   @Post(['clerk', '/api/v1/webhook/clerk', '/api/v1/webhooks/clerk'])
   @HttpCode(HttpStatus.OK)
   async handleClerkWebhook(

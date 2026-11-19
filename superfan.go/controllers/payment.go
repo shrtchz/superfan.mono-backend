@@ -1,7 +1,10 @@
 package controllers
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -56,34 +59,90 @@ func (pc *PaymentController) InitiateDeposit(c *gin.Context) {
 	utils.Success(c, http.StatusOK, "Deposit initiated", res)
 }
 
-// Webhook handles POST /v1/payment/webhook/:provider
+// Webhook handles POST /v1/payment/webhook/:provider, /api/v1/payment/webhook/:provider, /webhooks/:provider
 func (pc *PaymentController) Webhook(c *gin.Context) {
-	providerParam := c.Param("provider")
+	providerParam := strings.ToLower(c.Param("provider"))
 
-	var req providers.VerifyTransactionRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	rawBody, err := io.ReadAll(c.Request.Body)
+	if err != nil {
 		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "invalid request payload")
 		return
 	}
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(rawBody))
 
-	var currency string
+	// Detect provider from headers or query if not in URL param
+	if providerParam == "" {
+		if c.GetHeader("X-Bachs-Signature") != "" || c.GetHeader("x-bachs-signature") != "" || c.GetHeader("Bachs-Signature") != "" {
+			providerParam = "bachs"
+		}
+	}
+
 	switch providerParam {
+	case "bachs":
+		signature := c.GetHeader("X-Bachs-Signature")
+		if signature == "" {
+			signature = c.GetHeader("x-bachs-signature")
+		}
+		if signature == "" {
+			signature = c.GetHeader("Bachs-Signature")
+		}
+
+		var payload map[string]interface{}
+		if err := json.Unmarshal(rawBody, &payload); err != nil {
+			utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "invalid json body")
+			return
+		}
+
+		if err := pc.paymentService.HandleBachsWebhook(c.Request.Context(), signature, rawBody, payload); err != nil {
+			log.Printf("[PaymentController] Bachs webhook error: %v", err)
+			utils.SendError(c, http.StatusBadRequest, "WEBHOOK_FAILED", err.Error())
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"status":  "success",
+			"message": "Bachs webhook processed successfully",
+		})
+		return
+
 	case "monnify":
-		currency = "NGN"
+		var req providers.VerifyTransactionRequest
+		if err := json.Unmarshal(rawBody, &req); err != nil {
+			utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "invalid request payload")
+			return
+		}
+		if err := pc.paymentService.HandleDepositWebhook(c.Request.Context(), "NGN", req); err != nil {
+			utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
+			return
+		}
+		utils.Success(c, http.StatusOK, "Webhook processed successfully", nil)
+
 	case "bitnob":
-		currency = "USDC"
+		var req providers.VerifyTransactionRequest
+		if err := json.Unmarshal(rawBody, &req); err != nil {
+			utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "invalid request payload")
+			return
+		}
+		if err := pc.paymentService.HandleDepositWebhook(c.Request.Context(), "USDC", req); err != nil {
+			utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
+			return
+		}
+		utils.Success(c, http.StatusOK, "Webhook processed successfully", nil)
+
 	default:
+		// Attempt to parse payload and check if it's a Bachs payload before rejecting
+		var fallback map[string]interface{}
+		if err := json.Unmarshal(rawBody, &fallback); err == nil {
+			if _, hasEvent := fallback["event"]; hasEvent {
+				if err := pc.paymentService.HandleBachsWebhook(c.Request.Context(), c.GetHeader("X-Bachs-Signature"), rawBody, fallback); err == nil {
+					c.JSON(http.StatusOK, gin.H{"status": "success", "message": "Webhook processed successfully"})
+					return
+				}
+			}
+		}
 		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "unknown provider webhook")
 		return
 	}
-
-	err := pc.paymentService.HandleDepositWebhook(c.Request.Context(), currency, req)
-	if err != nil {
-		utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
-		return
-	}
-
-	utils.Success(c, http.StatusOK, "Webhook processed successfully", nil)
 }
 
 func RegisterPaymentRoutes(rg *gin.RouterGroup, pc *PaymentController) {
@@ -97,6 +156,11 @@ func RegisterPaymentRoutes(rg *gin.RouterGroup, pc *PaymentController) {
 	paymentGroup.GET("/query-transaction", pc.QueryTransaction)
 	paymentGroup.POST("/simulate-address-deposit", pc.SimulateAddressDeposit)
 	paymentGroup.POST("/webhook/:provider", pc.Webhook)
+	paymentGroup.POST("/webhook", pc.Webhook)
+	paymentGroup.POST("/webhooks/:provider", pc.Webhook)
+	paymentGroup.POST("/webhooks", pc.Webhook)
+	rg.POST("/webhooks/:provider", pc.Webhook)
+	rg.POST("/webhooks", pc.Webhook)
 	paymentGroup.GET("/user-wallet-balance", pc.GetUserWalletBalance)
 	paymentGroup.GET("/payments/history", pc.GetPaymentHistory)
 	paymentGroup.POST("/trf-btw-wallets/:userId", pc.TransferBetweenWallets)
