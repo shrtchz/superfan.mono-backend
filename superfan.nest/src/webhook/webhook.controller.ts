@@ -398,7 +398,11 @@ async handleFlutterwaveWebhook(
 ) {
   console.log('Received Flutterwave webhook');
 
-  if (signature !== process.env.FLW_SECRET_HASH) {
+  const dbProcessor = await prisma.paymentProcessor.findFirst({
+    where: { name: { equals: 'flutterwave', mode: 'insensitive' } },
+  });
+  const expectedHash = dbProcessor?.secretKey || process.env.FLW_SECRET_HASH;
+  if (expectedHash && signature !== expectedHash && signature !== process.env.FLW_SECRET_HASH) {
     return res.status(401).end();
   }
 
@@ -408,9 +412,93 @@ async handleFlutterwaveWebhook(
 
   if (payload?.event === 'charge.completed') {
     await this.handleCardCharge(payload);
+  } else if (payload?.event === 'transfer.completed') {
+    await this.handleTransferCompleted(payload);
   }
 
   return res.status(HttpStatus.OK).end();
+}
+
+private async handleTransferCompleted(payload: any) {
+  try {
+    const data = payload?.data;
+    const ref = data?.reference || data?.tx_ref;
+    const status = String(data?.status || '').toUpperCase();
+    this.logger.log(`[FLW TRANSFER] Event ref=${ref}, status=${status}`);
+
+    if (!ref) return;
+
+    const withdrawalTx = await prisma.walletTransaction.findFirst({
+      where: {
+        OR: [{ trx_ref: ref }, { reference: ref }],
+        AND: [
+          {
+            OR: [
+              { type: { in: ['debit', 'DEBIT'] } },
+              { transactionType: { in: ['withdrawal', 'WITHDRAWAL', 'Withdrawal'] } },
+            ],
+          },
+        ],
+      },
+    });
+
+    if (!withdrawalTx) {
+      this.logger.warn(`[FLW TRANSFER] No matching withdrawal transaction for ref ${ref}`);
+      return;
+    }
+
+    if (status === 'SUCCESSFUL') {
+      await prisma.$transaction([
+        prisma.walletTransaction.update({
+          where: { id: withdrawalTx.id },
+          data: { status: 'Completed' },
+        }),
+        prisma.activityWallet.updateMany({
+          where: { reference: ref },
+          data: { status: 'SUCCESS' },
+        }),
+      ]);
+
+      try {
+        await this.notificationService.createNotification(
+          withdrawalTx.userId,
+          'Withdrawal Successful',
+          `Your withdrawal of ${withdrawalTx.currency || 'NGN'} ${withdrawalTx.amount} was completed successfully.`,
+          'wallet_withdrawal_success',
+        );
+      } catch {}
+    } else if (status === 'FAILED') {
+      await prisma.$transaction([
+        prisma.walletTransaction.update({
+          where: { id: withdrawalTx.id },
+          data: { status: 'FAILED' },
+        }),
+        prisma.activityWallet.updateMany({
+          where: { reference: ref },
+          data: { status: 'FAILED' },
+        }),
+        prisma.wallet.update({
+          where: { userId: withdrawalTx.userId },
+          data: {
+            personalBalance: { increment: withdrawalTx.amount },
+            checkingBalance: { increment: withdrawalTx.amount },
+            balance: { increment: withdrawalTx.amount },
+          },
+        }),
+      ]);
+
+      try {
+        await this.notificationService.createNotification(
+          withdrawalTx.userId,
+          'Withdrawal Failed',
+          `Your withdrawal of ${withdrawalTx.currency || 'NGN'} ${withdrawalTx.amount} failed and has been refunded to your wallet.`,
+          'wallet_withdrawal_failed',
+        );
+      } catch {}
+    }
+  } catch (error) {
+    this.logger.error('[FLW TRANSFER] Handler error:', error);
+  }
 }
 
 private async handleCardCharge(payload: any) {

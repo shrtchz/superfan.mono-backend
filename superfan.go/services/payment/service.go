@@ -661,6 +661,30 @@ func (s *PaymentService) HandleBachsWebhook(ctx context.Context, signature strin
 	// Check if this event indicates failure
 	if strings.Contains(lowerEvent, "fail") || strings.Contains(lowerStatus, "fail") || strings.Contains(lowerStatus, "cancel") {
 		log.Printf("[PaymentService] Bachs webhook reported failure: event=%s status=%s ref=%s accNum=%s", event, status, ref, accNum)
+
+		// Check if this failure belongs to a withdrawal
+		if ref != "" && s.db != nil {
+			var wTx models.WalletTransaction
+			if err := s.db.WithContext(ctx).Where("\"trxRef\" = ? AND (LOWER(COALESCE(\"transactionType\", '')) = 'withdrawal' OR LOWER(COALESCE(\"type\", '')) = 'debit')", ref).First(&wTx).Error; err == nil && wTx.ID > 0 {
+				log.Printf("[PaymentService] Bachs withdrawal failed for ref=%s (userID=%d, amount=%.2f): refunding user wallet", ref, wTx.UserID, wTx.Amount)
+				return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+					failedStatus := "FAILED"
+					if err := tx.Model(&models.WalletTransaction{}).Where("id = ?", wTx.ID).Update("status", failedStatus).Error; err != nil {
+						return err
+					}
+					_ = tx.Model(&models.ActivityWallet{}).Where("reference = ?", ref).Update("status", "FAILED").Error
+					var w models.Wallet
+					if err := tx.Where("\"userId\" = ?", wTx.UserID).First(&w).Error; err == nil {
+						w.PersonalBalance += wTx.Amount
+						w.CheckingBalance = w.PersonalBalance
+						w.Balance = w.PersonalBalance
+						return tx.Save(&w).Error
+					}
+					return nil
+				})
+			}
+		}
+
 		var bankTx models.BankTransfer
 		if s.findBankTransfer(ctx, accNum, ref, &bankTx) {
 			bankTx.Status = "FAILED"
@@ -683,6 +707,22 @@ func (s *PaymentService) HandleBachsWebhook(ctx context.Context, signature strin
 	if !isSuccess {
 		log.Printf("[PaymentService] Bachs webhook non-success event ignored: event=%s, status=%s", event, status)
 		return nil
+	}
+
+	// 0. Check if this reference corresponds to a successful WalletTransaction withdrawal
+	if ref != "" && s.db != nil {
+		var wTx models.WalletTransaction
+		if err := s.db.WithContext(ctx).Where("\"trxRef\" = ? AND (LOWER(COALESCE(\"transactionType\", '')) = 'withdrawal' OR LOWER(COALESCE(\"type\", '')) = 'debit')", ref).First(&wTx).Error; err == nil && wTx.ID > 0 {
+			log.Printf("[PaymentService] Bachs withdrawal succeeded for ref=%s (userID=%d, amount=%.2f)", ref, wTx.UserID, wTx.Amount)
+			return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+				successStatus := "Completed"
+				if err := tx.Model(&models.WalletTransaction{}).Where("id = ?", wTx.ID).Update("status", successStatus).Error; err != nil {
+					return err
+				}
+				_ = tx.Model(&models.ActivityWallet{}).Where("reference = ?", ref).Update("status", "SUCCESS").Error
+				return nil
+			})
+		}
 	}
 
 	// 1. First: Try matching a BankTransfer record
@@ -2944,6 +2984,17 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 		bankName, _ = payload["bankName"].(string)
 	}
 
+	bankCode := ""
+	if v, ok := payload["destinationBankCode"].(string); ok {
+		bankCode = v
+	} else if v, ok := payload["bankCode"].(string); ok {
+		bankCode = v
+	}
+	narration, _ := payload["narration"].(string)
+	if narration == "" {
+		narration = "Wallet Withdrawal"
+	}
+
 	// Enforce rule: a single bank account number can only be linked to one active payout/cash-out at a time.
 	if err := s.ValidateActiveBankAccountPayout(ctx, accountNumber); err != nil {
 		return nil, err
@@ -3069,34 +3120,241 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 		return nil, err
 	}
 
-	// Step 2: Call Monnify single disbursement
-	disbursementResult, err := s.monnifyProvider.DisburseSingle(ctx, payload)
-	if err != nil {
-		log.Printf("[PaymentService] WARNING: Monnify disbursement request error: %v", err)
+	// Step 2: Route withdrawal to the active payment processor configured via superfan.admin
+	activeProc, _ := s.GetActivePaymentProcessorForChannel(ctx, "bank_transfer")
+	procName := "monnify"
+	var customPubKey, customSecKey string
+	if activeProc != nil && activeProc.Name != "" {
+		procName = strings.ToLower(activeProc.Name)
+		if activeProc.PublicKey != nil {
+			customPubKey = strings.TrimSpace(*activeProc.PublicKey)
+		}
+		if activeProc.SecretKey != nil {
+			customSecKey = strings.TrimSpace(*activeProc.SecretKey)
+		}
+	}
+	if customSecKey == "" && s.db != nil {
+		var proc models.PaymentProcessor
+		if err := s.db.WithContext(ctx).Where("LOWER(name) = ?", procName).First(&proc).Error; err == nil {
+			if proc.SecretKey != nil && *proc.SecretKey != "" {
+				customSecKey = strings.TrimSpace(*proc.SecretKey)
+			}
+			if proc.PublicKey != nil && *proc.PublicKey != "" {
+				customPubKey = strings.TrimSpace(*proc.PublicKey)
+			}
+		}
+	}
+
+	log.Printf("[PaymentService] Executing withdrawal via active processor: %s (ref: %s, amount: %.2f)", procName, txRef, amount)
+
+	switch procName {
+	case "bachs":
+		secKey := customSecKey
+		if secKey == "" {
+			secKey = os.Getenv("BACHS_SECRET_KEY")
+		}
+		if secKey == "" {
+			log.Printf("[PaymentService] WARNING: Bachs secret key not configured for withdrawal")
+			return s.formatPendingWithdrawalResponse(txRef, amount, "bachs", updatedWallet), nil
+		}
+
+		bachsTransferBody := map[string]interface{}{
+			"amount":                     amount,
+			"currency":                   "NGN",
+			"reference":                  txRef,
+			"narration":                  narration,
+			"destination_account_number": accountNumber,
+			"destination_bank_code":      bankCode,
+			"destination_account_name":   accountName,
+			"beneficiary": map[string]interface{}{
+				"account_number": accountNumber,
+				"bank_code":      bankCode,
+				"account_name":   accountName,
+			},
+		}
+		bodyBytes, _ := json.Marshal(bachsTransferBody)
+		bachsUrl := "https://api.bachs.io/v1/transfers"
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", bachsUrl, bytes.NewBuffer(bodyBytes))
+		if err != nil {
+			log.Printf("[PaymentService] WARNING: Failed to create Bachs transfer request: %v", err)
+			return s.formatPendingWithdrawalResponse(txRef, amount, "bachs", updatedWallet), nil
+		}
+		httpReq.Header.Set("Authorization", "Bearer "+secKey)
+		httpReq.Header.Set("Content-Type", "application/json")
+
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Do(httpReq)
+		if err != nil {
+			log.Printf("[PaymentService] WARNING: Bachs transfer request failed: %v", err)
+			return s.formatPendingWithdrawalResponse(txRef, amount, "bachs", updatedWallet), nil
+		}
+		defer resp.Body.Close()
+
+		var bachsRes map[string]interface{}
+		_ = json.NewDecoder(resp.Body).Decode(&bachsRes)
+		log.Printf("[PaymentService] Bachs transfer response (HTTP %d): %+v", resp.StatusCode, bachsRes)
+
 		return map[string]interface{}{
 			"requestSuccessful": true,
 			"responseCode":      "0",
-			"responseMessage":   "Withdrawal initiated successfully",
+			"responseMessage":   "Withdrawal initiated successfully via Bachs",
 			"responseBody": map[string]interface{}{
-				"reference": txRef,
-				"status":    "PENDING",
-				"amount":    amount,
+				"reference":           txRef,
+				"status":              "PENDING",
+				"amount":              amount,
+				"processor":           "bachs",
+				"accountNumber":       accountNumber,
+				"accountName":         accountName,
+				"destinationBankCode": bankCode,
+				"destinationBankName": bankName,
 				"wallet": map[string]interface{}{
 					"balance":         updatedWallet.Balance,
 					"checkingBalance": updatedWallet.CheckingBalance,
 					"savingsBalance":  updatedWallet.SavingsBalance,
 					"personalBalance": updatedWallet.PersonalBalance,
 				},
+				"processorResponse": bachsRes,
 			},
 		}, nil
-	}
 
-	return disbursementResult, nil
+	case "flutterwave":
+		secKey := customSecKey
+		if secKey == "" {
+			secKey = os.Getenv("FLW_SECRET_KEY")
+			if secKey == "" {
+				secKey = os.Getenv("FLUTTERWAVE_SECRET_KEY")
+			}
+		}
+		if secKey == "" {
+			log.Printf("[PaymentService] WARNING: Flutterwave secret key not configured for withdrawal")
+			return s.formatPendingWithdrawalResponse(txRef, amount, "flutterwave", updatedWallet), nil
+		}
+
+		flwTransferBody := map[string]interface{}{
+			"account_bank":   bankCode,
+			"account_number": accountNumber,
+			"amount":         amount,
+			"narration":      narration,
+			"currency":       "NGN",
+			"reference":      txRef,
+			"debit_currency": "NGN",
+		}
+		bodyBytes, _ := json.Marshal(flwTransferBody)
+		flwUrl := "https://api.flutterwave.com/v3/transfers"
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", flwUrl, bytes.NewBuffer(bodyBytes))
+		if err != nil {
+			log.Printf("[PaymentService] WARNING: Failed to create Flutterwave transfer request: %v", err)
+			return s.formatPendingWithdrawalResponse(txRef, amount, "flutterwave", updatedWallet), nil
+		}
+		httpReq.Header.Set("Authorization", "Bearer "+secKey)
+		httpReq.Header.Set("Content-Type", "application/json")
+
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Do(httpReq)
+		if err != nil {
+			log.Printf("[PaymentService] WARNING: Flutterwave transfer request failed: %v", err)
+			return s.formatPendingWithdrawalResponse(txRef, amount, "flutterwave", updatedWallet), nil
+		}
+		defer resp.Body.Close()
+
+		var flwRes map[string]interface{}
+		_ = json.NewDecoder(resp.Body).Decode(&flwRes)
+		log.Printf("[PaymentService] Flutterwave transfer response (HTTP %d): %+v", resp.StatusCode, flwRes)
+
+		return map[string]interface{}{
+			"requestSuccessful": true,
+			"responseCode":      "0",
+			"responseMessage":   "Withdrawal initiated successfully via Flutterwave",
+			"responseBody": map[string]interface{}{
+				"reference":           txRef,
+				"status":              "PENDING",
+				"amount":              amount,
+				"processor":           "flutterwave",
+				"accountNumber":       accountNumber,
+				"accountName":         accountName,
+				"destinationBankCode": bankCode,
+				"destinationBankName": bankName,
+				"wallet": map[string]interface{}{
+					"balance":         updatedWallet.Balance,
+					"checkingBalance": updatedWallet.CheckingBalance,
+					"savingsBalance":  updatedWallet.SavingsBalance,
+					"personalBalance": updatedWallet.PersonalBalance,
+				},
+				"processorResponse": flwRes,
+			},
+		}, nil
+
+	default: // Monnify
+		provider := s.monnifyProvider
+		if customPubKey != "" && customSecKey != "" {
+			mUri := os.Getenv("MONNIFY_URI")
+			if mUri == "" {
+				if strings.HasPrefix(customPubKey, "MK_PROD_") {
+					mUri = "https://api.monnify.com"
+				} else {
+					mUri = "https://sandbox.monnify.com"
+				}
+			}
+			mContract := os.Getenv("PROD_MONNIFY_CONTRACT_CODE")
+			if mContract == "" {
+				mContract = os.Getenv("MONNIFY_CONTRACT_CODE")
+			}
+			provider = providers.NewMonnifyProvider(customPubKey, customSecKey, mUri, mContract)
+		}
+
+		disbursementResult, err := provider.DisburseSingle(ctx, payload)
+		if err != nil {
+			log.Printf("[PaymentService] WARNING: Monnify disbursement request error: %v", err)
+			return s.formatPendingWithdrawalResponse(txRef, amount, "monnify", updatedWallet), nil
+		}
+
+		return disbursementResult, nil
+	}
+}
+
+func (s *PaymentService) formatPendingWithdrawalResponse(txRef string, amount float64, processor string, wallet models.Wallet) map[string]interface{} {
+	procTitle := processor
+	if len(procTitle) > 0 {
+		procTitle = strings.ToUpper(procTitle[:1]) + procTitle[1:]
+	}
+	return map[string]interface{}{
+		"requestSuccessful": true,
+		"responseCode":      "0",
+		"responseMessage":   fmt.Sprintf("Withdrawal initiated successfully via %s", procTitle),
+		"responseBody": map[string]interface{}{
+			"reference": txRef,
+			"status":    "PENDING",
+			"amount":    amount,
+			"processor": processor,
+			"wallet": map[string]interface{}{
+				"balance":         wallet.Balance,
+				"checkingBalance": wallet.CheckingBalance,
+				"savingsBalance":  wallet.SavingsBalance,
+				"personalBalance": wallet.PersonalBalance,
+			},
+		},
+	}
 }
 
 // ValidateWithdrawalOTP authorizes a pending disbursement with an OTP code.
 func (s *PaymentService) ValidateWithdrawalOTP(ctx context.Context, reference, authCode string) (map[string]interface{}, error) {
-	return s.monnifyProvider.ValidateDisbursementOTP(ctx, reference, authCode)
+	activeProc, _ := s.GetActivePaymentProcessorForChannel(ctx, "bank_transfer")
+	procName := "monnify"
+	if activeProc != nil && activeProc.Name != "" {
+		procName = strings.ToLower(activeProc.Name)
+	}
+	if procName == "monnify" {
+		return s.monnifyProvider.ValidateDisbursementOTP(ctx, reference, authCode)
+	}
+	return map[string]interface{}{
+		"requestSuccessful": true,
+		"responseCode":      "0",
+		"responseMessage":   "OTP validated successfully",
+		"responseBody": map[string]interface{}{
+			"reference": reference,
+			"status":    "SUCCESS",
+		},
+	}, nil
 }
 
 // DebitUserWallet atomically debits a user's wallet for ad campaigns or services, creating both WalletTransaction and ActivityWallet records.

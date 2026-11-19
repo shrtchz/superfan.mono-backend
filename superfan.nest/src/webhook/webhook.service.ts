@@ -1279,6 +1279,58 @@ if (bankTransfer) {
       status.includes('cancel')
     ) {
       this.logger.warn(`Bachs transaction failed: ${ref}`);
+
+      // Check if this failure belongs to a withdrawal
+      if (ref) {
+        const withdrawalTx = await prisma.walletTransaction.findFirst({
+          where: {
+            OR: [{ trx_ref: ref }, { reference: ref }],
+            AND: [
+              {
+                OR: [
+                  { type: { in: ['debit', 'DEBIT'] } },
+                  { transactionType: { in: ['withdrawal', 'WITHDRAWAL', 'Withdrawal'] } },
+                ],
+              },
+            ],
+          },
+        });
+
+        if (withdrawalTx) {
+          this.logger.warn(
+            `Bachs withdrawal failed for ref=${ref} (userId=${withdrawalTx.userId}, amount=${withdrawalTx.amount}): refunding user wallet`,
+          );
+          await prisma.$transaction([
+            prisma.walletTransaction.update({
+              where: { id: withdrawalTx.id },
+              data: { status: 'FAILED' },
+            }),
+            prisma.activityWallet.updateMany({
+              where: { reference: ref },
+              data: { status: 'FAILED' },
+            }),
+            prisma.wallet.update({
+              where: { userId: withdrawalTx.userId },
+              data: {
+                personalBalance: { increment: withdrawalTx.amount },
+                checkingBalance: { increment: withdrawalTx.amount },
+                balance: { increment: withdrawalTx.amount },
+              },
+            }),
+          ]);
+
+          try {
+            await this.notificationService.createNotification(
+              withdrawalTx.userId,
+              'Withdrawal Failed',
+              `Your withdrawal of ${withdrawalTx.currency || 'NGN'} ${withdrawalTx.amount} failed and has been refunded to your wallet.`,
+              'wallet_withdrawal_failed',
+            );
+          } catch {}
+          return;
+        }
+      }
+
       if (ref || accountNumber) {
         await prisma.bankTransfer.updateMany({
           where: {
@@ -1314,6 +1366,49 @@ if (bankTransfer) {
         `Bachs non-success event ignored: event=${event}, status=${status}`,
       );
       return;
+    }
+
+    // Check if this reference corresponds to a successful WalletTransaction withdrawal
+    if (ref) {
+      const withdrawalTx = await prisma.walletTransaction.findFirst({
+        where: {
+          OR: [{ trx_ref: ref }, { reference: ref }],
+          AND: [
+            {
+              OR: [
+                { type: { in: ['debit', 'DEBIT'] } },
+                { transactionType: { in: ['withdrawal', 'WITHDRAWAL', 'Withdrawal'] } },
+              ],
+            },
+          ],
+        },
+      });
+
+      if (withdrawalTx) {
+        this.logger.log(
+          `Bachs withdrawal succeeded for ref=${ref} (userId=${withdrawalTx.userId}, amount=${withdrawalTx.amount})`,
+        );
+        await prisma.$transaction([
+          prisma.walletTransaction.update({
+            where: { id: withdrawalTx.id },
+            data: { status: 'Completed' },
+          }),
+          prisma.activityWallet.updateMany({
+            where: { reference: ref },
+            data: { status: 'SUCCESS' },
+          }),
+        ]);
+
+        try {
+          await this.notificationService.createNotification(
+            withdrawalTx.userId,
+            'Withdrawal Successful',
+            `Your withdrawal of ${withdrawalTx.currency || 'NGN'} ${withdrawalTx.amount} was completed successfully.`,
+            'wallet_withdrawal_success',
+          );
+        } catch {}
+        return;
+      }
     }
 
     // 1. First: Try matching BankTransfer record
