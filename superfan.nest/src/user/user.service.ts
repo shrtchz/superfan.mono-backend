@@ -2589,36 +2589,104 @@ async checkSubscriptionStatus(userId: number, mandateCode?: string): Promise<{
   status: string | null;
   subscriptionPlan: string | null;
 }> {
+  const now = new Date();
   const subscription = await prisma.subscription.findFirst({
     where: { 
       userId,
       ...(mandateCode && { mandateCode })
     },
-    select: {
-      status: true,
-      subscriptionPlan: true,
-    },
+    orderBy: { startDate: 'desc' },
   });
+
+  if (!subscription) {
+    return { status: null, subscriptionPlan: 'FREE' };
+  }
+
+  const isExpired = subscription.endDate ? new Date(subscription.endDate) < now : false;
+  if (isExpired && subscription.status === 'ACTIVE') {
+    await prisma.$transaction([
+      prisma.subscription.update({
+        where: { id: subscription.id },
+        data: { status: 'EXPIRED' },
+      }),
+      prisma.user.update({
+        where: { id: userId },
+        data: { subscriptionPlan: 'FREE' },
+      }),
+    ]);
+    return { status: 'EXPIRED', subscriptionPlan: 'FREE' };
+  }
+
   return {
-    status: subscription?.status ?? null,
-    subscriptionPlan: subscription?.subscriptionPlan ?? null,
+    status: subscription.status,
+    subscriptionPlan: subscription.subscriptionPlan,
   };
 }
 
 async checkSubscriptionStatusbyUserId(userId: number): Promise<{
   subscriptionPlan: string | null;
 }> {
-  const subscription = await prisma.user.findFirst({
-    where: { 
-      id: userId,
-    },
-    select: {
-      subscriptionPlan: true,
-    },
+  const now = new Date();
+  const subscription = await prisma.subscription.findFirst({
+    where: { userId },
+    orderBy: { startDate: 'desc' },
+  });
+
+  if (subscription) {
+    const isExpired = subscription.endDate ? new Date(subscription.endDate) < now : false;
+    const isCancelled = String(subscription.status || '').toUpperCase() === 'CANCELLED';
+
+    if (isExpired || isCancelled || String(subscription.status || '').toUpperCase() === 'EXPIRED') {
+      if (subscription.status === 'ACTIVE' && isExpired) {
+        await prisma.$transaction([
+          prisma.subscription.update({
+            where: { id: subscription.id },
+            data: { status: 'EXPIRED' },
+          }),
+          prisma.user.update({
+            where: { id: userId },
+            data: { subscriptionPlan: 'FREE' },
+          }),
+        ]);
+      }
+      return { subscriptionPlan: 'FREE' };
+    }
+
+    return { subscriptionPlan: subscription.subscriptionPlan };
+  }
+
+  const user = await prisma.user.findFirst({
+    where: { id: userId },
+    select: { subscriptionPlan: true },
   });
   return {
-    subscriptionPlan: subscription?.subscriptionPlan ?? null,
+    subscriptionPlan: user?.subscriptionPlan ?? 'FREE',
   };
+}
+
+async sweepExpiredSubscriptions(): Promise<number> {
+  const now = new Date();
+  const expiredSubs = await prisma.subscription.findMany({
+    where: {
+      status: 'ACTIVE',
+      endDate: { lt: now },
+    },
+  });
+
+  for (const sub of expiredSubs) {
+    await prisma.$transaction([
+      prisma.subscription.update({
+        where: { id: sub.id },
+        data: { status: 'EXPIRED' },
+      }),
+      prisma.user.update({
+        where: { id: sub.userId },
+        data: { subscriptionPlan: 'FREE' },
+      }),
+    ]);
+  }
+
+  return expiredSubs.length;
 }
 
   async fetchClients(params: {
@@ -2631,6 +2699,7 @@ async checkSubscriptionStatusbyUserId(userId: number): Promise<{
     sortOrder?: 'asc' | 'desc';
   }): Promise<any> {
     try {
+      await this.sweepExpiredSubscriptions().catch(() => 0);
       const page = Math.max(1, Number(params.page) || 1);
       const perPage = Math.max(1, Number(params.perPage) || 10);
       const { status, plan, search, sortBy = 'createdAt', sortOrder = 'desc' } = params;
@@ -2726,14 +2795,18 @@ async checkSubscriptionStatusbyUserId(userId: number): Promise<{
         const sub = subscriptionMap[user.id];
 
         const now = new Date();
-        const effectivePlan = user.subscriptionPlan || (sub?.subscriptionPlan ?? 'FREE');
+        const rawStatus = String(sub?.status || '').toUpperCase();
+        const isExpired = sub?.endDate ? new Date(sub.endDate) < now : false;
+        const isEnded = isExpired || rawStatus === 'EXPIRED' || rawStatus === 'CANCELLED';
+
+        const effectivePlan = isEnded ? 'FREE' : (user.subscriptionPlan || (sub?.subscriptionPlan ?? 'FREE'));
         let subscriptionName = 'Free';
         let planTier: string | null = null;
 
-        if (effectivePlan === 'PREMIUM_PRO' || effectivePlan === 'PREMIUM_PRO_MAX') {
+        if (!isEnded && (effectivePlan === 'PREMIUM_PRO' || effectivePlan === 'PREMIUM_PRO_MAX')) {
           subscriptionName = 'Premium';
           planTier = effectivePlan === 'PREMIUM_PRO' ? 'Pro' : 'Pro Max';
-        } else if (effectivePlan === 'FREE') {
+        } else if (effectivePlan === 'FREE' || isEnded) {
           subscriptionName = 'Free';
           planTier = null;
         } else if (effectivePlan) {
@@ -2743,9 +2816,6 @@ async checkSubscriptionStatusbyUserId(userId: number): Promise<{
         // Compute subscription status: Active, Expired, Cancelled, or None
         let subscriptionStatus = 'None';
         if (sub) {
-          const rawStatus = String(sub.status || '').toUpperCase();
-          const isExpired = sub.endDate ? new Date(sub.endDate) < now : false;
-
           if (rawStatus === 'CANCELLED') {
             subscriptionStatus = 'Cancelled';
           } else if (rawStatus === 'EXPIRED' || isExpired) {
