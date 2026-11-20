@@ -1203,6 +1203,367 @@ if (bankTransfer) {
     return { received: true, handled: false, event: eventType };
   }
 
+  /**
+   * Processes Bachs webhook events (bank transfer collections, virtual account credits)
+   */
+  async handleBachsWebhookEvent(
+    payload: any,
+    signature?: string,
+    rawBody?: string,
+  ): Promise<void> {
+    // 1. Primary source: PaymentProcessor record configured via superfan.admin
+    const dbProcessor = await prisma.paymentProcessor.findFirst({
+      where: { name: { equals: 'bachs', mode: 'insensitive' } },
+    });
+    const bachsSecret =
+      dbProcessor?.secretKey ||
+      process.env.BACHS_WEBHOOK_SECRET ||
+      process.env.BACHS_SECRET_KEY;
+    if (bachsSecret && signature && rawBody) {
+      const crypto = require('crypto');
+      const hash = crypto
+        .createHmac('sha256', bachsSecret)
+        .update(rawBody)
+        .digest('hex');
+      const cleanSig = signature.toLowerCase().replace(/^sha256=/, '');
+      if (hash.toLowerCase() !== cleanSig) {
+        this.logger.warn(
+          `Bachs webhook signature mismatch. Expected: ${hash}, Received: ${signature}`,
+        );
+        throw new UnauthorizedException('Invalid Bachs webhook signature');
+      }
+    }
+
+    const event = (
+      payload?.event ||
+      payload?.type ||
+      payload?.action ||
+      ''
+    ).toLowerCase();
+    const data = payload?.data || payload;
+    const ref =
+      data?.reference ||
+      data?.payment_reference ||
+      data?.paymentReference ||
+      data?.transaction_reference ||
+      data?.transactionReference ||
+      data?.txRef ||
+      data?.tx_ref;
+    const accountNumber =
+      data?.account_number ||
+      data?.accountNumber ||
+      data?.virtual_account_number ||
+      data?.destination_account_number;
+    const amount = Number(
+      data?.amount ||
+        data?.amount_paid ||
+        data?.amountPaid ||
+        data?.totalPayable ||
+        0,
+    );
+    const currency = data?.currency || 'NGN';
+    const status = (
+      data?.status ||
+      data?.payment_status ||
+      data?.paymentStatus ||
+      ''
+    ).toLowerCase();
+
+    this.logger.log(
+      `Processing Bachs webhook: event=${event}, ref=${ref}, account=${accountNumber}, amount=${amount}, status=${status}`,
+    );
+
+    if (
+      event.includes('fail') ||
+      status.includes('fail') ||
+      status.includes('cancel')
+    ) {
+      this.logger.warn(`Bachs transaction failed: ${ref}`);
+
+      // Check if this failure belongs to a withdrawal
+      if (ref) {
+        const withdrawalTx = await prisma.walletTransaction.findFirst({
+          where: {
+            OR: [{ trx_ref: ref }, { reference: ref }],
+            AND: [
+              {
+                OR: [
+                  { type: { in: ['debit', 'DEBIT'] } },
+                  { transactionType: { in: ['withdrawal', 'WITHDRAWAL', 'Withdrawal'] } },
+                ],
+              },
+            ],
+          },
+        });
+
+        if (withdrawalTx) {
+          this.logger.warn(
+            `Bachs withdrawal failed for ref=${ref} (userId=${withdrawalTx.userId}, amount=${withdrawalTx.amount}): refunding user wallet`,
+          );
+          await prisma.$transaction([
+            prisma.walletTransaction.update({
+              where: { id: withdrawalTx.id },
+              data: { status: 'FAILED' },
+            }),
+            prisma.activityWallet.updateMany({
+              where: { reference: ref },
+              data: { status: 'FAILED' },
+            }),
+            prisma.wallet.update({
+              where: { userId: withdrawalTx.userId },
+              data: {
+                personalBalance: { increment: withdrawalTx.amount },
+                checkingBalance: { increment: withdrawalTx.amount },
+                balance: { increment: withdrawalTx.amount },
+              },
+            }),
+          ]);
+
+          try {
+            await this.notificationService.createNotification(
+              withdrawalTx.userId,
+              'Withdrawal Failed',
+              `Your withdrawal of ${withdrawalTx.currency || 'NGN'} ${withdrawalTx.amount} failed and has been refunded to your wallet.`,
+              'wallet_withdrawal_failed',
+            );
+          } catch {}
+          return;
+        }
+      }
+
+      if (ref || accountNumber) {
+        await prisma.bankTransfer.updateMany({
+          where: {
+            OR: [
+              ...(ref
+                ? [{ paymentReference: ref }, { transactionReference: ref }]
+                : []),
+              ...(accountNumber ? [{ accountNumber }] : []),
+            ],
+            status: 'PENDING',
+          },
+          data: { status: 'FAILED' },
+        });
+      }
+      return;
+    }
+
+    const isSuccess =
+      event.includes('success') ||
+      event.includes('succeeded') ||
+      event.includes('credited') ||
+      event.includes('paid') ||
+      [
+        'succeeded',
+        'success',
+        'paid',
+        'completed',
+        'successful',
+      ].includes(status);
+
+    if (!isSuccess) {
+      this.logger.log(
+        `Bachs non-success event ignored: event=${event}, status=${status}`,
+      );
+      return;
+    }
+
+    // Check if this reference corresponds to a successful WalletTransaction withdrawal
+    if (ref) {
+      const withdrawalTx = await prisma.walletTransaction.findFirst({
+        where: {
+          OR: [{ trx_ref: ref }, { reference: ref }],
+          AND: [
+            {
+              OR: [
+                { type: { in: ['debit', 'DEBIT'] } },
+                { transactionType: { in: ['withdrawal', 'WITHDRAWAL', 'Withdrawal'] } },
+              ],
+            },
+          ],
+        },
+      });
+
+      if (withdrawalTx) {
+        this.logger.log(
+          `Bachs withdrawal succeeded for ref=${ref} (userId=${withdrawalTx.userId}, amount=${withdrawalTx.amount})`,
+        );
+        await prisma.$transaction([
+          prisma.walletTransaction.update({
+            where: { id: withdrawalTx.id },
+            data: { status: 'Completed' },
+          }),
+          prisma.activityWallet.updateMany({
+            where: { reference: ref },
+            data: { status: 'SUCCESS' },
+          }),
+        ]);
+
+        try {
+          await this.notificationService.createNotification(
+            withdrawalTx.userId,
+            'Withdrawal Successful',
+            `Your withdrawal of ${withdrawalTx.currency || 'NGN'} ${withdrawalTx.amount} was completed successfully.`,
+            'wallet_withdrawal_success',
+          );
+        } catch {}
+        return;
+      }
+    }
+
+    // 1. First: Try matching BankTransfer record
+    let bankTransfer = null;
+    if (accountNumber && ref) {
+      bankTransfer = await prisma.bankTransfer.findFirst({
+        where: {
+          accountNumber,
+          OR: [{ paymentReference: ref }, { transactionReference: ref }],
+        },
+      });
+    }
+
+    if (!bankTransfer && ref) {
+      bankTransfer = await prisma.bankTransfer.findFirst({
+        where: {
+          OR: [{ paymentReference: ref }, { transactionReference: ref }],
+        },
+      });
+    }
+
+    if (!bankTransfer && accountNumber) {
+      bankTransfer = await prisma.bankTransfer.findFirst({
+        where: { accountNumber },
+        orderBy: { createdAt: 'desc' },
+      });
+    }
+
+    if (bankTransfer) {
+      if (bankTransfer.status === 'PAID') {
+        this.logger.warn(
+          `Duplicate Bachs webhook ignored: BankTransfer ID=${bankTransfer.id} already PAID`,
+        );
+        return;
+      }
+
+      const creditAmount =
+        amount > 0 ? amount : Number(bankTransfer.amount);
+      const txRef =
+        bankTransfer.transactionReference ||
+        bankTransfer.paymentReference ||
+        ref ||
+        `BACHS-${Date.now()}`;
+
+      await prisma.$transaction([
+        prisma.bankTransfer.update({
+          where: { id: bankTransfer.id },
+          data: {
+            status: 'PAID',
+            paidAt: data?.paid_at ? new Date(data.paid_at) : new Date(),
+            completedAt: new Date(),
+          },
+        }),
+        prisma.wallet.update({
+          where: { userId: bankTransfer.userId },
+          data: {
+            balance: { increment: creditAmount },
+            personalBalance: { increment: creditAmount },
+            checkingBalance: { increment: creditAmount },
+          },
+        }),
+        prisma.walletTransaction.create({
+          data: {
+            userId: bankTransfer.userId,
+            amount: creditAmount,
+            type: 'credit',
+            transactionType: 'FUNDING',
+            status: 'SUCCESS',
+            reference: txRef,
+            payment_method: 'bankTransfer',
+            account_name: bankTransfer.accountName,
+            bank_name: bankTransfer.bankName,
+            account_no: bankTransfer.accountNumber,
+            account_type: 'checking',
+            trx_ref: `${generateFiveUniqueRandomNumbers()}`,
+            description: 'Deposit - Bank Transfer (Bachs)',
+          },
+        }),
+        prisma.activityWallet.create({
+          data: {
+            userId: bankTransfer.userId,
+            type: 'credit',
+            title: 'Deposit - Bank Transfer',
+            description: 'Deposit - Bank Transfer (Bachs)',
+            amount: creditAmount,
+            currency: currency,
+            reference: txRef,
+            status: 'SUCCESS',
+            metadata: {
+              processor: 'bachs',
+              bankName: bankTransfer.bankName,
+              accountNumber: bankTransfer.accountNumber,
+            },
+          },
+        }),
+      ]);
+
+      await this.notificationService.createNotification(
+        bankTransfer.userId,
+        'Wallet Credited',
+        `Your wallet has been credited with ${currency} ${creditAmount} via Bachs bank transfer`,
+        'wallet_credited',
+      );
+      this.logger.log(
+        `Bachs BankTransfer processed & credited: userId=${bankTransfer.userId}, amount=${creditAmount}`,
+      );
+      return;
+    }
+
+    // 2. Fallback to direct user account match
+    if (accountNumber) {
+      const user = await prisma.user.findFirst({
+        where: { accountNumber },
+      });
+      if (user && amount > 0) {
+        const txRef = ref || `BACHS-${Date.now()}`;
+        await prisma.$transaction([
+          prisma.wallet.update({
+            where: { userId: user.id },
+            data: {
+              balance: { increment: amount },
+              personalBalance: { increment: amount },
+              checkingBalance: { increment: amount },
+            },
+          }),
+          prisma.walletTransaction.create({
+            data: {
+              userId: user.id,
+              amount,
+              type: 'credit',
+              transactionType: 'FUNDING',
+              status: 'SUCCESS',
+              reference: txRef,
+              payment_method: 'bankTransfer',
+              account_no: accountNumber,
+              account_type: 'checking',
+              trx_ref: `${generateFiveUniqueRandomNumbers()}`,
+              description: 'Deposit - Bank Transfer (Bachs)',
+            },
+          }),
+        ]);
+        await this.notificationService.createNotification(
+          user.id,
+          'Wallet Credited',
+          `Your wallet has been credited with ${currency} ${amount} via Bachs bank transfer`,
+          'wallet_credited',
+        );
+        return;
+      }
+    }
+
+    this.logger.warn(
+      `No BankTransfer or User found for Bachs webhook: ref=${ref}, account=${accountNumber}`,
+    );
+  }
 }
 
 ///ssssssssssssssssss
