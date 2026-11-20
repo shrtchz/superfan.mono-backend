@@ -771,6 +771,7 @@ export class AdminService {
       const formatted = clients.map((user) => {
         const sub = subscriptionMap[user.id];
 
+        const now = new Date();
         const effectivePlan = user.subscriptionPlan || (sub?.subscriptionPlan ?? 'FREE');
         let subscriptionName = 'Free';
         let planTier: string | null = null;
@@ -783,6 +784,25 @@ export class AdminService {
           planTier = null;
         } else if (effectivePlan) {
           subscriptionName = String(effectivePlan);
+        }
+
+        // Compute subscription status: Active, Expired, Cancelled, or None
+        let subscriptionStatus = 'None';
+        if (sub) {
+          const rawStatus = String(sub.status || '').toUpperCase();
+          const isExpired = sub.endDate ? new Date(sub.endDate) < now : false;
+
+          if (rawStatus === 'CANCELLED') {
+            subscriptionStatus = 'Cancelled';
+          } else if (rawStatus === 'EXPIRED' || isExpired) {
+            subscriptionStatus = 'Expired';
+          } else if (rawStatus === 'ACTIVE') {
+            subscriptionStatus = 'Active';
+          } else {
+            subscriptionStatus = sub.status || 'Active';
+          }
+        } else if (effectivePlan === 'PREMIUM_PRO' || effectivePlan === 'PREMIUM_PRO_MAX') {
+          subscriptionStatus = 'Active';
         }
 
         let age: number | null = null;
@@ -816,6 +836,7 @@ export class AdminService {
           subscriptionPlan: effectivePlan,
           subscription: subscriptionName,
           plan: planTier,
+          subscriptionStatus,
           subscriptionDate: sub?.startDate ?? null,
           subscriptionExpiry: sub?.endDate ?? null,
           birthDate: user.dob ?? null,
