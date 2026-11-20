@@ -326,7 +326,7 @@ export class AdminService {
       let accessLevel: string;
       if (adminType === 'superadmin') {
         accessLevel = 'Owner / Super Admin';
-      } else if (permCount >= ALL_FEATURE_PERMISSION_IDS.length) {
+      } else if (permCount >= ALL_FEATURE_PERMISSION_IDS.length || permCount >= 11) {
         accessLevel = hasManageAdmins ? 'Full Admin (+ Manage Admins)' : 'Full Admin';
       } else {
         accessLevel = 'Restricted Admin';

@@ -54,9 +54,10 @@ export class TaskService {
 
     // ✅ Validate assignment date
     const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const assignmentDate = new Date(dto.assignmentDate);
 
-    if (assignmentDate < now) {
+    if (assignmentDate < todayStart) {
       throw new BadRequestException('Assignment date cannot be in the past');
     }
 
@@ -76,12 +77,12 @@ export class TaskService {
         description: dto.description,
         priority: dto.priority,
         status: dto.status,
-        dueDate: dto.dueDate,
+        dueDate: dto.dueDate ? new Date(dto.dueDate) : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
         assignmentDate: dto.assignmentDate,
         userId: dto.userId,
         assignerId: dto.assignerId,
         assignerFirstName: assigner.firstName,
-        assignerLastName: assigner.lastName,
+        assignerLastName: assigner.lastName || '',
         assignerUserName: assigner.username,
         isDeleted: false,
         assignTo: user.firstName,
@@ -100,14 +101,9 @@ export class TaskService {
     // 🔥 Emit task assignment
     const socketId = this.gateway.getUserSocket(dto.userId);
 
-    if (socketId) {
+    if (socketId && this.gateway.server) {
       this.gateway.server.to(socketId).emit('taskAssigned', create_task);
     }
-
-    // 🔥 Notify assigned user
-    this.gateway.server
-      .to(this.gateway['users'].get(dto.userId))
-      .emit('taskAssigned', create_task);
 
     return {
       create_task,
@@ -134,12 +130,32 @@ export class TaskService {
       },
     });
 
-    // 🔥 Emit to task room (real-time)
-    this.gateway.server
-      .to(`task-${data.taskId}`)
-      .emit('newMessage', newMessage);
+    const sender = await this.userService.findUserById(data.senderId);
+    const senderName = sender
+      ? `${sender.firstName || ''} ${sender.lastName || ''}`.trim() || sender.username
+      : 'User';
 
-    return newMessage;
+    const enrichedMessage = {
+      ...newMessage,
+      sender: sender
+        ? {
+            id: sender.id,
+            firstName: sender.firstName,
+            lastName: sender.lastName,
+            username: sender.username,
+          }
+        : null,
+      senderName,
+    };
+
+    // 🔥 Emit to task room (real-time)
+    if (this.gateway?.server) {
+      this.gateway.server
+        .to(`task-${data.taskId}`)
+        .emit('newMessage', enrichedMessage);
+    }
+
+    return enrichedMessage;
   }
 
   // async fetchMessages(taskId: number) {
@@ -169,6 +185,9 @@ export class TaskService {
     const enrichedMessages = await Promise.all(
       messages.map(async (msg) => {
         const sender = await this.userService.findUserById(msg.senderId);
+        const senderName = sender
+          ? `${sender.firstName || ''} ${sender.lastName || ''}`.trim() || sender.username
+          : 'User';
 
         return {
           ...msg,
@@ -180,6 +199,7 @@ export class TaskService {
                 username: sender.username,
               }
             : null,
+          senderName,
         };
       }),
     );
@@ -207,23 +227,31 @@ export class TaskService {
     });
 
     // 🔥 Emit real-time update
-    this.gateway.server
-      .to(`task-${existingMessage.taskId}`)
-      .emit('messageEdited', updatedMessage);
+    if (this.gateway?.server) {
+      this.gateway.server
+        .to(`task-${existingMessage.taskId}`)
+        .emit('messageEdited', {
+          id: String(updatedMessage.id),
+          message: updatedMessage.message,
+          updatedAt: new Date().toISOString(),
+        });
+    }
 
     return updatedMessage;
   }
 
   // 🗑 Delete Message
   async deleteMessage(messageId: string) {
-    let existingTask = await prisma.taskMessage.delete({
+    const existingTask = await prisma.taskMessage.delete({
       where: { id: Number(messageId) },
     });
 
     // 🔥 Emit real-time delete
-    this.gateway.server
-      .to(`task-${existingTask.taskId}`)
-      .emit('messageDeleted', { id: messageId });
+    if (this.gateway?.server) {
+      this.gateway.server
+        .to(`task-${existingTask.taskId}`)
+        .emit('messageDeleted', { id: String(messageId) });
+    }
 
     return {
       message: 'Message deleted successfully',

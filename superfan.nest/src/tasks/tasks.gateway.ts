@@ -70,48 +70,92 @@ export class TaskChatGateway
     @MessageBody() data: { taskId: number },
     @ConnectedSocket() client: Socket,
   ) {
-    const room = `task-${data.taskId}`;
+    const taskId = Number(data.taskId);
+    const room = `task-${taskId}`;
     client.join(room);
+
+    try {
+      const messages = await prisma.taskMessage.findMany({
+        where: { taskId },
+        orderBy: { createdAt: 'asc' },
+      });
+
+      const enrichedMessages = await Promise.all(
+        messages.map(async (msg) => {
+          const sender = await prisma.user.findUnique({
+            where: { id: msg.senderId },
+            select: { id: true, firstName: true, lastName: true, username: true },
+          });
+
+          const senderName = sender
+            ? `${sender.firstName || ''} ${sender.lastName || ''}`.trim() || sender.username
+            : 'User';
+
+          return {
+            ...msg,
+            sender: sender ?? null,
+            senderName,
+          };
+        }),
+      );
+
+      client.emit('taskMessages', enrichedMessages);
+    } catch (err) {
+      console.error('[TaskChatGateway] Error fetching room messages on join:', err);
+    }
 
     return { message: `Joined room ${room}` };
   }
 
+  // 🚪 Leave a task room
+  @SubscribeMessage('leaveTaskRoom')
+  async leaveTaskRoom(
+    @MessageBody() data: { taskId: number },
+    @ConnectedSocket() client: Socket,
+  ) {
+    const taskId = Number(data.taskId);
+    const room = `task-${taskId}`;
+    client.leave(room);
+
+    return { message: `Left room ${room}` };
+  }
+
   // ✍️ User starts typing
-@SubscribeMessage('startTyping')
-handleStartTyping(
-  @MessageBody()
-  data: {
-    taskId: number;
-    userId: number;
-  },
-  @ConnectedSocket() client: Socket,
-) {
-  const room = `task-${data.taskId}`;
+  @SubscribeMessage('startTyping')
+  handleStartTyping(
+    @MessageBody()
+    data: {
+      taskId: number;
+      userId: number;
+    },
+    @ConnectedSocket() client: Socket,
+  ) {
+    const room = `task-${data.taskId}`;
 
-  // Emit to everyone except sender
-  client.to(room).emit('userTyping', {
-    userId: data.userId,
-    isTyping: true,
-  });
-}
+    // Emit to everyone in the room except sender
+    client.to(room).emit('userTyping', {
+      userId: Number(data.userId),
+      isTyping: true,
+    });
+  }
 
-// 🛑 User stops typing
-@SubscribeMessage('stopTyping')
-handleStopTyping(
-  @MessageBody()
-  data: {
-    taskId: number;
-    userId: number;
-  },
-  @ConnectedSocket() client: Socket,
-) {
-  const room = `task-${data.taskId}`;
+  // 🛑 User stops typing
+  @SubscribeMessage('stopTyping')
+  handleStopTyping(
+    @MessageBody()
+    data: {
+      taskId: number;
+      userId: number;
+    },
+    @ConnectedSocket() client: Socket,
+  ) {
+    const room = `task-${data.taskId}`;
 
-  client.to(room).emit('userTyping', {
-    userId: data.userId,
-    isTyping: false,
-  });
-}
+    client.to(room).emit('userTyping', {
+      userId: Number(data.userId),
+      isTyping: false,
+    });
+  }
 
   // 💬 Send message
   @SubscribeMessage('sendMessage')
@@ -123,22 +167,112 @@ handleStopTyping(
       message: string;
     },
   ) {
+    const taskId = Number(data.taskId);
+    const senderId = Number(data.senderId);
+
     // ✅ Save to DB
     const newMessage = await prisma.taskMessage.create({
       data: {
-        taskId: data.taskId,
-        senderId: data.senderId,
+        taskId,
+        senderId,
         message: data.message,
       },
     });
 
-    // 📡 Emit to room
-    this.server.to(`task-${data.taskId}`).emit('newMessage', newMessage);
+    const sender = await prisma.user.findUnique({
+      where: { id: senderId },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        username: true,
+      },
+    });
 
-    return newMessage;
+    const senderName = sender
+      ? `${sender.firstName || ''} ${sender.lastName || ''}`.trim() || sender.username
+      : 'User';
+
+    const enrichedMessage = {
+      ...newMessage,
+      sender: sender ?? null,
+      senderName,
+    };
+
+    // 📡 Emit to room
+    this.server.to(`task-${taskId}`).emit('newMessage', enrichedMessage);
+
+    return enrichedMessage;
+  }
+
+  // ✏️ Edit message via socket
+  @SubscribeMessage('editMessage')
+  async handleEditMessage(
+    @MessageBody()
+    data: {
+      taskId: number;
+      messageId: number | string;
+      message: string;
+      updatedAt?: string;
+    },
+    @ConnectedSocket() client: Socket,
+  ) {
+    const taskId = Number(data.taskId);
+    const messageId = Number(data.messageId);
+
+    if (Number.isFinite(messageId) && messageId > 0 && data.message) {
+      try {
+        await prisma.taskMessage.update({
+          where: { id: messageId },
+          data: { message: data.message },
+        });
+      } catch (err) {
+        console.error('[TaskChatGateway] Error updating message in DB:', err);
+      }
+    }
+
+    const payload = {
+      id: String(data.messageId),
+      message: data.message,
+      updatedAt: data.updatedAt || new Date().toISOString(),
+    };
+
+    client.to(`task-${taskId}`).emit('messageEdited', payload);
+    return payload;
+  }
+
+  // 🗑 Delete message via socket
+  @SubscribeMessage('deleteMessage')
+  async handleDeleteMessage(
+    @MessageBody()
+    data: {
+      taskId: number;
+      messageId: number | string;
+    },
+    @ConnectedSocket() client: Socket,
+  ) {
+    const taskId = Number(data.taskId);
+    const messageId = Number(data.messageId);
+
+    if (Number.isFinite(messageId) && messageId > 0) {
+      try {
+        await prisma.taskMessage.delete({
+          where: { id: messageId },
+        });
+      } catch (err) {
+        // May already be deleted by REST endpoint
+      }
+    }
+
+    const payload = {
+      id: String(data.messageId),
+    };
+
+    client.to(`task-${taskId}`).emit('messageDeleted', payload);
+    return payload;
   }
 
   getUserSocket(userId: number) {
-  return this.users.get(userId);
-}
+    return this.users.get(userId);
+  }
 }
