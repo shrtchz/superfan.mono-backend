@@ -4,7 +4,9 @@ import (
 	"net/http"
 	"strings"
 
+	"quiz.superfan.com/apis/models"
 	"quiz.superfan.com/apis/services"
+	"quiz.superfan.com/apis/utils"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -144,6 +146,54 @@ func OptionalAuth() gin.HandlerFunc {
 			c.Set(ContextUserEmailKey, email)
 		}
 		c.Set(ContextAuthSource, "clerk")
+		c.Next()
+	}
+}
+
+// IsAdmin returns true if the current context user has an administrator role (superadmin, subadmin, or admin).
+func IsAdmin(c *gin.Context) bool {
+	if roleVal, exists := c.Get(ContextUserRoleKey); exists {
+		if role, ok := roleVal.(string); ok {
+			roleLower := strings.ToLower(strings.TrimSpace(role))
+			if roleLower == "superadmin" || roleLower == "subadmin" || roleLower == "admin" {
+				return true
+			}
+		}
+	}
+
+	userID := c.GetInt(ContextUserIDKey)
+	if userID <= 0 {
+		return false
+	}
+
+	if utils.DB == nil {
+		return false
+	}
+
+	var user models.User
+	if err := utils.DB.WithContext(c.Request.Context()).Select("roleName").First(&user, userID).Error; err != nil {
+		return false
+	}
+
+	roleName := ""
+	if user.RoleName != nil {
+		roleName = strings.ToLower(strings.TrimSpace(*user.RoleName))
+		c.Set(ContextUserRoleKey, roleName)
+	}
+
+	return roleName == "superadmin" || roleName == "subadmin" || roleName == "admin"
+}
+
+// AdminRequired ensures that the request is authenticated and performed by an administrator.
+func AdminRequired() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !IsAdmin(c) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"error": "Forbidden: Administrator access required",
+				"code":  "FORBIDDEN",
+			})
+			return
+		}
 		c.Next()
 	}
 }

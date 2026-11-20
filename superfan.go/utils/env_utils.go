@@ -13,6 +13,11 @@ func GetEnvWithKey(key string) string {
 	return os.Getenv(key)
 }
 
+// GetInternalServiceKey : get internal service key
+func GetInternalServiceKey() string {
+	return os.Getenv("INTERNAL_SERVICE_KEY")
+}
+
 // LoadEnv initially load env
 func LoadEnv() {
 	wd, err := os.Getwd()
