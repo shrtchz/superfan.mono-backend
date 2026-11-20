@@ -254,6 +254,8 @@ describe('Subscription Visibility & Tracking Suite', () => {
       const client = result.data[0];
 
       expect(client.subscriptionStatus).toBe('Expired');
+      expect(client.subscription).toBe('Free');
+      expect(client.plan).toBeNull();
       expect(client.subscriptionDate).toEqual(pastStart);
       expect(client.subscriptionExpiry).toEqual(pastEnd);
     });
@@ -296,6 +298,37 @@ describe('Subscription Visibility & Tracking Suite', () => {
       const client = result.data[0];
 
       expect(client.subscriptionStatus).toBe('Cancelled');
+      expect(client.subscription).toBe('Free');
+      expect(client.plan).toBeNull();
+    });
+
+    it('should sweep and cancel expired unrenewed subscriptions', async () => {
+      const expiredSub = {
+        id: 99,
+        userId: 200,
+        status: 'ACTIVE',
+        endDate: new Date(Date.now() - 10000),
+      };
+      (prisma.subscription.findMany as jest.Mock).mockResolvedValueOnce([expiredSub]);
+      (prisma.$transaction as jest.Mock).mockResolvedValueOnce([
+        { id: 99, status: 'EXPIRED' },
+        { id: 200, subscriptionPlan: 'FREE' },
+      ]);
+
+      const count = await userService.sweepExpiredSubscriptions();
+      expect(count).toBe(1);
+      expect(prisma.subscription.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 99 },
+          data: { status: 'EXPIRED' },
+        }),
+      );
+      expect(prisma.user.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 200 },
+          data: { subscriptionPlan: 'FREE' },
+        }),
+      );
     });
   });
 
