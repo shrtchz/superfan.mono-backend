@@ -20,6 +20,142 @@ type MonnifyProvider struct {
 	ContractCode string
 }
 
+// ResolveMonnifyContractCode resolves the Monnify contract code based on staging/production flags,
+// optional API key format, and environment variables.
+func ResolveMonnifyContractCode(apiKey ...string) string {
+	stageFlag := getMonnifyStageFlag()
+
+	stagingContract := strings.TrimSpace(os.Getenv("MONNIFY_CONTRACT_CODE"))
+	if stagingContract == "" {
+		stagingContract = strings.TrimSpace(os.Getenv("STAGING_MONNIFY_CONTRACT_CODE"))
+	}
+
+	prodContract := strings.TrimSpace(os.Getenv("PROD_MONNIFY_CONTRACT_CODE"))
+	if prodContract == "" {
+		prodContract = strings.TrimSpace(os.Getenv("PRODUCTION_MONNIFY_CONTRACT_CODE"))
+	}
+
+	defaultContract := "943294313374"
+
+	// 1. Evaluate explicit environment flag
+	switch strings.ToLower(stageFlag) {
+	case "staging", "stage", "sandbox", "test", "dev", "development", "false", "0", "no", "off":
+		if stagingContract != "" {
+			return stagingContract
+		}
+		if prodContract != "" {
+			return prodContract
+		}
+		return defaultContract
+
+	case "production", "prod", "live", "true", "1", "yes", "on":
+		if prodContract != "" {
+			return prodContract
+		}
+		if stagingContract != "" {
+			return stagingContract
+		}
+		return defaultContract
+	}
+
+	// 2. If no explicit flag is set, check if the provided or configured API key indicates staging (e.g. MK_TEST_)
+	key := ""
+	if len(apiKey) > 0 {
+		key = apiKey[0]
+	}
+	if key == "" {
+		key = os.Getenv("PROD_MONNIFY_API_KEY")
+		if key == "" {
+			key = os.Getenv("MONNIFY_API_KEY")
+		}
+	}
+
+	if strings.HasPrefix(key, "MK_TEST_") {
+		if stagingContract != "" {
+			return stagingContract
+		}
+		if prodContract != "" {
+			return prodContract
+		}
+		return defaultContract
+	}
+
+	// 3. Fallback: default to production contract, then staging, then hardcoded default
+	if prodContract != "" {
+		return prodContract
+	}
+	if stagingContract != "" {
+		return stagingContract
+	}
+	return defaultContract
+}
+
+// GetMonnifyContractCode is an alias for ResolveMonnifyContractCode.
+func GetMonnifyContractCode(apiKey ...string) string {
+	return ResolveMonnifyContractCode(apiKey...)
+}
+
+func getMonnifyStageFlag() string {
+	// Check command-line arguments for staging/production flags
+	for _, arg := range os.Args[1:] {
+		for _, prefix := range []string{
+			"--monnify-env=", "-monnify-env=",
+			"--monnify-stage=", "-monnify-stage=",
+			"--monnify-contract-env=", "-monnify-contract-env=",
+			"--stage=", "-stage=",
+			"--env=", "-env=",
+		} {
+			if strings.HasPrefix(strings.ToLower(arg), prefix) {
+				return strings.TrimSpace(arg[len(prefix):])
+			}
+		}
+		switch strings.ToLower(arg) {
+		case "--staging", "-staging":
+			return "staging"
+		case "--production", "-production", "--prod", "-prod":
+			return "production"
+		}
+	}
+
+	// Dedicated Monnify environment flags
+	for _, envKey := range []string{
+		"MONNIFY_ENV",
+		"MONNIFY_STAGE",
+		"MONNIFY_CONTRACT_ENV",
+		"MONNIFY_CONTRACT_STAGE",
+		"MONNIFY_MODE",
+	} {
+		if val := strings.TrimSpace(os.Getenv(envKey)); val != "" {
+			return val
+		}
+	}
+
+	// Boolean production override flags
+	for _, envKey := range []string{
+		"USE_PROD_MONNIFY_CONTRACT",
+		"USE_PROD_MONNIFY",
+		"PROD_MONNIFY_CONTRACT",
+	} {
+		if val := strings.TrimSpace(os.Getenv(envKey)); val != "" {
+			return val
+		}
+	}
+
+	// General environment flags
+	for _, envKey := range []string{
+		"STAGE",
+		"APP_ENV",
+		"ENVIRONMENT",
+		"NODE_ENV",
+	} {
+		if val := strings.TrimSpace(os.Getenv(envKey)); val != "" {
+			return val
+		}
+	}
+
+	return ""
+}
+
 func NewMonnifyProvider(apiKey, secretKey, baseURL, contractCode string) *MonnifyProvider {
 	if apiKey == "" {
 		apiKey = os.Getenv("PROD_MONNIFY_API_KEY")
@@ -44,13 +180,7 @@ func NewMonnifyProvider(apiKey, secretKey, baseURL, contractCode string) *Monnif
 		}
 	}
 	if contractCode == "" {
-		contractCode = os.Getenv("PROD_MONNIFY_CONTRACT_CODE")
-	}
-	if contractCode == "" {
-		contractCode = os.Getenv("MONNIFY_CONTRACT_CODE")
-	}
-	if contractCode == "" {
-		contractCode = "943294313374"
+		contractCode = ResolveMonnifyContractCode(apiKey)
 	}
 	return &MonnifyProvider{
 		ApiKey:       apiKey,
@@ -169,13 +299,7 @@ func (m *MonnifyProvider) InitializeTransaction(ctx context.Context, payload map
 		contractCode = m.ContractCode
 	}
 	if contractCode == "" {
-		contractCode = os.Getenv("PROD_MONNIFY_CONTRACT_CODE")
-	}
-	if contractCode == "" {
-		contractCode = os.Getenv("MONNIFY_CONTRACT_CODE")
-	}
-	if contractCode == "" {
-		contractCode = "943294313374"
+		contractCode = ResolveMonnifyContractCode(m.ApiKey)
 	}
 	payload["contractCode"] = contractCode
 
@@ -252,13 +376,7 @@ func (m *MonnifyProvider) InitPaymentByTransfer(ctx context.Context, payload map
 		contractCode = m.ContractCode
 	}
 	if contractCode == "" {
-		contractCode = os.Getenv("PROD_MONNIFY_CONTRACT_CODE")
-	}
-	if contractCode == "" {
-		contractCode = os.Getenv("MONNIFY_CONTRACT_CODE")
-	}
-	if contractCode == "" {
-		contractCode = "943294313374"
+		contractCode = ResolveMonnifyContractCode(m.ApiKey)
 	}
 
 	amount, _ := payload["amount"].(float64)
