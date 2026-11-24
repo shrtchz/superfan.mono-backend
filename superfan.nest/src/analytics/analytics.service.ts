@@ -417,13 +417,18 @@ export class AnalyticsService {
       const transactions = await prisma.walletTransaction.findMany({
         where: { userId },
         select: {
+          id: true,
           amount: true,
           type: true,
+          currency: true,
           account_type: true,
           payment_method: true,
           description: true,
+          status: true,
+          reference: true,
           createdAt: true,
         },
+        orderBy: { createdAt: 'desc' },
       });
 
       // Calculate balances
@@ -492,6 +497,18 @@ export class AnalyticsService {
         total_withdrawals,
         currencies_used,
         last_activity_date,
+        transactions: transactions.map(t => ({
+          id: String(t.id),
+          date: t.createdAt.toISOString(),
+          description: t.description || (t.type?.toLowerCase() === 'debit' ? 'Debit' : 'Credit'),
+          currency: t.currency || 'NGN',
+          amount: t.amount,
+          type: t.type,
+          status: t.status,
+          reference: t.reference,
+          payment_method: t.payment_method,
+          account_type: t.account_type,
+        })),
       };
     } catch (error) {
       throw error;

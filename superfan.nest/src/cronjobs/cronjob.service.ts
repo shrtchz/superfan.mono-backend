@@ -30,6 +30,18 @@ export class CronJobService {
         }
     }
 
+    @Cron(CronExpression.EVERY_10_MINUTES)
+    async handleSubscriptionExpirySweep() {
+        try {
+            const count = await this.userService.sweepExpiredSubscriptions();
+            if (count > 0) {
+                this.logger.log(`Subscription expiry sweep: expired ${count} unrenewed subscriptions.`);
+            }
+        } catch (error: any) {
+            this.logger.error(`Error sweeping expired subscriptions: ${error.message}`);
+        }
+    }
+
     @Cron(CronExpression.EVERY_DAY_AT_11AM)
     async sendDailyQuizNotification() {
         this.logger.log('Sending daily quiz notifications...');
