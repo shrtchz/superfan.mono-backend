@@ -14,6 +14,7 @@ import { ApiRoutes } from '../common/enums/routes.enum';
 import { VersusService } from './versus.service';
 import {
   AcceptVersusDto,
+  ConfigureJackpotDto,
   CreateVersusDto,
   FundVersusDto,
   SubmitVersusResultDto,
@@ -124,6 +125,17 @@ export class VersusController {
   ) {
     this.ensureAdmin(req);
     return this.versusService.getAdminPlayerQuestions(id, playerId);
+  }
+
+  @Post('admin/jackpot')
+  async configureJackpot(@Req() req: any, @Body() dto: ConfigureJackpotDto) {
+    this.ensureAdmin(req);
+    return this.versusService.configureJackpot(dto);
+  }
+
+  @Get('jackpot/active')
+  async getActiveJackpot() {
+    return this.versusService.getActiveJackpot();
   }
 
   @Get(':id')

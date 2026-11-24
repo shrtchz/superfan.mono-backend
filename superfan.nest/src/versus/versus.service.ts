@@ -16,6 +16,7 @@ import { QuizService } from '../quiz/quiz.service';
 
 import {
   AcceptVersusDto,
+  ConfigureJackpotDto,
   CreateVersusDto,
   FundVersusDto,
   SubmitVersusResultDto,
@@ -84,6 +85,82 @@ export class VersusService {
     private readonly notificationGateway: NotificationGateway,
     @Inject(forwardRef(() => QuizService)) private readonly quizService: QuizService,
   ) {}
+
+  /**
+   * Configure Versus Jackpot event settings (Admin)
+   */
+  async configureJackpot(dto: ConfigureJackpotDto) {
+    const participantsTarget = Math.max(1, Number(dto.participantsTarget));
+    const amountToDisburse = Math.max(0, Number(dto.amountToDisburse));
+    // unit_pay_per_match = amount_to_disburse ÷ participants_target, rounded down to the kobo
+    const unitPayPerMatch =
+      dto.unitPayPerMatch && !isNaN(dto.unitPayPerMatch) && dto.unitPayPerMatch > 0
+        ? Number(dto.unitPayPerMatch)
+        : Math.floor((amountToDisburse / participantsTarget) * 100) / 100;
+    const actualPayout =
+      dto.actualPayout !== undefined
+        ? Number(dto.actualPayout)
+        : Math.round(unitPayPerMatch * participantsTarget * 100) / 100;
+    const remainder =
+      dto.remainder !== undefined
+        ? Number(dto.remainder)
+        : Math.round((amountToDisburse - actualPayout) * 100) / 100;
+
+    const config = {
+      participantsTarget,
+      amountToDisburse,
+      unitPayPerMatch,
+      alertSendDate: dto.alertSendDate,
+      maxWinners: participantsTarget,
+      actualPayout,
+      remainder,
+      userStakeRequired: 0,
+      isActive: dto.isActive !== undefined ? dto.isActive : true,
+      updatedAt: new Date().toISOString(),
+    };
+
+    await this.prisma.platformSetting.upsert({
+      where: { key: 'versus_jackpot_config' },
+      update: { value: JSON.stringify(config) },
+      create: { key: 'versus_jackpot_config', value: JSON.stringify(config) },
+    });
+
+    return {
+      success: true,
+      data: config,
+      message: 'Versus Jackpot configured successfully',
+    };
+  }
+
+  /**
+   * Get active Versus Jackpot configuration
+   */
+  async getActiveJackpot() {
+    try {
+      const setting = await this.prisma.platformSetting.findUnique({
+        where: { key: 'versus_jackpot_config' },
+      });
+
+      if (setting && setting.value) {
+        return JSON.parse(setting.value);
+      }
+    } catch (err: any) {
+      this.logger.warn(`Failed to fetch versus_jackpot_config from DB: ${err.message}`);
+    }
+
+    // Default specification fallback
+    return {
+      isActive: true,
+      participantsTarget: 233,
+      amountToDisburse: 500000,
+      unitPayPerMatch: 2145.92,
+      alertSendDate: '2027-10-12',
+      maxWinners: 233,
+      actualPayout: 499999.36,
+      remainder: 0.64,
+      userStakeRequired: 0,
+    };
+  }
 
   /**
    * Helper to normalize account type string to standard 'savings' or 'checking'
@@ -177,30 +254,42 @@ export class VersusService {
       throw new BadRequestException(`User @${cleanOpponent} is currently unable to accept challenges`);
     }
 
-    const jackpot = Number(dto.jackpot);
-    const hostShare = Number(dto.hostShare);
-    const opponentShare = Number(dto.opponentShare);
+    const isJackpot = Boolean(dto.isJackpot || (dto.hostShare === 0 && dto.opponentShare === 0));
+    let jackpot = Number(dto.jackpot);
+    let hostShare = Number(dto.hostShare);
+    let opponentShare = Number(dto.opponentShare);
 
-    if (isNaN(jackpot) || jackpot <= 0) {
-      throw new BadRequestException('Jackpot must be a positive number');
-    }
-    if (isNaN(hostShare) || hostShare <= 0) {
-      throw new BadRequestException('Your contribution must be a positive number');
-    }
-    if (isNaN(opponentShare) || opponentShare <= 0) {
-      throw new BadRequestException("Opponent's contribution must be a positive number");
+    if (isJackpot) {
+      if (isNaN(jackpot) || jackpot <= 0) {
+        const activeJackpot = await this.getActiveJackpot();
+        jackpot = Number(activeJackpot.unitPayPerMatch) || 2145.92;
+      }
+      hostShare = 0;
+      opponentShare = 0;
+    } else {
+      if (isNaN(jackpot) || jackpot <= 0) {
+        throw new BadRequestException('Jackpot must be a positive number');
+      }
+      if (isNaN(hostShare) || hostShare <= 0) {
+        throw new BadRequestException('Your contribution must be a positive number');
+      }
+      if (isNaN(opponentShare) || opponentShare <= 0) {
+        throw new BadRequestException("Opponent's contribution must be a positive number");
+      }
+
+      const sum = Math.round((hostShare + opponentShare) * 100) / 100;
+      const roundedJackpot = Math.round(jackpot * 100) / 100;
+      if (Math.abs(sum - roundedJackpot) > 0.01) {
+        throw new BadRequestException(
+          `Host contribution (₦${hostShare}) and opponent contribution (₦${opponentShare}) must sum exactly to jackpot (₦${jackpot})`,
+        );
+      }
     }
 
-    const sum = Math.round((hostShare + opponentShare) * 100) / 100;
-    const roundedJackpot = Math.round(jackpot * 100) / 100;
-    if (Math.abs(sum - roundedJackpot) > 0.01) {
-      throw new BadRequestException(
-        `Host contribution (₦${hostShare}) and opponent contribution (₦${opponentShare}) must sum exactly to jackpot (₦${jackpot})`,
-      );
-    }
-
-    const accountType = this.normalizeAccountType(dto.fundingAccount);
-    const mode = this.normalizeMode(dto.mode);
+    const accountType = isJackpot
+      ? 'savings'
+      : this.normalizeAccountType(dto.fundingAccount || 'savings');
+    const mode = isJackpot ? 'LIVE_1V1' : this.normalizeMode(dto.mode);
 
     const language = dto.language || host.languagePreference || 'Yoruba';
     const subject = dto.subject || host.subjectPreference || 'General';
@@ -226,66 +315,68 @@ export class VersusService {
           data: {
             userId: hostUserId,
             balance: 0,
-                                  },
+          },
         });
       }
 
-      let availableBalance = 0;
-      if (accountType === 'savings') {
-        availableBalance = Number(wallet.savingsBalance) || 0;
-      } else {
-        availableBalance = Number(wallet.checkingBalance) || 0;
-        const held = await tx.walletTransaction.aggregate({
-          _sum: { amount: true },
-          where: {
+      if (!isJackpot && hostShare > 0) {
+        let availableBalance = 0;
+        if (accountType === 'savings') {
+          availableBalance = Number(wallet.savingsBalance) || 0;
+        } else {
+          availableBalance = Number(wallet.checkingBalance) || 0;
+          const held = await tx.walletTransaction.aggregate({
+            _sum: { amount: true },
+            where: {
+              userId: hostUserId,
+              account_type: { in: ['checking'] },
+              holdUntil: { gt: now },
+            },
+          });
+          availableBalance = Math.max(0, availableBalance - Number(held._sum.amount || 0));
+        }
+
+        if (availableBalance < hostShare) {
+          const accountLabel = accountType === 'savings' ? 'Savings' : 'Checking';
+          throw new BadRequestException(
+            `Insufficient ${accountLabel} balance. Required: ₦${hostShare.toLocaleString()}, Available: ₦${availableBalance.toLocaleString()}`,
+          );
+        }
+
+        if (accountType === 'savings') {
+          await tx.wallet.update({
+            where: { userId: hostUserId },
+            data: {
+              savingsBalance: { decrement: hostShare },
+              balance: { decrement: hostShare },
+            },
+          });
+        } else {
+          await tx.wallet.update({
+            where: { userId: hostUserId },
+            data: {
+              checkingBalance: { decrement: hostShare },
+              balance: { decrement: hostShare },
+            },
+          });
+        }
+
+        await tx.walletTransaction.create({
+          data: {
             userId: hostUserId,
-            account_type: { in: ['checking'] },
-            holdUntil: { gt: now },
-          },
-        });
-        availableBalance = Math.max(0, availableBalance - Number(held._sum.amount || 0));
-      }
-
-      if (availableBalance < hostShare) {
-        const accountLabel = accountType === 'savings' ? 'Savings' : 'Checking';
-        throw new BadRequestException(
-          `Insufficient ${accountLabel} balance. Required: ₦${hostShare.toLocaleString()}, Available: ₦${availableBalance.toLocaleString()}`,
-        );
-      }
-
-      if (accountType === 'savings') {
-        await tx.wallet.update({
-          where: { userId: hostUserId },
-          data: {
-            savingsBalance: { decrement: hostShare },
-                        balance: { decrement: hostShare },
-          },
-        });
-      } else {
-        await tx.wallet.update({
-          where: { userId: hostUserId },
-          data: {
-            checkingBalance: { decrement: hostShare },
-                        balance: { decrement: hostShare },
+            amount: hostShare,
+            type: 'debit',
+            currency: 'NGN',
+            status: 'HELD',
+            payment_method: 'versus_escrow',
+            account_type: accountType,
+            transactionType: 'VERSUS_ESCROW_DEBIT',
+            trx_ref: escrowTxRef,
+            reference: escrowTxRef,
+            description: `Versus ${mode === 'LIVE_1V1' ? 'Live 1v1' : 'H2H'} for challenge with @${opponent.username}`,
           },
         });
       }
-
-      await tx.walletTransaction.create({
-        data: {
-          userId: hostUserId,
-          amount: hostShare,
-          type: 'debit',
-          currency: 'NGN',
-          status: 'HELD',
-          payment_method: 'versus_escrow',
-          account_type: accountType,
-          transactionType: 'VERSUS_ESCROW_DEBIT',
-          trx_ref: escrowTxRef,
-          reference: escrowTxRef,
-          description: `Versus ${mode === 'LIVE_1V1' ? 'Live 1v1' : 'H2H'} for challenge with @${opponent.username}`,
-        },
-      });
 
       return tx.versusRequest.create({
         data: {
@@ -303,7 +394,7 @@ export class VersusService {
           durationMinutes,
           hostReady: true,
           opponentReady: false,
-          opponentFunded: false,
+          opponentFunded: isJackpot ? true : false,
           status: 'PENDING',
           escrowStatus: 'HELD',
           escrowTxRef,
@@ -379,41 +470,43 @@ export class VersusService {
       });
 
       const isHostSavings = request.hostFundingAccount === 'savings';
-      if (isHostSavings) {
-        await tx.wallet.update({
-          where: { userId: request.hostId },
+      if (request.hostShare > 0) {
+        if (isHostSavings) {
+          await tx.wallet.update({
+            where: { userId: request.hostId },
+            data: {
+              savingsBalance: { increment: request.hostShare },
+              balance: { increment: request.hostShare },
+            },
+          });
+        } else {
+          await tx.wallet.update({
+            where: { userId: request.hostId },
+            data: {
+              checkingBalance: { increment: request.hostShare },
+              balance: { increment: request.hostShare },
+            },
+          });
+        }
+
+        await tx.walletTransaction.create({
           data: {
-            savingsBalance: { increment: request.hostShare },
-                        balance: { increment: request.hostShare },
-          },
-        });
-      } else {
-        await tx.wallet.update({
-          where: { userId: request.hostId },
-          data: {
-            checkingBalance: { increment: request.hostShare },
-                        balance: { increment: request.hostShare },
+            userId: request.hostId,
+            amount: request.hostShare,
+            type: 'credit',
+            currency: 'NGN',
+            status: 'SUCCESS',
+            payment_method: 'versus_escrow',
+            account_type: isHostSavings ? 'savings' : 'checking',
+            transactionType: 'VERSUS_ESCROW_REFUND',
+            trx_ref: refundRef,
+            reference: refundRef,
+            description: `Versus Challenge - Refund for @${request.opponent.username}`,
           },
         });
       }
 
-      await tx.walletTransaction.create({
-        data: {
-          userId: request.hostId,
-          amount: request.hostShare,
-          type: 'credit',
-          currency: 'NGN',
-          status: 'SUCCESS',
-          payment_method: 'versus_escrow',
-          account_type: isHostSavings ? 'savings' : 'checking',
-          transactionType: 'VERSUS_ESCROW_REFUND',
-          trx_ref: refundRef,
-          reference: refundRef,
-          description: `Versus Challenge - Refund for @${request.opponent.username}`,
-        },
-      });
-
-      if (request.opponentFunded && request.opponentFundingAccount) {
+      if (request.opponentFunded && request.opponentFundingAccount && request.opponentShare > 0) {
         const oppRefundRef = `VERSUS_REFUND_OPP_${Date.now()}_${randomBytes(4).toString('hex').toUpperCase()}`;
         const isOppSavings = request.opponentFundingAccount === 'savings';
         if (isOppSavings) {
@@ -421,7 +514,7 @@ export class VersusService {
             where: { userId: request.opponentId },
             data: {
               savingsBalance: { increment: request.opponentShare },
-                            balance: { increment: request.opponentShare },
+              balance: { increment: request.opponentShare },
             },
           });
         } else {
@@ -429,7 +522,7 @@ export class VersusService {
             where: { userId: request.opponentId },
             data: {
               checkingBalance: { increment: request.opponentShare },
-                            balance: { increment: request.opponentShare },
+              balance: { increment: request.opponentShare },
             },
           });
         }
@@ -1036,84 +1129,86 @@ export class VersusService {
           },
         });
       } else {
-        // DRAW: Zero jackpot won, refund original contributions to source accounts
+        // DRAW: Zero jackpot won. If players contributed shares, refund them; if platform-funded (jackpot), reward remains with app account.
         const hostRefundRef = `VERSUS_DRAW_HOST_${Date.now()}_${randomBytes(3).toString('hex').toUpperCase()}`;
         const oppRefundRef = `VERSUS_DRAW_OPP_${Date.now()}_${randomBytes(3).toString('hex').toUpperCase()}`;
 
-        // Host refund to original account
-        const isHostSavings = match.hostFundingAccount === 'savings';
-        const hostRefundAccount = isHostSavings ? 'savings' : 'checking';
-        if (isHostSavings) {
-          await tx.wallet.update({
-            where: { userId: match.hostId },
+        if (match.hostShare > 0) {
+          const isHostSavings = match.hostFundingAccount === 'savings';
+          const hostRefundAccount = isHostSavings ? 'savings' : 'checking';
+          if (isHostSavings) {
+            await tx.wallet.update({
+              where: { userId: match.hostId },
+              data: {
+                savingsBalance: { increment: match.hostShare },
+                balance: { increment: match.hostShare },
+              },
+            });
+          } else {
+            await tx.wallet.update({
+              where: { userId: match.hostId },
+              data: {
+                checkingBalance: { increment: match.hostShare },
+                balance: { increment: match.hostShare },
+              },
+            });
+          }
+
+          await tx.walletTransaction.create({
             data: {
-              savingsBalance: { increment: match.hostShare },
-                            balance: { increment: match.hostShare },
-            },
-          });
-        } else {
-          await tx.wallet.update({
-            where: { userId: match.hostId },
-            data: {
-              checkingBalance: { increment: match.hostShare },
-                            balance: { increment: match.hostShare },
+              userId: match.hostId,
+              amount: match.hostShare,
+              type: 'credit',
+              currency: 'NGN',
+              status: 'SUCCESS',
+              payment_method: 'versus_escrow',
+              account_type: hostRefundAccount,
+              transactionType: 'VERSUS_DRAW_REFUND',
+              trx_ref: hostRefundRef,
+              reference: hostRefundRef,
+              description: `Versus match draw stake refund for challenge with @${match.opponent.username}`,
             },
           });
         }
 
-        await tx.walletTransaction.create({
-          data: {
-            userId: match.hostId,
-            amount: match.hostShare,
-            type: 'credit',
-            currency: 'NGN',
-            status: 'SUCCESS',
-            payment_method: 'versus_escrow',
-            account_type: hostRefundAccount,
-            transactionType: 'VERSUS_DRAW_REFUND',
-            trx_ref: hostRefundRef,
-            reference: hostRefundRef,
-            description: `Versus match draw stake refund for challenge with @${match.opponent.username}`,
-          },
-        });
+        if (match.opponentShare > 0) {
+          const oppAccount = match.opponentFundingAccount || 'checking';
+          const isOppSavings = oppAccount === 'savings';
+          const oppRefundAccount = isOppSavings ? 'savings' : 'checking';
+          if (isOppSavings) {
+            await tx.wallet.update({
+              where: { userId: match.opponentId },
+              data: {
+                savingsBalance: { increment: match.opponentShare },
+                balance: { increment: match.opponentShare },
+              },
+            });
+          } else {
+            await tx.wallet.update({
+              where: { userId: match.opponentId },
+              data: {
+                checkingBalance: { increment: match.opponentShare },
+                balance: { increment: match.opponentShare },
+              },
+            });
+          }
 
-        // Opponent refund to original account
-        const oppAccount = match.opponentFundingAccount || 'checking';
-        const isOppSavings = oppAccount === 'savings';
-        const oppRefundAccount = isOppSavings ? 'savings' : 'checking';
-        if (isOppSavings) {
-          await tx.wallet.update({
-            where: { userId: match.opponentId },
+          await tx.walletTransaction.create({
             data: {
-              savingsBalance: { increment: match.opponentShare },
-                            balance: { increment: match.opponentShare },
-            },
-          });
-        } else {
-          await tx.wallet.update({
-            where: { userId: match.opponentId },
-            data: {
-              checkingBalance: { increment: match.opponentShare },
-                            balance: { increment: match.opponentShare },
+              userId: match.opponentId,
+              amount: match.opponentShare,
+              type: 'credit',
+              currency: 'NGN',
+              status: 'SUCCESS',
+              payment_method: 'versus_escrow',
+              account_type: oppRefundAccount,
+              transactionType: 'VERSUS_DRAW_REFUND',
+              trx_ref: oppRefundRef,
+              reference: oppRefundRef,
+              description: `Versus match draw stake refund for challenge with @${match.host.username}`,
             },
           });
         }
-
-        await tx.walletTransaction.create({
-          data: {
-            userId: match.opponentId,
-            amount: match.opponentShare,
-            type: 'credit',
-            currency: 'NGN',
-            status: 'SUCCESS',
-            payment_method: 'versus_escrow',
-            account_type: oppRefundAccount,
-            transactionType: 'VERSUS_DRAW_REFUND',
-            trx_ref: oppRefundRef,
-            reference: oppRefundRef,
-            description: `Versus match draw stake refund for challenge with @${match.host.username}`,
-          },
-        });
 
         return tx.versusRequest.update({
           where: { id: requestId },

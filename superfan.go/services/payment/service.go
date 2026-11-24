@@ -1765,13 +1765,7 @@ func (s *PaymentService) InitializeTransaction(ctx context.Context, payload map[
 			if !strings.HasPrefix(customPubKey, "MK_PROD_") {
 				mUri = "https://sandbox.monnify.com"
 			}
-			mContract := os.Getenv("PROD_MONNIFY_CONTRACT_CODE")
-			if mContract == "" {
-				mContract = os.Getenv("MONNIFY_CONTRACT_CODE")
-			}
-			if mContract == "" {
-				mContract = "943294313374"
-			}
+			mContract := providers.ResolveMonnifyContractCode(customPubKey)
 			provider = providers.NewMonnifyProvider(customPubKey, customSecKey, mUri, mContract)
 		}
 		result, err := provider.InitializeTransaction(ctx, payload)
@@ -2096,10 +2090,7 @@ func (s *PaymentService) InitPaymentByTransfer(ctx context.Context, payload map[
 					mUri = "https://sandbox.monnify.com"
 				}
 			}
-			mContract := os.Getenv("PROD_MONNIFY_CONTRACT_CODE")
-			if mContract == "" {
-				mContract = os.Getenv("MONNIFY_CONTRACT_CODE")
-			}
+			mContract := providers.ResolveMonnifyContractCode(customPubKey)
 			provider = providers.NewMonnifyProvider(customPubKey, customSecKey, mUri, mContract)
 		}
 
@@ -2258,13 +2249,7 @@ func (s *PaymentService) ChargeCardAndCreditWallet(ctx context.Context, userID i
 			if !strings.HasPrefix(customPubKey, "MK_PROD_") {
 				mUri = "https://sandbox.monnify.com"
 			}
-			mContract := os.Getenv("PROD_MONNIFY_CONTRACT_CODE")
-			if mContract == "" {
-				mContract = os.Getenv("MONNIFY_CONTRACT_CODE")
-			}
-			if mContract == "" {
-				mContract = "943294313374"
-			}
+			mContract := providers.ResolveMonnifyContractCode(customPubKey)
 			provider = providers.NewMonnifyProvider(customPubKey, customSecKey, mUri, mContract)
 		}
 		var err error
@@ -2434,13 +2419,7 @@ func (s *PaymentService) AuthorizeCardOTPAndCreditWallet(ctx context.Context, us
 	if !strings.HasPrefix(customPubKey, "MK_PROD_") {
 		mUri = "https://sandbox.monnify.com"
 	}
-	mContract := os.Getenv("PROD_MONNIFY_CONTRACT_CODE")
-	if mContract == "" {
-		mContract = os.Getenv("MONNIFY_CONTRACT_CODE")
-	}
-	if mContract == "" {
-		mContract = "943294313374"
-	}
+	mContract := providers.ResolveMonnifyContractCode(customPubKey)
 	monnifyProv := providers.NewMonnifyProvider(customPubKey, customSecKey, mUri, mContract)
 
 	authResult, err := monnifyProv.AuthorizeCardOTP(ctx, authPayload)
@@ -2755,13 +2734,7 @@ func (s *PaymentService) QueryTransaction(ctx context.Context, transactionRefere
 		if !strings.HasPrefix(*activeProc.PublicKey, "MK_PROD_") {
 			mUri = "https://sandbox.monnify.com"
 		}
-		mContract := os.Getenv("PROD_MONNIFY_CONTRACT_CODE")
-		if mContract == "" {
-			mContract = os.Getenv("MONNIFY_CONTRACT_CODE")
-		}
-		if mContract == "" {
-			mContract = "943294313374"
-		}
+		mContract := providers.ResolveMonnifyContractCode(*activeProc.PublicKey)
 		provider = providers.NewMonnifyProvider(*activeProc.PublicKey, *activeProc.SecretKey, mUri, mContract)
 	}
 	return provider.QueryTransaction(ctx, transactionReference)
@@ -3295,10 +3268,7 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 					mUri = "https://sandbox.monnify.com"
 				}
 			}
-			mContract := os.Getenv("PROD_MONNIFY_CONTRACT_CODE")
-			if mContract == "" {
-				mContract = os.Getenv("MONNIFY_CONTRACT_CODE")
-			}
+			mContract := providers.ResolveMonnifyContractCode(customPubKey)
 			provider = providers.NewMonnifyProvider(customPubKey, customSecKey, mUri, mContract)
 		}
 

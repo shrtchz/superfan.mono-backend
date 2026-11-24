@@ -1,4 +1,34 @@
-import { IsNotEmpty, IsNumber, IsPositive, IsString, IsIn, IsOptional, IsBoolean } from 'class-validator';
+import { IsNotEmpty, IsNumber, IsPositive, IsString, IsIn, IsOptional, IsBoolean, Min } from 'class-validator';
+
+export class ConfigureJackpotDto {
+  @IsNumber()
+  @IsPositive()
+  participantsTarget: number;
+
+  @IsNumber()
+  @IsPositive()
+  amountToDisburse: number;
+
+  @IsNumber()
+  @IsPositive()
+  unitPayPerMatch: number;
+
+  @IsString()
+  @IsNotEmpty()
+  alertSendDate: string;
+
+  @IsOptional()
+  @IsNumber()
+  actualPayout?: number;
+
+  @IsOptional()
+  @IsNumber()
+  remainder?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+}
 
 export class CreateVersusDto {
   @IsString()
@@ -15,16 +45,21 @@ export class CreateVersusDto {
   jackpot: number;
 
   @IsNumber()
-  @IsPositive()
+  @Min(0)
   hostShare: number;
 
   @IsNumber()
-  @IsPositive()
+  @Min(0)
   opponentShare: number;
 
+  @IsOptional()
   @IsString()
   @IsIn(['savings', 'checking', 'Savings', 'Checking'])
-  fundingAccount: string;
+  fundingAccount?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isJackpot?: boolean;
 
   @IsOptional()
   @IsString()
