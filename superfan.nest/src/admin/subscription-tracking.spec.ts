@@ -69,9 +69,9 @@ describe('Subscription Visibility & Tracking Suite', () => {
       pointsConversionUtil,
     );
 
-    analyticsService = new AnalyticsService();
+    analyticsService = new (AnalyticsService as any)({} as any);
 
-    userService = new UserService(
+    userService = new (UserService as any)(
       clerkService,
       mailService,
       configService,
