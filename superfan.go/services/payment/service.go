@@ -665,7 +665,7 @@ func (s *PaymentService) HandleBachsWebhook(ctx context.Context, signature strin
 		// Check if this failure belongs to a withdrawal
 		if ref != "" && s.db != nil {
 			var wTx models.WalletTransaction
-			if err := s.db.WithContext(ctx).Where("\"trxRef\" = ? AND (LOWER(COALESCE(\"transactionType\", '')) = 'withdrawal' OR LOWER(COALESCE(\"type\", '')) = 'debit')", ref).First(&wTx).Error; err == nil && wTx.ID > 0 {
+			if err := s.db.WithContext(ctx).Where("\"trx_ref\" = ? AND (LOWER(COALESCE(\"transactionType\", '')) = 'withdrawal' OR LOWER(COALESCE(\"type\", '')) = 'debit')", ref).First(&wTx).Error; err == nil && wTx.ID > 0 {
 				log.Printf("[PaymentService] Bachs withdrawal failed for ref=%s (userID=%d, amount=%.2f): refunding user wallet", ref, wTx.UserID, wTx.Amount)
 				return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 					failedStatus := "FAILED"
@@ -712,7 +712,7 @@ func (s *PaymentService) HandleBachsWebhook(ctx context.Context, signature strin
 	// 0. Check if this reference corresponds to a successful WalletTransaction withdrawal
 	if ref != "" && s.db != nil {
 		var wTx models.WalletTransaction
-		if err := s.db.WithContext(ctx).Where("\"trxRef\" = ? AND (LOWER(COALESCE(\"transactionType\", '')) = 'withdrawal' OR LOWER(COALESCE(\"type\", '')) = 'debit')", ref).First(&wTx).Error; err == nil && wTx.ID > 0 {
+		if err := s.db.WithContext(ctx).Where("\"trx_ref\" = ? AND (LOWER(COALESCE(\"transactionType\", '')) = 'withdrawal' OR LOWER(COALESCE(\"type\", '')) = 'debit')", ref).First(&wTx).Error; err == nil && wTx.ID > 0 {
 			log.Printf("[PaymentService] Bachs withdrawal succeeded for ref=%s (userID=%d, amount=%.2f)", ref, wTx.UserID, wTx.Amount)
 			return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 				successStatus := "Completed"
@@ -2579,7 +2579,9 @@ func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amoun
 
 		// Idempotency: check if WalletTransaction for txRef already completed to avoid duplicate crediting
 		var existingCount int64
-		if err := tx.Model(&models.WalletTransaction{}).Where("\"trxRef\" = ? AND \"status\" = ?", txRef, "Completed").Count(&existingCount).Error; err == nil && existingCount > 0 {
+		if err := tx.Model(&models.WalletTransaction{}).Where("\"trx_ref\" = ? AND \"status\" = ?", txRef, "Completed").Count(&existingCount).Error; err != nil {
+			return fmt.Errorf("failed to check existing wallet transaction: %w", err)
+		} else if existingCount > 0 {
 			log.Printf("[DB] WalletTransaction for txRef=%s already completed, skipping duplicate balance increment", txRef)
 			updatedWallet = wallet
 			return nil
@@ -2627,7 +2629,7 @@ func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amoun
 			log.Printf("[DB] WalletTransaction created: id=%d", wTx.ID)
 		}
 
-		// 4. Insert ActivityWallet record
+		// 4. Insert ActivityWallet record (optional audit write; savepoint keeps its failure from aborting the credit)
 		actTx := models.ActivityWallet{
 			UserID:      userID,
 			Type:        "credit", // matches ActivityType enum: credit | debit
@@ -2639,8 +2641,12 @@ func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amoun
 			Status:      "SUCCESS",
 			CreatedAt:   time.Now(),
 		}
+		if spErr := tx.SavePoint("activity_wallet").Error; spErr != nil {
+			return fmt.Errorf("failed to open activity wallet savepoint: %w", spErr)
+		}
 		if err := tx.Create(&actTx).Error; err != nil {
 			log.Printf("[DB] WARNING: Failed to create ActivityWallet: %v", err)
+			tx.RollbackTo("activity_wallet")
 		} else {
 			log.Printf("[DB] ActivityWallet created: id=%d", actTx.ID)
 		}
@@ -2669,55 +2675,23 @@ func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amoun
 				CreatedAt: time.Now(),
 				UpdatedAt: time.Now(),
 			}
+			if spErr := tx.SavePoint("card_funding").Error; spErr != nil {
+				return fmt.Errorf("failed to open card funding savepoint: %w", spErr)
+			}
 			if err := tx.Create(&cardFunding).Error; err != nil {
 				log.Printf("[DB] WARNING: Failed to create CardFunding record: %v", err)
+				tx.RollbackTo("card_funding")
 			} else {
 				log.Printf("[DB] CardFunding created: id=%d", cardFunding.ID)
 			}
 
 			if cardMeta != nil && (cardMeta.CardToken != "" || cardMeta.MaskedPan != "") {
-				var existing models.UserCard
-				err := tx.Where("\"userId\" = ? AND (COALESCE(\"cardToken\", '') = ? OR COALESCE(\"maskedPan\", '') = ?)", userID, cardMeta.CardToken, cardMeta.MaskedPan).First(&existing).Error
-				if errors.Is(err, gorm.ErrRecordNotFound) {
-					cardRecord := models.UserCard{
-						UserID:    userID,
-						CardToken: stringValuePtr(cardMeta.CardToken),
-						MaskedPan: stringValuePtr(cardMeta.MaskedPan),
-						CardType:  stringValuePtr(cardMeta.CardType),
-						Expiry:    stringValuePtr(cardMeta.Expiry),
-						IsDefault: true,
-						CreatedAt: time.Now(),
-						UpdatedAt: time.Now(),
-					}
-					if err := tx.Create(&cardRecord).Error; err != nil {
-						log.Printf("[DB] WARNING: Failed to create UserCard record: %v", err)
-					} else {
-						log.Printf("[DB] UserCard created: id=%d token=%s maskedPan=%s", cardRecord.ID, cardMeta.CardToken, cardMeta.MaskedPan)
-					}
-				} else if err == nil {
-					updates := map[string]interface{}{}
-					if cardMeta.CardToken != "" {
-						updates["cardToken"] = cardMeta.CardToken
-					}
-					if cardMeta.MaskedPan != "" {
-						updates["maskedPan"] = cardMeta.MaskedPan
-					}
-					if cardMeta.CardType != "" {
-						updates["cardType"] = cardMeta.CardType
-					}
-					if cardMeta.Expiry != "" {
-						updates["expiry"] = cardMeta.Expiry
-					}
-					if len(updates) > 0 {
-						updates["updatedAt"] = time.Now()
-						if err := tx.Model(&existing).Updates(updates).Error; err != nil {
-							log.Printf("[DB] WARNING: Failed to update UserCard record: %v", err)
-						} else {
-							log.Printf("[DB] UserCard updated: id=%d", existing.ID)
-						}
-					}
-				} else {
-					log.Printf("[DB] WARNING: Failed to query existing UserCard: %v", err)
+				if spErr := tx.SavePoint("user_card").Error; spErr != nil {
+					return fmt.Errorf("failed to open user card savepoint: %w", spErr)
+				}
+				if err := upsertUserCard(tx, userID, cardMeta); err != nil {
+					log.Printf("[DB] WARNING: Failed to upsert UserCard record: %v", err)
+					tx.RollbackTo("user_card")
 				}
 			}
 		}
@@ -2731,6 +2705,55 @@ func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amoun
 	}
 
 	return &updatedWallet, nil
+}
+
+// upsertUserCard creates or refreshes the saved card record for a successful card payment.
+func upsertUserCard(tx *gorm.DB, userID int, cardMeta *savedCardMetadata) error {
+	var existing models.UserCard
+	err := tx.Where("\"userId\" = ? AND (COALESCE(\"cardToken\", '') = ? OR COALESCE(\"maskedPan\", '') = ?)", userID, cardMeta.CardToken, cardMeta.MaskedPan).First(&existing).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		cardRecord := models.UserCard{
+			UserID:    userID,
+			CardToken: stringValuePtr(cardMeta.CardToken),
+			MaskedPan: stringValuePtr(cardMeta.MaskedPan),
+			CardType:  stringValuePtr(cardMeta.CardType),
+			Expiry:    stringValuePtr(cardMeta.Expiry),
+			IsDefault: true,
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+		if createErr := tx.Create(&cardRecord).Error; createErr != nil {
+			return createErr
+		}
+		log.Printf("[DB] UserCard created: id=%d token=%s maskedPan=%s", cardRecord.ID, cardMeta.CardToken, cardMeta.MaskedPan)
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	updates := map[string]interface{}{}
+	if cardMeta.CardToken != "" {
+		updates["cardToken"] = cardMeta.CardToken
+	}
+	if cardMeta.MaskedPan != "" {
+		updates["maskedPan"] = cardMeta.MaskedPan
+	}
+	if cardMeta.CardType != "" {
+		updates["cardType"] = cardMeta.CardType
+	}
+	if cardMeta.Expiry != "" {
+		updates["expiry"] = cardMeta.Expiry
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	updates["updatedAt"] = time.Now()
+	if err := tx.Model(&existing).Updates(updates).Error; err != nil {
+		return err
+	}
+	log.Printf("[DB] UserCard updated: id=%d", existing.ID)
+	return nil
 }
 
 // QueryTransaction queries the status of a Monnify transaction.
