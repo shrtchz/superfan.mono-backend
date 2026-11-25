@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math/big"
 	"net/http"
 	"strings"
@@ -38,16 +39,19 @@ var (
 func verifyClerkToken(tokenString string) (jwt.MapClaims, bool) {
 	unverified, _, err := jwt.NewParser().ParseUnverified(tokenString, jwt.MapClaims{})
 	if err != nil {
+		log.Printf("[CLERK] ParseUnverified failed: %v", err)
 		return nil, false
 	}
 
 	kid, _ := unverified.Header["kid"].(string)
 	if kid == "" {
+		log.Printf("[CLERK] Token missing kid header")
 		return nil, false
 	}
 
-	jwks, err := getClerkJWKS()
+	jwks, err := getClerkJWKS(false)
 	if err != nil || jwks == nil {
+		log.Printf("[CLERK] getClerkJWKS failed: %v", err)
 		return nil, false
 	}
 
@@ -59,11 +63,25 @@ func verifyClerkToken(tokenString string) (jwt.MapClaims, bool) {
 		}
 	}
 	if matched == nil {
+		// Force refresh JWKS once in case of key rotation or stale cache
+		if refreshed, rErr := getClerkJWKS(true); rErr == nil && refreshed != nil {
+			jwks = refreshed
+			for i := range jwks.Keys {
+				if jwks.Keys[i].Kid == kid {
+					matched = &jwks.Keys[i]
+					break
+				}
+			}
+		}
+	}
+	if matched == nil {
+		log.Printf("[CLERK] No matching JWK for kid=%s (loaded %d keys)", kid, len(jwks.Keys))
 		return nil, false
 	}
 
 	pubKey, err := jwkToRSAPublicKey(matched)
 	if err != nil {
+		log.Printf("[CLERK] jwkToRSAPublicKey failed for kid=%s: %v", kid, err)
 		return nil, false
 	}
 
@@ -75,21 +93,23 @@ func verifyClerkToken(tokenString string) (jwt.MapClaims, bool) {
 		return pubKey, nil
 	}, jwt.WithLeeway(5*time.Minute))
 	if err != nil || !parsed.Valid {
+		log.Printf("[CLERK] jwt.ParseWithClaims failed for kid=%s: %v", kid, err)
 		return nil, false
 	}
 
 	sub, _ := claims["sub"].(string)
 	if sub == "" {
+		log.Printf("[CLERK] Token missing sub claim")
 		return nil, false
 	}
 	return claims, true
 }
 
-func getClerkJWKS() (*clerkJWKS, error) {
+func getClerkJWKS(forceRefresh bool) (*clerkJWKS, error) {
 	jwksCacheMu.Lock()
 	defer jwksCacheMu.Unlock()
 
-	if jwksCache != nil && time.Since(jwksCacheAt) < jwksCacheTTL {
+	if !forceRefresh && jwksCache != nil && time.Since(jwksCacheAt) < jwksCacheTTL {
 		return jwksCache, nil
 	}
 
@@ -127,6 +147,7 @@ func getClerkJWKS() (*clerkJWKS, error) {
 		}
 	}
 
+	log.Printf("[CLERK] Fetching JWKS from %s", jwksURL)
 	req, err := http.NewRequest(http.MethodGet, jwksURL, nil)
 	if err != nil {
 		return nil, err
