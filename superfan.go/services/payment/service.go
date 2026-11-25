@@ -1564,6 +1564,15 @@ var processorCapabilities = map[string][]string{
 	"bachs":       {"card", "bank_transfer", "stable_coin"},
 }
 
+// monnifyContractCode prefers the contractCode configured on the payment processor
+// record (managed in superfan.admin) and falls back to env vars for legacy setups.
+func monnifyContractCode(proc *models.PaymentProcessor, apiKey string) string {
+	if code := proc.AdditionalField("contractCode"); code != "" {
+		return code
+	}
+	return providers.ResolveMonnifyContractCode(apiKey)
+}
+
 // GetActivePaymentProcessorForChannel returns the active payment processor assigned to a given channel ("card", "bank_transfer", "stable_coin")
 func (s *PaymentService) GetActivePaymentProcessorForChannel(ctx context.Context, channel string) (*models.PaymentProcessor, error) {
 	if s.db == nil {
@@ -1765,7 +1774,7 @@ func (s *PaymentService) InitializeTransaction(ctx context.Context, payload map[
 			if !strings.HasPrefix(customPubKey, "MK_PROD_") {
 				mUri = "https://sandbox.monnify.com"
 			}
-			mContract := providers.ResolveMonnifyContractCode(customPubKey)
+			mContract := monnifyContractCode(activeProc, customPubKey)
 			provider = providers.NewMonnifyProvider(customPubKey, customSecKey, mUri, mContract)
 		}
 		result, err := provider.InitializeTransaction(ctx, payload)
@@ -2090,7 +2099,7 @@ func (s *PaymentService) InitPaymentByTransfer(ctx context.Context, payload map[
 					mUri = "https://sandbox.monnify.com"
 				}
 			}
-			mContract := providers.ResolveMonnifyContractCode(customPubKey)
+			mContract := monnifyContractCode(activeProc, customPubKey)
 			provider = providers.NewMonnifyProvider(customPubKey, customSecKey, mUri, mContract)
 		}
 
@@ -2249,7 +2258,7 @@ func (s *PaymentService) ChargeCardAndCreditWallet(ctx context.Context, userID i
 			if !strings.HasPrefix(customPubKey, "MK_PROD_") {
 				mUri = "https://sandbox.monnify.com"
 			}
-			mContract := providers.ResolveMonnifyContractCode(customPubKey)
+			mContract := monnifyContractCode(activeProc, customPubKey)
 			provider = providers.NewMonnifyProvider(customPubKey, customSecKey, mUri, mContract)
 		}
 		var err error
@@ -2419,7 +2428,7 @@ func (s *PaymentService) AuthorizeCardOTPAndCreditWallet(ctx context.Context, us
 	if !strings.HasPrefix(customPubKey, "MK_PROD_") {
 		mUri = "https://sandbox.monnify.com"
 	}
-	mContract := providers.ResolveMonnifyContractCode(customPubKey)
+	mContract := monnifyContractCode(activeProc, customPubKey)
 	monnifyProv := providers.NewMonnifyProvider(customPubKey, customSecKey, mUri, mContract)
 
 	authResult, err := monnifyProv.AuthorizeCardOTP(ctx, authPayload)
@@ -2734,7 +2743,7 @@ func (s *PaymentService) QueryTransaction(ctx context.Context, transactionRefere
 		if !strings.HasPrefix(*activeProc.PublicKey, "MK_PROD_") {
 			mUri = "https://sandbox.monnify.com"
 		}
-		mContract := providers.ResolveMonnifyContractCode(*activeProc.PublicKey)
+		mContract := monnifyContractCode(activeProc, *activeProc.PublicKey)
 		provider = providers.NewMonnifyProvider(*activeProc.PublicKey, *activeProc.SecretKey, mUri, mContract)
 	}
 	return provider.QueryTransaction(ctx, transactionReference)
@@ -2793,7 +2802,7 @@ func (s *PaymentService) TransferBetweenWallets(ctx context.Context, userID int,
 				return fmt.Errorf("insufficient checking wallet balance (available: %.2f, required: %.2f)", wallet.CheckingBalance, amount)
 			}
 			wallet.PersonalBalance -= amount
-		wallet.CheckingBalance = wallet.PersonalBalance
+			wallet.CheckingBalance = wallet.PersonalBalance
 			wallet.GoldBalance += amount
 			wallet.Balance = wallet.PersonalBalance
 			wallet.SavingsBalance = wallet.GoldBalance
@@ -3268,7 +3277,7 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 					mUri = "https://sandbox.monnify.com"
 				}
 			}
-			mContract := providers.ResolveMonnifyContractCode(customPubKey)
+			mContract := monnifyContractCode(activeProc, customPubKey)
 			provider = providers.NewMonnifyProvider(customPubKey, customSecKey, mUri, mContract)
 		}
 
