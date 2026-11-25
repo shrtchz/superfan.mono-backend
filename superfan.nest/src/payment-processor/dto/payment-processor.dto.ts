@@ -1,4 +1,4 @@
-import { IsBoolean, IsOptional, IsString } from 'class-validator';
+import { IsBoolean, IsObject, IsOptional, IsString } from 'class-validator';
 
 export class ConfigurePaymentProcessorDto {
   @IsOptional()
@@ -12,6 +12,10 @@ export class ConfigurePaymentProcessorDto {
   @IsOptional()
   @IsString()
   secretKey?: string;
+
+  @IsOptional()
+  @IsObject()
+  additionalFields?: Record<string, string>;
 
   @IsOptional()
   @IsBoolean()
