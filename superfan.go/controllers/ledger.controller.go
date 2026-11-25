@@ -23,7 +23,55 @@ func RegisterLedgerRoutes(router *gin.RouterGroup, lc *LedgerController) {
 	ledgerGroup := router.Group("/admin/ledger")
 	{
 		ledgerGroup.GET("", lc.GetLedgerEntries)
+		ledgerGroup.GET("/summary", lc.GetLedgerSummary)
 	}
+}
+
+func ledgerFilters(c *gin.Context) map[string]interface{} {
+	filters := make(map[string]interface{})
+
+	if status := c.Query("status"); status != "" {
+		filters["status"] = status
+	}
+	if statuses := c.Query("statuses"); statuses != "" {
+		filters["statuses"] = statuses
+	}
+	if currency := c.Query("currency"); currency != "" {
+		filters["currency"] = currency
+	}
+	if currencies := c.Query("currencies"); currencies != "" {
+		filters["currencies"] = currencies
+	}
+	if trxType := c.Query("transactionType"); trxType != "" {
+		filters["transactionType"] = trxType
+	}
+	if trxTypes := c.Query("transactionTypes"); trxTypes != "" {
+		filters["transactionTypes"] = trxTypes
+	}
+	if accountType := c.Query("accountType"); accountType != "" {
+		filters["accountType"] = accountType
+	}
+	if accounts := c.Query("accounts"); accounts != "" {
+		filters["accounts"] = accounts
+	}
+	if providers := c.Query("providers"); providers != "" {
+		filters["providers"] = providers
+	}
+	if user := c.Query("user"); user != "" {
+		filters["user"] = user
+	} else if userId := c.Query("userId"); userId != "" {
+		filters["user"] = userId
+	}
+	if username := c.Query("username"); username != "" {
+		filters["username"] = username
+	}
+	if dateFrom := c.Query("dateFrom"); dateFrom != "" {
+		filters["dateFrom"] = dateFrom
+	}
+	if dateTo := c.Query("dateTo"); dateTo != "" {
+		filters["dateTo"] = dateTo
+	}
+	return filters
 }
 
 func (lc *LedgerController) GetLedgerEntries(c *gin.Context) {
@@ -31,25 +79,7 @@ func (lc *LedgerController) GetLedgerEntries(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	search := c.Query("search")
 
-	filters := make(map[string]interface{})
-	
-	if status := c.Query("status"); status != "" {
-		filters["status"] = status
-	}
-	if currency := c.Query("currency"); currency != "" {
-		filters["currency"] = currency
-	}
-	if trxType := c.Query("transactionType"); trxType != "" {
-		filters["transactionType"] = trxType
-	}
-	if userId := c.Query("userId"); userId != "" {
-		filters["userId"] = userId
-	}
-	if username := c.Query("username"); username != "" {
-		filters["username"] = username
-	}
-
-	entries, total, summary, err := lc.ledgerService.GetLedgerEntries(page, limit, filters, search)
+	entries, total, summary, err := lc.ledgerService.GetLedgerEntries(page, limit, ledgerFilters(c), search)
 	if err != nil {
 		log.Printf("[LEDGER_ERROR] GetLedgerEntries failed: %v", err)
 		utils.SendError(c, http.StatusInternalServerError, "LEDGER_ERROR", "Failed to fetch ledger entries")
@@ -67,6 +97,19 @@ func (lc *LedgerController) GetLedgerEntries(c *gin.Context) {
 			"limit":   limit,
 		},
 	})
+}
+
+// GetLedgerSummary handles GET /admin/ledger/summary — aggregate balances for the
+// admin ledger dashboard cards, without the paginated journal rows.
+func (lc *LedgerController) GetLedgerSummary(c *gin.Context) {
+	summary, err := lc.ledgerService.GetLedgerSummary(ledgerFilters(c), c.Query("search"))
+	if err != nil {
+		log.Printf("[LEDGER_ERROR] GetLedgerSummary failed: %v", err)
+		utils.SendError(c, http.StatusInternalServerError, "LEDGER_ERROR", "Failed to fetch ledger summary")
+		return
+	}
+
+	utils.Success(c, http.StatusOK, "Ledger summary retrieved successfully", summary)
 }
 
 // BroadcastLedgerUpdate is a helper to broadcast new transactions to the admin dashboard via WebSockets.
