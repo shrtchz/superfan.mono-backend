@@ -55,6 +55,7 @@ func AuthRequired() gin.HandlerFunc {
 		if !ok {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"error": "Invalid token. Use a Clerk session JWT.",
+				"code":  "INVALID_CLERK_TOKEN",
 			})
 			return
 		}
