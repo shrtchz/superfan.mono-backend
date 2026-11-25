@@ -28,132 +28,189 @@ type clerkJWK struct {
 	E   string `json:"e"`
 }
 
+type jwksSource struct {
+	url    string
+	bearer string
+}
+
+type cachedJWKS struct {
+	jwks *clerkJWKS
+	at   time.Time
+}
+
 var (
-	jwksCache     *clerkJWKS
-	jwksCacheAt   time.Time
-	jwksCacheMu   sync.Mutex
-	jwksCacheTTL  = 1 * time.Hour
+	jwksCacheMu       sync.Mutex
+	jwksCache         = map[string]cachedJWKS{}
+	jwksCacheTTL      = 1 * time.Hour
+	lastVerifyFailLog time.Time
 )
 
-// verifyClerkToken validates a Clerk session JWT against Clerk's JWKS.
+// verifyClerkToken validates a Clerk session JWT against every configured Clerk JWKS.
 func verifyClerkToken(tokenString string) (jwt.MapClaims, bool) {
 	unverified, _, err := jwt.NewParser().ParseUnverified(tokenString, jwt.MapClaims{})
 	if err != nil {
-		log.Printf("[CLERK] ParseUnverified failed: %v", err)
 		return nil, false
 	}
 
 	kid, _ := unverified.Header["kid"].(string)
 	if kid == "" {
-		log.Printf("[CLERK] Token missing kid header")
+		logClerkVerifyFailure("token has no kid header", "")
 		return nil, false
 	}
 
-	jwks, err := getClerkJWKS(false)
-	if err != nil || jwks == nil {
-		log.Printf("[CLERK] getClerkJWKS failed: %v", err)
+	sources := clerkJWKSSources()
+	if len(sources) == 0 {
+		logClerkVerifyFailure("no Clerk JWKS source configured; set CLERK_JWKS_URL, CLERK_ISSUER, CLERK_FRONTEND_API, or a Clerk publishable key", kid)
 		return nil, false
 	}
 
-	var matched *clerkJWK
-	for i := range jwks.Keys {
-		if jwks.Keys[i].Kid == kid {
-			matched = &jwks.Keys[i]
-			break
+	var lastErr error
+	for _, src := range sources {
+		jwks, err := getClerkJWKS(src, false)
+		if err != nil {
+			lastErr = err
+			continue
 		}
-	}
-	if matched == nil {
-		// Force refresh JWKS once in case of key rotation or stale cache
-		if refreshed, rErr := getClerkJWKS(true); rErr == nil && refreshed != nil {
-			jwks = refreshed
-			for i := range jwks.Keys {
-				if jwks.Keys[i].Kid == kid {
-					matched = &jwks.Keys[i]
-					break
-				}
+		key := findJWK(jwks, kid)
+		if key == nil {
+			// Key id missing from cache — refetch once in case Clerk rotated keys.
+			if jwks, err = getClerkJWKS(src, true); err != nil {
+				lastErr = err
+				continue
 			}
+			key = findJWK(jwks, kid)
 		}
-	}
-	if matched == nil {
-		log.Printf("[CLERK] No matching JWK for kid=%s (loaded %d keys)", kid, len(jwks.Keys))
-		return nil, false
-	}
-
-	pubKey, err := jwkToRSAPublicKey(matched)
-	if err != nil {
-		log.Printf("[CLERK] jwkToRSAPublicKey failed for kid=%s: %v", kid, err)
-		return nil, false
-	}
-
-	claims := jwt.MapClaims{}
-	parsed, err := jwt.ParseWithClaims(tokenString, claims, func(t *jwt.Token) (interface{}, error) {
-		if t.Method == nil || t.Method.Alg() != jwt.SigningMethodRS256.Alg() {
-			return nil, jwt.ErrTokenSignatureInvalid
+		if key == nil {
+			continue
 		}
-		return pubKey, nil
-	}, jwt.WithLeeway(5*time.Minute))
-	if err != nil || !parsed.Valid {
-		log.Printf("[CLERK] jwt.ParseWithClaims failed for kid=%s: %v", kid, err)
-		return nil, false
+
+		pubKey, err := jwkToRSAPublicKey(key)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		claims := jwt.MapClaims{}
+		parsed, err := jwt.ParseWithClaims(tokenString, claims, func(t *jwt.Token) (interface{}, error) {
+			if t.Method == nil || t.Method.Alg() != jwt.SigningMethodRS256.Alg() {
+				return nil, jwt.ErrTokenSignatureInvalid
+			}
+			return pubKey, nil
+		}, jwt.WithLeeway(5*time.Minute))
+		if err != nil || !parsed.Valid {
+			lastErr = err
+			continue
+		}
+
+		sub, _ := claims["sub"].(string)
+		if sub == "" {
+			lastErr = fmt.Errorf("token has no sub claim")
+			continue
+		}
+		return claims, true
 	}
 
-	sub, _ := claims["sub"].(string)
-	if sub == "" {
-		log.Printf("[CLERK] Token missing sub claim")
-		return nil, false
+	msg := "kid not found or signature invalid in any configured Clerk JWKS"
+	if lastErr != nil {
+		msg = fmt.Sprintf("%s (last error: %v)", msg, lastErr)
 	}
-	return claims, true
+	logClerkVerifyFailure(msg, kid)
+	return nil, false
 }
 
-func getClerkJWKS(forceRefresh bool) (*clerkJWKS, error) {
+func findJWK(jwks *clerkJWKS, kid string) *clerkJWK {
+	for i := range jwks.Keys {
+		if jwks.Keys[i].Kid == kid {
+			return &jwks.Keys[i]
+		}
+	}
+	return nil
+}
+
+// logClerkVerifyFailure logs verification failures (throttled) with the JWKS sources in use.
+func logClerkVerifyFailure(reason, kid string) {
 	jwksCacheMu.Lock()
-	defer jwksCacheMu.Unlock()
+	if time.Since(lastVerifyFailLog) < 30*time.Second {
+		jwksCacheMu.Unlock()
+		return
+	}
+	lastVerifyFailLog = time.Now()
+	jwksCacheMu.Unlock()
 
-	if !forceRefresh && jwksCache != nil && time.Since(jwksCacheAt) < jwksCacheTTL {
-		return jwksCache, nil
+	urls := make([]string, 0, 4)
+	for _, src := range clerkJWKSSources() {
+		urls = append(urls, src.url)
+	}
+	log.Printf("[AUTH] Clerk token verification failed: %s (kid=%s, jwks sources=%v)", reason, kid, urls)
+}
+
+// clerkJWKSSources returns the configured Clerk JWKS endpoints in priority order.
+func clerkJWKSSources() []jwksSource {
+	var sources []jwksSource
+	seen := map[string]bool{}
+
+	add := func(rawURL, bearer string) {
+		rawURL = strings.TrimSpace(rawURL)
+		if rawURL == "" {
+			return
+		}
+		if !strings.HasPrefix(rawURL, "http") {
+			rawURL = "https://" + rawURL
+		}
+		rawURL = strings.TrimRight(rawURL, "/")
+		if seen[rawURL] {
+			return
+		}
+		seen[rawURL] = true
+		sources = append(sources, jwksSource{url: rawURL, bearer: bearer})
 	}
 
-	jwksURL := utils.GetEnvWithKey("CLERK_JWKS_URL")
-	secretKey := utils.GetEnvWithKey("CLERK_SECRET_KEY")
+	add(utils.GetEnvWithKey("CLERK_JWKS_URL"), "")
 
-	if jwksURL == "" {
-		issuer := utils.GetEnvWithKey("CLERK_ISSUER")
-		if issuer == "" {
-			issuer = utils.GetEnvWithKey("CLERK_FRONTEND_API")
-		}
+	issuers := []string{
+		utils.GetEnvWithKey("CLERK_ISSUER"),
+		utils.GetEnvWithKey("CLERK_FRONTEND_API"),
 		// Derive Frontend API host from publishable key (pk_test_<base64(host$)>)
+		clerkFrontendAPIFromPublishableKey(utils.GetEnvWithKey("CLERK_PUBLISHABLE_KEY")),
+		clerkFrontendAPIFromPublishableKey(utils.GetEnvWithKey("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY")),
+	}
+	for _, issuer := range issuers {
+		issuer = strings.TrimSpace(issuer)
 		if issuer == "" {
-			issuer = clerkFrontendAPIFromPublishableKey(
-				utils.GetEnvWithKey("CLERK_PUBLISHABLE_KEY"),
-			)
-			if issuer == "" {
-				issuer = clerkFrontendAPIFromPublishableKey(
-					utils.GetEnvWithKey("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY"),
-				)
-			}
+			continue
 		}
-		if issuer != "" {
-			issuer = strings.TrimRight(issuer, "/")
-			if !strings.HasPrefix(issuer, "http") {
-				issuer = "https://" + issuer
-			}
-			// Session JWTs are verified against the Frontend API JWKS (same as Nest verifyToken).
-			jwksURL = issuer + "/.well-known/jwks.json"
-		} else if secretKey != "" {
-			// Last resort — Backend API JWKS (may not match session token kids)
-			jwksURL = "https://api.clerk.com/v1/jwks"
-		} else {
-			return nil, fmt.Errorf("CLERK_JWKS_URL, CLERK_ISSUER/CLERK_FRONTEND_API, or CLERK_SECRET_KEY is required")
+		if !strings.HasPrefix(issuer, "http") {
+			issuer = "https://" + issuer
 		}
+		issuer = strings.TrimRight(issuer, "/")
+		// Session JWTs are verified against the Frontend API JWKS (same as Nest verifyToken).
+		add(issuer+"/.well-known/jwks.json", "")
 	}
 
-	log.Printf("[CLERK] Fetching JWKS from %s", jwksURL)
-	req, err := http.NewRequest(http.MethodGet, jwksURL, nil)
+	if secretKey := utils.GetEnvWithKey("CLERK_SECRET_KEY"); secretKey != "" {
+		// Last resort — Backend API JWKS (may not match session token kids)
+		add("https://api.clerk.com/v1/jwks", secretKey)
+	}
+
+	return sources
+}
+
+func getClerkJWKS(src jwksSource, force bool) (*clerkJWKS, error) {
+	jwksCacheMu.Lock()
+	if !force {
+		if cached, ok := jwksCache[src.url]; ok && time.Since(cached.at) < jwksCacheTTL {
+			jwksCacheMu.Unlock()
+			return cached.jwks, nil
+		}
+	}
+	jwksCacheMu.Unlock()
+
+	req, err := http.NewRequest(http.MethodGet, src.url, nil)
 	if err != nil {
 		return nil, err
 	}
-	if strings.Contains(jwksURL, "api.clerk.com") && secretKey != "" {
-		req.Header.Set("Authorization", "Bearer "+secretKey)
+	if src.bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+src.bearer)
 	}
 
 	client := &http.Client{Timeout: 10 * time.Second}
@@ -163,16 +220,19 @@ func getClerkJWKS(forceRefresh bool) (*clerkJWKS, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to fetch Clerk JWKS: status %d", resp.StatusCode)
+		return nil, fmt.Errorf("failed to fetch Clerk JWKS from %s: status %d", src.url, resp.StatusCode)
 	}
 
 	var jwks clerkJWKS
 	if err := json.NewDecoder(resp.Body).Decode(&jwks); err != nil {
 		return nil, err
 	}
-	jwksCache = &jwks
-	jwksCacheAt = time.Now()
-	return jwksCache, nil
+
+	jwksCacheMu.Lock()
+	jwksCache[src.url] = cachedJWKS{jwks: &jwks, at: time.Now()}
+	jwksCacheMu.Unlock()
+
+	return &jwks, nil
 }
 
 // clerkFrontendAPIFromPublishableKey decodes pk_(test|live)_<base64> → https://<host>
