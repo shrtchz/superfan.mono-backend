@@ -178,6 +178,7 @@ model PaymentProcessor {
   name        String // monnify, flutterwave, busha
   publicKey   String?
   secretKey   String?
+  additionalFields Json? // arbitrary key/value config, e.g. { "contractCode": "..." }
   isEnabled   Boolean   @default(false)
   isConnected Boolean   @default(false)
   lastSync    DateTime?

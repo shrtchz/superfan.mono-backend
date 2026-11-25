@@ -38,10 +38,17 @@ export class PaymentProcessorService implements OnModuleInit {
       if (!existing) {
         let envPublicKey: string | null = null;
         let envSecretKey: string | null = null;
+        let envAdditionalFields: Record<string, string> | undefined;
 
         if (name === 'monnify') {
           envPublicKey = process.env.PROD_MONNIFY_API_KEY || process.env.MONNIFY_API_KEY || null;
           envSecretKey = process.env.PROD_MONNIFY_SECRET_KEY || process.env.MONNIFY_SECRET_KEY || null;
+          const envContractCode = (
+            process.env.MONNIFY_CONTRACT_CODE ||
+            process.env.PROD_MONNIFY_CONTRACT_CODE ||
+            ''
+          ).trim();
+          if (envContractCode) envAdditionalFields = { contractCode: envContractCode };
         } else if (name === 'flutterwave') {
           envPublicKey = process.env.FLW_PUBLIC_KEY || process.env.FLUTTERWAVE_PUBLIC_KEY || null;
           envSecretKey = process.env.FLW_SECRET_KEY || process.env.FLUTTERWAVE_SECRET_KEY || null;
@@ -64,6 +71,7 @@ export class PaymentProcessorService implements OnModuleInit {
             name,
             publicKey: envPublicKey,
             secretKey: envSecretKey,
+            additionalFields: envAdditionalFields,
             isEnabled: name === 'monnify',
             isConnected: name === 'monnify',
             lastSync: new Date(),
@@ -248,6 +256,7 @@ export class PaymentProcessorService implements OnModuleInit {
           name,
           publicKey: dto.publicKey ?? null,
           secretKey: dto.secretKey ?? null,
+          additionalFields: dto.additionalFields ?? undefined,
           isEnabled: dto.isEnabled ?? false,
           isConnected: dto.isConnected ?? false,
           lastSync: new Date(),
@@ -266,6 +275,7 @@ export class PaymentProcessorService implements OnModuleInit {
 
     if (dto.publicKey !== undefined) dataToUpdate.publicKey = dto.publicKey;
     if (dto.secretKey !== undefined) dataToUpdate.secretKey = dto.secretKey;
+    if (dto.additionalFields !== undefined) dataToUpdate.additionalFields = dto.additionalFields;
     if (dto.isEnabled !== undefined) {
       dataToUpdate.isEnabled = dto.isEnabled;
       dataToUpdate.isConnected = dto.isConnected ?? dto.isEnabled;
