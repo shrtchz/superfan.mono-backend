@@ -57,19 +57,31 @@ type WalletTransaction struct {
 	WalletID        *int       `gorm:"column:walletId" json:"walletId"`
 	CreatedAt       time.Time  `gorm:"column:createdAt" json:"createdAt"`
 	HoldUntil       *time.Time `gorm:"column:holdUntil" json:"holdUntil"`
+	ClientName      string     `gorm:"-" json:"clientName"` // resolved from User for ledger display
+}
+
+type LedgerCategoryAmount struct {
+	Label  string  `json:"label"`
+	Amount float64 `json:"amount"`
 }
 
 type LedgerSummary struct {
-	TotalCredits       float64 `json:"totalCredits"`
-	TotalDebits        float64 `json:"totalDebits"`
-	PendingSettlement  float64 `json:"pendingSettlement"`
-	PendingCount       int64   `json:"pendingCount"`
-	CashBank           float64 `json:"cashBank"`
-	CheckingWalletLiab float64 `json:"checkingWalletLiab"`
-	PersonalWalletLiab float64 `json:"personalWalletLiab"`
-	SavingsWalletLiab  float64 `json:"savingsWalletLiab"`
-	GoldWalletLiab     float64 `json:"goldWalletLiab"` // NGN earnings: quiz, ads, referral
-	PlatformRevenue    float64 `json:"platformRevenue"`
+	TotalCredits       float64                `json:"totalCredits"`
+	TotalDebits        float64                `json:"totalDebits"`
+	PendingSettlement  float64                `json:"pendingSettlement"`
+	PendingCount       int64                  `json:"pendingCount"`
+	CashBank           float64                `json:"cashBank"`
+	ProviderClearing   float64                `json:"providerClearing"` // pending deposits not yet settled to bank
+	CheckingWalletLiab float64                `json:"checkingWalletLiab"`
+	PersonalWalletLiab float64                `json:"personalWalletLiab"`
+	SavingsWalletLiab  float64                `json:"savingsWalletLiab"`
+	GoldWalletLiab     float64                `json:"goldWalletLiab"` // NGN earnings: quiz, ads, referral
+	PlatformRevenue    float64                `json:"platformRevenue"`
+	RewardsExpense     float64                `json:"rewardsExpense"`
+	RevenueAds         float64                `json:"revenueAds"`
+	RevenueSubs        float64                `json:"revenueSubs"`
+	RevenueShop        float64                `json:"revenueShop"`
+	RewardBreakdown    []LedgerCategoryAmount `gorm:"-" json:"rewardBreakdown"` // top reward categories, largest first
 }
 
 func (WalletTransaction) TableName() string {
