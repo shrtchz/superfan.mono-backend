@@ -675,8 +675,6 @@ model Wallet {
   balance         Float @default(0)
   savingsBalance  Float @default(0)
   checkingBalance Float @default(0)
-  goldBalance     Float @default(0)
-  personalBalance Float @default(0)
   usdcBalance     Float @default(0)
   usdtBalance     Float @default(0)
   user            User  @relation(fields: [userId], references: [id], onDelete: Cascade)

@@ -338,13 +338,9 @@ func (s *ledgerServiceImpl) computeSummary(base *gorm.DB) (*models.LedgerSummary
 		return nil, fmt.Errorf("summary query failed: %w", err)
 	}
 
-	// Wallet balances are the source of truth for amounts owed to users. The live
-	// wallet table stores spendable money in personalBalance (checking) and earnings
-	// in goldBalance (savings); the mirrored checking/savings columns are absent.
-	summary.CheckingWalletLiab = s.sumOrZero(`SELECT COALESCE(SUM("personalBalance"), 0) AS total FROM "Wallet"`, "checking wallet liability")
-	summary.PersonalWalletLiab = summary.CheckingWalletLiab
-	summary.SavingsWalletLiab = s.sumOrZero(`SELECT COALESCE(SUM("goldBalance"), 0) AS total FROM "Wallet"`, "savings wallet liability")
-	summary.GoldWalletLiab = summary.SavingsWalletLiab
+	// Wallet balances are the source of truth for amounts owed to users.
+	summary.CheckingWalletLiab = s.sumOrZero(`SELECT COALESCE(SUM("checkingBalance"), 0) AS total FROM "Wallet"`, "checking wallet liability")
+	summary.SavingsWalletLiab = s.sumOrZero(`SELECT COALESCE(SUM("savingsBalance"), 0) AS total FROM "Wallet"`, "savings wallet liability")
 
 	summary.RevenueAds = s.sumOrZero(
 		`SELECT COALESCE(SUM("totalFee"), 0) AS total FROM "AdCampaign" WHERE UPPER(COALESCE("paymentStatus", '')) IN ('PAID', 'SUCCESS', 'COMPLETED')`,

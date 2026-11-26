@@ -269,7 +269,6 @@ if (bankTransfer) {
         where: { userId: bankTransfer.userId },
         data: {
           balance: { increment: amount },
-          personalBalance: { increment: amount },
           checkingBalance: { increment: amount },
         },
       }),
@@ -1312,7 +1311,6 @@ if (bankTransfer) {
             prisma.wallet.update({
               where: { userId: withdrawalTx.userId },
               data: {
-                personalBalance: { increment: withdrawalTx.amount },
                 checkingBalance: { increment: withdrawalTx.amount },
                 balance: { increment: withdrawalTx.amount },
               },
@@ -1466,7 +1464,6 @@ if (bankTransfer) {
           where: { userId: bankTransfer.userId },
           data: {
             balance: { increment: creditAmount },
-            personalBalance: { increment: creditAmount },
             checkingBalance: { increment: creditAmount },
           },
         }),
@@ -1530,7 +1527,6 @@ if (bankTransfer) {
             where: { userId: user.id },
             data: {
               balance: { increment: amount },
-              personalBalance: { increment: amount },
               checkingBalance: { increment: amount },
             },
           }),

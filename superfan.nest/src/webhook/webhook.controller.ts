@@ -480,7 +480,6 @@ private async handleTransferCompleted(payload: any) {
         prisma.wallet.update({
           where: { userId: withdrawalTx.userId },
           data: {
-            personalBalance: { increment: withdrawalTx.amount },
             checkingBalance: { increment: withdrawalTx.amount },
             balance: { increment: withdrawalTx.amount },
           },

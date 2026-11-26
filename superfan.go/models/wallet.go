@@ -13,13 +13,10 @@ type Wallet struct {
 	Balance                  float64 `gorm:"column:balance" json:"balance"`
 	SavingsBalance           float64 `gorm:"column:savingsBalance" json:"savingsBalance"`
 	CheckingBalance          float64 `gorm:"column:checkingBalance" json:"checkingBalance"`
-	GoldBalance              float64 `gorm:"column:goldBalance" json:"goldBalance"`
-	PersonalBalance          float64 `gorm:"column:personalBalance" json:"personalBalance"`
 	UsdcBalance              float64 `gorm:"column:usdcBalance" json:"usdcBalance"`
 	UsdtBalance              float64 `gorm:"column:usdtBalance" json:"usdtBalance"`
 	TotalBalance             float64 `gorm:"-" json:"totalBalance"`
 	HoldBalance              float64 `gorm:"-" json:"holdBalance"`
-	AvailablePersonalBalance float64 `gorm:"-" json:"availablePersonalBalance"`
 	AvailableCheckingBalance float64 `gorm:"-" json:"availableCheckingBalance"`
 	AvailableBalance         float64 `gorm:"-" json:"availableBalance"`
 }
@@ -77,9 +74,7 @@ type LedgerSummary struct {
 	CashBank           float64                `json:"cashBank"`
 	ProviderClearing   float64                `json:"providerClearing"` // pending deposits not yet settled to bank
 	CheckingWalletLiab float64                `json:"checkingWalletLiab"`
-	PersonalWalletLiab float64                `json:"personalWalletLiab"`
-	SavingsWalletLiab  float64                `json:"savingsWalletLiab"`
-	GoldWalletLiab     float64                `json:"goldWalletLiab"` // NGN earnings: quiz, ads, referral
+	SavingsWalletLiab  float64                `json:"savingsWalletLiab"` // NGN earnings: quiz, ads, referral
 	PlatformRevenue    float64                `json:"platformRevenue"`
 	RewardsExpense     float64                `json:"rewardsExpense"`
 	RevenueAds         float64                `json:"revenueAds"`

@@ -840,9 +840,8 @@ func (s *PaymentService) HandleBachsWebhook(ctx context.Context, signature strin
 					_ = tx.Model(&models.ActivityWallet{}).Where("reference = ?", ref).Update("status", "FAILED").Error
 					var w models.Wallet
 					if err := tx.Where("\"userId\" = ?", wTx.UserID).First(&w).Error; err == nil {
-						w.PersonalBalance += wTx.Amount
-						w.CheckingBalance = w.PersonalBalance
-						w.Balance = w.PersonalBalance
+						w.CheckingBalance += wTx.Amount
+						w.Balance = w.CheckingBalance
 						return tx.Save(&w).Error
 					}
 					return nil
@@ -931,8 +930,8 @@ func (s *PaymentService) HandleBachsWebhook(ctx context.Context, signature strin
 			return fmt.Errorf("failed to credit wallet: %w", err)
 		}
 
-		log.Printf("[PaymentService] Bachs BankTransfer credited successfully: userID=%d amount=%.2f balance=%.2f personalBalance=%.2f",
-			bankTx.UserID, amount, wallet.Balance, wallet.PersonalBalance)
+		log.Printf("[PaymentService] Bachs BankTransfer credited successfully: userID=%d amount=%.2f balance=%.2f checkingBalance=%.2f",
+			bankTx.UserID, amount, wallet.Balance, wallet.CheckingBalance)
 		return nil
 	}
 
@@ -980,28 +979,27 @@ func (s *PaymentService) GetWalletByUserID(ctx context.Context, userID int) (*mo
 	err := s.db.WithContext(ctx).Where("\"userId\" = ?", userID).First(&wallet).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return &models.Wallet{UserID: userID, Balance: 0, SavingsBalance: 0, CheckingBalance: 0, GoldBalance: 0, PersonalBalance: 0, UsdcBalance: 0, UsdtBalance: 0, TotalBalance: 0, HoldBalance: 0, AvailablePersonalBalance: 0, AvailableCheckingBalance: 0, AvailableBalance: 0}, nil
+			return &models.Wallet{UserID: userID, Balance: 0, SavingsBalance: 0, CheckingBalance: 0, UsdcBalance: 0, UsdtBalance: 0, TotalBalance: 0, HoldBalance: 0, AvailableCheckingBalance: 0, AvailableBalance: 0}, nil
 		}
 		return nil, err
 	}
-	heldBalance, availablePersonal, err := s.getPersonalBalanceBreakdown(ctx, userID, wallet.PersonalBalance)
+	heldBalance, availablePersonal, err := s.getCheckingBalanceBreakdown(ctx, userID, wallet.CheckingBalance)
 	if err != nil {
 		return nil, err
 	}
 	wallet.HoldBalance = heldBalance
-	wallet.AvailablePersonalBalance = availablePersonal
 	wallet.AvailableCheckingBalance = availablePersonal
-	wallet.TotalBalance = wallet.PersonalBalance + wallet.GoldBalance
-	wallet.AvailableBalance = wallet.GoldBalance + availablePersonal
+	wallet.TotalBalance = wallet.CheckingBalance + wallet.SavingsBalance
+	wallet.AvailableBalance = wallet.SavingsBalance + availablePersonal
 	return &wallet, nil
 }
 
-func (s *PaymentService) availablePersonalBalance(ctx context.Context, userID int, personalBalance float64) (float64, error) {
-	_, available, err := s.getPersonalBalanceBreakdown(ctx, userID, personalBalance)
+func (s *PaymentService) availableCheckingBalance(ctx context.Context, userID int, checkingBalance float64) (float64, error) {
+	_, available, err := s.getCheckingBalanceBreakdown(ctx, userID, checkingBalance)
 	return available, err
 }
 
-func (s *PaymentService) getPersonalBalanceBreakdown(ctx context.Context, userID int, personalBalance float64) (float64, float64, error) {
+func (s *PaymentService) getCheckingBalanceBreakdown(ctx context.Context, userID int, checkingBalance float64) (float64, float64, error) {
 	var held float64
 	err := s.db.WithContext(ctx).
 		Table("WalletTransaction").
@@ -1011,7 +1009,7 @@ func (s *PaymentService) getPersonalBalanceBreakdown(ctx context.Context, userID
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to calculate available wallet balance: %w", err)
 	}
-	return held, math.Max(0, personalBalance-held), nil
+	return held, math.Max(0, checkingBalance-held), nil
 }
 
 // GetExchangeRates returns live conversion rates for currencies
@@ -2569,7 +2567,7 @@ func (s *PaymentService) ChargeCardAndCreditWallet(ctx context.Context, userID i
 		log.Printf("[PaymentService] CRITICAL: Card charged but DB recording FAILED for userID=%d txRef=%s: %v", userID, monnifyTxRef, err)
 		return nil, fmt.Errorf("payment recording failed after successful card charge (txRef: %s): %w", monnifyTxRef, err)
 	}
-	log.Printf("[PaymentService] Payment finalized: userID=%d direct=%v balance=%.2f personalBalance=%.2f", userID, isDirectPayment, wallet.Balance, wallet.PersonalBalance)
+	log.Printf("[PaymentService] Payment finalized: userID=%d direct=%v balance=%.2f checkingBalance=%.2f", userID, isDirectPayment, wallet.Balance, wallet.CheckingBalance)
 
 	// Return combined response
 	return map[string]interface{}{
@@ -2587,9 +2585,7 @@ func (s *PaymentService) ChargeCardAndCreditWallet(ctx context.Context, userID i
 				"balance":         wallet.Balance,
 				"savingsBalance":  wallet.SavingsBalance,
 				"checkingBalance": wallet.CheckingBalance,
-				"personalBalance": wallet.PersonalBalance,
-				"goldBalance":     wallet.GoldBalance,
-				"usdcBalance":     wallet.UsdcBalance,
+								"usdcBalance":     wallet.UsdcBalance,
 				"usdtBalance":     wallet.UsdtBalance,
 			},
 		},
@@ -2729,9 +2725,7 @@ func (s *PaymentService) AuthorizeCardOTPAndCreditWallet(ctx context.Context, us
 				"id":              wallet.ID,
 				"balance":         wallet.Balance,
 				"checkingBalance": wallet.CheckingBalance,
-				"personalBalance": wallet.PersonalBalance,
-				"goldBalance":     wallet.GoldBalance,
-				"usdcBalance":     wallet.UsdcBalance,
+								"usdcBalance":     wallet.UsdcBalance,
 				"usdtBalance":     wallet.UsdtBalance,
 			},
 			"cardDetails": map[string]interface{}{
@@ -2972,12 +2966,11 @@ func (s *PaymentService) creditWalletWithFeeInDB(ctx context.Context, userID int
 			updatedWallet = wallet
 			return nil
 		}
-		log.Printf("[DB] Wallet before credit: balance=%.2f personalBalance=%.2f", wallet.Balance, wallet.PersonalBalance)
+		log.Printf("[DB] Wallet before credit: balance=%.2f checkingBalance=%.2f", wallet.Balance, wallet.CheckingBalance)
 
 		// 2. Increment balances
-		wallet.PersonalBalance += amount
-		wallet.CheckingBalance = wallet.PersonalBalance
-		wallet.Balance = wallet.PersonalBalance
+		wallet.CheckingBalance += amount
+		wallet.Balance = wallet.CheckingBalance
 		holdUntil := time.Now().Add(personalDepositHold)
 		switch currency {
 		case "USDC":
@@ -2989,7 +2982,7 @@ func (s *PaymentService) creditWalletWithFeeInDB(ctx context.Context, userID int
 		if err := tx.Save(&wallet).Error; err != nil {
 			return fmt.Errorf("failed to update wallet: %w", err)
 		}
-		log.Printf("[DB] Wallet after credit: balance=%.2f personalBalance=%.2f", wallet.Balance, wallet.PersonalBalance)
+		log.Printf("[DB] Wallet after credit: balance=%.2f checkingBalance=%.2f", wallet.Balance, wallet.CheckingBalance)
 
 		cls := accounting.ClassifyTransaction(accounting.ClassificationInput{
 			UserID:          userID,
@@ -3221,26 +3214,21 @@ func (s *PaymentService) TransferBetweenWallets(ctx context.Context, userID int,
 		txRef := fmt.Sprintf("TRF-%s-%d", strings.ToUpper(fromType), time.Now().UnixNano())
 
 		if fromType == "savings" {
-			if wallet.GoldBalance < amount {
+			if wallet.SavingsBalance < amount {
 				return fmt.Errorf("insufficient savings wallet balance (available: %.2f, required: %.2f)", wallet.SavingsBalance, amount)
 			}
-			wallet.GoldBalance -= amount
-			wallet.PersonalBalance += amount
-			wallet.Balance = wallet.PersonalBalance
-			wallet.SavingsBalance = wallet.GoldBalance
-			wallet.CheckingBalance = wallet.PersonalBalance
+			wallet.SavingsBalance -= amount
+			wallet.CheckingBalance += amount
+			wallet.Balance = wallet.CheckingBalance
 			description = labels.Wallet("transferGoldToPersonal", nil)
 			activityType = "credit"
 		} else {
-			if wallet.PersonalBalance < amount {
+			if wallet.CheckingBalance < amount {
 				return fmt.Errorf("insufficient checking wallet balance (available: %.2f, required: %.2f)", wallet.CheckingBalance, amount)
 			}
-			wallet.PersonalBalance -= amount
-			wallet.CheckingBalance = wallet.PersonalBalance
-			wallet.GoldBalance += amount
-			wallet.Balance = wallet.PersonalBalance
-			wallet.SavingsBalance = wallet.GoldBalance
-			wallet.CheckingBalance = wallet.PersonalBalance
+			wallet.CheckingBalance -= amount
+			wallet.SavingsBalance += amount
+			wallet.Balance = wallet.CheckingBalance
 			description = labels.Wallet("transferPersonalToGold", nil)
 			activityType = "debit"
 		}
@@ -3249,7 +3237,7 @@ func (s *PaymentService) TransferBetweenWallets(ctx context.Context, userID int,
 			return fmt.Errorf("failed to update wallet balances: %w", err)
 		}
 
-		log.Printf("[PaymentService] Wallet transferred successfully: userID=%d newPersonalBalance=%.2f newGoldBalance=%.2f", userID, wallet.PersonalBalance, wallet.GoldBalance)
+		log.Printf("[PaymentService] Wallet transferred successfully: userID=%d newCheckingBalance=%.2f newSavingsBalance=%.2f", userID, wallet.CheckingBalance, wallet.SavingsBalance)
 
 		// 1. Insert WalletTransaction record
 		fromAcct := accounting.NormalizeWalletAccount(fromType)
@@ -3460,11 +3448,11 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 	if err := s.db.WithContext(ctx).Where("\"userId\" = ?", userID).First(&wallet).Error; err != nil {
 		return nil, fmt.Errorf("wallet not found for user: %w", err)
 	}
-	accountBalance := wallet.PersonalBalance
+	accountBalance := wallet.CheckingBalance
 	if isSavings {
-		accountBalance = wallet.GoldBalance
+		accountBalance = wallet.SavingsBalance
 	} else {
-		if availablePersonal, err := s.availablePersonalBalance(ctx, userID, wallet.PersonalBalance); err == nil {
+		if availablePersonal, err := s.availableCheckingBalance(ctx, userID, wallet.CheckingBalance); err == nil {
 			accountBalance = availablePersonal
 		}
 	}
@@ -3500,18 +3488,17 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 			return fmt.Errorf("wallet not found for user: %w", err)
 		}
 
-		availablePersonal, err := s.availablePersonalBalance(ctx, userID, wallet.PersonalBalance)
+		availablePersonal, err := s.availableCheckingBalance(ctx, userID, wallet.CheckingBalance)
 		if err != nil {
 			return err
 		}
 		if availablePersonal < amount {
-			return fmt.Errorf("insufficient wallet balance (available: %.2f, requested: %.2f)", wallet.PersonalBalance, amount)
+			return fmt.Errorf("insufficient wallet balance (available: %.2f, requested: %.2f)", wallet.CheckingBalance, amount)
 		}
 
-		// Debit personal balance
-		wallet.PersonalBalance -= amount
-		wallet.CheckingBalance = wallet.PersonalBalance
-		wallet.Balance = wallet.PersonalBalance
+		// Debit checking balance
+		wallet.CheckingBalance -= amount
+		wallet.Balance = wallet.CheckingBalance
 
 		if err := tx.Save(&wallet).Error; err != nil {
 			return fmt.Errorf("failed to debit wallet: %w", err)
@@ -3685,8 +3672,7 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 					"balance":         updatedWallet.Balance,
 					"checkingBalance": updatedWallet.CheckingBalance,
 					"savingsBalance":  updatedWallet.SavingsBalance,
-					"personalBalance": updatedWallet.PersonalBalance,
-				},
+									},
 				"processorResponse": bachsRes,
 			},
 		}, nil
@@ -3752,8 +3738,7 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 					"balance":         updatedWallet.Balance,
 					"checkingBalance": updatedWallet.CheckingBalance,
 					"savingsBalance":  updatedWallet.SavingsBalance,
-					"personalBalance": updatedWallet.PersonalBalance,
-				},
+									},
 				"processorResponse": flwRes,
 			},
 		}, nil
@@ -3801,8 +3786,7 @@ func (s *PaymentService) formatPendingWithdrawalResponse(txRef string, amount fl
 				"balance":         wallet.Balance,
 				"checkingBalance": wallet.CheckingBalance,
 				"savingsBalance":  wallet.SavingsBalance,
-				"personalBalance": wallet.PersonalBalance,
-			},
+							},
 		},
 	}
 }
@@ -3872,18 +3856,16 @@ func (s *PaymentService) DebitUserWalletFromAccount(ctx context.Context, userID 
 		}
 
 		if normAccount == accounting.AccountTypeSavings {
-			if wallet.GoldBalance < amount {
-				return fmt.Errorf("insufficient savings wallet balance (available: %.2f, required: %.2f)", wallet.GoldBalance, amount)
+			if wallet.SavingsBalance < amount {
+				return fmt.Errorf("insufficient savings wallet balance (available: %.2f, required: %.2f)", wallet.SavingsBalance, amount)
 			}
-			wallet.GoldBalance -= amount
-			wallet.SavingsBalance = wallet.GoldBalance
+			wallet.SavingsBalance -= amount
 		} else {
-			if wallet.PersonalBalance < amount {
-				return fmt.Errorf("insufficient checking wallet balance (available: %.2f, required: %.2f)", wallet.PersonalBalance, amount)
+			if wallet.CheckingBalance < amount {
+				return fmt.Errorf("insufficient checking wallet balance (available: %.2f, required: %.2f)", wallet.CheckingBalance, amount)
 			}
-			wallet.PersonalBalance -= amount
-			wallet.CheckingBalance = wallet.PersonalBalance
-			wallet.Balance = wallet.PersonalBalance
+			wallet.CheckingBalance -= amount
+			wallet.Balance = wallet.CheckingBalance
 		}
 
 		if err := tx.Save(&wallet).Error; err != nil {

@@ -44,28 +44,20 @@ func main() {
 	// 1. Inspect Wallet balance consistency
 	var walletStats struct {
 		TotalWallets      int64   `gorm:"column:total_wallets"`
-		PersonalSum       float64 `gorm:"column:personal_sum"`
-		CheckingSum       float64 `gorm:"column:checking_sum"`
-		GoldSum           float64 `gorm:"column:gold_sum"`
-		SavingsSum        float64 `gorm:"column:savings_sum"`
-		CheckingDriftRows int64   `gorm:"column:checking_drift_rows"`
-		SavingsDriftRows  int64   `gorm:"column:savings_drift_rows"`
-	}
+			CheckingSum       float64 `gorm:"column:checking_sum"`
+			SavingsSum        float64 `gorm:"column:savings_sum"`
+			}
 	db.Raw(`
 		SELECT
 			COUNT(*) AS total_wallets,
-			COALESCE(SUM("personalBalance"), 0) AS personal_sum,
 			COALESCE(SUM("checkingBalance"), 0) AS checking_sum,
-			COALESCE(SUM("goldBalance"), 0) AS gold_sum,
-			COALESCE(SUM("savingsBalance"), 0) AS savings_sum,
-			COUNT(*) FILTER (WHERE ABS(COALESCE("personalBalance", 0) - COALESCE("checkingBalance", 0)) > 0.01) AS checking_drift_rows,
-			COUNT(*) FILTER (WHERE ABS(COALESCE("goldBalance", 0) - COALESCE("savingsBalance", 0)) > 0.01) AS savings_drift_rows
+			COALESCE(SUM("savingsBalance"), 0) AS savings_sum
 		FROM "Wallet"
 	`).Scan(&walletStats)
 
-	fmt.Printf("Wallets: total=%d | personalSum=%.2f checkingSum=%.2f (driftRows=%d) | goldSum=%.2f savingsSum=%.2f (driftRows=%d)\n",
-		walletStats.TotalWallets, walletStats.PersonalSum, walletStats.CheckingSum, walletStats.CheckingDriftRows,
-		walletStats.GoldSum, walletStats.SavingsSum, walletStats.SavingsDriftRows)
+	fmt.Printf("Wallets: total=%d | checkingSum=%.2f | savingsSum=%.2f\n",
+
+		walletStats.TotalWallets, walletStats.CheckingSum, walletStats.SavingsSum)
 
 	// 2. Inspect WalletTransaction and LedgerJournalLine counts
 	var txStats struct {
@@ -103,7 +95,7 @@ func main() {
 	if *inspectSavings {
 		var rows []struct {
 			UserID      int     `gorm:"column:user_id"`
-			GoldBalance float64 `gorm:"column:gold_balance"`
+			SavingsBalance float64 `gorm:"column:savings_balance"`
 			LedgerNet   float64 `gorm:"column:ledger_net"`
 			Diff        float64 `gorm:"column:diff"`
 		}
@@ -117,17 +109,17 @@ func main() {
 				GROUP BY wt."userId"
 			)
 			SELECT w."userId" AS user_id,
-				COALESCE(w."goldBalance", 0) AS gold_balance,
+				COALESCE(w."savingsBalance", 0) AS savings_balance,
 				COALESCE(lu.ledger_net, 0) AS ledger_net,
-				COALESCE(w."goldBalance", 0) - COALESCE(lu.ledger_net, 0) AS diff
+				COALESCE(w."savingsBalance", 0) - COALESCE(lu.ledger_net, 0) AS diff
 			FROM "Wallet" w
 			LEFT JOIN ledger_by_user lu ON lu.user_id = w."userId"
-			WHERE ABS(COALESCE(w."goldBalance", 0) - COALESCE(lu.ledger_net, 0)) > 0.01
-			ORDER BY ABS(COALESCE(w."goldBalance", 0) - COALESCE(lu.ledger_net, 0)) DESC
+			WHERE ABS(COALESCE(w."savingsBalance", 0) - COALESCE(lu.ledger_net, 0)) > 0.01
+			ORDER BY ABS(COALESCE(w."savingsBalance", 0) - COALESCE(lu.ledger_net, 0)) DESC
 		`).Scan(&rows)
 		fmt.Printf("Savings drift users (%d):\n", len(rows))
 		for _, r := range rows {
-			fmt.Printf("  userId=%d goldBalance=%.2f ledger2020Net=%.2f diff=%.2f\n", r.UserID, r.GoldBalance, r.LedgerNet, r.Diff)
+			fmt.Printf("  userId=%d savingsBalance=%.2f ledger2020Net=%.2f diff=%.2f\n", r.UserID, r.SavingsBalance, r.LedgerNet, r.Diff)
 		}
 		var txs []struct {
 			ID          int     `gorm:"column:id"`
@@ -163,21 +155,7 @@ func main() {
 
 	// 4. Backfill inside a single atomic transaction
 	err = db.Transaction(func(tx *gorm.DB) error {
-		// Sync wallet mirror columns where personalBalance == 0 and checkingBalance > 0, or goldBalance == 0 and savingsBalance > 0
-		if err := tx.Exec(`
-			UPDATE "Wallet"
-			SET "personalBalance" = "checkingBalance"
-			WHERE COALESCE("personalBalance", 0) = 0 AND COALESCE("checkingBalance", 0) > 0
-		`).Error; err != nil {
-			return err
-		}
-		if err := tx.Exec(`
-			UPDATE "Wallet"
-			SET "goldBalance" = "savingsBalance"
-			WHERE COALESCE("goldBalance", 0) = 0 AND COALESCE("savingsBalance", 0) > 0
-		`).Error; err != nil {
-			return err
-		}
+		// personalBalance and goldBalance columns have been dropped; nothing to sync
 
 		// Rebuild LedgerJournalLine cleanly for all settled/held transactions
 		if err := tx.Exec(`DELETE FROM "LedgerJournalLine"`).Error; err != nil {

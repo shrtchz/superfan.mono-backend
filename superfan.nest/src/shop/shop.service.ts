@@ -305,13 +305,12 @@ export class ShopService {
           );
         }
 
-        // Deduct from wallet balance (keep personalBalance/goldBalance in lockstep with checkingBalance/savingsBalance)
+        // Deduct from wallet balance
         if (isSavings) {
           await tx.wallet.update({
             where: { userId },
             data: {
               savingsBalance: { decrement: totalAmount },
-              goldBalance: { decrement: totalAmount },
               balance: { decrement: totalAmount },
             },
           });
@@ -320,7 +319,6 @@ export class ShopService {
             where: { userId },
             data: {
               checkingBalance: { decrement: totalAmount },
-              personalBalance: { decrement: totalAmount },
               balance: { decrement: totalAmount },
             },
           });

@@ -2331,13 +2331,9 @@ async getCard(userId: number): Promise<any> {
 
       const isSavings = subWallet === 'savings';
       // For internal transactions like Pro subscriptions, funds in holding state can be used
-      const rawChecking = Math.max(
-        Number(wallet.checkingBalance) || 0,
-        Number(wallet.personalBalance) || 0,
-      );
       const walletBalance = isSavings
         ? Number(wallet.savingsBalance) || 0
-        : rawChecking;
+        : Number(wallet.checkingBalance) || 0;
 
       if (walletBalance < amount) {
         throw new BadRequestException(
@@ -2355,12 +2351,10 @@ async getCard(userId: number): Promise<any> {
           },
         });
       } else {
-        const currentPersonal = Number(wallet.personalBalance) || 0;
         await prisma.wallet.update({
           where: { userId },
           data: {
             checkingBalance: { decrement: amount },
-            personalBalance: currentPersonal > 0 ? { decrement: Math.min(currentPersonal, amount) } : undefined,
             balance: { decrement: amount },
           },
         });

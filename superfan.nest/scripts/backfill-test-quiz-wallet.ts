@@ -148,7 +148,7 @@ async function main() {
           where: { userId },
           data: {
             balance: { decrement: dupAmount },
-            goldBalance: { decrement: dupAmount },
+            savingsBalance: { decrement: dupAmount },
           },
         });
       }
@@ -171,7 +171,7 @@ async function main() {
             where: { userId },
             data: {
               balance: { increment: delta },
-              goldBalance: { increment: delta },
+              savingsBalance: { increment: delta },
             },
           });
         }
