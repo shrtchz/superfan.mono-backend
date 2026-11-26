@@ -822,7 +822,7 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 		description := rewardType
 		savingsAccount := "Savings"
 		currency := "NGN"
-		txRef := fmt.Sprintf("ADREW-%d-%d", req.UserID, time.Now().UnixNano())
+		txRef := fmt.Sprintf("ADSREW-%d-%d", req.UserID, time.Now().UnixNano())
 
 		status := "Completed"
 		wTx := models.WalletTransaction{

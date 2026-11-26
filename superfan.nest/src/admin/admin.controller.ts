@@ -16,6 +16,7 @@ import {
 } from '@nestjs/common';
 import { IsArray, IsBoolean, IsEmail, IsIn, IsInt, IsOptional, IsNumber, Min } from 'class-validator';
 import { Public, Roles } from '../common/decorators';
+import { Role } from '../common/enums/role.enum';
 import { ApiRoutes } from '../common/enums/routes.enum';
 import { JwtGuard } from '../common/guards';
 import { PermissionGuard } from '../common/guards/permission.guard';
@@ -56,7 +57,7 @@ class UpdatePointsConversionRateDto {
 
 @Controller(ApiRoutes.ADMIN)
 @UseGuards(JwtGuard, PermissionGuard)
-@Roles('superadmin', 'subadmin')
+@Roles(Role.superadmin, Role.subadmin)
 export class AdminController {
   constructor(
     private adminService: AdminService,
