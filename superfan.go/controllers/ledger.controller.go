@@ -1,12 +1,16 @@
 package controllers
 
 import (
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"quiz.superfan.com/apis/middleware"
+	"quiz.superfan.com/apis/models"
 	"quiz.superfan.com/apis/services"
 	"quiz.superfan.com/apis/utils"
 )
@@ -26,7 +30,211 @@ func RegisterLedgerRoutes(router *gin.RouterGroup, lc *LedgerController) {
 		ledgerGroup.GET("", lc.GetLedgerEntries)
 		ledgerGroup.GET("/summary", lc.GetLedgerSummary)
 		ledgerGroup.GET("/reconciliation", lc.GetReconciliation)
+		ledgerGroup.GET("/approvals", lc.GetLedgerApprovals)
+		ledgerGroup.POST("/approvals", lc.CreateLedgerApproval)
+		ledgerGroup.POST("/approvals/:id/approve", lc.ApproveLedgerApproval)
+		ledgerGroup.POST("/approvals/:id/reject", lc.RejectLedgerApproval)
+		ledgerGroup.GET("/reconciliation/entries", lc.GetLedgerReconciliation)
+		ledgerGroup.POST("/reconciliation/resolve", lc.ResolveLedgerReconciliation)
+		ledgerGroup.POST("/reconciliation/import", lc.ImportLedgerReconciliation)
+		ledgerGroup.GET("/period-close", lc.GetPeriodClose)
+		ledgerGroup.POST("/period-close", lc.ClosePeriod)
+		ledgerGroup.GET("/period-close/pack", lc.GetPeriodClosePack)
 	}
+}
+
+type createLedgerApprovalRequest struct {
+	Reference     string                      `json:"reference"`
+	Kind          string                      `json:"kind"`
+	Description   string                      `json:"description"`
+	ClientName    string                      `json:"clientName"`
+	AccountType   string                      `json:"accountType"`
+	Currency      string                      `json:"currency"`
+	Reason        string                      `json:"reason"`
+	RequestedBy   string                      `json:"requestedBy"`
+	ReversalOf    *string                     `json:"reversalOf"`
+	CorrectsEntry *string                     `json:"correctsEntry"`
+	Lines         []models.LedgerApprovalLine `json:"lines"`
+}
+
+type reviewLedgerApprovalRequest struct {
+	Reviewer string `json:"reviewer"`
+	Note     string `json:"note"`
+}
+
+func sendApprovalError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, services.ErrApprovalNotFound):
+		utils.SendError(c, http.StatusNotFound, "APPROVAL_NOT_FOUND", err.Error())
+	case errors.Is(err, services.ErrApprovalDuplicateRef):
+		utils.SendError(c, http.StatusConflict, "APPROVAL_DUPLICATE_REFERENCE", err.Error())
+	case errors.Is(err, services.ErrApprovalAlreadyReviewed):
+		utils.SendError(c, http.StatusConflict, "APPROVAL_ALREADY_REVIEWED", err.Error())
+	case errors.Is(err, services.ErrApprovalSelfReview):
+		utils.SendError(c, http.StatusForbidden, "APPROVAL_SELF_REVIEW", err.Error())
+	case errors.Is(err, services.ErrApprovalRejectionNeedsWhy), errors.Is(err, services.ErrApprovalInvalid):
+		utils.SendError(c, http.StatusBadRequest, "APPROVAL_INVALID", err.Error())
+	case errors.Is(err, services.ErrPeriodLocked):
+		utils.SendError(c, http.StatusConflict, "PERIOD_LOCKED", err.Error())
+	default:
+		log.Printf("[LEDGER_ERROR] approval request failed: %v", err)
+		utils.SendError(c, http.StatusInternalServerError, "LEDGER_ERROR", "Failed to process approval request")
+	}
+}
+
+func (lc *LedgerController) GetLedgerApprovals(c *gin.Context) {
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
+
+	approvals, total, err := lc.ledgerService.ListLedgerApprovals(page, limit, c.Query("status"), c.Query("search"))
+	if err != nil {
+		sendApprovalError(c, err)
+		return
+	}
+
+	utils.Success(c, http.StatusOK, "Approval requests retrieved successfully", gin.H{
+		"approvals": approvals,
+		"total":     total,
+		"page":      page,
+		"limit":     limit,
+	})
+}
+
+func (lc *LedgerController) CreateLedgerApproval(c *gin.Context) {
+	var body createLedgerApprovalRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "INVALID_BODY", "Invalid approval request payload")
+		return
+	}
+
+	approval, err := lc.ledgerService.CreateLedgerApproval(services.CreateLedgerApprovalInput{
+		Reference:     body.Reference,
+		Kind:          body.Kind,
+		Description:   body.Description,
+		ClientName:    body.ClientName,
+		AccountType:   body.AccountType,
+		Currency:      body.Currency,
+		Reason:        body.Reason,
+		RequestedBy:   body.RequestedBy,
+		ReversalOf:    body.ReversalOf,
+		CorrectsEntry: body.CorrectsEntry,
+		Lines:         body.Lines,
+	})
+	if err != nil {
+		sendApprovalError(c, err)
+		return
+	}
+
+	utils.Success(c, http.StatusCreated, "Approval request sent", approval)
+}
+
+func (lc *LedgerController) ApproveLedgerApproval(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		utils.SendError(c, http.StatusBadRequest, "INVALID_ID", "Invalid approval request id")
+		return
+	}
+	var body reviewLedgerApprovalRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "INVALID_BODY", "Invalid approval review payload")
+		return
+	}
+
+	approval, err := lc.ledgerService.ApproveLedgerApproval(uint(id), body.Reviewer, body.Note)
+	if err != nil {
+		sendApprovalError(c, err)
+		return
+	}
+
+	utils.Success(c, http.StatusOK, "Approval request approved", approval)
+}
+
+func (lc *LedgerController) RejectLedgerApproval(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		utils.SendError(c, http.StatusBadRequest, "INVALID_ID", "Invalid approval request id")
+		return
+	}
+	var body reviewLedgerApprovalRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "INVALID_BODY", "Invalid approval review payload")
+		return
+	}
+
+	approval, err := lc.ledgerService.RejectLedgerApproval(uint(id), body.Reviewer, body.Note)
+	if err != nil {
+		sendApprovalError(c, err)
+		return
+	}
+
+	utils.Success(c, http.StatusOK, "Approval request rejected", approval)
+}
+
+type resolveReconciliationRequest struct {
+	RowKey     string `json:"rowKey"`
+	Note       string `json:"note"`
+	ResolvedBy string `json:"resolvedBy"`
+}
+
+type importReconciliationRequest struct {
+	SourceType string                              `json:"sourceType"`
+	Source     string                              `json:"source"`
+	ImportedBy string                              `json:"importedBy"`
+	Rows       []services.ReconciliationImportRow `json:"rows"`
+}
+
+func sendReconciliationError(c *gin.Context, err error) {
+	if errors.Is(err, services.ErrReconciliationInvalid) {
+		utils.SendError(c, http.StatusBadRequest, "RECONCILIATION_INVALID", err.Error())
+		return
+	}
+	log.Printf("[LEDGER_ERROR] reconciliation request failed: %v", err)
+	utils.SendError(c, http.StatusInternalServerError, "LEDGER_ERROR", "Failed to process reconciliation request")
+}
+
+func (lc *LedgerController) GetLedgerReconciliation(c *gin.Context) {
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "25"))
+
+	result, err := lc.ledgerService.ListReconciliation(page, limit, c.Query("status"), c.Query("search"))
+	if err != nil {
+		sendReconciliationError(c, err)
+		return
+	}
+
+	utils.Success(c, http.StatusOK, "Reconciliation rows retrieved successfully", result)
+}
+
+func (lc *LedgerController) ResolveLedgerReconciliation(c *gin.Context) {
+	var body resolveReconciliationRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "INVALID_BODY", "Invalid reconciliation resolution payload")
+		return
+	}
+
+	resolution, err := lc.ledgerService.ResolveReconciliation(body.RowKey, body.Note, body.ResolvedBy)
+	if err != nil {
+		sendReconciliationError(c, err)
+		return
+	}
+
+	utils.Success(c, http.StatusOK, "Reconciliation row resolved", resolution)
+}
+
+func (lc *LedgerController) ImportLedgerReconciliation(c *gin.Context) {
+	var body importReconciliationRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "INVALID_BODY", "Invalid reconciliation import payload")
+		return
+	}
+
+	imported, err := lc.ledgerService.ImportReconciliationRows(body.SourceType, body.Source, body.ImportedBy, body.Rows)
+	if err != nil {
+		sendReconciliationError(c, err)
+		return
+	}
+
+	utils.Success(c, http.StatusCreated, "Statement rows imported", gin.H{"imported": imported})
 }
 
 func ledgerFilters(c *gin.Context) map[string]interface{} {
@@ -131,5 +339,82 @@ func BroadcastLedgerUpdate(entry interface{}) {
 	BroadcastToRoom("admin_ledger", map[string]interface{}{
 		"event": "ledger_update",
 		"data":  entry,
+	})
+}
+
+type closePeriodRequest struct {
+	Period   string `json:"period"`
+	ClosedBy string `json:"closedBy"`
+	Note     string `json:"note"`
+}
+
+func sendPeriodCloseError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, services.ErrPeriodAlreadyClosed):
+		utils.SendError(c, http.StatusConflict, "PERIOD_ALREADY_CLOSED", err.Error())
+	case errors.Is(err, services.ErrPeriodCloseBlocked):
+		utils.SendError(c, http.StatusConflict, "PERIOD_CLOSE_BLOCKED", err.Error())
+	case errors.Is(err, services.ErrPeriodLocked):
+		utils.SendError(c, http.StatusConflict, "PERIOD_LOCKED", err.Error())
+	case errors.Is(err, services.ErrPeriodInvalid):
+		utils.SendError(c, http.StatusBadRequest, "PERIOD_INVALID", err.Error())
+	default:
+		log.Printf("[LEDGER_ERROR] period close failed: %v", err)
+		utils.SendError(c, http.StatusInternalServerError, "PERIOD_CLOSE_ERROR", "Failed to process period close")
+	}
+}
+
+// GetPeriodClose handles GET /admin/ledger/period-close — close readiness for one month plus closed history.
+func (lc *LedgerController) GetPeriodClose(c *gin.Context) {
+	report, err := lc.ledgerService.GetPeriodCloseReport(c.Request.Context(), c.Query("period"))
+	if err != nil {
+		sendPeriodCloseError(c, err)
+		return
+	}
+	periods, err := lc.ledgerService.ListClosedPeriods(c.Request.Context())
+	if err != nil {
+		sendPeriodCloseError(c, err)
+		return
+	}
+
+	utils.Success(c, http.StatusOK, "Period close status retrieved successfully", gin.H{
+		"report":  report,
+		"periods": periods,
+	})
+}
+
+// ClosePeriod handles POST /admin/ledger/period-close — locks a month once every check passes.
+func (lc *LedgerController) ClosePeriod(c *gin.Context) {
+	var body closePeriodRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		utils.SendError(c, http.StatusBadRequest, "INVALID_BODY", "Invalid period close payload")
+		return
+	}
+
+	record, err := lc.ledgerService.ClosePeriod(c.Request.Context(), services.ClosePeriodInput{
+		Period:   body.Period,
+		ClosedBy: body.ClosedBy,
+		Note:     body.Note,
+	})
+	if err != nil {
+		sendPeriodCloseError(c, err)
+		return
+	}
+
+	utils.Success(c, http.StatusCreated, "Accounting period closed", record)
+}
+
+// GetPeriodClosePack handles GET /admin/ledger/period-close/pack — JSON audit pack for a month.
+func (lc *LedgerController) GetPeriodClosePack(c *gin.Context) {
+	report, err := lc.ledgerService.GetPeriodCloseReport(c.Request.Context(), c.Query("period"))
+	if err != nil {
+		sendPeriodCloseError(c, err)
+		return
+	}
+
+	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="ledger-close-%s.json"`, report.Period))
+	utils.Success(c, http.StatusOK, "Period close pack generated", gin.H{
+		"generatedAt": time.Now().UTC().Format(time.RFC3339),
+		"report":      report,
 	})
 }

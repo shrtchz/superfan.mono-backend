@@ -148,8 +148,8 @@ func init() {
 	if pgURI != "" {
 		utils.ConnectPostgres(pgURI)
 		if utils.DB != nil {
-			if err := utils.DB.AutoMigrate(&models.AdCampaign{}, &models.AdPlacement{}, &models.AdEvent{}, &models.PaymentIntent{}, &models.WalletTransaction{}, &models.LedgerJournalLine{}); err != nil {
-				log.Fatalf("failed to migrate ads tables: %v", err)
+			if err := utils.DB.AutoMigrate(&models.AdCampaign{}, &models.AdPlacement{}, &models.AdEvent{}, &models.PaymentIntent{}, &models.WalletTransaction{}, &models.LedgerJournalLine{}, &models.LedgerApproval{}, &models.ReconciliationStatementRow{}, &models.ReconciliationResolution{}, &models.LedgerPeriodClose{}); err != nil {
+				log.Fatalf("failed to migrate ads, payment intent and ledger tables: %v", err)
 			}
 			if err := utils.DB.Exec(`ALTER TABLE "AdCampaign" ADD COLUMN IF NOT EXISTS "placementType" TEXT`).Error; err != nil {
 				log.Fatalf("failed to migrate AdCampaign.placementType: %v", err)
