@@ -305,12 +305,13 @@ export class ShopService {
           );
         }
 
-        // Deduct from wallet balance
+        // Deduct from wallet balance (keep personalBalance/goldBalance in lockstep with checkingBalance/savingsBalance)
         if (isSavings) {
           await tx.wallet.update({
             where: { userId },
             data: {
               savingsBalance: { decrement: totalAmount },
+              goldBalance: { decrement: totalAmount },
               balance: { decrement: totalAmount },
             },
           });
@@ -319,22 +320,27 @@ export class ShopService {
             where: { userId },
             data: {
               checkingBalance: { decrement: totalAmount },
+              personalBalance: { decrement: totalAmount },
               balance: { decrement: totalAmount },
             },
           });
         }
 
-        // Record wallet transaction tagged as shop debit
+        // Record wallet transaction tagged as In-app shop debit
+        const shopRef = `SHOP-${Date.now()}`;
         await tx.walletTransaction.create({
           data: {
             userId,
             amount: totalAmount,
-            type: 'debit',
+            type: 'DEBIT',
+            transactionType: 'SHOP',
             currency: 'NGN',
-            payment_method: 'shop',
-            reference: `SHOP-${Date.now()}`,
-            status: 'SUCCESS',
-            account_name: `Shop Purchase (${dto.subWallet || 'Checking'})`,
+            payment_method: 'WALLET',
+            account_type: isSavings ? 'Savings' : 'Checking',
+            reference: shopRef,
+            trx_ref: shopRef,
+            status: 'Completed',
+            account_name: `Shop Purchase (${isSavings ? 'Savings' : 'Checking'})`,
             description: 'Shop Merch Payment',
           },
         });

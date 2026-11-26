@@ -20,6 +20,7 @@ import (
 	"gorm.io/gorm"
 	"quiz.superfan.com/apis/labels"
 	"quiz.superfan.com/apis/models"
+	"quiz.superfan.com/apis/services/accounting"
 	"quiz.superfan.com/apis/services/payment/providers"
 	"quiz.superfan.com/apis/utils"
 )
@@ -49,6 +50,11 @@ func stringValuePtr(value string) *string {
 		return nil
 	}
 	return &value
+}
+
+func float64Ptr(value float64) *float64 {
+	v := value
+	return &v
 }
 
 func normalizeCardDigits(value string) string {
@@ -438,7 +444,102 @@ func (s *PaymentService) InitiateDeposit(ctx context.Context, req providers.Depo
 	return provider.InitiateDeposit(ctx, req)
 }
 
-// HandleDepositWebhook verifies a deposit transaction and credits the user's wallet.
+func (s *PaymentService) resolveUserDisplayName(tx *gorm.DB, userID int) string {
+	if tx == nil || userID <= 0 {
+		return accounting.ProviderInApp
+	}
+	var user struct {
+		FirstName string `gorm:"column:firstName"`
+		LastName  string `gorm:"column:lastName"`
+		Username  string `gorm:"column:username"`
+		Email     string `gorm:"column:email"`
+	}
+	_ = tx.Exec("SAVEPOINT sp_resolve_user_name").Error
+	err := tx.Table(`"User"`).
+		Select(`COALESCE("firstName", '') AS "firstName", COALESCE("lastName", '') AS "lastName", COALESCE("username", '') AS "username", COALESCE("email", '') AS "email"`).
+		Where(`"id" = ?`, userID).
+		Take(&user).Error
+	if err != nil {
+		_ = tx.Exec("ROLLBACK TO SAVEPOINT sp_resolve_user_name").Error
+		return fmt.Sprintf("User #%d", userID)
+	}
+	_ = tx.Exec("RELEASE SAVEPOINT sp_resolve_user_name").Error
+	full := strings.TrimSpace(strings.TrimSpace(user.FirstName) + " " + strings.TrimSpace(user.LastName))
+	if full != "" {
+		return full
+	}
+	if strings.TrimSpace(user.Username) != "" {
+		return strings.TrimSpace(user.Username)
+	}
+	if strings.TrimSpace(user.Email) != "" {
+		return strings.TrimSpace(user.Email)
+	}
+	return fmt.Sprintf("User #%d", userID)
+}
+
+func (s *PaymentService) resolveExternalProvider(ctx context.Context, paymentMethod, currency, txRef string) string {
+	upperRef := strings.ToUpper(strings.TrimSpace(txRef))
+	switch {
+	case strings.HasPrefix(upperRef, "MNFY"):
+		return "Monnify"
+	case strings.HasPrefix(upperRef, "FLW"):
+		return "Flutterwave"
+	case strings.HasPrefix(upperRef, "BIT") || strings.HasPrefix(upperRef, "BTN"):
+		return "Bitnob"
+	case strings.HasPrefix(upperRef, "BACHS"):
+		return "Bachs"
+	}
+	if strings.EqualFold(paymentMethod, "stablecoin") || currency == "USDC" || currency == "USDT" {
+		return "Bitnob"
+	}
+	channel := "card"
+	if strings.EqualFold(paymentMethod, "bank") || strings.Contains(strings.ToLower(paymentMethod), "transfer") {
+		channel = "bank_transfer"
+	}
+	if proc, err := s.GetActivePaymentProcessorForChannel(ctx, channel); err == nil && proc != nil && strings.TrimSpace(proc.Name) != "" {
+		norm := accounting.NormalizeProvider(proc.Name)
+		if norm != accounting.ProviderInApp {
+			return norm
+		}
+	}
+	return "Monnify"
+}
+
+// VerifyProviderWebhook validates webhook signatures for Monnify and Bitnob.
+func (s *PaymentService) VerifyProviderWebhook(ctx context.Context, providerName, signature string, rawBody []byte) error {
+	switch strings.ToLower(strings.TrimSpace(providerName)) {
+	case "monnify":
+		if s.monnifyProvider == nil {
+			return errors.New("monnify provider not configured")
+		}
+		if strings.TrimSpace(s.monnifyProvider.SecretKey) == "" && strings.TrimSpace(signature) == "" {
+			return nil
+		}
+		if !s.monnifyProvider.VerifyWebhookSignature(rawBody, signature) {
+			return errors.New("invalid monnify webhook signature")
+		}
+		return nil
+	case "bitnob":
+		if s.bitnobProvider == nil {
+			return errors.New("bitnob provider not configured")
+		}
+		secret := strings.TrimSpace(os.Getenv("BITNOB_WEBHOOK_SECRET"))
+		if secret == "" {
+			secret = strings.TrimSpace(s.bitnobProvider.ApiKey)
+		}
+		if secret == "" && strings.TrimSpace(signature) == "" {
+			return nil
+		}
+		if !s.bitnobProvider.VerifyWebhookSignature(rawBody, signature) {
+			return errors.New("invalid bitnob webhook signature")
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported webhook provider: %s", providerName)
+	}
+}
+
+// HandleDepositWebhook verifies a deposit or direct purchase webhook and posts idempotent ledger entries.
 func (s *PaymentService) HandleDepositWebhook(ctx context.Context, currency string, req providers.VerifyTransactionRequest) error {
 	var provider providers.PaymentProvider
 	switch currency {
@@ -449,41 +550,105 @@ func (s *PaymentService) HandleDepositWebhook(ctx context.Context, currency stri
 	default:
 		return fmt.Errorf("unsupported currency: %s", currency)
 	}
+	if provider == nil {
+		return fmt.Errorf("payment provider for %s is not configured", currency)
+	}
 
 	verification, err := provider.VerifyTransaction(ctx, req)
 	if err != nil {
 		return err
 	}
 
-	if verification.Status != "SUCCESS" {
+	txRef := strings.TrimSpace(verification.TransactionReference)
+	if txRef == "" {
+		txRef = strings.TrimSpace(req.TransactionReference)
+	}
+
+	providerName := accounting.NormalizeProvider(verification.ProviderName)
+	if providerName == accounting.ProviderInApp {
+		providerName = s.resolveExternalProvider(ctx, currency, currency, txRef)
+	}
+
+	if !strings.EqualFold(verification.Status, "SUCCESS") && !strings.EqualFold(verification.Status, "PAID") {
+		_ = s.RecordFailedTransaction(ctx, 0, accounting.AccountTypePlatform, providerName, "Deposit", txRef, fmt.Sprintf("webhook status: %s", verification.Status), verification.Amount, currency)
 		return fmt.Errorf("transaction not successful, status: %s", verification.Status)
 	}
 
-	return s.db.Transaction(func(tx *gorm.DB) error {
+	// Check PaymentIntent to see if this webhook belongs to a specific user and/or direct purchase.
+	var intent models.PaymentIntent
+	hasIntent := s.db.WithContext(ctx).Where("reference = ?", txRef).First(&intent).Error == nil
+
+	if hasIntent && intent.UserID > 0 {
+		purpose := strings.ToLower(strings.TrimSpace(intent.Purpose))
+		method := "bank"
+		if currency == "USDC" || currency == "USDT" {
+			method = "stablecoin"
+		}
+		if purpose == "ad_payment" || purpose == "ads" || purpose == "shop_payment" || purpose == "shop" || purpose == "subscription_payment" || purpose == "subscription" {
+			_, err := s.recordDirectPaymentWithFeeInDB(ctx, intent.UserID, verification.Amount, verification.Fee, txRef, method, currency, purpose, "", providerName, nil)
+			return err
+		}
+		_, err := s.creditWalletWithFeeInDB(ctx, intent.UserID, verification.Amount, verification.Fee, txRef, method, currency, providerName, nil)
+		return err
+	}
+
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existingCount int64
+		if err := tx.Model(&models.WalletTransaction{}).Where(`"trx_ref" = ? AND "status" = ?`, txRef, "Completed").Count(&existingCount).Error; err != nil {
+			return err
+		}
+		if existingCount > 0 {
+			return nil
+		}
+
 		methodKey := "bankTransfer"
-		switch currency {
-		case "USDC", "USDT":
+		paymentMethodValue := "ACCOUNT_TRANSFER"
+		if currency == "USDC" || currency == "USDT" {
 			methodKey = "stablecoin"
+			paymentMethodValue = "STABLE_COIN"
 		}
 		description := labels.Wallet("deposit", map[string]string{"method": labels.Method(methodKey)})
 		txType := "CREDIT"
 		status := "Completed"
 		trxType := "Deposit"
+		cls := accounting.ClassifyTransaction(accounting.ClassificationInput{
+			UserID:          0,
+			Kind:            accounting.KindExternalDeposit,
+			WalletAccount:   accounting.AccountTypePlatform,
+			ExternalGateway: providerName,
+		})
+		accountType := accounting.AccountTypePlatform
+		fee := verification.Fee
+		netAmount := verification.Amount - fee
 		wTx := models.WalletTransaction{
-			UserID:          0, // Stub or handled via relation
+			UserID:          0,
+			ClientName:      cls.ClientName,
 			Amount:          verification.Amount,
+			Fee:             float64Ptr(fee),
+			NetAmount:       float64Ptr(netAmount),
 			Type:            &txType,
 			TransactionType: &trxType,
 			Status:          &status,
 			Currency:        currency,
 			Description:     &description,
-			TrxRef:          &verification.TransactionReference,
+			TrxRef:          &txRef,
+			PaymentMethod:   &paymentMethodValue,
+			AccountType:     &accountType,
+			Provider:        &cls.Provider,
 			CreatedAt:       time.Now(),
 		}
 		if err := tx.Create(&wTx).Error; err != nil {
 			return err
 		}
-		return nil
+		return accounting.PostJournalTx(tx, &wTx, accounting.JournalInput{
+			Kind:          accounting.KindExternalDeposit,
+			Purpose:       "deposit",
+			Amount:        verification.Amount,
+			Fee:           fee,
+			Currency:      currency,
+			Provider:      cls.Provider,
+			WalletAccount: accounting.AccountTypeChecking,
+		})
 	})
 }
 
@@ -2608,11 +2773,19 @@ func resolveDirectPaymentTransactionType(purpose, customDesc, txRef string) stri
 // recordDirectPaymentInDB records a direct platform payment (e.g., Ads, Shop, Subscription)
 // without crediting or altering the user's wallet balance.
 func (s *PaymentService) recordDirectPaymentInDB(ctx context.Context, userID int, amount float64, txRef, paymentMethod, currency, purpose, customDesc string, cardMeta *savedCardMetadata) (*models.Wallet, error) {
+	providerName := s.resolveExternalProvider(ctx, paymentMethod, currency, txRef)
+	return s.recordDirectPaymentWithFeeInDB(ctx, userID, amount, 0, txRef, paymentMethod, currency, purpose, customDesc, providerName, cardMeta)
+}
+
+func (s *PaymentService) recordDirectPaymentWithFeeInDB(ctx context.Context, userID int, amount, fee float64, txRef, paymentMethod, currency, purpose, customDesc, providerName string, cardMeta *savedCardMetadata) (*models.Wallet, error) {
 	if userID <= 0 {
 		return nil, errors.New("invalid userId")
 	}
 	if amount <= 0 {
 		return nil, fmt.Errorf("invalid amount: %.2f", amount)
+	}
+	if fee < 0 || fee > amount {
+		return nil, fmt.Errorf("invalid fee %.2f for amount %.2f", fee, amount)
 	}
 	if currency == "" {
 		currency = "NGN"
@@ -2632,8 +2805,11 @@ func (s *PaymentService) recordDirectPaymentInDB(ctx context.Context, userID int
 	if description == "" {
 		description = defaultDesc
 	}
+	if strings.TrimSpace(providerName) == "" {
+		providerName = s.resolveExternalProvider(ctx, paymentMethod, currency, txRef)
+	}
 
-	log.Printf("[DB] recordDirectPaymentInDB - userID=%d amount=%.2f description=%s txRef=%s", userID, amount, description, txRef)
+	log.Printf("[DB] recordDirectPaymentInDB - userID=%d amount=%.2f fee=%.2f provider=%s description=%s txRef=%s", userID, amount, fee, providerName, description, txRef)
 
 	var currentWallet models.Wallet
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -2650,12 +2826,23 @@ func (s *PaymentService) recordDirectPaymentInDB(ctx context.Context, userID int
 			return nil
 		}
 
+		cls := accounting.ClassifyTransaction(accounting.ClassificationInput{
+			UserID:          userID,
+			UserDisplayName: s.resolveUserDisplayName(tx, userID),
+			Kind:            accounting.KindExternalPurchase,
+			ExternalGateway: providerName,
+		})
+
 		txType := "DEBIT"
 		status := "Completed"
 		trxType := resolveDirectPaymentTransactionType(purpose, description, txRef)
+		netAmount := amount - fee
 		wTx := models.WalletTransaction{
 			UserID:          userID,
+			ClientName:      cls.ClientName,
 			Amount:          amount,
+			Fee:             float64Ptr(fee),
+			NetAmount:       float64Ptr(netAmount),
 			Type:            &txType,
 			TransactionType: &trxType,
 			Status:          &status,
@@ -2663,12 +2850,25 @@ func (s *PaymentService) recordDirectPaymentInDB(ctx context.Context, userID int
 			Description:     &description,
 			TrxRef:          &txRef,
 			PaymentMethod:   &paymentMethodValue,
+			AccountType:     &cls.AccountType,
+			Provider:        &cls.Provider,
 			CreatedAt:       time.Now(),
 		}
 		if err := tx.Create(&wTx).Error; err != nil {
 			return fmt.Errorf("failed to create WalletTransaction for direct payment: %w", err)
 		}
 		log.Printf("[DB] Direct payment WalletTransaction created: id=%d", wTx.ID)
+
+		if err := accounting.PostJournalTx(tx, &wTx, accounting.JournalInput{
+			Kind:     accounting.KindExternalPurchase,
+			Purpose:  purpose,
+			Amount:   amount,
+			Fee:      fee,
+			Currency: currency,
+			Provider: cls.Provider,
+		}); err != nil {
+			return fmt.Errorf("failed to post journal lines for direct payment: %w", err)
+		}
 
 		markPaymentIntentPaidTx(tx, txRef)
 
@@ -2705,11 +2905,19 @@ func (s *PaymentService) recordDirectPaymentInDB(ctx context.Context, userID int
 }
 
 func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amount float64, txRef, paymentMethod, currency string, cardMeta *savedCardMetadata, customDesc ...string) (*models.Wallet, error) {
+	providerName := s.resolveExternalProvider(ctx, paymentMethod, currency, txRef)
+	return s.creditWalletWithFeeInDB(ctx, userID, amount, 0, txRef, paymentMethod, currency, providerName, cardMeta, customDesc...)
+}
+
+func (s *PaymentService) creditWalletWithFeeInDB(ctx context.Context, userID int, amount, fee float64, txRef, paymentMethod, currency, providerName string, cardMeta *savedCardMetadata, customDesc ...string) (*models.Wallet, error) {
 	if userID <= 0 {
 		return nil, errors.New("invalid userId")
 	}
 	if amount <= 0 {
 		return nil, fmt.Errorf("invalid amount: %.2f", amount)
+	}
+	if fee < 0 || fee > amount {
+		return nil, fmt.Errorf("invalid fee %.2f for amount %.2f", fee, amount)
 	}
 	if currency == "" {
 		currency = "NGN"
@@ -2731,8 +2939,11 @@ func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amoun
 	} else if methodKey == "stablecoin" {
 		paymentMethodValue = "STABLE_COIN"
 	}
+	if strings.TrimSpace(providerName) == "" {
+		providerName = s.resolveExternalProvider(ctx, paymentMethod, currency, txRef)
+	}
 
-	log.Printf("[DB] creditWalletInDB - userID=%d amount=%.2f description=%s txRef=%s", userID, amount, description, txRef)
+	log.Printf("[DB] creditWalletInDB - userID=%d amount=%.2f fee=%.2f provider=%s description=%s txRef=%s", userID, amount, fee, providerName, description, txRef)
 
 	var updatedWallet models.Wallet
 
@@ -2764,10 +2975,10 @@ func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amoun
 		log.Printf("[DB] Wallet before credit: balance=%.2f personalBalance=%.2f", wallet.Balance, wallet.PersonalBalance)
 
 		// 2. Increment balances
-		wallet.Balance += amount
 		wallet.PersonalBalance += amount
+		wallet.CheckingBalance = wallet.PersonalBalance
+		wallet.Balance = wallet.PersonalBalance
 		holdUntil := time.Now().Add(personalDepositHold)
-		accountType := "Checking"
 		switch currency {
 		case "USDC":
 			wallet.UsdcBalance += amount
@@ -2780,13 +2991,25 @@ func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amoun
 		}
 		log.Printf("[DB] Wallet after credit: balance=%.2f personalBalance=%.2f", wallet.Balance, wallet.PersonalBalance)
 
+		cls := accounting.ClassifyTransaction(accounting.ClassificationInput{
+			UserID:          userID,
+			UserDisplayName: s.resolveUserDisplayName(tx, userID),
+			Kind:            accounting.KindExternalDeposit,
+			WalletAccount:   accounting.AccountTypeChecking,
+			ExternalGateway: providerName,
+		})
+
 		// 3. Insert WalletTransaction record
 		txType := "CREDIT"
 		status := "Completed"
 		trxType := "Deposit"
+		netAmount := amount - fee
 		wTx := models.WalletTransaction{
 			UserID:          userID,
+			ClientName:      cls.ClientName,
 			Amount:          amount,
+			Fee:             float64Ptr(fee),
+			NetAmount:       float64Ptr(netAmount),
 			Type:            &txType,
 			TransactionType: &trxType,
 			Status:          &status,
@@ -2794,7 +3017,8 @@ func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amoun
 			Description:     &description,
 			TrxRef:          &txRef,
 			PaymentMethod:   &paymentMethodValue,
-			AccountType:     &accountType,
+			AccountType:     &cls.AccountType,
+			Provider:        &cls.Provider,
 			HoldUntil:       &holdUntil,
 			CreatedAt:       time.Now(),
 		}
@@ -2802,6 +3026,18 @@ func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amoun
 			return fmt.Errorf("failed to create WalletTransaction: %w", err)
 		} else {
 			log.Printf("[DB] WalletTransaction created: id=%d", wTx.ID)
+		}
+
+		if err := accounting.PostJournalTx(tx, &wTx, accounting.JournalInput{
+			Kind:          accounting.KindExternalDeposit,
+			Purpose:       "deposit",
+			Amount:        amount,
+			Fee:           fee,
+			Currency:      currency,
+			Provider:      cls.Provider,
+			WalletAccount: accounting.AccountTypeChecking,
+		}); err != nil {
+			return fmt.Errorf("failed to post journal lines for deposit: %w", err)
 		}
 
 		// 4. Insert ActivityWallet record (optional audit write; savepoint keeps its failure from aborting the credit)
@@ -3016,24 +3252,55 @@ func (s *PaymentService) TransferBetweenWallets(ctx context.Context, userID int,
 		log.Printf("[PaymentService] Wallet transferred successfully: userID=%d newPersonalBalance=%.2f newGoldBalance=%.2f", userID, wallet.PersonalBalance, wallet.GoldBalance)
 
 		// 1. Insert WalletTransaction record
+		fromAcct := accounting.NormalizeWalletAccount(fromType)
+		toAcct := accounting.AccountTypeSavings
+		if fromAcct == accounting.AccountTypeSavings {
+			toAcct = accounting.AccountTypeChecking
+		}
+		cls := accounting.ClassifyTransaction(accounting.ClassificationInput{
+			UserID:          userID,
+			UserDisplayName: s.resolveUserDisplayName(tx, userID),
+			Kind:            accounting.KindWalletTransfer,
+			WalletAccount:   fromAcct,
+		})
 		txType := "TRANSFER"
 		status := "Completed"
 		trxType := "Transfer"
+		pmWallet := "WALLET"
 		wTx := models.WalletTransaction{
 			UserID:          userID,
+			ClientName:      cls.ClientName,
 			Amount:          amount,
+			Fee:             float64Ptr(0),
+			NetAmount:       float64Ptr(amount),
 			Type:            &txType,
 			TransactionType: &trxType,
 			Status:          &status,
 			Currency:        "NGN",
 			Description:     &description,
 			TrxRef:          &txRef,
+			PaymentMethod:   &pmWallet,
+			AccountType:     &cls.AccountType,
+			Provider:        &cls.Provider,
 			CreatedAt:       time.Now(),
 		}
 		if err := tx.Create(&wTx).Error; err != nil {
 			return fmt.Errorf("failed to create WalletTransaction for transfer: %w", err)
 		} else {
 			log.Printf("[PaymentService] WalletTransaction created: id=%d", wTx.ID)
+		}
+
+		if err := accounting.PostJournalTx(tx, &wTx, accounting.JournalInput{
+			Kind:          accounting.KindWalletTransfer,
+			Purpose:       "transfer",
+			Amount:        amount,
+			Fee:           0,
+			Currency:      "NGN",
+			Provider:      cls.Provider,
+			WalletAccount: fromAcct,
+			TargetAccount: toAcct,
+		}); err != nil {
+			return fmt.Errorf("failed to post journal lines for transfer: %w", err)
 		}
 
 		// 2. Insert ActivityWallet record
@@ -3251,6 +3518,17 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 		}
 
 		// Record in WalletTransaction
+		withdrawProc := "Monnify"
+		if proc, procErr := s.GetActivePaymentProcessorForChannel(ctx, "bank_transfer"); procErr == nil && proc != nil && strings.TrimSpace(proc.Name) != "" {
+			withdrawProc = accounting.NormalizeProvider(proc.Name)
+		}
+		cls := accounting.ClassifyTransaction(accounting.ClassificationInput{
+			UserID:          userID,
+			UserDisplayName: s.resolveUserDisplayName(tx, userID),
+			Kind:            accounting.KindWithdrawal,
+			WalletAccount:   accountType,
+			ExternalGateway: withdrawProc,
+		})
 		txType := "DEBIT"
 		desc := labels.Wallet("withdrawal", map[string]string{"method": labels.Method("bankTransfer")})
 		if desc == "" {
@@ -3258,7 +3536,10 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 		}
 		wTx := models.WalletTransaction{
 			UserID:          userID,
+			ClientName:      cls.ClientName,
 			Amount:          amount,
+			Fee:             float64Ptr(0),
+			NetAmount:       float64Ptr(amount),
 			Type:            &txType,
 			TransactionType: &transactionType,
 			Status:          &txStatus,
@@ -3269,11 +3550,24 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 			AccountNo:       &accountNumber,
 			BankName:        &bankName,
 			PaymentMethod:   &paymentMethod,
-			AccountType:     &accountType,
+			AccountType:     &cls.AccountType,
+			Provider:        &cls.Provider,
 			CreatedAt:       time.Now(),
 		}
 		if err := tx.Create(&wTx).Error; err != nil {
 			return fmt.Errorf("failed to create WalletTransaction for withdrawal: %w", err)
+		}
+
+		if err := accounting.PostJournalTx(tx, &wTx, accounting.JournalInput{
+			Kind:          accounting.KindWithdrawal,
+			Purpose:       "withdrawal",
+			Amount:        amount,
+			Fee:           0,
+			Currency:      "NGN",
+			Provider:      cls.Provider,
+			WalletAccount: cls.AccountType,
+		}); err != nil {
+			return fmt.Errorf("failed to post journal lines for withdrawal: %w", err)
 		}
 
 		// Record in ActivityWallet
@@ -3536,6 +3830,12 @@ func (s *PaymentService) ValidateWithdrawalOTP(ctx context.Context, reference, a
 
 // DebitUserWallet atomically debits a user's wallet for ad campaigns or services, creating both WalletTransaction and ActivityWallet records.
 func (s *PaymentService) DebitUserWallet(ctx context.Context, userID int, amount float64, description, txRef string) (*models.Wallet, error) {
+	return s.DebitUserWalletFromAccount(ctx, userID, amount, accounting.AccountTypeChecking, "", description, txRef)
+}
+
+// DebitUserWalletFromAccount debits either Checking (Personal) or Savings (Gold) wallet atomically
+// and posts balanced wallet-purchase journal lines with Provider = "In-app".
+func (s *PaymentService) DebitUserWalletFromAccount(ctx context.Context, userID int, amount float64, accountType, purpose, description, txRef string) (*models.Wallet, error) {
 	if userID <= 0 {
 		return nil, errors.New("invalid userId")
 	}
@@ -3543,13 +3843,14 @@ func (s *PaymentService) DebitUserWallet(ctx context.Context, userID int, amount
 		return nil, errors.New("amount must be greater than 0")
 	}
 	if description == "" {
-		description = "Ad Fee Wallet Debit"
+		description = "Wallet Purchase"
 	}
 	if txRef == "" {
-		txRef = fmt.Sprintf("DEBIT-ADS-%d", time.Now().UnixNano())
+		txRef = fmt.Sprintf("DEBIT-WALLET-%d", time.Now().UnixNano())
 	}
+	normAccount := accounting.NormalizeWalletAccount(accountType)
 
-	log.Printf("[PaymentService] DebitUserWallet - userID=%d amount=%.2f desc=%s ref=%s", userID, amount, description, txRef)
+	log.Printf("[PaymentService] DebitUserWalletFromAccount - userID=%d account=%s amount=%.2f desc=%s ref=%s", userID, normAccount, amount, description, txRef)
 
 	var updatedWallet models.Wallet
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -3561,36 +3862,77 @@ func (s *PaymentService) DebitUserWallet(ctx context.Context, userID int, amount
 			return fmt.Errorf("failed to fetch wallet: %w", err)
 		}
 
-		if wallet.PersonalBalance < amount {
-			return fmt.Errorf("insufficient wallet balance (available: %.2f, required: %.2f)", wallet.PersonalBalance, amount)
+		// Idempotency check
+		var existingCount int64
+		if err := tx.Model(&models.WalletTransaction{}).Where(`"trx_ref" = ? AND "status" = ?`, txRef, "Completed").Count(&existingCount).Error; err != nil {
+			return fmt.Errorf("failed to check existing wallet transaction: %w", err)
+		} else if existingCount > 0 {
+			updatedWallet = wallet
+			return nil
 		}
 
-		// Debit personal balance
-		wallet.PersonalBalance -= amount
-		wallet.CheckingBalance = wallet.PersonalBalance
-		wallet.Balance = wallet.PersonalBalance
+		if normAccount == accounting.AccountTypeSavings {
+			if wallet.GoldBalance < amount {
+				return fmt.Errorf("insufficient savings wallet balance (available: %.2f, required: %.2f)", wallet.GoldBalance, amount)
+			}
+			wallet.GoldBalance -= amount
+			wallet.SavingsBalance = wallet.GoldBalance
+		} else {
+			if wallet.PersonalBalance < amount {
+				return fmt.Errorf("insufficient checking wallet balance (available: %.2f, required: %.2f)", wallet.PersonalBalance, amount)
+			}
+			wallet.PersonalBalance -= amount
+			wallet.CheckingBalance = wallet.PersonalBalance
+			wallet.Balance = wallet.PersonalBalance
+		}
 
 		if err := tx.Save(&wallet).Error; err != nil {
 			return fmt.Errorf("failed to debit wallet: %w", err)
 		}
 
+		cls := accounting.ClassifyTransaction(accounting.ClassificationInput{
+			UserID:          userID,
+			UserDisplayName: s.resolveUserDisplayName(tx, userID),
+			Kind:            accounting.KindWalletPurchase,
+			WalletAccount:   normAccount,
+		})
+
 		// Record in WalletTransaction
 		txType := "DEBIT"
 		status := "Completed"
-		trxType := resolveDirectPaymentTransactionType("", description, txRef)
+		trxType := resolveDirectPaymentTransactionType(purpose, description, txRef)
+		pmWallet := "WALLET"
 		wTx := models.WalletTransaction{
 			UserID:          userID,
+			ClientName:      cls.ClientName,
 			Amount:          amount,
+			Fee:             float64Ptr(0),
+			NetAmount:       float64Ptr(amount),
 			Type:            &txType,
 			TransactionType: &trxType,
 			Status:          &status,
 			Currency:        "NGN",
 			Description:     &description,
 			TrxRef:          &txRef,
+			PaymentMethod:   &pmWallet,
+			AccountType:     &cls.AccountType,
+			Provider:        &cls.Provider,
 			CreatedAt:       time.Now(),
 		}
 		if err := tx.Create(&wTx).Error; err != nil {
 			return fmt.Errorf("failed to create WalletTransaction for debit: %w", err)
+		}
+
+		if err := accounting.PostJournalTx(tx, &wTx, accounting.JournalInput{
+			Kind:          accounting.KindWalletPurchase,
+			Purpose:       purpose,
+			Amount:        amount,
+			Fee:           0,
+			Currency:      "NGN",
+			Provider:      cls.Provider,
+			WalletAccount: cls.AccountType,
+		}); err != nil {
+			return fmt.Errorf("failed to post journal lines for wallet debit: %w", err)
 		}
 
 		markPaymentIntentPaidTx(tx, txRef)
@@ -3620,6 +3962,196 @@ func (s *PaymentService) DebitUserWallet(ctx context.Context, userID int, amount
 	}
 
 	return &updatedWallet, nil
+}
+
+// RecordSettlement records a gateway-to-platform-bank settlement (Client = In-app, AccountType = Platform).
+func (s *PaymentService) RecordSettlement(ctx context.Context, providerName, txRef string, amount, fee float64, currency string) error {
+	if amount <= 0 {
+		return fmt.Errorf("invalid settlement amount: %.2f", amount)
+	}
+	if fee < 0 || fee > amount {
+		return fmt.Errorf("invalid settlement fee %.2f for amount %.2f", fee, amount)
+	}
+	if currency == "" {
+		currency = "NGN"
+	}
+	if strings.TrimSpace(txRef) == "" {
+		txRef = fmt.Sprintf("SETTLE-%d", time.Now().UnixNano())
+	}
+
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existingCount int64
+		if err := tx.Model(&models.WalletTransaction{}).Where(`"trx_ref" = ? AND "status" = ?`, txRef, "Completed").Count(&existingCount).Error; err != nil {
+			return err
+		}
+		if existingCount > 0 {
+			return nil
+		}
+
+		cls := accounting.ClassifyTransaction(accounting.ClassificationInput{
+			UserID:          0,
+			Kind:            accounting.KindSettlement,
+			ExternalGateway: providerName,
+		})
+		txType := "CREDIT"
+		trxType := "SETTLEMENT"
+		status := "Completed"
+		desc := fmt.Sprintf("%s settlement to platform bank", cls.Provider)
+		pm := "SETTLEMENT"
+		netAmount := amount - fee
+		wTx := models.WalletTransaction{
+			UserID:          0,
+			ClientName:      cls.ClientName,
+			Amount:          amount,
+			Fee:             float64Ptr(fee),
+			NetAmount:       float64Ptr(netAmount),
+			Type:            &txType,
+			TransactionType: &trxType,
+			Status:          &status,
+			Currency:        currency,
+			Description:     &desc,
+			TrxRef:          &txRef,
+			PaymentMethod:   &pm,
+			AccountType:     &cls.AccountType,
+			Provider:        &cls.Provider,
+			CreatedAt:       time.Now(),
+		}
+		if err := tx.Create(&wTx).Error; err != nil {
+			return err
+		}
+		return accounting.PostJournalTx(tx, &wTx, accounting.JournalInput{
+			Kind:     accounting.KindSettlement,
+			Purpose:  "settlement",
+			Amount:   amount,
+			Fee:      fee,
+			Currency: currency,
+			Provider: cls.Provider,
+		})
+	})
+}
+
+// RecordExternalRefund records a gateway refund reversal (Client = user, AccountType = Platform, Provider = gateway).
+func (s *PaymentService) RecordExternalRefund(ctx context.Context, userID int, providerName, purpose, txRef string, amount, fee float64, currency string) error {
+	if userID <= 0 {
+		return errors.New("invalid userId for external refund")
+	}
+	if amount <= 0 {
+		return fmt.Errorf("invalid refund amount: %.2f", amount)
+	}
+	if fee < 0 || fee > amount {
+		return fmt.Errorf("invalid refund fee %.2f for amount %.2f", fee, amount)
+	}
+	if currency == "" {
+		currency = "NGN"
+	}
+	if strings.TrimSpace(txRef) == "" {
+		txRef = fmt.Sprintf("REFUND-EXT-%d", time.Now().UnixNano())
+	}
+
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existingCount int64
+		if err := tx.Model(&models.WalletTransaction{}).Where(`"trx_ref" = ? AND "status" = ?`, txRef, "Completed").Count(&existingCount).Error; err != nil {
+			return err
+		}
+		if existingCount > 0 {
+			return nil
+		}
+
+		cls := accounting.ClassifyTransaction(accounting.ClassificationInput{
+			UserID:          userID,
+			UserDisplayName: s.resolveUserDisplayName(tx, userID),
+			Kind:            accounting.KindExternalRefund,
+			ExternalGateway: providerName,
+		})
+		txType := "DEBIT"
+		trxType := "REFUND"
+		status := "Completed"
+		desc := fmt.Sprintf("Refund via %s (%s)", cls.Provider, purpose)
+		pm := "REFUND"
+		netAmount := amount - fee
+		wTx := models.WalletTransaction{
+			UserID:          userID,
+			ClientName:      cls.ClientName,
+			Amount:          amount,
+			Fee:             float64Ptr(fee),
+			NetAmount:       float64Ptr(netAmount),
+			Type:            &txType,
+			TransactionType: &trxType,
+			Status:          &status,
+			Currency:        currency,
+			Description:     &desc,
+			TrxRef:          &txRef,
+			PaymentMethod:   &pm,
+			AccountType:     &cls.AccountType,
+			Provider:        &cls.Provider,
+			CreatedAt:       time.Now(),
+		}
+		if err := tx.Create(&wTx).Error; err != nil {
+			return err
+		}
+		return accounting.PostJournalTx(tx, &wTx, accounting.JournalInput{
+			Kind:     accounting.KindExternalRefund,
+			Purpose:  purpose,
+			Amount:   amount,
+			Fee:      fee,
+			Currency: currency,
+			Provider: cls.Provider,
+		})
+	})
+}
+
+// RecordFailedTransaction logs a failed payment/deposit attempt without mutating balances or posting revenue/liability journals.
+func (s *PaymentService) RecordFailedTransaction(ctx context.Context, userID int, accountType, providerName, trxType, txRef, reason string, amount float64, currency string) error {
+	if currency == "" {
+		currency = "NGN"
+	}
+	if strings.TrimSpace(txRef) == "" {
+		txRef = fmt.Sprintf("FAIL-%d", time.Now().UnixNano())
+	}
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existingCount int64
+		if err := tx.Model(&models.WalletTransaction{}).Where(`"trx_ref" = ? AND "status" = ?`, txRef, "Failed").Count(&existingCount).Error; err != nil {
+			return err
+		}
+		if existingCount > 0 {
+			return nil
+		}
+		client := accounting.ProviderInApp
+		if userID > 0 {
+			client = s.resolveUserDisplayName(tx, userID)
+		}
+		acct := accountType
+		if strings.TrimSpace(acct) == "" {
+			acct = accounting.AccountTypePlatform
+		}
+		prov := accounting.NormalizeProvider(providerName)
+		txType := "DEBIT"
+		if strings.EqualFold(trxType, "Deposit") {
+			txType = "CREDIT"
+		}
+		status := "Failed"
+		desc := strings.TrimSpace(reason)
+		if desc == "" {
+			desc = "Transaction failed"
+		}
+		wTx := models.WalletTransaction{
+			UserID:          userID,
+			ClientName:      client,
+			Amount:          amount,
+			Fee:             float64Ptr(0),
+			NetAmount:       float64Ptr(0),
+			Type:            &txType,
+			TransactionType: &trxType,
+			Status:          &status,
+			Currency:        currency,
+			Description:     &desc,
+			TrxRef:          &txRef,
+			AccountType:     &acct,
+			Provider:        &prov,
+			CreatedAt:       time.Now(),
+		}
+		return tx.Create(&wTx).Error
+	})
 }
 
 func markPaymentIntentPaidTx(tx *gorm.DB, txRef string) {

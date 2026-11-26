@@ -29,6 +29,9 @@ type VerifyTransactionRequest struct {
 type VerifyTransactionResponse struct {
 	TransactionReference string
 	Amount               float64
+	Fee                  float64
+	SettlementAmount     float64
+	ProviderName         string
 	Currency             string
 	Status               string // e.g., "SUCCESS", "FAILED", "PENDING"
 }

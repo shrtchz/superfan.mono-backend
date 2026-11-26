@@ -17,6 +17,7 @@ import (
 	"gorm.io/gorm/clause"
 	"quiz.superfan.com/apis/labels"
 	"quiz.superfan.com/apis/models"
+	"quiz.superfan.com/apis/services/accounting"
 	"quiz.superfan.com/apis/utils"
 )
 
@@ -660,8 +661,9 @@ func creditQuizReward(tx *gorm.DB, userID int, amountInNaira float64, subject st
 
 	// 2. Create WalletTransaction tagged to the Savings Account with the standard
 	//    "Credit Wallet - Quiz Earning" label.
-	trxType := "credit"
-	savingsType := "Savings"
+	trxType := "CREDIT"
+	savingsType := accounting.AccountTypeSavings
+	inAppProvider := accounting.ProviderInApp
 	status := "Completed"
 	transactionType := "Reward"
 	description := labels.Wallet("quizEarning", nil)
@@ -669,18 +671,34 @@ func creditQuizReward(tx *gorm.DB, userID int, amountInNaira float64, subject st
 		description = "Test Quiz Earning"
 	}
 	trxRef := fmt.Sprintf("QUIZ_%d", now.UnixNano())
-	if err := tx.Create(&models.WalletTransaction{
+	zeroFee := 0.0
+	wTx := models.WalletTransaction{
 		UserID:          userID,
 		Amount:          amountInNaira,
+		Fee:             &zeroFee,
+		NetAmount:       &amountInNaira,
 		Type:            &trxType,
 		TransactionType: &transactionType,
 		Currency:        "NGN",
 		AccountType:     &savingsType,
+		Provider:        &inAppProvider,
 		Status:          &status,
 		Description:     &description,
 		TrxRef:          &trxRef,
 		CreatedAt:       now,
-	}).Error; err != nil {
+	}
+	if err := tx.Create(&wTx).Error; err != nil {
+		return err
+	}
+	if err := accounting.PostJournalTx(tx, &wTx, accounting.JournalInput{
+		Kind:          accounting.KindRewardCredit,
+		Purpose:       "quiz_earning",
+		Amount:        amountInNaira,
+		Fee:           0,
+		Currency:      "NGN",
+		Provider:      inAppProvider,
+		WalletAccount: savingsType,
+	}); err != nil {
 		return err
 	}
 

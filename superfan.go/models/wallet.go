@@ -53,11 +53,15 @@ type WalletTransaction struct {
 	RewardType      *string    `gorm:"column:rewardType" json:"rewardType"`
 	TransactionType *string    `gorm:"column:transactionType" json:"transactionType"`
 	Description     *string    `gorm:"column:description" json:"description"`
-	TrxRef          *string    `gorm:"column:trx_ref" json:"trx_ref"`
-	WalletID        *int       `gorm:"column:walletId" json:"walletId"`
-	CreatedAt       time.Time  `gorm:"column:createdAt" json:"createdAt"`
-	HoldUntil       *time.Time `gorm:"column:holdUntil" json:"holdUntil"`
-	ClientName      string     `gorm:"-" json:"clientName"` // resolved from User for ledger display
+	TrxRef          *string             `gorm:"column:trx_ref" json:"trx_ref"`
+	WalletID        *int                `gorm:"column:walletId" json:"walletId"`
+	Provider        *string             `gorm:"column:provider;size:64" json:"provider,omitempty"`
+	Fee             *float64            `gorm:"column:fee;default:0" json:"fee,omitempty"`
+	NetAmount       *float64            `gorm:"column:net_amount" json:"net_amount,omitempty"`
+	CreatedAt       time.Time           `gorm:"column:createdAt" json:"createdAt"`
+	HoldUntil       *time.Time          `gorm:"column:holdUntil" json:"holdUntil"`
+	ClientName      string              `gorm:"-" json:"clientName"` // resolved from User or "In-app" for internal entries
+	JournalLines    []LedgerJournalLine `gorm:"-" json:"journalLines,omitempty"`
 }
 
 type LedgerCategoryAmount struct {

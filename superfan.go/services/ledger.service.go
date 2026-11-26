@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strconv"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"quiz.superfan.com/apis/models"
+	"quiz.superfan.com/apis/services/accounting"
 
 	"gorm.io/gorm"
 )
@@ -15,6 +17,7 @@ import (
 type LedgerService interface {
 	GetLedgerEntries(page, limit int, filters map[string]interface{}, search string) ([]models.WalletTransaction, int64, *models.LedgerSummary, error)
 	GetLedgerSummary(filters map[string]interface{}, search string) (*models.LedgerSummary, error)
+	GetReconciliation(ctx context.Context) (*accounting.ReconciliationReport, error)
 }
 
 type ledgerServiceImpl struct {
@@ -113,25 +116,25 @@ func accountConditions(names []string) []string {
 	for _, name := range upperAll(names) {
 		switch name {
 		case "CHECKING", "PERSONAL":
-			ors = append(ors, `UPPER(COALESCE("account_type", '')) = 'PERSONAL'`)
+			ors = append(ors, `UPPER(COALESCE("account_type", '')) IN ('CHECKING', 'PERSONAL')`)
 		case "SAVINGS", "GOLD":
-			ors = append(ors, `UPPER(COALESCE("account_type", '')) = 'GOLD'`)
+			ors = append(ors, `UPPER(COALESCE("account_type", '')) IN ('SAVINGS', 'GOLD')`)
 		case "PLATFORM":
-			ors = append(ors, `COALESCE("account_type", '') = ''`)
+			ors = append(ors, `UPPER(COALESCE("account_type", '')) IN ('', 'PLATFORM')`)
 		}
 	}
 	return ors
 }
 
 // providerConditions best-effort maps providers onto the columns the ledger
-// actually stores: transaction refs carry provider prefixes (e.g. Monnify
-// "MNFY|...") and bank transfers carry the bank name. In-app rows are the ones
-// with no external provider reference.
+// actually stores: explicit provider column, transaction refs (e.g. "MNFY|..."),
+// and bank transfers carry the bank name. In-app rows are internal wallet transactions.
 func providerConditions(names []string) ([]string, []interface{}) {
 	var ors []string
 	var args []interface{}
 	ref := `COALESCE("trx_ref", "reference", '')`
 	bank := `COALESCE("bank_name", '')`
+	prov := `UPPER(COALESCE("provider", ''))`
 	add := func(cond string, arg interface{}) {
 		ors = append(ors, cond)
 		if arg != nil {
@@ -141,19 +144,24 @@ func providerConditions(names []string) ([]string, []interface{}) {
 	for _, name := range upperAll(names) {
 		switch name {
 		case "MONNIFY":
+			add(prov+` = ?`, "MONNIFY")
 			add(ref+` ILIKE ?`, "MNFY%")
 			add(bank+` ILIKE ?`, "%MONNIFY%")
 		case "FLUTTERWAVE":
+			add(prov+` = ?`, "FLUTTERWAVE")
 			add(ref+` ILIKE ?`, "FLW%")
 			add(bank+` ILIKE ?`, "%FLUTTERWAVE%")
 		case "BITNOB":
+			add(prov+` = ?`, "BITNOB")
 			add(ref+` ILIKE ?`, "BIT%")
 			add(bank+` ILIKE ?`, "%BITNOB%")
 		case "BACHS":
+			add(prov+` = ?`, "BACHS")
 			add(ref+` ILIKE ?`, "BACHS%")
 			add(bank+` ILIKE ?`, "%BACHS%")
 		case "IN-APP", "IN APP", "INAPP":
-			add(`(COALESCE("payment_method", '') = '' AND `+ref+` NOT ILIKE 'MNFY%' AND `+ref+` NOT ILIKE 'FLW%' AND `+ref+` NOT ILIKE 'BIT%' AND `+ref+` NOT ILIKE 'BACHS%')`, nil)
+			add(prov+` = ?`, "IN-APP")
+			add(`(`+prov+` = '' AND COALESCE("payment_method", '') = '' AND `+ref+` NOT ILIKE 'MNFY%' AND `+ref+` NOT ILIKE 'FLW%' AND `+ref+` NOT ILIKE 'BIT%' AND `+ref+` NOT ILIKE 'BACHS%')`, nil)
 		}
 	}
 	return ors, args
@@ -227,8 +235,33 @@ func (s *ledgerServiceImpl) GetLedgerEntries(page, limit int, filters map[string
 	}
 
 	s.attachClientNames(entries)
+	s.attachJournalLines(entries)
 
 	return entries, total, summary, nil
+}
+
+func (s *ledgerServiceImpl) attachJournalLines(entries []models.WalletTransaction) {
+	if len(entries) == 0 || s.db == nil {
+		return
+	}
+	ids := make([]int, 0, len(entries))
+	for _, e := range entries {
+		ids = append(ids, e.ID)
+	}
+	var lines []models.LedgerJournalLine
+	if err := s.db.Where(`"transactionId" IN ?`, ids).Order("id ASC").Find(&lines).Error; err != nil {
+		log.Printf("[LEDGER] journal line lookup failed: %v", err)
+		return
+	}
+	byTx := make(map[int][]models.LedgerJournalLine, len(entries))
+	for _, l := range lines {
+		byTx[l.TransactionID] = append(byTx[l.TransactionID], l)
+	}
+	for i := range entries {
+		if jLines, ok := byTx[entries[i].ID]; ok {
+			entries[i].JournalLines = jLines
+		}
+	}
 }
 
 // attachClientNames fills the display-only ClientName field by resolving the
@@ -270,8 +303,18 @@ func (s *ledgerServiceImpl) attachClientNames(entries []models.WalletTransaction
 	}
 
 	for i := range entries {
-		entries[i].ClientName = names[entries[i].UserID]
+		if entries[i].UserID <= 0 {
+			entries[i].ClientName = accounting.ProviderInApp
+			continue
+		}
+		if resolved := names[entries[i].UserID]; resolved != "" {
+			entries[i].ClientName = resolved
+		}
 	}
+}
+
+func (s *ledgerServiceImpl) GetReconciliation(ctx context.Context) (*accounting.ReconciliationReport, error) {
+	return accounting.ReconcileWalletsAndLedger(ctx, s.db)
 }
 
 func (s *ledgerServiceImpl) GetLedgerSummary(filters map[string]interface{}, search string) (*models.LedgerSummary, error) {
