@@ -2911,8 +2911,24 @@ async isWinner(commentId: number, winAmount: number) {
 
   async getVideoViews(videoId: string): Promise<any> {
     try {
-      await this.ensureValidToken();
+      let useApiKeyFallback = false;
+      try {
+        await this.ensureValidToken();
+      } catch (authErr: any) {
+        if (process.env.YOUTUBE_API_KEY?.trim()) {
+          this.logger.warn(
+            `YouTube OAuth unavailable (${authErr?.message}); falling back to YOUTUBE_API_KEY for video-stats.`,
+          );
+          useApiKeyFallback = true;
+        } else {
+          throw authErr;
+        }
+      }
+
       const response = await this.youtube.videos.list({
+        ...(useApiKeyFallback
+          ? { key: process.env.YOUTUBE_API_KEY!.trim() }
+          : {}),
         id: [videoId],
         part: ['statistics', 'snippet', 'liveStreamingDetails', 'status'],
       });
