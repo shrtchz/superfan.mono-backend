@@ -157,6 +157,9 @@ func init() {
 			if err := utils.DB.Exec(`ALTER TABLE "AdPlacement" ADD COLUMN IF NOT EXISTS "placementType" TEXT`).Error; err != nil {
 				log.Fatalf("failed to migrate AdPlacement.placementType: %v", err)
 			}
+			if err := utils.DB.Exec(`ALTER TABLE "WalletTransaction" ADD COLUMN IF NOT EXISTS "provider" VARCHAR(64), ADD COLUMN IF NOT EXISTS "fee" DOUBLE PRECISION DEFAULT 0, ADD COLUMN IF NOT EXISTS "net_amount" DOUBLE PRECISION`).Error; err != nil {
+				log.Fatalf("failed to migrate WalletTransaction columns: %v", err)
+			}
 		}
 	} else {
 		log.Println("DATABASE_URL environment variable is not set; skipping PostgreSQL connection")

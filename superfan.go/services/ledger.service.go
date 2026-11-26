@@ -412,6 +412,7 @@ func (s *ledgerServiceImpl) computeSummary(base *gorm.DB) (*models.LedgerSummary
 		`SELECT COALESCE(SUM("totalAmount"), 0) AS total FROM "Order" WHERE UPPER(COALESCE("paymentStatus", '')) = 'PAID' AND UPPER(COALESCE(status::text, '')) <> 'CANCELLED'`,
 		"shop revenue",
 	)
+	summary.PlatformRevenue += summary.RevenueAds + summary.RevenueSubs + summary.RevenueShop
 	summary.RewardsExpense = s.sumOrZero(
 		`SELECT COALESCE(SUM(amount), 0) AS total FROM "Reward" WHERE currency = 'NGN' AND status::text IN ('PAID_OUT', 'SUCCESS', 'COMPLETED')`,
 		"rewards expense",
