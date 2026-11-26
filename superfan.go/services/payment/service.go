@@ -2197,6 +2197,12 @@ func (s *PaymentService) InitPaymentByTransfer(ctx context.Context, payload map[
 // This is the single entry point for card-based wallet funding.
 func (s *PaymentService) ChargeCardAndCreditWallet(ctx context.Context, userID int, amount float64, currency string, chargePayload map[string]interface{}) (map[string]interface{}, error) {
 	txRef, _ := chargePayload["transactionReference"].(string)
+	customDescription, _ := chargePayload["description"].(string)
+	if strings.TrimSpace(customDescription) == "" {
+		customDescription, _ = chargePayload["paymentDescription"].(string)
+	}
+	delete(chargePayload, "description")
+	delete(chargePayload, "paymentDescription")
 	log.Printf("[PaymentService] ChargeCardAndCreditWallet - userID=%d amount=%.2f txRef=%s", userID, amount, txRef)
 
 	if amount < minimumDepositAmount {
@@ -2365,7 +2371,7 @@ func (s *PaymentService) ChargeCardAndCreditWallet(ctx context.Context, userID i
 
 	// Step 3: Credit wallet atomically in DB
 	log.Printf("[PaymentService] Step 3: Crediting wallet for userID=%d amount=%.2f", userID, amount)
-	wallet, err := s.creditWalletInDB(ctx, userID, amount, monnifyTxRef, "card", currency, &cardMeta)
+	wallet, err := s.creditWalletInDB(ctx, userID, amount, monnifyTxRef, "card", currency, &cardMeta, customDescription)
 	if err != nil {
 		log.Printf("[PaymentService] CRITICAL: Card charged but wallet credit FAILED for userID=%d txRef=%s: %v", userID, monnifyTxRef, err)
 		return nil, fmt.Errorf("wallet credit failed after successful card charge (txRef: %s): %w", monnifyTxRef, err)
@@ -2497,8 +2503,12 @@ func (s *PaymentService) AuthorizeCardOTPAndCreditWallet(ctx context.Context, us
 	}
 
 	// Credit wallet atomically
+	customDescription, _ := authPayload["description"].(string)
+	if strings.TrimSpace(customDescription) == "" {
+		customDescription, _ = authPayload["paymentDescription"].(string)
+	}
 	log.Printf("[PaymentService] Crediting wallet after successful OTP authorization: userID=%d amount=%.2f txRef=%s", userID, amount, monnifyTxRef)
-	wallet, err := s.creditWalletInDB(ctx, userID, amount, monnifyTxRef, "card", currency, &cardMeta)
+	wallet, err := s.creditWalletInDB(ctx, userID, amount, monnifyTxRef, "card", currency, &cardMeta, customDescription)
 	if err != nil {
 		log.Printf("[PaymentService] CRITICAL: Card OTP authorized but wallet credit FAILED for userID=%d txRef=%s: %v", userID, monnifyTxRef, err)
 		return nil, fmt.Errorf("wallet credit failed after successful card charge (txRef: %s): %w", monnifyTxRef, err)
@@ -2532,7 +2542,7 @@ func (s *PaymentService) AuthorizeCardOTPAndCreditWallet(ctx context.Context, us
 }
 
 // creditWalletInDB atomically updates Wallet, WalletTransaction, ActivityWallet, CardFunding, and UserCard.
-func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amount float64, txRef, paymentMethod, currency string, cardMeta *savedCardMetadata) (*models.Wallet, error) {
+func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amount float64, txRef, paymentMethod, currency string, cardMeta *savedCardMetadata, customDesc ...string) (*models.Wallet, error) {
 	if userID <= 0 {
 		return nil, errors.New("invalid userId")
 	}
@@ -2550,6 +2560,9 @@ func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amoun
 		methodKey = "stablecoin"
 	}
 	description := labels.Wallet("deposit", map[string]string{"method": labels.Method(methodKey)})
+	if len(customDesc) > 0 && strings.TrimSpace(customDesc[0]) != "" {
+		description = strings.TrimSpace(customDesc[0])
+	}
 	paymentMethodValue := "ACCOUNT_TRANSFER"
 	if methodKey == "debitCard" {
 		paymentMethodValue = "CARD"

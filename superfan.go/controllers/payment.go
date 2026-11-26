@@ -318,11 +318,16 @@ func (pc *PaymentController) ChargeCard(c *gin.Context) {
 
 	log.Printf("[PaymentController] ChargeCard - userID=%d amount=%.2f txRef=%s currency=%s", userID, amount, txRef, currency)
 
-	// Pass charge payload (card + txRef) through to service
+	// Pass charge payload (card + txRef + optional description) through to service
 	chargePayload := map[string]interface{}{
 		"transactionReference": txRef,
 		"card":                 cardMap,
 		"amount":               amount,
+	}
+	if desc, _ := req["description"].(string); strings.TrimSpace(desc) != "" {
+		chargePayload["description"] = strings.TrimSpace(desc)
+	} else if desc, _ := req["paymentDescription"].(string); strings.TrimSpace(desc) != "" {
+		chargePayload["description"] = strings.TrimSpace(desc)
 	}
 
 	res, err := pc.paymentService.ChargeCardAndCreditWallet(c.Request.Context(), userID, amount, currency, chargePayload)
