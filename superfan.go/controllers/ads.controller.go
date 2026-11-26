@@ -492,18 +492,16 @@ func (ac *AdsController) AwardMidQuizReward(c *gin.Context) {
 func RegisterAdsRoutes(rg *gin.RouterGroup, ac *AdsController) {
 	adsGroup := rg.Group("/ads")
 	{
-		// Public informational / placement endpoints
-		adsGroup.GET("/placements", ac.GetPlacements)
-		adsGroup.GET("/reward-quota", ac.GetRewardAdQuota)
-		adsGroup.POST("/estimate", ac.EstimateAdCost)
-		adsGroup.GET("/campaigns", middleware.OptionalAuth(), ac.GetCampaigns)
-		adsGroup.POST("/test-link", ac.TestLink)
-		adsGroup.POST("/campaigns/:id/test-link", ac.TestCampaignLink)
-		adsGroup.POST("/events", ac.LogAdEvent)
-		adsGroup.GET("/placement/:key/eligibility", ac.GetPlacementEligibility)
-
 		// Authenticated user endpoints
-		authed := adsGroup.Group("", middleware.AuthRequired())
+		authed := adsGroup.Group("", middleware.InternalOrAuthRequired())
+		authed.GET("/placements", ac.GetPlacements)
+		authed.GET("/reward-quota", ac.GetRewardAdQuota)
+		authed.POST("/estimate", ac.EstimateAdCost)
+		authed.GET("/campaigns", ac.GetCampaigns)
+		authed.POST("/test-link", ac.TestLink)
+		authed.POST("/campaigns/:id/test-link", ac.TestCampaignLink)
+		authed.POST("/events", ac.LogAdEvent)
+		authed.GET("/placement/:key/eligibility", ac.GetPlacementEligibility)
 		authed.POST("/reward", ac.AwardMidQuizReward)
 		authed.POST("/campaigns", ac.CreateCampaign)
 		authed.GET("/campaigns/mine", ac.GetMyCampaigns)
@@ -512,7 +510,7 @@ func RegisterAdsRoutes(rg *gin.RouterGroup, ac *AdsController) {
 		authed.DELETE("/campaigns/:id", ac.DeleteCampaign)
 
 		// Admin only endpoints
-		adminOnly := adsGroup.Group("", middleware.AuthRequired(), middleware.AdminRequired())
+		adminOnly := adsGroup.Group("", middleware.InternalOrAuthRequired(), middleware.InternalOrAdminRequired())
 		adminOnly.GET("/inventory/stats", ac.GetInventoryStats)
 		adminOnly.POST("/campaigns/:id/approve", ac.ApproveCampaign)
 		adminOnly.POST("/campaigns/:id/reject", ac.RejectCampaign)

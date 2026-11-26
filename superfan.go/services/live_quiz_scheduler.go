@@ -532,7 +532,15 @@ func (f *LiveQuizFinaliser) sendNotification(userID string, amount float64, ques
 	}
 
 	url := fmt.Sprintf("%s/api/v1/notification/triggers/live-quiz-reward", strings.TrimRight(f.nestBaseURL, "/"))
-	resp, err := f.httpClient.Post(url, "application/json", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create request to nest: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if key := utils.GetInternalServiceKey(); key != "" {
+		req.Header.Set("x-internal-service-key", key)
+	}
+	resp, err := f.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("http post to nest: %w", err)
 	}
@@ -686,7 +694,15 @@ func (f *LiveQuizFinaliser) sendConsolationNotification(userID string, points in
 	}
 
 	url := fmt.Sprintf("%s/api/v1/notification/triggers/live-quiz-consolation", strings.TrimRight(f.nestBaseURL, "/"))
-	resp, err := f.httpClient.Post(url, "application/json", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create request to nest: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if key := utils.GetInternalServiceKey(); key != "" {
+		req.Header.Set("x-internal-service-key", key)
+	}
+	resp, err := f.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("http post to nest: %w", err)
 	}

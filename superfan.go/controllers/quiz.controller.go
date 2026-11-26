@@ -1319,34 +1319,26 @@ func RegisterQuizRoutes(
 ) {
 	quizroute := rg.Group("/quiz")
 
-	// TTS Read-Aloud endpoint (public accessibility read-aloud)
-	quizroute.GET("/tts", qc.GetQuizTTS)
-
-	// Airtable Webhook stays public
+	// Airtable Webhook stays public (verified via webhook)
 	quizroute.POST("/airtable-webhook", qc.AirtableWebhook)
 
-	// Live quiz reads — public (stream player + schedule polling).
-	quizroute.GET("/live", qc.GetAllLiveQuiz)
-	quizroute.GET("/live/random/:number", qc.GetRandomLiveQuiz)
-	quizroute.GET("/live/:id", qc.GetLiveQuiz)
-	quizroute.GET("/live-answer/:id", middleware.AuthRequired(), qc.GetLiveQuizAnswerById)
-
-	// Quiz search — public (used by admin create-quiz autocomplete)
-	quizroute.GET("/search", qc.SearchQuizzes)
-
-	// ── Authenticated Quiz User Routes ─────────────────────
+	// ── Authenticated Quiz User & Read Routes ──────────────
 	quizAuthed := quizroute.Group("", middleware.InternalOrAuthRequired())
+	quizAuthed.GET("/tts", qc.GetQuizTTS)
+	quizAuthed.GET("/live", qc.GetAllLiveQuiz)
+	quizAuthed.GET("/live/random/:number", qc.GetRandomLiveQuiz)
+	quizAuthed.GET("/live/:id", qc.GetLiveQuiz)
+	quizAuthed.GET("/live-answer/:id", qc.GetLiveQuizAnswerById)
+	quizAuthed.GET("/search", qc.SearchQuizzes)
+	quizAuthed.GET("/categories", qc.GetAllCategory)
+	quizAuthed.GET("/get/:id", qc.GetQuiz)
+	quizAuthed.GET("/getall", qc.GetAllQuiz)
+	quizAuthed.GET("/preferences", qc.GetQuizByPreferences)
+	quizAuthed.GET("/quick-start", qc.QuickStart)
 	quizAuthed.GET("/quiz-answer/:id", qc.GetQuizAnswerById)
 	quizAuthed.GET("/get-ongoing-quiz/:id", qc.GetOngoingQuiz)
 	quizAuthed.POST("/submit", qc.SubmitQuiz)
 	quizAuthed.GET("/get-user-submissions/:userId", qsc.GetUserSubmissions)
-
-	// ── Public Quiz Catalog / Read Routes ──────────────────
-	quizroute.GET("/categories", qc.GetAllCategory)
-	quizroute.GET("/get/:id", qc.GetQuiz)
-	quizroute.GET("/getall", qc.GetAllQuiz)
-	quizroute.GET("/preferences", qc.GetQuizByPreferences)
-	quizroute.GET("/quick-start", qc.QuickStart)
 
 	// ── Admin Quiz Management & Submissions ────────────────
 	quizAdmin := quizroute.Group("", middleware.InternalOrAuthRequired(), middleware.InternalOrAdminRequired())
