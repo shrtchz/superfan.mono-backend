@@ -2394,7 +2394,7 @@ func (s *PaymentService) ChargeCardAndCreditWallet(ctx context.Context, userID i
 	responseMessage := "Card charged and wallet credited successfully"
 	if isDirectPayment {
 		log.Printf("[PaymentService] Step 3: Recording direct card payment (no wallet credit) for userID=%d amount=%.2f purpose=%s", userID, amount, paymentPurpose)
-		wallet, err = s.recordDirectPaymentInDB(ctx, userID, amount, monnifyTxRef, "card", currency, customDescription, &cardMeta)
+		wallet, err = s.recordDirectPaymentInDB(ctx, userID, amount, monnifyTxRef, "card", currency, paymentPurpose, customDescription, &cardMeta)
 		responseMessage = "Card payment completed successfully"
 	} else {
 		log.Printf("[PaymentService] Step 3: Crediting wallet for userID=%d amount=%.2f", userID, amount)
@@ -2535,12 +2535,12 @@ func (s *PaymentService) AuthorizeCardOTPAndCreditWallet(ctx context.Context, us
 	if strings.TrimSpace(customDescription) == "" {
 		customDescription, _ = authPayload["paymentDescription"].(string)
 	}
-	isDirectPayment, _ := isDirectPaymentPurpose(authPayload)
+	isDirectPayment, paymentPurpose := isDirectPaymentPurpose(authPayload)
 	var wallet *models.Wallet
 	responseMessage := "Card payment authorized and wallet credited successfully"
 	if isDirectPayment {
 		log.Printf("[PaymentService] Recording direct card payment after OTP authorization: userID=%d amount=%.2f txRef=%s", userID, amount, monnifyTxRef)
-		wallet, err = s.recordDirectPaymentInDB(ctx, userID, amount, monnifyTxRef, "card", currency, customDescription, &cardMeta)
+		wallet, err = s.recordDirectPaymentInDB(ctx, userID, amount, monnifyTxRef, "card", currency, paymentPurpose, customDescription, &cardMeta)
 		responseMessage = "Card payment authorized and completed successfully"
 	} else {
 		log.Printf("[PaymentService] Crediting wallet after successful OTP authorization: userID=%d amount=%.2f txRef=%s", userID, amount, monnifyTxRef)
@@ -2579,9 +2579,35 @@ func (s *PaymentService) AuthorizeCardOTPAndCreditWallet(ctx context.Context, us
 }
 
 // creditWalletInDB atomically updates Wallet, WalletTransaction, ActivityWallet, CardFunding, and UserCard.
+func resolveDirectPaymentTransactionType(purpose, customDesc, txRef string) string {
+	p := strings.ToLower(strings.TrimSpace(purpose))
+	d := strings.ToLower(strings.TrimSpace(customDesc))
+	r := strings.ToUpper(strings.TrimSpace(txRef))
+
+	switch p {
+	case "ad_payment", "ads", "ad":
+		return "ADS"
+	case "shop_payment", "shop", "merch":
+		return "SHOP"
+	case "subscription_payment", "subscription", "sub":
+		return "SUBSCRIPTION"
+	}
+
+	if strings.HasPrefix(r, "DEBIT-ADS-") || strings.Contains(d, "ad campaign") || strings.HasPrefix(d, "ads") {
+		return "ADS"
+	}
+	if strings.Contains(d, "shop") || strings.Contains(d, "merch") {
+		return "SHOP"
+	}
+	if strings.Contains(d, "subscription") {
+		return "SUBSCRIPTION"
+	}
+	return "Payment"
+}
+
 // recordDirectPaymentInDB records a direct platform payment (e.g., Ads, Shop, Subscription)
 // without crediting or altering the user's wallet balance.
-func (s *PaymentService) recordDirectPaymentInDB(ctx context.Context, userID int, amount float64, txRef, paymentMethod, currency, customDesc string, cardMeta *savedCardMetadata) (*models.Wallet, error) {
+func (s *PaymentService) recordDirectPaymentInDB(ctx context.Context, userID int, amount float64, txRef, paymentMethod, currency, purpose, customDesc string, cardMeta *savedCardMetadata) (*models.Wallet, error) {
 	if userID <= 0 {
 		return nil, errors.New("invalid userId")
 	}
@@ -2626,7 +2652,7 @@ func (s *PaymentService) recordDirectPaymentInDB(ctx context.Context, userID int
 
 		txType := "DEBIT"
 		status := "Completed"
-		trxType := "Payment"
+		trxType := resolveDirectPaymentTransactionType(purpose, description, txRef)
 		wTx := models.WalletTransaction{
 			UserID:          userID,
 			Amount:          amount,
@@ -3549,7 +3575,7 @@ func (s *PaymentService) DebitUserWallet(ctx context.Context, userID int, amount
 		// Record in WalletTransaction
 		txType := "DEBIT"
 		status := "Completed"
-		trxType := "Payment"
+		trxType := resolveDirectPaymentTransactionType("", description, txRef)
 		wTx := models.WalletTransaction{
 			UserID:          userID,
 			Amount:          amount,
