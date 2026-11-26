@@ -1,4 +1,5 @@
 import { verifyToken } from '@clerk/backend';
+import { timingSafeEqual } from 'crypto';
 
 import {
 
@@ -57,6 +58,25 @@ export class JwtGuard implements CanActivate {
 
 
     const request = context.switchToHttp().getRequest();
+
+    const internalKey = process.env.INTERNAL_SERVICE_KEY?.trim();
+    const providedInternalKey =
+      typeof request.headers['x-internal-service-key'] === 'string'
+        ? request.headers['x-internal-service-key'].trim()
+        : '';
+    if (
+      internalKey &&
+      providedInternalKey &&
+      internalKey.length === providedInternalKey.length &&
+      timingSafeEqual(
+        Buffer.from(providedInternalKey),
+        Buffer.from(internalKey),
+      )
+    ) {
+      request.isInternalService = true;
+      request.user = { id: 0, roleName: 'internal' };
+      return true;
+    }
 
     const authHeader = request.headers.authorization;
 

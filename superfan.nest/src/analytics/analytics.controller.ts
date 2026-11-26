@@ -11,25 +11,21 @@ export class AnalyticsController {
     private readonly taskService: TaskService,
   ) {}
 
-  @Public()
   @Get('/total-admins')
   getTotalAdmins() {
     return this.analyticsService.fetchAdminAndInviteStats();
   }
 
-  @Public()
   @Get('/total-clients')
   getTotalCleints() {
     return this.analyticsService.fetchTotalClients();
   }
 
-  @Public()
   @Get('/admin')
   async getAnalytics() {
     return this.analyticsService.fetchAnalytics();
   }
 
-  @Public()
   @Get('/avg-users')
   async getAverageUsers() {
     return this.analyticsService.fetchAverageUsers();

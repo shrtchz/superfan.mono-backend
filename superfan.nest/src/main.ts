@@ -34,6 +34,31 @@ async function bootstrap() {
 
   app.use(helmet());
 
+  // Populate req.cookies without requiring an external cookie-parser dependency
+  app.use((req: any, _res: any, next: () => void) => {
+    if (!req.cookies) {
+      req.cookies = {};
+      const cookieHeader = req.headers?.cookie;
+      if (typeof cookieHeader === 'string' && cookieHeader.length > 0) {
+        for (const part of cookieHeader.split(';')) {
+          const idx = part.indexOf('=');
+          if (idx > 0) {
+            const key = part.slice(0, idx).trim();
+            const val = part.slice(idx + 1).trim();
+            if (key) {
+              try {
+                req.cookies[key] = decodeURIComponent(val);
+              } catch {
+                req.cookies[key] = val;
+              }
+            }
+          }
+        }
+      }
+    }
+    next();
+  });
+
   app.enableCors({
     origin: [
       "http://localhost:3000",

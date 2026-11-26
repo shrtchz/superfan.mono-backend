@@ -15,6 +15,14 @@ export class PermissionGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
+    const isPublic = this.reflector.getAllAndOverride<boolean>('isPublic', [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+    if (isPublic) {
+      return true;
+    }
+
     const requiredPermissions =
       this.reflector.getAllAndOverride<string[]>(PERMISSION_KEY, [
         context.getHandler(),
@@ -24,6 +32,9 @@ export class PermissionGuard implements CanActivate {
     if (!requiredPermissions) return true;
 
     const request = context.switchToHttp().getRequest();
+    if (request.isInternalService) {
+      return true;
+    }
     const user = request.user;
 
     if (!user) {

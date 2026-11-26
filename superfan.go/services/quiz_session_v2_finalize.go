@@ -539,11 +539,20 @@ func notifyReferralFirstTestBonus(notification *referralFirstTestNotification) {
 	}
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Post(
+	req, err := http.NewRequest(
+		http.MethodPost,
 		fmt.Sprintf("%s/api/v1/notification/triggers/referral-first-test", nestBaseURL),
-		"application/json",
 		bytes.NewReader(payload),
 	)
+	if err != nil {
+		log.Printf("[Referral] Failed to create first-test notification request: %v", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if key := utils.GetInternalServiceKey(); key != "" {
+		req.Header.Set("x-internal-service-key", key)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		log.Printf("[Referral] Failed to send first-test notification: %v", err)
 		return
@@ -728,11 +737,20 @@ func creditQuizReward(tx *gorm.DB, userID int, amountInNaira float64, subject st
 	if body, err := json.Marshal(payload); err == nil {
 		go func() {
 			client := &http.Client{Timeout: 5 * time.Second}
-			resp, err := client.Post(
+			req, err := http.NewRequest(
+				http.MethodPost,
 				fmt.Sprintf("%s/api/v1/notification/triggers/test-quiz-reward", nestBaseURL),
-				"application/json",
 				bytes.NewReader(body),
 			)
+			if err != nil {
+				log.Printf("[QuizSessionV2] Failed to create test-quiz notification request: %v", err)
+				return
+			}
+			req.Header.Set("Content-Type", "application/json")
+			if key := utils.GetInternalServiceKey(); key != "" {
+				req.Header.Set("x-internal-service-key", key)
+			}
+			resp, err := client.Do(req)
 			if err != nil {
 				log.Printf("[QuizSessionV2] Failed to send test-quiz notification: %v", err)
 				return

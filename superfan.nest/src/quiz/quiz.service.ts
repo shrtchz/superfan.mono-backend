@@ -460,7 +460,22 @@ export class QuizService {
     @Inject(forwardRef(() => TaskService))
     private readonly taskService: TaskService,
     private readonly notificationService: NotificationService,
-  ) {}
+  ) {
+    this.httpService.axiosRef.interceptors.request.use((config) => {
+      const goEndpoint = process.env.GO_ENDPOINT?.trim();
+      const internalKey = this.configService.get<string>('INTERNAL_SERVICE_KEY')?.trim();
+      if (
+        goEndpoint &&
+        internalKey &&
+        typeof config.url === 'string' &&
+        config.url.startsWith(goEndpoint)
+      ) {
+        config.headers = config.headers ?? {};
+        config.headers['x-internal-service-key'] = internalKey;
+      }
+      return config;
+    });
+  }
 
   async getPointsConversionRate(category?: 'quiz' | 'ads') {
     if (category) {
@@ -469,17 +484,15 @@ export class QuizService {
     return this.pointsConversionUtil.getAllConversionRatesDetails();
   }
 
-  /** Service JWT for server-to-server calls to the Go quiz API (AuthRequired routes). */
+  /** Service auth headers for server-to-server calls to the Go quiz API. */
   private getGoServiceAuthHeaders(): Record<string, string> {
-    const token = this.jwtService.sign(
-      { id: 0, email: 'system@superfan.internal', role: 'SYSTEM' },
-      {
-        secret:
-          this.configService.get<string>('AT_SECRET') || 'superfan_secret_key',
-        expiresIn: '5m',
-      },
-    );
-    return { Authorization: `Bearer ${token}` };
+    const internalKey = this.configService
+      .get<string>('INTERNAL_SERVICE_KEY')
+      ?.trim();
+    if (internalKey) {
+      return { 'x-internal-service-key': internalKey };
+    }
+    return {};
   }
 
   private getLagosNow(): Date {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"quiz.superfan.com/apis/middleware"
 	"quiz.superfan.com/apis/services/payment"
 	"quiz.superfan.com/apis/services/payment/providers"
 	"quiz.superfan.com/apis/utils"
@@ -147,38 +148,48 @@ func (pc *PaymentController) Webhook(c *gin.Context) {
 
 func RegisterPaymentRoutes(rg *gin.RouterGroup, pc *PaymentController) {
 	paymentGroup := rg.Group("/payment")
-	paymentGroup.GET("/wallet-transactions", pc.GetWalletTransactions)
-	paymentGroup.POST("/deposit", pc.InitiateDeposit)
-	paymentGroup.POST("/initialize-transaction", pc.InitializeTransaction)
-	paymentGroup.POST("/init-payment-by-transfer", pc.InitPaymentByTransfer)
-	paymentGroup.POST("/charge-card", pc.ChargeCard)
-	paymentGroup.POST("/authorize-card-otp", pc.AuthorizeCardOTP)
-	paymentGroup.GET("/query-transaction", pc.QueryTransaction)
-	paymentGroup.POST("/simulate-address-deposit", pc.SimulateAddressDeposit)
+
+	// Public payment provider webhooks (verified via provider signature/HMAC)
 	paymentGroup.POST("/webhook/:provider", pc.Webhook)
 	paymentGroup.POST("/webhook", pc.Webhook)
 	paymentGroup.POST("/webhooks/:provider", pc.Webhook)
 	paymentGroup.POST("/webhooks", pc.Webhook)
 	rg.POST("/webhooks/:provider", pc.Webhook)
 	rg.POST("/webhooks", pc.Webhook)
-	paymentGroup.GET("/user-wallet-balance", pc.GetUserWalletBalance)
-	paymentGroup.GET("/payments/history", pc.GetPaymentHistory)
-	paymentGroup.POST("/trf-btw-wallets/:userId", pc.TransferBetweenWallets)
-	paymentGroup.GET("/banks", pc.GetBanks)
-	paymentGroup.GET("/banks/validate", pc.ValidateBankAccount)
-	paymentGroup.POST("/create-withdrawal-bank", pc.CreateUserWithdrawalBank)
-	paymentGroup.GET("/user-withdrawal-banks", pc.GetUserWithdrawalBanks)
-	paymentGroup.GET("/user-withdrawal-banks/:userId", pc.GetUserWithdrawalBanks)
-	paymentGroup.POST("/connect-withdrawal-wallet", pc.CreateUserWithdrawalWallet)
-	paymentGroup.GET("/user-withdrawal-wallets/:userId", pc.GetUserWithdrawalWallets)
-	paymentGroup.GET("/rates", pc.GetRates)
-	paymentGroup.GET("/convert", pc.ConvertCurrency)
-	paymentGroup.POST("/convert", pc.ConvertCurrency)
-	paymentGroup.POST("/wallet-withdrawal", pc.WalletWithdrawal)
-	paymentGroup.POST("/debit", pc.DebitWallet)
-	paymentGroup.POST("/validate-otp", pc.ValidateOTP)
-	paymentGroup.GET("/processors", pc.GetProcessors)
-	paymentGroup.PATCH("/processors/:id/toggle", pc.ToggleProcessor)
+
+	// Public / optional-auth reference & conversion endpoints
+	paymentGroup.GET("/banks", middleware.OptionalAuth(), pc.GetBanks)
+	paymentGroup.GET("/banks/validate", middleware.OptionalAuth(), pc.ValidateBankAccount)
+	paymentGroup.GET("/rates", middleware.OptionalAuth(), pc.GetRates)
+	paymentGroup.GET("/convert", middleware.OptionalAuth(), pc.ConvertCurrency)
+	paymentGroup.POST("/convert", middleware.OptionalAuth(), pc.ConvertCurrency)
+
+	// Authenticated user & internal service payment endpoints
+	authed := paymentGroup.Group("", middleware.InternalOrAuthRequired())
+	authed.GET("/wallet-transactions", pc.GetWalletTransactions)
+	authed.POST("/deposit", pc.InitiateDeposit)
+	authed.POST("/initialize-transaction", pc.InitializeTransaction)
+	authed.POST("/init-payment-by-transfer", pc.InitPaymentByTransfer)
+	authed.POST("/charge-card", pc.ChargeCard)
+	authed.POST("/authorize-card-otp", pc.AuthorizeCardOTP)
+	authed.GET("/query-transaction", pc.QueryTransaction)
+	authed.POST("/simulate-address-deposit", pc.SimulateAddressDeposit)
+	authed.GET("/user-wallet-balance", pc.GetUserWalletBalance)
+	authed.GET("/payments/history", pc.GetPaymentHistory)
+	authed.POST("/trf-btw-wallets/:userId", pc.TransferBetweenWallets)
+	authed.POST("/create-withdrawal-bank", pc.CreateUserWithdrawalBank)
+	authed.GET("/user-withdrawal-banks", pc.GetUserWithdrawalBanks)
+	authed.GET("/user-withdrawal-banks/:userId", pc.GetUserWithdrawalBanks)
+	authed.POST("/connect-withdrawal-wallet", pc.CreateUserWithdrawalWallet)
+	authed.GET("/user-withdrawal-wallets/:userId", pc.GetUserWithdrawalWallets)
+	authed.POST("/wallet-withdrawal", pc.WalletWithdrawal)
+	authed.POST("/debit", pc.DebitWallet)
+	authed.POST("/validate-otp", pc.ValidateOTP)
+
+	// Admin-only payment processor configuration
+	adminOnly := paymentGroup.Group("", middleware.InternalOrAuthRequired(), middleware.InternalOrAdminRequired())
+	adminOnly.GET("/processors", pc.GetProcessors)
+	adminOnly.PATCH("/processors/:id/toggle", pc.ToggleProcessor)
 }
 
 // GetWalletTransactions handles GET /v1/payment/wallet-transactions

@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"crypto/subtle"
 	"net/http"
 	"strings"
 
@@ -196,5 +197,43 @@ func AdminRequired() gin.HandlerFunc {
 			return
 		}
 		c.Next()
+	}
+}
+
+// HasValidInternalServiceKey verifies the shared x-internal-service-key header using constant-time comparison.
+func HasValidInternalServiceKey(c *gin.Context) bool {
+	expected := strings.TrimSpace(utils.GetInternalServiceKey())
+	if expected == "" {
+		return false
+	}
+	provided := strings.TrimSpace(c.GetHeader("x-internal-service-key"))
+	if len(provided) != len(expected) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(provided), []byte(expected)) == 1
+}
+
+// InternalOrAuthRequired accepts either a valid x-internal-service-key header or a Clerk session JWT.
+func InternalOrAuthRequired() gin.HandlerFunc {
+	authMiddleware := AuthRequired()
+	return func(c *gin.Context) {
+		if HasValidInternalServiceKey(c) {
+			c.Set(ContextAuthSource, "internal")
+			c.Next()
+			return
+		}
+		authMiddleware(c)
+	}
+}
+
+// InternalOrAdminRequired allows trusted internal service calls or authenticated administrators.
+func InternalOrAdminRequired() gin.HandlerFunc {
+	adminMiddleware := AdminRequired()
+	return func(c *gin.Context) {
+		if c.GetString(ContextAuthSource) == "internal" || HasValidInternalServiceKey(c) {
+			c.Next()
+			return
+		}
+		adminMiddleware(c)
 	}
 }
