@@ -21,6 +21,7 @@ import (
 	"gorm.io/gorm"
 	"quiz.superfan.com/apis/labels"
 	"quiz.superfan.com/apis/models"
+	"quiz.superfan.com/apis/services/accounting"
 	"quiz.superfan.com/apis/utils"
 )
 
@@ -793,9 +794,10 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				wallet = models.Wallet{
-					UserID:      req.UserID,
-					Balance:     rewardNaira,
+					UserID:         req.UserID,
+					Balance:        rewardNaira,
 					SavingsBalance: rewardNaira,
+					GoldBalance:    rewardNaira,
 				}
 				if err := tx.Create(&wallet).Error; err != nil {
 					return err
@@ -807,11 +809,13 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 			if err := tx.Model(&wallet).Updates(map[string]interface{}{
 				"balance":        gorm.Expr(`"balance" + ?`, rewardNaira),
 				"savingsBalance": gorm.Expr(`"savingsBalance" + ?`, rewardNaira),
+				"goldBalance":    gorm.Expr(`"goldBalance" + ?`, rewardNaira),
 			}).Error; err != nil {
 				return err
 			}
 			wallet.Balance += rewardNaira
 			wallet.SavingsBalance += rewardNaira
+			wallet.GoldBalance += rewardNaira
 		}
 
 		newBalance = wallet.SavingsBalance
@@ -820,19 +824,24 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 		transactionType := "Reward"
 		rewardType := labels.Wallet("adsReward", nil)
 		description := rewardType
-		savingsAccount := "Savings"
+		savingsAccount := accounting.AccountTypeSavings
+		inAppProvider := accounting.ProviderInApp
 		currency := "NGN"
 		txRef := fmt.Sprintf("ADSREW-%d-%d", req.UserID, time.Now().UnixNano())
 
 		status := "Completed"
+		zeroFee := 0.0
 		wTx := models.WalletTransaction{
 			UserID:          req.UserID,
 			Amount:          rewardNaira,
+			Fee:             &zeroFee,
+			NetAmount:       &rewardNaira,
 			Type:            &txType,
 			Currency:        currency,
 			Status:          &status,
 			TransactionType: &transactionType,
 			AccountType:     &savingsAccount,
+			Provider:        &inAppProvider,
 			RewardType:      &rewardType,
 			Description:     &description,
 			TrxRef:          &txRef,
@@ -840,6 +849,17 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 			CreatedAt:       time.Now(),
 		}
 		if err := tx.Create(&wTx).Error; err != nil {
+			return err
+		}
+		if err := accounting.PostJournalTx(tx, &wTx, accounting.JournalInput{
+			Kind:          accounting.KindRewardCredit,
+			Purpose:       "ads_reward",
+			Amount:        rewardNaira,
+			Fee:           0,
+			Currency:      currency,
+			Provider:      inAppProvider,
+			WalletAccount: savingsAccount,
+		}); err != nil {
 			return err
 		}
 
@@ -1545,53 +1565,93 @@ func (s *adsServiceImpl) RejectAndRefundCampaign(ctx context.Context, id int, re
 		return nil, fmt.Errorf("failed to update campaign status to rejected: %w", err)
 	}
 
-	// Issue wallet credit refund to advertiser if fee > 0 and user exists
+	// Issue wallet credit refund to advertiser atomically if fee > 0 and user exists
 	refundAmount := float64(campaign.TotalFee)
 	if campaign.UserID != nil && *campaign.UserID > 0 && refundAmount > 0 {
 		userID := *campaign.UserID
+		ref := fmt.Sprintf("REF-AD-%d", campaign.ID)
 
-		// Credit user's wallet
-		var wallet models.Wallet
-		walletErr := s.db.WithContext(ctx).Where(`"userId" = ?`, userID).First(&wallet).Error
-		if walletErr == nil && wallet.ID > 0 {
-			if err := s.db.WithContext(ctx).Model(&models.Wallet{}).
-				Where("id = ?", wallet.ID).
-				Updates(map[string]interface{}{
-					"checkingBalance": gorm.Expr(`"checkingBalance" + ?`, refundAmount),
-					"balance":         gorm.Expr(`"balance" + ?`, refundAmount),
-				}).Error; err != nil {
-				fmt.Printf("Warning: failed to credit wallet %d: %v\n", wallet.ID, err)
+		if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			var existingCount int64
+			if err := tx.Model(&models.WalletTransaction{}).
+				Where(`"trx_ref" = ?`, ref).
+				Count(&existingCount).Error; err != nil {
+				return err
 			}
-		} else {
-			// Create wallet with credited amount
-			newWallet := models.Wallet{
+			if existingCount > 0 {
+				return nil
+			}
+
+			var wallet models.Wallet
+			walletErr := tx.Where(`"userId" = ?`, userID).First(&wallet).Error
+			if walletErr == nil && wallet.ID > 0 {
+				if err := tx.Model(&models.Wallet{}).
+					Where("id = ?", wallet.ID).
+					Updates(map[string]interface{}{
+						"personalBalance": gorm.Expr(`"personalBalance" + ?`, refundAmount),
+						"checkingBalance": gorm.Expr(`"checkingBalance" + ?`, refundAmount),
+						"balance":         gorm.Expr(`"balance" + ?`, refundAmount),
+					}).Error; err != nil {
+					return err
+				}
+			} else if errors.Is(walletErr, gorm.ErrRecordNotFound) {
+				newWallet := models.Wallet{
+					UserID:          userID,
+					PersonalBalance: refundAmount,
+					CheckingBalance: refundAmount,
+					Balance:         refundAmount,
+				}
+				if err := tx.Create(&newWallet).Error; err != nil {
+					return err
+				}
+				wallet = newWallet
+			} else if walletErr != nil {
+				return walletErr
+			}
+
+			trxType := "CREDIT"
+			trxCategory := "AD_REFUND"
+			trxStatus := "Completed"
+			trxDesc := "Ad Rejection Refund"
+			checkingAccount := accounting.AccountTypeChecking
+			inAppProvider := accounting.ProviderInApp
+			pmWallet := "WALLET"
+			zeroFee := 0.0
+
+			txRecord := models.WalletTransaction{
 				UserID:          userID,
-				CheckingBalance: refundAmount,
-				Balance:         refundAmount,
+				Amount:          refundAmount,
+				Fee:             &zeroFee,
+				NetAmount:       &refundAmount,
+				Type:            &trxType,
+				TransactionType: &trxCategory,
+				Currency:        "NGN",
+				Status:          &trxStatus,
+				AccountType:     &checkingAccount,
+				Provider:        &inAppProvider,
+				PaymentMethod:   &pmWallet,
+				Description:     &trxDesc,
+				Reference:       &ref,
+				TrxRef:          &ref,
+				WalletID:        &wallet.ID,
+				CreatedAt:       now,
 			}
-			_ = s.db.WithContext(ctx).Create(&newWallet).Error
-		}
+			if err := tx.Create(&txRecord).Error; err != nil {
+				return err
+			}
 
-		// Insert WalletTransaction record
-		trxType := "credit"
-		trxCategory := "AD_REFUND"
-		trxStatus := "SUCCESS"
-		trxDesc := "Ad Rejection Refund"
-		ref := fmt.Sprintf("REF-AD-%d-%d", campaign.ID, now.Unix())
-
-		txRecord := models.WalletTransaction{
-			UserID:          userID,
-			Amount:          refundAmount,
-			Type:            &trxType,
-			TransactionType: &trxCategory,
-			Currency:        "NGN",
-			Status:          &trxStatus,
-			Description:     &trxDesc,
-			Reference:       &ref,
-			TrxRef:          &ref,
-			CreatedAt:       now,
+			return accounting.PostJournalTx(tx, &txRecord, accounting.JournalInput{
+				Kind:          accounting.KindWalletRefund,
+				Purpose:       "ad_refund",
+				Amount:        refundAmount,
+				Fee:           0,
+				Currency:      "NGN",
+				Provider:      inAppProvider,
+				WalletAccount: checkingAccount,
+			})
+		}); err != nil {
+			return nil, fmt.Errorf("failed to refund campaign %d: %w", campaign.ID, err)
 		}
-		_ = s.db.WithContext(ctx).Create(&txRecord).Error
 
 		// Trigger in-app notification and email via Nest
 		s.notifyNest("ad-rejected", map[string]interface{}{

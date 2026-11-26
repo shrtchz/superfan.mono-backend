@@ -25,6 +25,7 @@ func RegisterLedgerRoutes(router *gin.RouterGroup, lc *LedgerController) {
 	{
 		ledgerGroup.GET("", lc.GetLedgerEntries)
 		ledgerGroup.GET("/summary", lc.GetLedgerSummary)
+		ledgerGroup.GET("/reconciliation", lc.GetReconciliation)
 	}
 }
 
@@ -111,6 +112,18 @@ func (lc *LedgerController) GetLedgerSummary(c *gin.Context) {
 	}
 
 	utils.Success(c, http.StatusOK, "Ledger summary retrieved successfully", summary)
+}
+
+// GetReconciliation handles GET /admin/ledger/reconciliation — verifies trial balance and wallet liabilities.
+func (lc *LedgerController) GetReconciliation(c *gin.Context) {
+	report, err := lc.ledgerService.GetReconciliation(c.Request.Context())
+	if err != nil {
+		log.Printf("[LEDGER_ERROR] GetReconciliation failed: %v", err)
+		utils.SendError(c, http.StatusInternalServerError, "RECONCILIATION_ERROR", "Failed to run ledger reconciliation")
+		return
+	}
+
+	utils.Success(c, http.StatusOK, "Ledger reconciliation completed", report)
 }
 
 // BroadcastLedgerUpdate is a helper to broadcast new transactions to the admin dashboard via WebSockets.

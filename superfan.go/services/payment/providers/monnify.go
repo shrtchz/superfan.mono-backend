@@ -3,12 +3,16 @@ package providers
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha512"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -84,17 +88,56 @@ func (m *MonnifyProvider) VerifyTransaction(ctx context.Context, req VerifyTrans
 		body = result
 	}
 	status, _ := body["paymentStatus"].(string)
-	amountPaidStr, _ := body["amountPaid"].(string)
-	amountPaid := 0.0
-	fmt.Sscanf(amountPaidStr, "%f", &amountPaid)
+	amountPaid := parseMonnifyFloat(body["amountPaid"])
+	settlementAmount := parseMonnifyFloat(body["settlementAmount"])
+	fee := parseMonnifyFloat(body["fee"])
+	if fee == 0 {
+		fee = parseMonnifyFloat(body["fees"])
+	}
+	if fee == 0 && settlementAmount > 0 && amountPaid > settlementAmount {
+		fee = amountPaid - settlementAmount
+	}
 	currency, _ := body["currency"].(string)
 	txRef, _ := body["transactionReference"].(string)
 	return &VerifyTransactionResponse{
 		TransactionReference: txRef,
 		Amount:               amountPaid,
+		Fee:                  fee,
+		SettlementAmount:     settlementAmount,
+		ProviderName:         "Monnify",
 		Currency:             currency,
 		Status:               status,
 	}, nil
+}
+
+func parseMonnifyFloat(v interface{}) float64 {
+	switch val := v.(type) {
+	case float64:
+		return val
+	case int:
+		return float64(val)
+	case int64:
+		return float64(val)
+	case string:
+		f, err := strconv.ParseFloat(strings.TrimSpace(val), 64)
+		if err == nil {
+			return f
+		}
+	}
+	return 0
+}
+
+// VerifyWebhookSignature validates Monnify's `monnify-signature` HMAC-SHA512 header.
+func (m *MonnifyProvider) VerifyWebhookSignature(rawBody []byte, signatureHeader string) bool {
+	sig := strings.TrimSpace(signatureHeader)
+	secret := strings.TrimSpace(m.SecretKey)
+	if sig == "" || secret == "" {
+		return false
+	}
+	mac := hmac.New(sha512.New, []byte(secret))
+	mac.Write(rawBody)
+	expected := hex.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(strings.ToLower(sig)), []byte(strings.ToLower(expected)))
 }
 
 // getAccessToken authenticates with Monnify and returns a Bearer token.

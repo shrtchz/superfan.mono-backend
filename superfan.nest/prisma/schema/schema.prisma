@@ -1325,10 +1325,13 @@ model AdCampaign {
   endDate              DateTime?
   runContinuously      Boolean   @default(true)
   ageRange             String? // "18-24", "18-35", "25-45", "45+"
+  placementType        String?
+  pricingModel         String?
+  questionBlocks       Int       @default(0)
   guaranteedDailyViews Int       @default(1000)
   pausedByAdmin        Boolean   @default(false)
   approvedByAdmin      Boolean   @default(false)
-  status               AdStatus  @default(PENDING)
+  status               String    @default("PENDING")
   views                Int       @default(0)
   clicks               Int       @default(0)
   paymentStatus        String    @default("PENDING") // PENDING, PAID, FAILED
@@ -1341,13 +1344,18 @@ model AdCampaign {
 }
 
 model AdPlacement {
-  id          Int      @id @default(autoincrement())
-  campaignId  Int
-  key         String // e.g. "QUIZ_MIDPOINT"
-  mediaUrl    String
-  durationSec Int      @default(30)
-  skipAllowed Boolean  @default(false)
-  createdAt   DateTime @default(now())
+  id                Int      @id @default(autoincrement())
+  campaignId        Int
+  key               String // e.g. "QUIZ_MIDPOINT"
+  placementType     String?
+  mediaUrl          String
+  durationSec       Int      @default(30)
+  skipAllowed       Boolean  @default(false)
+  skipAfterSec      Int      @default(0)
+  pointsAwardActive Boolean  @default(false)
+  pointsAwardAmount Int      @default(0)
+  pricingModel      String?
+  createdAt         DateTime @default(now())
 
   campaign AdCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   events   AdEvent[]

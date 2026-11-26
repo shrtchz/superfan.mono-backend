@@ -107,6 +107,15 @@ func (pc *PaymentController) Webhook(c *gin.Context) {
 		return
 
 	case "monnify":
+		signature := c.GetHeader("monnify-signature")
+		if signature == "" {
+			signature = c.GetHeader("Monnify-Signature")
+		}
+		if err := pc.paymentService.VerifyProviderWebhook(c.Request.Context(), "monnify", signature, rawBody); err != nil {
+			log.Printf("[PaymentController] Monnify webhook signature error: %v", err)
+			utils.SendError(c, http.StatusUnauthorized, "UNAUTHORIZED", err.Error())
+			return
+		}
 		var req providers.VerifyTransactionRequest
 		if err := json.Unmarshal(rawBody, &req); err != nil {
 			utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "invalid request payload")
@@ -119,6 +128,15 @@ func (pc *PaymentController) Webhook(c *gin.Context) {
 		utils.Success(c, http.StatusOK, "Webhook processed successfully", nil)
 
 	case "bitnob":
+		signature := c.GetHeader("x-bitnob-signature")
+		if signature == "" {
+			signature = c.GetHeader("X-Bitnob-Signature")
+		}
+		if err := pc.paymentService.VerifyProviderWebhook(c.Request.Context(), "bitnob", signature, rawBody); err != nil {
+			log.Printf("[PaymentController] Bitnob webhook signature error: %v", err)
+			utils.SendError(c, http.StatusUnauthorized, "UNAUTHORIZED", err.Error())
+			return
+		}
 		var req providers.VerifyTransactionRequest
 		if err := json.Unmarshal(rawBody, &req); err != nil {
 			utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "invalid request payload")

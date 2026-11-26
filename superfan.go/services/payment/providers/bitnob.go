@@ -3,11 +3,15 @@ package providers
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha512"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -99,9 +103,26 @@ func (b *BitnobProvider) VerifyTransaction(ctx context.Context, req VerifyTransa
 	return &VerifyTransactionResponse{
 		TransactionReference: req.TransactionReference,
 		Amount:               0,
+		ProviderName:         "Bitnob",
 		Currency:             "USDC",
 		Status:               "SUCCESS", // Mocked for now
 	}, nil
+}
+
+// VerifyWebhookSignature validates Bitnob's `x-bitnob-signature` HMAC-SHA512 header.
+func (b *BitnobProvider) VerifyWebhookSignature(rawBody []byte, signatureHeader string) bool {
+	sig := strings.TrimSpace(signatureHeader)
+	secret := strings.TrimSpace(os.Getenv("BITNOB_WEBHOOK_SECRET"))
+	if secret == "" {
+		secret = strings.TrimSpace(b.ApiKey)
+	}
+	if sig == "" || secret == "" {
+		return false
+	}
+	mac := hmac.New(sha512.New, []byte(secret))
+	mac.Write(rawBody)
+	expected := hex.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(strings.ToLower(sig)), []byte(strings.ToLower(expected)))
 }
 
 type SimulateAddressDepositRequest struct {
