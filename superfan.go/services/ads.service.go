@@ -797,7 +797,6 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 					UserID:         req.UserID,
 					Balance:        rewardNaira,
 					SavingsBalance: rewardNaira,
-					GoldBalance:    rewardNaira,
 				}
 				if err := tx.Create(&wallet).Error; err != nil {
 					return err
@@ -809,13 +808,11 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 			if err := tx.Model(&wallet).Updates(map[string]interface{}{
 				"balance":        gorm.Expr(`"balance" + ?`, rewardNaira),
 				"savingsBalance": gorm.Expr(`"savingsBalance" + ?`, rewardNaira),
-				"goldBalance":    gorm.Expr(`"goldBalance" + ?`, rewardNaira),
 			}).Error; err != nil {
 				return err
 			}
 			wallet.Balance += rewardNaira
 			wallet.SavingsBalance += rewardNaira
-			wallet.GoldBalance += rewardNaira
 		}
 
 		newBalance = wallet.SavingsBalance
@@ -1588,7 +1585,6 @@ func (s *adsServiceImpl) RejectAndRefundCampaign(ctx context.Context, id int, re
 				if err := tx.Model(&models.Wallet{}).
 					Where("id = ?", wallet.ID).
 					Updates(map[string]interface{}{
-						"personalBalance": gorm.Expr(`"personalBalance" + ?`, refundAmount),
 						"checkingBalance": gorm.Expr(`"checkingBalance" + ?`, refundAmount),
 						"balance":         gorm.Expr(`"balance" + ?`, refundAmount),
 					}).Error; err != nil {
@@ -1597,7 +1593,6 @@ func (s *adsServiceImpl) RejectAndRefundCampaign(ctx context.Context, id int, re
 			} else if errors.Is(walletErr, gorm.ErrRecordNotFound) {
 				newWallet := models.Wallet{
 					UserID:          userID,
-					PersonalBalance: refundAmount,
 					CheckingBalance: refundAmount,
 					Balance:         refundAmount,
 				}

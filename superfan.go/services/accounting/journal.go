@@ -380,7 +380,7 @@ func ReconcileWalletsAndLedger(ctx context.Context, db *gorm.DB) (*Reconciliatio
 		Savings  float64
 	}
 	if err := db.WithContext(ctx).Model(&models.Wallet{}).
-		Select(`COALESCE(SUM("personalBalance"), 0) AS checking, COALESCE(SUM("goldBalance"), 0) AS savings`).
+		Select(`COALESCE(SUM("checkingBalance"), 0) AS checking, COALESCE(SUM("savingsBalance"), 0) AS savings`).
 		Scan(&wSums).Error; err != nil {
 		return nil, err
 	}

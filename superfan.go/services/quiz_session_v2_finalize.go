@@ -569,9 +569,8 @@ func creditReferralTestBonus(tx *gorm.DB, userID, points int, pointType, title s
 	updatedWallet := tx.Model(&models.Wallet{}).
 		Where(`"userId" = ?`, userID).
 		Updates(map[string]interface{}{
-			"balance":     gorm.Expr(`"balance" + ?`, amountInNaira),
+			"balance":        gorm.Expr(`"balance" + ?`, amountInNaira),
 			"savingsBalance": gorm.Expr(`"savingsBalance" + ?`, amountInNaira),
-			"goldBalance": gorm.Expr(`"goldBalance" + ?`, amountInNaira),
 		})
 	if updatedWallet.Error != nil {
 		return updatedWallet.Error
@@ -646,15 +645,14 @@ func creditQuizReward(tx *gorm.DB, userID int, amountInNaira float64, subject st
 		walletAmount = 1
 	}
 
-	// 1. Credit the Gold Wallet (test quiz earnings always go to Gold Account).
-	//    Both the overall "balance" and the "goldBalance" are incremented so the
-	//    earnings are visible in the Gold Wallet.
+	// 1. Credit the Savings Wallet (test quiz earnings always go to Savings Account).
+	//    Both the overall "balance" and the "savingsBalance" are incremented so the
+	//    earnings are visible in the Savings Wallet.
 	if err := tx.Model(&models.Wallet{}).
 		Where(`"userId" = ?`, userID).
 		Updates(map[string]interface{}{
-			"balance":     gorm.Expr(`"balance" + ?`, amountInNaira),
+			"balance":        gorm.Expr(`"balance" + ?`, amountInNaira),
 			"savingsBalance": gorm.Expr(`"savingsBalance" + ?`, amountInNaira),
-			"goldBalance": gorm.Expr(`"goldBalance" + ?`, amountInNaira),
 		}).Error; err != nil {
 		return err
 	}

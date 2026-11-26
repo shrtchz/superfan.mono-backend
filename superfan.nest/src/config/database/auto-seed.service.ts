@@ -236,8 +236,8 @@ export class AutoSeedService implements OnApplicationBootstrap {
         "id" SERIAL PRIMARY KEY,
         "userId" INTEGER NOT NULL UNIQUE REFERENCES "User"("id") ON DELETE CASCADE,
         "balance" DOUBLE PRECISION NOT NULL DEFAULT 0,
-        "goldBalance" DOUBLE PRECISION NOT NULL DEFAULT 0,
-        "personalBalance" DOUBLE PRECISION NOT NULL DEFAULT 0,
+        "savingsBalance" DOUBLE PRECISION NOT NULL DEFAULT 0,
+        "checkingBalance" DOUBLE PRECISION NOT NULL DEFAULT 0,
         "usdcBalance" DOUBLE PRECISION NOT NULL DEFAULT 0,
         "usdtBalance" DOUBLE PRECISION NOT NULL DEFAULT 0
       )`,
