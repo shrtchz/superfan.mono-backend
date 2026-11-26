@@ -1102,7 +1102,7 @@ func (s *PaymentService) GetWalletTransactions(ctx context.Context, filter Walle
 		var pendingPayoutsList []PendingResult
 		if err := s.db.WithContext(ctx).Model(&models.Payout{}).
 			Select("\"userId\", SUM(amount) as total").
-			Where("\"userId\" IN ? AND (\"status\" ILIKE 'PENDING' OR \"status\" ILIKE 'PROCESSING')", userIDs).
+			Where("\"userId\" IN ? AND (CAST(\"status\" AS TEXT) ILIKE 'PENDING' OR CAST(\"status\" AS TEXT) ILIKE 'PROCESSING')", userIDs).
 			Group("\"userId\"").
 			Scan(&pendingPayoutsList).Error; err == nil {
 			for _, res := range pendingPayoutsList {
@@ -2670,6 +2670,8 @@ func (s *PaymentService) recordDirectPaymentInDB(ctx context.Context, userID int
 		}
 		log.Printf("[DB] Direct payment WalletTransaction created: id=%d", wTx.ID)
 
+		markPaymentIntentPaidTx(tx, txRef)
+
 		actTx := models.ActivityWallet{
 			UserID:      userID,
 			Type:        "debit",
@@ -3591,6 +3593,8 @@ func (s *PaymentService) DebitUserWallet(ctx context.Context, userID int, amount
 			return fmt.Errorf("failed to create WalletTransaction for debit: %w", err)
 		}
 
+		markPaymentIntentPaidTx(tx, txRef)
+
 		// Record in ActivityWallet
 		actTx := models.ActivityWallet{
 			UserID:      userID,
@@ -3616,6 +3620,82 @@ func (s *PaymentService) DebitUserWallet(ctx context.Context, userID int, amount
 	}
 
 	return &updatedWallet, nil
+}
+
+func markPaymentIntentPaidTx(tx *gorm.DB, txRef string) {
+	if tx == nil || strings.TrimSpace(txRef) == "" {
+		return
+	}
+	_ = tx.Exec(`SAVEPOINT sp_mark_intent_paid`).Error
+	err := tx.Model(&models.PaymentIntent{}).
+		Where("reference = ? AND UPPER(COALESCE(status, '')) <> 'PAID'", strings.TrimSpace(txRef)).
+		Updates(map[string]interface{}{
+			"status":    "PAID",
+			"updatedAt": time.Now(),
+		}).Error
+	if err != nil {
+		_ = tx.Exec(`ROLLBACK TO SAVEPOINT sp_mark_intent_paid`).Error
+	} else {
+		_ = tx.Exec(`RELEASE SAVEPOINT sp_mark_intent_paid`).Error
+	}
+}
+
+// CreatePaymentIntent records a PENDING_PAYMENT intent before charging a card, bank, or wallet.
+func (s *PaymentService) CreatePaymentIntent(ctx context.Context, userID int, reference, purpose string, amount float64, currency string, targetType, targetID, metadata *string) (*models.PaymentIntent, error) {
+	if s.db == nil {
+		return nil, errors.New("database not initialized")
+	}
+	if userID <= 0 {
+		return nil, errors.New("userId must be a positive integer")
+	}
+	if amount <= 0 {
+		return nil, errors.New("amount must be greater than 0")
+	}
+	reference = strings.TrimSpace(reference)
+	if reference == "" {
+		reference = fmt.Sprintf("INTENT-%d-%d", userID, time.Now().UnixNano())
+	}
+	if strings.TrimSpace(purpose) == "" {
+		purpose = "deposit"
+	}
+	if strings.TrimSpace(currency) == "" {
+		currency = "NGN"
+	}
+
+	var existing models.PaymentIntent
+	if err := s.db.WithContext(ctx).Where("reference = ?", reference).First(&existing).Error; err == nil {
+		return &existing, nil
+	}
+
+	intent := models.PaymentIntent{
+		UserID:     userID,
+		Reference:  reference,
+		Purpose:    strings.TrimSpace(purpose),
+		TargetType: targetType,
+		TargetID:   targetID,
+		Amount:     amount,
+		Currency:   strings.ToUpper(strings.TrimSpace(currency)),
+		Status:     "PENDING_PAYMENT",
+		Metadata:   metadata,
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
+	}
+	if err := s.db.WithContext(ctx).Create(&intent).Error; err != nil {
+		return nil, fmt.Errorf("failed to create payment intent: %w", err)
+	}
+	return &intent, nil
+}
+
+// GetPaymentIntent retrieves a PaymentIntent by its unique reference.
+func (s *PaymentService) GetPaymentIntent(ctx context.Context, reference string) (*models.PaymentIntent, error) {
+	if s.db == nil {
+		return nil, errors.New("database not initialized")
+	}
+	var intent models.PaymentIntent
+	if err := s.db.WithContext(ctx).Where("reference = ?", strings.TrimSpace(reference)).First(&intent).Error; err != nil {
+		return nil, err
+	}
+	return &intent, nil
 }
 
 // CreateUserWithdrawalBank saves a withdrawal bank account for a user.

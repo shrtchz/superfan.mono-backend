@@ -166,6 +166,8 @@ func RegisterPaymentRoutes(rg *gin.RouterGroup, pc *PaymentController) {
 
 	// Authenticated user & internal service payment endpoints
 	authed := paymentGroup.Group("", middleware.InternalOrAuthRequired())
+	authed.POST("/intent", pc.CreatePaymentIntent)
+	authed.GET("/intent/:reference", pc.GetPaymentIntent)
 	authed.GET("/wallet-transactions", pc.GetWalletTransactions)
 	authed.POST("/deposit", pc.InitiateDeposit)
 	authed.POST("/initialize-transaction", pc.InitializeTransaction)
@@ -190,6 +192,97 @@ func RegisterPaymentRoutes(rg *gin.RouterGroup, pc *PaymentController) {
 	adminOnly := paymentGroup.Group("", middleware.InternalOrAuthRequired(), middleware.InternalOrAdminRequired())
 	adminOnly.GET("/processors", pc.GetProcessors)
 	adminOnly.PATCH("/processors/:id/toggle", pc.ToggleProcessor)
+}
+
+// resolveAuthorizedUserID enforces that an authenticated non-admin caller
+// cannot charge or debit another user's ID.
+func resolveAuthorizedUserID(c *gin.Context, requestedUserID int) (int, bool) {
+	authUserID := c.GetInt(middleware.ContextUserIDKey)
+	if authUserID <= 0 {
+		return requestedUserID, true
+	}
+	if requestedUserID <= 0 {
+		return authUserID, true
+	}
+	if requestedUserID != authUserID && !middleware.IsAdmin(c) {
+		return 0, false
+	}
+	return requestedUserID, true
+}
+
+// CreatePaymentIntent handles POST /v1/payment/intent
+func (pc *PaymentController) CreatePaymentIntent(c *gin.Context) {
+	var req struct {
+		UserID     int     `json:"userId"`
+		Reference  string  `json:"reference"`
+		Purpose    string  `json:"purpose"`
+		Amount     float64 `json:"amount"`
+		Currency   string  `json:"currency"`
+		TargetType *string `json:"targetType"`
+		TargetID   *string `json:"targetId"`
+		Metadata   *string `json:"metadata"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		sendDetailedError(c, http.StatusBadRequest, "BAD_REQUEST", "Invalid request payload", err)
+		return
+	}
+
+	userID, allowed := resolveAuthorizedUserID(c, req.UserID)
+	if !allowed {
+		sendDetailedError(c, http.StatusForbidden, "FORBIDDEN", "Cannot create payment intent for another user", nil)
+		return
+	}
+	if userID <= 0 {
+		sendDetailedError(c, http.StatusBadRequest, "BAD_REQUEST", "userId must be a positive integer", nil)
+		return
+	}
+
+	intent, err := pc.paymentService.CreatePaymentIntent(
+		c.Request.Context(),
+		userID,
+		req.Reference,
+		req.Purpose,
+		req.Amount,
+		req.Currency,
+		req.TargetType,
+		req.TargetID,
+		req.Metadata,
+	)
+	if err != nil {
+		sendDetailedError(c, http.StatusBadRequest, "PAYMENT_INTENT_FAILED", err.Error(), err)
+		return
+	}
+
+	c.JSON(http.StatusCreated, map[string]interface{}{
+		"requestSuccessful": true,
+		"responseCode":      "0",
+		"responseMessage":   "Payment intent created",
+		"responseBody":      intent,
+	})
+}
+
+// GetPaymentIntent handles GET /v1/payment/intent/:reference
+func (pc *PaymentController) GetPaymentIntent(c *gin.Context) {
+	ref := strings.TrimSpace(c.Param("reference"))
+	if ref == "" {
+		sendDetailedError(c, http.StatusBadRequest, "BAD_REQUEST", "reference is required", nil)
+		return
+	}
+	intent, err := pc.paymentService.GetPaymentIntent(c.Request.Context(), ref)
+	if err != nil {
+		sendDetailedError(c, http.StatusNotFound, "NOT_FOUND", "Payment intent not found", err)
+		return
+	}
+	authUserID := c.GetInt(middleware.ContextUserIDKey)
+	if authUserID > 0 && intent.UserID != authUserID && !middleware.IsAdmin(c) {
+		sendDetailedError(c, http.StatusForbidden, "FORBIDDEN", "Access denied", nil)
+		return
+	}
+	c.JSON(http.StatusOK, map[string]interface{}{
+		"requestSuccessful": true,
+		"responseCode":      "0",
+		"responseBody":      intent,
+	})
 }
 
 // GetWalletTransactions handles GET /v1/payment/wallet-transactions
@@ -304,7 +397,11 @@ func (pc *PaymentController) ChargeCard(c *gin.Context) {
 	}
 
 	userIDFloat, _ := req["userId"].(float64)
-	userID := int(userIDFloat)
+	userID, allowed := resolveAuthorizedUserID(c, int(userIDFloat))
+	if !allowed {
+		sendDetailedError(c, http.StatusForbidden, "FORBIDDEN", "Cannot charge card for another user", nil)
+		return
+	}
 	if userID <= 0 {
 		sendDetailedError(c, http.StatusBadRequest, "BAD_REQUEST", "userId must be a positive integer", nil)
 		return
@@ -385,7 +482,11 @@ func (pc *PaymentController) AuthorizeCardOTP(c *gin.Context) {
 	}
 
 	userIDFloat, _ := req["userId"].(float64)
-	userID := int(userIDFloat)
+	userID, allowed := resolveAuthorizedUserID(c, int(userIDFloat))
+	if !allowed {
+		sendDetailedError(c, http.StatusForbidden, "FORBIDDEN", "Cannot charge card for another user", nil)
+		return
+	}
 	if userID <= 0 {
 		sendDetailedError(c, http.StatusBadRequest, "BAD_REQUEST", "userId must be a positive integer", nil)
 		return
@@ -829,6 +930,12 @@ func (pc *PaymentController) DebitWallet(c *gin.Context) {
 	}
 	if userId <= 0 {
 		fmt.Sscanf(c.Query("userId"), "%d", &userId)
+	}
+	var allowed bool
+	userId, allowed = resolveAuthorizedUserID(c, userId)
+	if !allowed {
+		sendDetailedError(c, http.StatusForbidden, "FORBIDDEN", "Cannot debit another user's wallet", nil)
+		return
 	}
 	if userId <= 0 {
 		sendDetailedError(c, http.StatusBadRequest, "BAD_REQUEST", "userId must be a positive integer", nil)
