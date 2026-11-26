@@ -2195,15 +2195,34 @@ func (s *PaymentService) InitPaymentByTransfer(ctx context.Context, payload map[
 // ChargeCardAndCreditWallet charges a card via the active processor (Monnify, Flutterwave, Bachs) and, on SUCCESS,
 // atomically credits the user's wallet and records all relevant DB entries.
 // This is the single entry point for card-based wallet funding.
+func isDirectPaymentPurpose(payload map[string]interface{}) (bool, string) {
+	if payload == nil {
+		return false, ""
+	}
+	if skip, ok := payload["skipWalletCredit"].(bool); ok && skip {
+		purpose, _ := payload["purpose"].(string)
+		return true, strings.TrimSpace(purpose)
+	}
+	purpose, _ := payload["purpose"].(string)
+	p := strings.ToLower(strings.TrimSpace(purpose))
+	if p == "" || p == "deposit" || p == "wallet" || p == "wallet_funding" || p == "topup" {
+		return false, p
+	}
+	return true, p
+}
+
 func (s *PaymentService) ChargeCardAndCreditWallet(ctx context.Context, userID int, amount float64, currency string, chargePayload map[string]interface{}) (map[string]interface{}, error) {
 	txRef, _ := chargePayload["transactionReference"].(string)
 	customDescription, _ := chargePayload["description"].(string)
 	if strings.TrimSpace(customDescription) == "" {
 		customDescription, _ = chargePayload["paymentDescription"].(string)
 	}
+	isDirectPayment, paymentPurpose := isDirectPaymentPurpose(chargePayload)
 	delete(chargePayload, "description")
 	delete(chargePayload, "paymentDescription")
-	log.Printf("[PaymentService] ChargeCardAndCreditWallet - userID=%d amount=%.2f txRef=%s", userID, amount, txRef)
+	delete(chargePayload, "purpose")
+	delete(chargePayload, "skipWalletCredit")
+	log.Printf("[PaymentService] ChargeCardAndCreditWallet - userID=%d amount=%.2f txRef=%s direct=%v purpose=%s", userID, amount, txRef, isDirectPayment, paymentPurpose)
 
 	if amount < minimumDepositAmount {
 		return nil, fmt.Errorf("minimum deposit amount is NGN 1,000")
@@ -2369,20 +2388,29 @@ func (s *PaymentService) ChargeCardAndCreditWallet(ctx context.Context, userID i
 		}
 	}
 
-	// Step 3: Credit wallet atomically in DB
-	log.Printf("[PaymentService] Step 3: Crediting wallet for userID=%d amount=%.2f", userID, amount)
-	wallet, err := s.creditWalletInDB(ctx, userID, amount, monnifyTxRef, "card", currency, &cardMeta, customDescription)
-	if err != nil {
-		log.Printf("[PaymentService] CRITICAL: Card charged but wallet credit FAILED for userID=%d txRef=%s: %v", userID, monnifyTxRef, err)
-		return nil, fmt.Errorf("wallet credit failed after successful card charge (txRef: %s): %w", monnifyTxRef, err)
+	// Step 3: Either record direct platform payment (no wallet credit) or credit wallet atomically in DB
+	var wallet *models.Wallet
+	var err error
+	responseMessage := "Card charged and wallet credited successfully"
+	if isDirectPayment {
+		log.Printf("[PaymentService] Step 3: Recording direct card payment (no wallet credit) for userID=%d amount=%.2f purpose=%s", userID, amount, paymentPurpose)
+		wallet, err = s.recordDirectPaymentInDB(ctx, userID, amount, monnifyTxRef, "card", currency, paymentPurpose, customDescription, &cardMeta)
+		responseMessage = "Card payment completed successfully"
+	} else {
+		log.Printf("[PaymentService] Step 3: Crediting wallet for userID=%d amount=%.2f", userID, amount)
+		wallet, err = s.creditWalletInDB(ctx, userID, amount, monnifyTxRef, "card", currency, &cardMeta, customDescription)
 	}
-	log.Printf("[PaymentService] Wallet credited successfully: userID=%d newBalance=%.2f newPersonalBalance=%.2f", userID, wallet.Balance, wallet.PersonalBalance)
+	if err != nil {
+		log.Printf("[PaymentService] CRITICAL: Card charged but DB recording FAILED for userID=%d txRef=%s: %v", userID, monnifyTxRef, err)
+		return nil, fmt.Errorf("payment recording failed after successful card charge (txRef: %s): %w", monnifyTxRef, err)
+	}
+	log.Printf("[PaymentService] Payment finalized: userID=%d direct=%v balance=%.2f personalBalance=%.2f", userID, isDirectPayment, wallet.Balance, wallet.PersonalBalance)
 
 	// Return combined response
 	return map[string]interface{}{
 		"requestSuccessful": true,
 		"responseCode":      "0",
-		"responseMessage":   "Card charged and wallet credited successfully",
+		"responseMessage":   responseMessage,
 		"responseBody": map[string]interface{}{
 			"transactionReference": monnifyTxRef,
 			"status":               "SUCCESS",
@@ -2502,22 +2530,31 @@ func (s *PaymentService) AuthorizeCardOTPAndCreditWallet(ctx context.Context, us
 		cardMeta.MaskedPan = buildMaskedPan(cardMeta.First6, cardMeta.Last4)
 	}
 
-	// Credit wallet atomically
+	// Record direct payment or credit wallet atomically
 	customDescription, _ := authPayload["description"].(string)
 	if strings.TrimSpace(customDescription) == "" {
 		customDescription, _ = authPayload["paymentDescription"].(string)
 	}
-	log.Printf("[PaymentService] Crediting wallet after successful OTP authorization: userID=%d amount=%.2f txRef=%s", userID, amount, monnifyTxRef)
-	wallet, err := s.creditWalletInDB(ctx, userID, amount, monnifyTxRef, "card", currency, &cardMeta, customDescription)
+	isDirectPayment, paymentPurpose := isDirectPaymentPurpose(authPayload)
+	var wallet *models.Wallet
+	responseMessage := "Card payment authorized and wallet credited successfully"
+	if isDirectPayment {
+		log.Printf("[PaymentService] Recording direct card payment after OTP authorization: userID=%d amount=%.2f txRef=%s", userID, amount, monnifyTxRef)
+		wallet, err = s.recordDirectPaymentInDB(ctx, userID, amount, monnifyTxRef, "card", currency, paymentPurpose, customDescription, &cardMeta)
+		responseMessage = "Card payment authorized and completed successfully"
+	} else {
+		log.Printf("[PaymentService] Crediting wallet after successful OTP authorization: userID=%d amount=%.2f txRef=%s", userID, amount, monnifyTxRef)
+		wallet, err = s.creditWalletInDB(ctx, userID, amount, monnifyTxRef, "card", currency, &cardMeta, customDescription)
+	}
 	if err != nil {
-		log.Printf("[PaymentService] CRITICAL: Card OTP authorized but wallet credit FAILED for userID=%d txRef=%s: %v", userID, monnifyTxRef, err)
-		return nil, fmt.Errorf("wallet credit failed after successful card charge (txRef: %s): %w", monnifyTxRef, err)
+		log.Printf("[PaymentService] CRITICAL: Card OTP authorized but DB recording FAILED for userID=%d txRef=%s: %v", userID, monnifyTxRef, err)
+		return nil, fmt.Errorf("payment recording failed after successful card charge (txRef: %s): %w", monnifyTxRef, err)
 	}
 
 	return map[string]interface{}{
 		"requestSuccessful": true,
 		"responseCode":      "0",
-		"responseMessage":   "Card payment authorized and wallet credited successfully",
+		"responseMessage":   responseMessage,
 		"responseBody": map[string]interface{}{
 			"transactionReference": monnifyTxRef,
 			"status":               "SUCCESS",
@@ -2542,6 +2579,129 @@ func (s *PaymentService) AuthorizeCardOTPAndCreditWallet(ctx context.Context, us
 }
 
 // creditWalletInDB atomically updates Wallet, WalletTransaction, ActivityWallet, CardFunding, and UserCard.
+func resolveDirectPaymentTransactionType(purpose, customDesc, txRef string) string {
+	p := strings.ToLower(strings.TrimSpace(purpose))
+	d := strings.ToLower(strings.TrimSpace(customDesc))
+	r := strings.ToUpper(strings.TrimSpace(txRef))
+
+	switch p {
+	case "ad_payment", "ads", "ad":
+		return "ADS"
+	case "shop_payment", "shop", "merch":
+		return "SHOP"
+	case "subscription_payment", "subscription", "sub":
+		return "SUBSCRIPTION"
+	}
+
+	if strings.HasPrefix(r, "DEBIT-ADS-") || strings.Contains(d, "ad campaign") || strings.HasPrefix(d, "ads") {
+		return "ADS"
+	}
+	if strings.Contains(d, "shop") || strings.Contains(d, "merch") {
+		return "SHOP"
+	}
+	if strings.Contains(d, "subscription") {
+		return "SUBSCRIPTION"
+	}
+	return "Payment"
+}
+
+// recordDirectPaymentInDB records a direct platform payment (e.g., Ads, Shop, Subscription)
+// without crediting or altering the user's wallet balance.
+func (s *PaymentService) recordDirectPaymentInDB(ctx context.Context, userID int, amount float64, txRef, paymentMethod, currency, purpose, customDesc string, cardMeta *savedCardMetadata) (*models.Wallet, error) {
+	if userID <= 0 {
+		return nil, errors.New("invalid userId")
+	}
+	if amount <= 0 {
+		return nil, fmt.Errorf("invalid amount: %.2f", amount)
+	}
+	if currency == "" {
+		currency = "NGN"
+	}
+
+	paymentMethodValue := "CARD"
+	defaultDesc := "Card Payment"
+	if strings.EqualFold(paymentMethod, "bank") || strings.Contains(strings.ToLower(paymentMethod), "transfer") {
+		paymentMethodValue = "ACCOUNT_TRANSFER"
+		defaultDesc = "Bank Transfer Payment"
+	} else if strings.EqualFold(paymentMethod, "stablecoin") || currency == "USDC" || currency == "USDT" {
+		paymentMethodValue = "STABLE_COIN"
+		defaultDesc = "Stablecoin Payment"
+	}
+
+	description := strings.TrimSpace(customDesc)
+	if description == "" {
+		description = defaultDesc
+	}
+
+	log.Printf("[DB] recordDirectPaymentInDB - userID=%d amount=%.2f description=%s txRef=%s", userID, amount, description, txRef)
+
+	var currentWallet models.Wallet
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("\"userId\" = ?", userID).First(&currentWallet).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("failed to fetch wallet: %w", err)
+		}
+
+		// Idempotency: avoid duplicate recording if txRef already completed
+		var existingCount int64
+		if err := tx.Model(&models.WalletTransaction{}).Where("\"trx_ref\" = ? AND \"status\" = ?", txRef, "Completed").Count(&existingCount).Error; err != nil {
+			return fmt.Errorf("failed to check existing wallet transaction: %w", err)
+		} else if existingCount > 0 {
+			log.Printf("[DB] Direct payment WalletTransaction for txRef=%s already completed, skipping duplicate", txRef)
+			return nil
+		}
+
+		txType := "DEBIT"
+		status := "Completed"
+		trxType := resolveDirectPaymentTransactionType(purpose, description, txRef)
+		wTx := models.WalletTransaction{
+			UserID:          userID,
+			Amount:          amount,
+			Type:            &txType,
+			TransactionType: &trxType,
+			Status:          &status,
+			Currency:        currency,
+			Description:     &description,
+			TrxRef:          &txRef,
+			PaymentMethod:   &paymentMethodValue,
+			CreatedAt:       time.Now(),
+		}
+		if err := tx.Create(&wTx).Error; err != nil {
+			return fmt.Errorf("failed to create WalletTransaction for direct payment: %w", err)
+		}
+		log.Printf("[DB] Direct payment WalletTransaction created: id=%d", wTx.ID)
+
+		actTx := models.ActivityWallet{
+			UserID:      userID,
+			Type:        "debit",
+			Title:       description,
+			Description: description,
+			Amount:      amount,
+			Currency:    currency,
+			Reference:   &txRef,
+			Status:      "SUCCESS",
+			CreatedAt:   time.Now(),
+		}
+		if err := tx.Exec("SAVEPOINT sp_activity_direct_payment").Error; err == nil {
+			if actErr := tx.Create(&actTx).Error; actErr != nil {
+				log.Printf("[DB] WARNING: Failed to create ActivityWallet for direct payment: %v", actErr)
+				_ = tx.Exec("ROLLBACK TO SAVEPOINT sp_activity_direct_payment").Error
+			} else {
+				_ = tx.Exec("RELEASE SAVEPOINT sp_activity_direct_payment").Error
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if currentWallet.UserID == 0 {
+		currentWallet.UserID = userID
+	}
+	return &currentWallet, nil
+}
+
 func (s *PaymentService) creditWalletInDB(ctx context.Context, userID int, amount float64, txRef, paymentMethod, currency string, cardMeta *savedCardMetadata, customDesc ...string) (*models.Wallet, error) {
 	if userID <= 0 {
 		return nil, errors.New("invalid userId")
@@ -3415,7 +3575,7 @@ func (s *PaymentService) DebitUserWallet(ctx context.Context, userID int, amount
 		// Record in WalletTransaction
 		txType := "DEBIT"
 		status := "Completed"
-		trxType := "Payment"
+		trxType := resolveDirectPaymentTransactionType("", description, txRef)
 		wTx := models.WalletTransaction{
 			UserID:          userID,
 			Amount:          amount,

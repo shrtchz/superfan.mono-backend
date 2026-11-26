@@ -329,6 +329,12 @@ func (pc *PaymentController) ChargeCard(c *gin.Context) {
 	} else if desc, _ := req["paymentDescription"].(string); strings.TrimSpace(desc) != "" {
 		chargePayload["description"] = strings.TrimSpace(desc)
 	}
+	if purpose, _ := req["purpose"].(string); strings.TrimSpace(purpose) != "" {
+		chargePayload["purpose"] = strings.TrimSpace(purpose)
+	}
+	if skipCredit, ok := req["skipWalletCredit"].(bool); ok && skipCredit {
+		chargePayload["skipWalletCredit"] = true
+	}
 
 	res, err := pc.paymentService.ChargeCardAndCreditWallet(c.Request.Context(), userID, amount, currency, chargePayload)
 	if err != nil {

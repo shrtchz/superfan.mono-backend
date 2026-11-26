@@ -817,7 +817,7 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 		newBalance = wallet.SavingsBalance
 
 		txType := "CREDIT"
-		transactionType := "Deposit"
+		transactionType := "Reward"
 		rewardType := labels.Wallet("adsReward", nil)
 		description := rewardType
 		savingsAccount := "Savings"
