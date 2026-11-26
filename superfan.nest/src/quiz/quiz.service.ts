@@ -470,8 +470,11 @@ export class QuizService {
         typeof config.url === 'string' &&
         config.url.startsWith(goEndpoint)
       ) {
-        config.headers = config.headers ?? {};
-        config.headers['x-internal-service-key'] = internalKey;
+        if (typeof config.headers?.set === 'function') {
+          config.headers.set('x-internal-service-key', internalKey);
+        } else {
+          (config.headers as Record<string, string>)['x-internal-service-key'] = internalKey;
+        }
       }
       return config;
     });

@@ -15,7 +15,7 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { IsArray, IsBoolean, IsEmail, IsIn, IsInt, IsOptional, IsNumber, Min } from 'class-validator';
-import { Public } from '../common/decorators';
+import { Public, Roles } from '../common/decorators';
 import { ApiRoutes } from '../common/enums/routes.enum';
 import { JwtGuard } from '../common/guards';
 import { PermissionGuard } from '../common/guards/permission.guard';
