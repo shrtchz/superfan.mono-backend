@@ -125,7 +125,8 @@ func ClassifyTransaction(in ClassificationInput) ClassificationResult {
 		accountType = NormalizeWalletAccount(in.WalletAccount)
 		provider = ProviderInApp
 	case KindRewardCredit:
-		accountType = AccountTypeSavings
+		client = ProviderInApp
+		accountType = AccountTypePlatform
 		provider = ProviderInApp
 	case KindWalletRefund:
 		accountType = NormalizeWalletAccount(in.WalletAccount)

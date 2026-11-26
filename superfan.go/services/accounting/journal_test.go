@@ -116,6 +116,17 @@ func TestClassifyTransactionRules(t *testing.T) {
 			wantAccount: AccountTypeChecking,
 			wantProv:    "Bachs",
 		},
+		{
+			name: "System reward credit (quiz/referral/ads) uses Client = In-app, AccountType = Platform, Provider = In-app",
+			in: ClassificationInput{
+				UserID:          15,
+				UserDisplayName: "Ada Lovelace",
+				Kind:            KindRewardCredit,
+			},
+			wantClient:  ProviderInApp,
+			wantAccount: AccountTypePlatform,
+			wantProv:    ProviderInApp,
+		},
 	}
 
 	for _, tc := range tests {

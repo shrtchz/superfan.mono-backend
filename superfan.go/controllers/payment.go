@@ -116,12 +116,12 @@ func (pc *PaymentController) Webhook(c *gin.Context) {
 			utils.SendError(c, http.StatusUnauthorized, "UNAUTHORIZED", err.Error())
 			return
 		}
-		var req providers.VerifyTransactionRequest
-		if err := json.Unmarshal(rawBody, &req); err != nil {
-			utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "invalid request payload")
+		txRef := extractWebhookReference(rawBody, "eventData", "transactionReference", "paymentReference", "reference")
+		if txRef == "" {
+			utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "missing transaction reference in webhook payload")
 			return
 		}
-		if err := pc.paymentService.HandleDepositWebhook(c.Request.Context(), "NGN", req); err != nil {
+		if err := pc.paymentService.HandleDepositWebhook(c.Request.Context(), "NGN", providers.VerifyTransactionRequest{TransactionReference: txRef}); err != nil {
 			utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
 			return
 		}
@@ -137,31 +137,41 @@ func (pc *PaymentController) Webhook(c *gin.Context) {
 			utils.SendError(c, http.StatusUnauthorized, "UNAUTHORIZED", err.Error())
 			return
 		}
-		var req providers.VerifyTransactionRequest
-		if err := json.Unmarshal(rawBody, &req); err != nil {
-			utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "invalid request payload")
+		txRef := extractWebhookReference(rawBody, "data", "reference", "transactionReference", "id")
+		if txRef == "" {
+			utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "missing transaction reference in webhook payload")
 			return
 		}
-		if err := pc.paymentService.HandleDepositWebhook(c.Request.Context(), "USDC", req); err != nil {
+		if err := pc.paymentService.HandleDepositWebhook(c.Request.Context(), "USDC", providers.VerifyTransactionRequest{TransactionReference: txRef}); err != nil {
 			utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
 			return
 		}
 		utils.Success(c, http.StatusOK, "Webhook processed successfully", nil)
 
 	default:
-		// Attempt to parse payload and check if it's a Bachs payload before rejecting
-		var fallback map[string]interface{}
-		if err := json.Unmarshal(rawBody, &fallback); err == nil {
-			if _, hasEvent := fallback["event"]; hasEvent {
-				if err := pc.paymentService.HandleBachsWebhook(c.Request.Context(), c.GetHeader("X-Bachs-Signature"), rawBody, fallback); err == nil {
-					c.JSON(http.StatusOK, gin.H{"status": "success", "message": "Webhook processed successfully"})
-					return
-				}
-			}
-		}
 		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "unknown provider webhook")
 		return
 	}
+}
+
+func extractWebhookReference(rawBody []byte, nestedKey string, keys ...string) string {
+	var body map[string]interface{}
+	if err := json.Unmarshal(rawBody, &body); err != nil {
+		return ""
+	}
+	for _, k := range keys {
+		if v, ok := body[k].(string); ok && strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	if nested, ok := body[nestedKey].(map[string]interface{}); ok {
+		for _, k := range keys {
+			if v, ok := nested[k].(string); ok && strings.TrimSpace(v) != "" {
+				return strings.TrimSpace(v)
+			}
+		}
+	}
+	return ""
 }
 
 func RegisterPaymentRoutes(rg *gin.RouterGroup, pc *PaymentController) {

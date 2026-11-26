@@ -273,6 +273,9 @@ export class ShopService {
           where: { userId },
         });
 
+        await tx.$queryRaw`SELECT id FROM "Wallet" WHERE "userId" = ${userId} FOR UPDATE`;
+        wallet = await tx.wallet.findUnique({ where: { userId } }) ?? wallet;
+
         if (!wallet) {
           wallet = await tx.wallet.create({
             data: {
@@ -326,7 +329,7 @@ export class ShopService {
 
         // Record wallet transaction tagged as In-app shop debit
         const shopRef = `SHOP-${Date.now()}`;
-        await tx.walletTransaction.create({
+        const shopWTx = await tx.walletTransaction.create({
           data: {
             userId,
             amount: totalAmount,
@@ -342,6 +345,20 @@ export class ShopService {
             description: 'Shop Merch Payment',
           },
         });
+        await tx.$executeRaw`
+          UPDATE "WalletTransaction"
+          SET "provider" = 'In-app', "fee" = 0, "net_amount" = ${totalAmount}
+          WHERE "id" = ${shopWTx.id}
+        `;
+        const liabCode = isSavings ? '2020' : '2010';
+        const liabName = isSavings ? 'Savings wallet liability' : 'Checking wallet liability';
+        const liabAcct = isSavings ? 'Savings' : 'Checking';
+        await tx.$executeRaw`
+          INSERT INTO "LedgerJournalLine" ("transactionId", "trxRef", "accountCode", "accountName", "accountType", "debit", "credit", "currency", "createdAt")
+          VALUES
+            (${shopWTx.id}, ${shopRef}, ${liabCode}, ${liabName}, ${liabAcct}, ${totalAmount}, 0, 'NGN', NOW()),
+            (${shopWTx.id}, ${shopRef}, '4030', 'Shop revenue', 'Platform', 0, ${totalAmount}, 'NGN', NOW())
+        `;
       }
 
 

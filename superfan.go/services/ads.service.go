@@ -785,7 +785,7 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 		rewardPoints = 200
 	}
 	adsConversionRate := s.getAdsPointsToNairaRate(ctx)
-	rewardNaira := float64(rewardPoints) / float64(adsConversionRate)
+	rewardNaira := math.Round((float64(rewardPoints)/float64(adsConversionRate))*100) / 100
 	var newBalance float64
 
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -822,6 +822,7 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 		rewardType := labels.Wallet("adsReward", nil)
 		description := rewardType
 		savingsAccount := accounting.AccountTypeSavings
+		platformAccount := accounting.AccountTypePlatform
 		inAppProvider := accounting.ProviderInApp
 		currency := "NGN"
 		txRef := fmt.Sprintf("ADSREW-%d-%d", req.UserID, time.Now().UnixNano())
@@ -830,6 +831,7 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 		zeroFee := 0.0
 		wTx := models.WalletTransaction{
 			UserID:          req.UserID,
+			ClientName:      inAppProvider,
 			Amount:          rewardNaira,
 			Fee:             &zeroFee,
 			NetAmount:       &rewardNaira,
@@ -837,7 +839,7 @@ func (s *adsServiceImpl) AwardMidQuizAdReward(ctx context.Context, req *AwardAdR
 			Currency:        currency,
 			Status:          &status,
 			TransactionType: &transactionType,
-			AccountType:     &savingsAccount,
+			AccountType:     &platformAccount,
 			Provider:        &inAppProvider,
 			RewardType:      &rewardType,
 			Description:     &description,
