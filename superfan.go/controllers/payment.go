@@ -157,15 +157,13 @@ func RegisterPaymentRoutes(rg *gin.RouterGroup, pc *PaymentController) {
 	rg.POST("/webhooks/:provider", pc.Webhook)
 	rg.POST("/webhooks", pc.Webhook)
 
-	// Public / optional-auth reference & conversion endpoints
-	paymentGroup.GET("/banks", middleware.OptionalAuth(), pc.GetBanks)
-	paymentGroup.GET("/banks/validate", middleware.OptionalAuth(), pc.ValidateBankAccount)
-	paymentGroup.GET("/rates", middleware.OptionalAuth(), pc.GetRates)
-	paymentGroup.GET("/convert", middleware.OptionalAuth(), pc.ConvertCurrency)
-	paymentGroup.POST("/convert", middleware.OptionalAuth(), pc.ConvertCurrency)
-
 	// Authenticated user & internal service payment endpoints
 	authed := paymentGroup.Group("", middleware.InternalOrAuthRequired())
+	authed.GET("/banks", pc.GetBanks)
+	authed.GET("/banks/validate", pc.ValidateBankAccount)
+	authed.GET("/rates", pc.GetRates)
+	authed.GET("/convert", pc.ConvertCurrency)
+	authed.POST("/convert", pc.ConvertCurrency)
 	authed.POST("/intent", pc.CreatePaymentIntent)
 	authed.GET("/intent/:reference", pc.GetPaymentIntent)
 	authed.GET("/wallet-transactions", pc.GetWalletTransactions)

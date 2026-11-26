@@ -8,25 +8,25 @@ import (
 // RegisterLiveQuizV2Routes mounts live quiz content CRUD under /v2/quiz/live*.
 func RegisterLiveQuizV2Routes(rg *gin.RouterGroup, qc *QuizController) {
 	quizroute := rg.Group("/quiz")
+	quizroute.Use(middleware.InternalOrAuthRequired())
 
-	// Public reads — stream player polling, no Clerk JWT required.
+	// Authenticated reads & answer submissions
 	quizroute.GET("/live", qc.GetAllLiveQuiz)
 	quizroute.GET("/live/random/:number", qc.GetRandomLiveQuiz)
 	quizroute.GET("/live/:id", qc.GetLiveQuiz)
-	quizroute.GET("/live-answer/:id", middleware.OptionalAuth(), qc.GetLiveQuizAnswerById)
+	quizroute.GET("/live-answer/:id", qc.GetLiveQuizAnswerById)
+	quizroute.POST("/live/:id/answer", qc.SubmitLiveQuizAnswer)
+	quizroute.POST("/live-quiz-answer/:id", qc.SubmitLiveQuizAnswer)
 
-	// Live quiz answer submission is public in v2 but can use auth if available.
-	quizroute.POST("/live/:id/answer", middleware.OptionalAuth(), qc.SubmitLiveQuizAnswer)
-	quizroute.POST("/live-quiz-answer/:id", middleware.OptionalAuth(), qc.SubmitLiveQuizAnswer)
-
-	// Make POST/PATCH/PUT/DELETE public for live quizzes (no auth middleware)
-	quizroute.POST("/live", qc.CreateLiveQuiz)
-	quizroute.PATCH("/live/:id", qc.UpdateLiveQuiz)
-	quizroute.PUT("/live/:id", qc.UpdateLiveQuiz)
-	quizroute.DELETE("/live/:id", qc.DeleteLiveQuiz)
-	quizroute.PATCH("/live/:id/custom-countdown-label", qc.UpdateLiveQuizCustomCountdownLabel)
-	quizroute.DELETE("/live/:id/custom-countdown-label", qc.DeleteLiveQuizCustomCountdownLabel)
-	quizroute.POST("/live/:id/custom-countdown-labels", qc.CreateLiveQuizCustomCountdownLabel)
-	quizroute.PATCH("/live/:id/custom-countdown-labels/:labelId", qc.UpdateLiveQuizCustomCountdownLabelByID)
-	quizroute.DELETE("/live/:id/custom-countdown-labels/:labelId", qc.DeleteLiveQuizCustomCountdownLabelByID)
+	// Admin-only live quiz writes
+	adminOnly := quizroute.Group("", middleware.InternalOrAdminRequired())
+	adminOnly.POST("/live", qc.CreateLiveQuiz)
+	adminOnly.PATCH("/live/:id", qc.UpdateLiveQuiz)
+	adminOnly.PUT("/live/:id", qc.UpdateLiveQuiz)
+	adminOnly.DELETE("/live/:id", qc.DeleteLiveQuiz)
+	adminOnly.PATCH("/live/:id/custom-countdown-label", qc.UpdateLiveQuizCustomCountdownLabel)
+	adminOnly.DELETE("/live/:id/custom-countdown-label", qc.DeleteLiveQuizCustomCountdownLabel)
+	adminOnly.POST("/live/:id/custom-countdown-labels", qc.CreateLiveQuizCustomCountdownLabel)
+	adminOnly.PATCH("/live/:id/custom-countdown-labels/:labelId", qc.UpdateLiveQuizCustomCountdownLabelByID)
+	adminOnly.DELETE("/live/:id/custom-countdown-labels/:labelId", qc.DeleteLiveQuizCustomCountdownLabelByID)
 }
