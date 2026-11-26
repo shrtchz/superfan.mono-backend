@@ -2911,24 +2911,22 @@ async isWinner(commentId: number, winAmount: number) {
 
   async getVideoViews(videoId: string): Promise<any> {
     try {
-      let useApiKeyFallback = false;
+      let youtubeClient = this.youtube;
       try {
         await this.ensureValidToken();
       } catch (authErr: any) {
-        if (process.env.YOUTUBE_API_KEY?.trim()) {
+        const apiKey = process.env.YOUTUBE_API_KEY?.trim();
+        if (apiKey) {
           this.logger.warn(
             `YouTube OAuth unavailable (${authErr?.message}); falling back to YOUTUBE_API_KEY for video-stats.`,
           );
-          useApiKeyFallback = true;
+          youtubeClient = google.youtube({ version: 'v3', auth: apiKey });
         } else {
           throw authErr;
         }
       }
 
-      const response = await this.youtube.videos.list({
-        ...(useApiKeyFallback
-          ? { key: process.env.YOUTUBE_API_KEY!.trim() }
-          : {}),
+      const response = await youtubeClient.videos.list({
         id: [videoId],
         part: ['statistics', 'snippet', 'liveStreamingDetails', 'status'],
       });
