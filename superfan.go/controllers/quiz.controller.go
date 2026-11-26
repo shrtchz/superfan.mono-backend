@@ -1334,29 +1334,29 @@ func RegisterQuizRoutes(
 	// Quiz search — public (used by admin create-quiz autocomplete)
 	quizroute.GET("/search", qc.SearchQuizzes)
 
-	// Quiz CRUD and related routes are now public so the admin Q&A table can fetch them without a Clerk session.
-	quizroute.POST("/create", qc.CreateQuiz)
-	quizroute.POST("/create-category", qc.CreateQuizCategory)
+	// ── Authenticated Quiz User Routes ─────────────────────
+	quizAuthed := quizroute.Group("", middleware.InternalOrAuthRequired())
+	quizAuthed.GET("/quiz-answer/:id", qc.GetQuizAnswerById)
+	quizAuthed.GET("/get-ongoing-quiz/:id", qc.GetOngoingQuiz)
+	quizAuthed.POST("/submit", qc.SubmitQuiz)
+	quizAuthed.GET("/get-user-submissions/:userId", qsc.GetUserSubmissions)
+
+	// ── Public Quiz Catalog / Read Routes ──────────────────
 	quizroute.GET("/categories", qc.GetAllCategory)
-	quizroute.GET("/quiz-answer/:id", qc.GetQuizAnswerById)
 	quizroute.GET("/get/:id", qc.GetQuiz)
 	quizroute.GET("/getall", qc.GetAllQuiz)
-	quizroute.PATCH("/update/:id", qc.UpdateQuiz)
-	quizroute.DELETE("/delete/:id", qc.DeleteQuiz)
-
-	// ── Preferences & Submission ───────────────────────────
 	quizroute.GET("/preferences", qc.GetQuizByPreferences)
 	quizroute.GET("/quick-start", qc.QuickStart)
-	quizroute.GET("/get-ongoing-quiz/:id", qc.GetOngoingQuiz)
-	quizroute.POST("/submit", qc.SubmitQuiz)
 
-	// ── Submissions ────────────────────────────────────────
-	quizroute.GET("/get-quiz-submissions", qsc.GetAllSubmissions)
-	quizroute.GET("/get-user-submissions/:userId", qsc.GetUserSubmissions)
-
-	// ── Live Quiz writes ───────────────────────────────────
-	quizroute.POST("/live", qc.CreateLiveQuiz)
-	quizroute.PATCH("/live/:id", qc.UpdateLiveQuiz)
-	quizroute.PUT("/live/:id", qc.UpdateLiveQuiz)
-	quizroute.DELETE("/live/:id", qc.DeleteLiveQuiz)
+	// ── Admin Quiz Management & Submissions ────────────────
+	quizAdmin := quizroute.Group("", middleware.InternalOrAuthRequired(), middleware.InternalOrAdminRequired())
+	quizAdmin.POST("/create", qc.CreateQuiz)
+	quizAdmin.POST("/create-category", qc.CreateQuizCategory)
+	quizAdmin.PATCH("/update/:id", qc.UpdateQuiz)
+	quizAdmin.DELETE("/delete/:id", qc.DeleteQuiz)
+	quizAdmin.GET("/get-quiz-submissions", qsc.GetAllSubmissions)
+	quizAdmin.POST("/live", qc.CreateLiveQuiz)
+	quizAdmin.PATCH("/live/:id", qc.UpdateLiveQuiz)
+	quizAdmin.PUT("/live/:id", qc.UpdateLiveQuiz)
+	quizAdmin.DELETE("/live/:id", qc.DeleteLiveQuiz)
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"quiz.superfan.com/apis/middleware"
 	"quiz.superfan.com/apis/models"
 	"quiz.superfan.com/apis/services"
 	"quiz.superfan.com/apis/utils"
@@ -207,6 +208,7 @@ func RegisterQuizSessionV2Routes(rg *gin.RouterGroup, quizService services.QuizS
 	controller := NewQuizSessionV2Controller(services.NewQuizSessionV2Service(quizService))
 
 	sessions := rg.Group("/quiz/sessions")
+	sessions.Use(middleware.InternalOrAuthRequired())
 	{
 		sessions.POST("", controller.CreateSession)
 		sessions.GET("/:sessionId", controller.GetSession)

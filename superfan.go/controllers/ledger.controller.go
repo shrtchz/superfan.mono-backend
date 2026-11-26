@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"quiz.superfan.com/apis/middleware"
 	"quiz.superfan.com/apis/services"
 	"quiz.superfan.com/apis/utils"
 )
@@ -19,8 +20,8 @@ func NewLedgerController(ls services.LedgerService) *LedgerController {
 }
 
 func RegisterLedgerRoutes(router *gin.RouterGroup, lc *LedgerController) {
-	// Protected by auth middleware normally, assuming it's applied to the router group
 	ledgerGroup := router.Group("/admin/ledger")
+	ledgerGroup.Use(middleware.InternalOrAuthRequired(), middleware.InternalOrAdminRequired())
 	{
 		ledgerGroup.GET("", lc.GetLedgerEntries)
 		ledgerGroup.GET("/summary", lc.GetLedgerSummary)
