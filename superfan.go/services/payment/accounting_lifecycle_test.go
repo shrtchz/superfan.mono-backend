@@ -98,3 +98,18 @@ func TestMonnifyVerifyTransactionExtractsFeeAndSettlement(t *testing.T) {
 		t.Fatalf("ProviderName = %q, want Monnify", res.ProviderName)
 	}
 }
+
+func TestWebhookFailClosedWhenSecretMissing(t *testing.T) {
+	t.Setenv("BITNOB_WEBHOOK_SECRET", "")
+	svc := &PaymentService{
+		monnifyProvider: providers.NewMonnifyProvider("MK_TEST_123", "", "https://sandbox.monnify.com", "12345"),
+		bitnobProvider:  providers.NewBitnobProvider("", "https://sandboxapi.bitnob.co"),
+	}
+	payload := []byte(`{"eventType":"SUCCESSFUL_TRANSACTION"}`)
+	if err := svc.VerifyProviderWebhook(context.Background(), "monnify", "", payload); err == nil {
+		t.Fatalf("expected monnify webhook with empty secret to fail closed")
+	}
+	if err := svc.VerifyProviderWebhook(context.Background(), "bitnob", "", payload); err == nil {
+		t.Fatalf("expected bitnob webhook with empty secret to fail closed")
+	}
+}

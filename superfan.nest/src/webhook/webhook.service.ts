@@ -1,6 +1,6 @@
 import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { createHmac } from 'crypto';
+import { createHmac, timingSafeEqual } from 'crypto';
 import { generateFiveUniqueRandomNumbers } from '../common/utils/utils';
 import { MailService } from '../mail/mail.service';
 import { ClerkService } from '../common/clerk/clerk.service';
@@ -42,12 +42,17 @@ export class MonnifyWebhookService {
    * @throws UnauthorizedException if hashes do not match
    */
   verifySignature(rawBody: string, receivedHash: string): void {
-    const computedHash = this.computeHash(rawBody);
+    if (!this.merchantClientSecret || !this.merchantClientSecret.trim()) {
+      this.logger.error('Monnify webhook secret is not configured');
+      throw new UnauthorizedException('Webhook secret not configured');
+    }
+    const computedHash = this.computeHash(rawBody).toLowerCase();
+    const receivedLower = String(receivedHash || '').trim().toLowerCase();
+    const a = Buffer.from(computedHash, 'utf8');
+    const b = Buffer.from(receivedLower, 'utf8');
 
-    if (computedHash !== receivedHash) {
-      this.logger.warn(
-        `Webhook signature mismatch. Expected: ${computedHash}, Received: ${receivedHash}`,
-      );
+    if (a.length !== b.length || !timingSafeEqual(a, b)) {
+      this.logger.warn('Monnify webhook signature mismatch');
       throw new UnauthorizedException('Invalid webhook signature');
     }
 

@@ -603,23 +603,41 @@ func creditReferralTestBonus(tx *gorm.DB, userID, points int, pointType, title s
 	}
 
 	transactionType := "credit"
-	accountType := "Savings"
+	accountType := accounting.AccountTypePlatform
+	inAppProvider := accounting.ProviderInApp
 	transactionStatus := "SUCCESS"
 	entryType := "Reward"
 	description := title
 	transactionReference := "REFERRAL_TEST_" + uuid.NewString()
-	if err := tx.Create(&models.WalletTransaction{
+	zeroFee := 0.0
+	wTx := models.WalletTransaction{
 		UserID:          userID,
+		ClientName:      inAppProvider,
 		Amount:          amountInNaira,
+		Fee:             &zeroFee,
+		NetAmount:       &amountInNaira,
 		Type:            &transactionType,
 		Currency:        "NGN",
 		AccountType:     &accountType,
+		Provider:        &inAppProvider,
 		Status:          &transactionStatus,
 		TransactionType: &entryType,
 		Description:     &description,
 		TrxRef:          &transactionReference,
 		CreatedAt:       now,
-	}).Error; err != nil {
+	}
+	if err := tx.Create(&wTx).Error; err != nil {
+		return err
+	}
+	if err := accounting.PostJournalTx(tx, &wTx, accounting.JournalInput{
+		Kind:          accounting.KindRewardCredit,
+		Purpose:       "referral_reward",
+		Amount:        amountInNaira,
+		Fee:           0,
+		Currency:      "NGN",
+		Provider:      inAppProvider,
+		WalletAccount: accounting.AccountTypeSavings,
+	}); err != nil {
 		return err
 	}
 
@@ -636,6 +654,7 @@ func creditReferralTestBonus(tx *gorm.DB, userID, points int, pointType, title s
 }
 
 func creditQuizReward(tx *gorm.DB, userID int, amountInNaira float64, subject string, score int, totalPoints int, now time.Time) error {
+	amountInNaira = math.Round(amountInNaira*100) / 100
 	if amountInNaira <= 0 {
 		return nil
 	}
@@ -660,7 +679,7 @@ func creditQuizReward(tx *gorm.DB, userID int, amountInNaira float64, subject st
 	// 2. Create WalletTransaction tagged to the Savings Account with the standard
 	//    "Credit Wallet - Quiz Earning" label.
 	trxType := "CREDIT"
-	savingsType := accounting.AccountTypeSavings
+	platformType := accounting.AccountTypePlatform
 	inAppProvider := accounting.ProviderInApp
 	status := "Completed"
 	transactionType := "Reward"
@@ -672,13 +691,14 @@ func creditQuizReward(tx *gorm.DB, userID int, amountInNaira float64, subject st
 	zeroFee := 0.0
 	wTx := models.WalletTransaction{
 		UserID:          userID,
+		ClientName:      inAppProvider,
 		Amount:          amountInNaira,
 		Fee:             &zeroFee,
 		NetAmount:       &amountInNaira,
 		Type:            &trxType,
 		TransactionType: &transactionType,
 		Currency:        "NGN",
-		AccountType:     &savingsType,
+		AccountType:     &platformType,
 		Provider:        &inAppProvider,
 		Status:          &status,
 		Description:     &description,
@@ -695,7 +715,7 @@ func creditQuizReward(tx *gorm.DB, userID int, amountInNaira float64, subject st
 		Fee:           0,
 		Currency:      "NGN",
 		Provider:      inAppProvider,
-		WalletAccount: savingsType,
+		WalletAccount: accounting.AccountTypeSavings,
 	}); err != nil {
 		return err
 	}

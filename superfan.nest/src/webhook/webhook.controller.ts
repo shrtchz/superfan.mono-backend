@@ -11,6 +11,7 @@ import {
   Req,
   Res,
 } from '@nestjs/common';
+import { createHmac, timingSafeEqual } from 'crypto';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Request, Response } from 'express';
 import { ApiRoutes } from '../common/enums/routes.enum';
@@ -134,17 +135,19 @@ async handleBitnobWebhook(
     throw new BadRequestException('Webhook secret not configured');
   }
 
-  const crypto = require('crypto');
+  if (!req.rawBody) {
+    throw new BadRequestException('Raw body unavailable for signature verification');
+  }
 
-  const rawBody =
-    req.rawBody?.toString('utf-8') || JSON.stringify(payload);
+  const hash = createHmac('sha512', webhookSecret)
+    .update(req.rawBody)
+    .digest('hex')
+    .toLowerCase();
+  const sigLower = String(signature).trim().toLowerCase();
+  const a = Buffer.from(hash, 'utf8');
+  const b = Buffer.from(sigLower, 'utf8');
 
-  const hash = crypto
-    .createHmac('sha512', webhookSecret)
-    .update(rawBody)
-    .digest('hex');
-
-  if (hash !== signature) {
+  if (a.length !== b.length || !timingSafeEqual(a, b)) {
     throw new BadRequestException('Invalid signature');
   }
 
@@ -392,17 +395,54 @@ await tx.wallet.update({
 
 @Post('flw')
 async handleFlutterwaveWebhook(
-  @Req() req: Request,
+  @Req() req: RawBodyRequest<Request>,
   @Res({ passthrough: true }) res: Response,
   @Headers('verif-hash') signature: string,
+  @Headers('flutterwave-signature') flwSignature: string,
 ) {
   console.log('Received Flutterwave webhook');
 
   const dbProcessor = await prisma.paymentProcessor.findFirst({
     where: { name: { equals: 'flutterwave', mode: 'insensitive' } },
   });
-  const expectedHash = dbProcessor?.secretKey || process.env.FLW_SECRET_HASH;
-  if (expectedHash && signature !== expectedHash && signature !== process.env.FLW_SECRET_HASH) {
+  const candidates = [dbProcessor?.secretKey, process.env.FLW_SECRET_HASH]
+    .map((s) => (s || '').trim())
+    .filter(Boolean);
+
+  if (candidates.length === 0) {
+    this.logger.error('[FLW WEBHOOK] Secret hash not configured');
+    return res.status(401).end();
+  }
+
+  const timingSafeMatch = (aStr: string, bStr: string): boolean => {
+    const a = Buffer.from(aStr, 'utf8');
+    const b = Buffer.from(bStr, 'utf8');
+    return a.length > 0 && a.length === b.length && timingSafeEqual(a, b);
+  };
+
+  let verified = false;
+  if (flwSignature && req.rawBody) {
+    const sigTrimmed = flwSignature.trim();
+    for (const secret of candidates) {
+      const expectedB64 = createHmac('sha256', secret).update(req.rawBody).digest('base64');
+      const expectedHex = createHmac('sha256', secret).update(req.rawBody).digest('hex');
+      if (timingSafeMatch(sigTrimmed, expectedB64) || timingSafeMatch(sigTrimmed.toLowerCase(), expectedHex)) {
+        verified = true;
+        break;
+      }
+    }
+  } else if (signature) {
+    const sigTrimmed = signature.trim();
+    for (const secret of candidates) {
+      if (timingSafeMatch(sigTrimmed, secret)) {
+        verified = true;
+        break;
+      }
+    }
+  }
+
+  if (!verified) {
+    this.logger.warn('[FLW WEBHOOK] Invalid or missing signature');
     return res.status(401).end();
   }
 

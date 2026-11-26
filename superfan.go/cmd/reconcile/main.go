@@ -188,8 +188,13 @@ func main() {
 			if wTx.AccountType == nil || strings.TrimSpace(*wTx.AccountType) == "" {
 				updates["account_type"] = cls.AccountType
 			}
-			if wTx.UserID <= 0 && strings.TrimSpace(wTx.ClientName) == "" {
-				updates["clientName"] = accounting.ProviderInApp
+			if in.Kind == accounting.KindRewardCredit {
+				if strVal(wTx.AccountType) != accounting.AccountTypePlatform {
+					updates["account_type"] = accounting.AccountTypePlatform
+				}
+				if strVal(wTx.Provider) != accounting.ProviderInApp {
+					updates["provider"] = accounting.ProviderInApp
+				}
 			}
 			if len(updates) > 0 {
 				if err := tx.Model(&models.WalletTransaction{}).Where(`"id" = ?`, wTx.ID).Updates(updates).Error; err != nil {
