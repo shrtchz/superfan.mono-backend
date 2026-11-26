@@ -59,7 +59,7 @@ func (s *ledgerServiceImpl) baseQuery(filters map[string]interface{}, search str
 	if search != "" {
 		searchStr := "%" + search + "%"
 		base = base.Where(
-			`description ILIKE ? OR trx_ref ILIKE ? OR username ILIKE ? OR `+userNameMatchSQL,
+			`(description ILIKE ? OR trx_ref ILIKE ? OR username ILIKE ? OR `+userNameMatchSQL+`)`,
 			searchStr, searchStr, searchStr, searchStr, searchStr, searchStr, searchStr, searchStr,
 		)
 	}
@@ -71,7 +71,7 @@ func (s *ledgerServiceImpl) baseQuery(filters map[string]interface{}, search str
 		}
 		switch k {
 		case "statuses":
-			base = base.Where(`UPPER(COALESCE("status", '')) IN ?`, upperAll(splitCSV(value)))
+			base = base.Where(`UPPER(COALESCE("status", '')) IN ?`, expandStatusFilter(splitCSV(value)))
 		case "transactionTypes":
 			base = base.Where(`UPPER(COALESCE("transactionType", '')) IN ?`, upperAll(splitCSV(value)))
 		case "currencies":
@@ -183,6 +183,31 @@ func upperAll(values []string) []string {
 	out := make([]string, 0, len(values))
 	for _, value := range values {
 		out = append(out, strings.ToUpper(value))
+	}
+	return out
+}
+
+func expandStatusFilter(values []string) []string {
+	seen := make(map[string]struct{}, len(values)*2)
+	out := make([]string, 0, len(values)*2)
+	add := func(s string) {
+		if _, ok := seen[s]; !ok {
+			seen[s] = struct{}{}
+			out = append(out, s)
+		}
+	}
+	for _, v := range upperAll(values) {
+		switch v {
+		case "COMPLETED", "SUCCESS", "PAID":
+			add("COMPLETED")
+			add("SUCCESS")
+			add("PAID")
+		case "PENDING", "HELD":
+			add("PENDING")
+			add("HELD")
+		default:
+			add(v)
+		}
 	}
 	return out
 }
@@ -325,7 +350,8 @@ func isSystemRewardEntry(entry *models.WalletTransaction) bool {
 	return strings.HasPrefix(ref, "QUIZ_") ||
 		strings.HasPrefix(ref, "ADSREW-") ||
 		strings.HasPrefix(ref, "REFERRAL") ||
-		strings.HasPrefix(ref, "LIVE_QUIZ_")
+		strings.HasPrefix(ref, "LIVE_QUIZ_") ||
+		strings.HasPrefix(ref, "LIVEQUIZ-")
 }
 
 func derefStr(p *string) string {

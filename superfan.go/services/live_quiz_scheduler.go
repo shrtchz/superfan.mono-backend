@@ -507,7 +507,7 @@ func (f *LiveQuizFinaliser) creditSavingsWallet(userID string, amount float64, p
 }
 
 func liveQuizRewardReference(quizID, userID string) string {
-	return fmt.Sprintf("live_quiz_reward:%s:%s", quizID, userID)
+	return fmt.Sprintf("LIVEQUIZ-REW-%s-%s", quizID, userID)
 }
 
 func liveQuizRewardAmount(points int) float64 {
@@ -554,7 +554,7 @@ func (f *LiveQuizFinaliser) sendNotification(userID string, amount float64, ques
 }
 
 func liveQuizConsolationReference(quizID, userID string) string {
-	return fmt.Sprintf("live_quiz_consolation:%s:%s", userID, quizID)
+	return fmt.Sprintf("LIVEQUIZ-CON-%s-%s", userID, quizID)
 }
 
 func (f *LiveQuizFinaliser) creditConsolationReward(userID string, amount float64, points int, quizID, question string, now time.Time) (bool, error) {
