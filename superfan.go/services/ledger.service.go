@@ -18,6 +18,16 @@ type LedgerService interface {
 	GetLedgerEntries(page, limit int, filters map[string]interface{}, search string) ([]models.WalletTransaction, int64, *models.LedgerSummary, error)
 	GetLedgerSummary(filters map[string]interface{}, search string) (*models.LedgerSummary, error)
 	GetReconciliation(ctx context.Context) (*accounting.ReconciliationReport, error)
+	CreateLedgerApproval(input CreateLedgerApprovalInput) (*models.LedgerApproval, error)
+	ListLedgerApprovals(page, limit int, status, search string) ([]models.LedgerApproval, int64, error)
+	ApproveLedgerApproval(id uint, reviewer, note string) (*models.LedgerApproval, error)
+	RejectLedgerApproval(id uint, reviewer, note string) (*models.LedgerApproval, error)
+	ListReconciliation(page, limit int, status, search string) (*ReconciliationResult, error)
+	ResolveReconciliation(rowKey, note, resolvedBy string) (*models.ReconciliationResolution, error)
+	ImportReconciliationRows(sourceType, source, importedBy string, rows []ReconciliationImportRow) (int, error)
+	GetPeriodCloseReport(ctx context.Context, period string) (*PeriodCloseReport, error)
+	ClosePeriod(ctx context.Context, input ClosePeriodInput) (*models.LedgerPeriodClose, error)
+	ListClosedPeriods(ctx context.Context) ([]models.LedgerPeriodClose, error)
 }
 
 type ledgerServiceImpl struct {
