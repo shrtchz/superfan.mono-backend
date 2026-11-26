@@ -435,7 +435,7 @@ export class WalletService {
     consolationPoints = 500,
     quizName = 'Live Quiz',
   ) {
-    const rewardReference = `live_quiz_consolation:${userId}:${sessionId}`;
+    const rewardReference = `LIVEQUIZ-CON-${userId}-${sessionId}`;
     const amount = await this.pointsConversionUtil.pointsToNaira(consolationPoints);
 
     // Idempotency guard — do not double-credit the same session
@@ -509,7 +509,7 @@ export class WalletService {
   ): Promise<void> {
     if (!amountNaira || amountNaira <= 0) return;
 
-    const rewardReference = `live_quiz_winner:${userId}:${quizId}`;
+    const rewardReference = `LIVEQUIZ-WIN-${userId}-${quizId}`;
     const ts = quizFinishDate ?? new Date();
 
     // Idempotency guard — do not double-credit the same quiz win
