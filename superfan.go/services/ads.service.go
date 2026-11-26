@@ -1051,9 +1051,33 @@ func (s *adsServiceImpl) CreateCampaign(ctx context.Context, req *CreateCampaign
 			status = models.AdStatus(sStr)
 		}
 	}
-	paymentStatus := "PAID"
-	if req.PaymentRef == nil || *req.PaymentRef == "" {
-		paymentStatus = "PAID"
+	paymentStatus := "PENDING_PAYMENT"
+	if req.PaymentRef != nil && strings.TrimSpace(*req.PaymentRef) != "" {
+		ref := strings.TrimSpace(*req.PaymentRef)
+		req.PaymentRef = &ref
+
+		if s.db != nil {
+			var existingCount int64
+			if err := s.db.WithContext(ctx).Model(&models.AdCampaign{}).
+				Where(`"paymentRef" = ?`, ref).
+				Count(&existingCount).Error; err == nil && existingCount > 0 {
+				return nil, fmt.Errorf("payment reference %s has already been used for another campaign", ref)
+			}
+
+			var paidTxCount int64
+			_ = s.db.WithContext(ctx).Model(&models.WalletTransaction{}).
+				Where(`("trx_ref" = ? OR "trx_ref" = ?) AND UPPER(COALESCE(status, '')) IN ('COMPLETED', 'SUCCESS', 'PAID')`, ref, "DEBIT-ADS-"+ref).
+				Count(&paidTxCount).Error
+
+			var paidIntentCount int64
+			_ = s.db.WithContext(ctx).Model(&models.PaymentIntent{}).
+				Where(`reference = ? AND UPPER(COALESCE(status, '')) = 'PAID'`, ref).
+				Count(&paidIntentCount).Error
+
+			if paidTxCount > 0 || paidIntentCount > 0 {
+				paymentStatus = "PAID"
+			}
+		}
 	}
 
 	placementTypeStr := string(rule.PlacementType)
@@ -2127,7 +2151,7 @@ func (s *adsServiceImpl) GetPlacementEligibility(ctx context.Context, userId int
 	// 1. Check user's subscription
 	if userId > 0 {
 		var user models.User
-		err := s.db.WithContext(ctx).Select("id, subscriptionPlan").First(&user, userId).Error
+		err := s.db.WithContext(ctx).Select(`id, "subscriptionPlan"`).First(&user, userId).Error
 		if err == nil && user.SubscriptionPlan != nil {
 			plan := strings.ToUpper(strings.TrimSpace(*user.SubscriptionPlan))
 			if plan == "PREMIUM_PRO" || plan == "PREMIUM_PRO_MAX" || plan == "PRO" || plan == "PRO_MAX" {
@@ -2185,7 +2209,7 @@ func (s *adsServiceImpl) GetPlacementEligibility(ctx context.Context, userId int
 		Table(`"AdPlacement"`).
 		Select(`"AdPlacement".*`).
 		Joins(`JOIN "AdCampaign" ON "AdCampaign".id = "AdPlacement"."campaignId"`).
-		Where(`(UPPER("AdPlacement".key) IN (?, ?) OR UPPER("AdPlacement"."placementType") IN (?, ?)) AND LOWER("AdCampaign".status::text) IN ('active', 'approved', 'paid', 'pending') AND `+activeCampaignDateCondition, placementKeyUpper, ruleTypeUpper, placementKeyUpper, ruleTypeUpper).
+		Where(`(UPPER("AdPlacement".key) IN (?, ?) OR UPPER("AdCampaign"."placementType") IN (?, ?)) AND LOWER("AdCampaign".status::text) IN ('active', 'approved', 'paid', 'pending') AND `+activeCampaignDateCondition, placementKeyUpper, ruleTypeUpper, placementKeyUpper, ruleTypeUpper).
 		Find(&placements).Error
 
 	if err == nil && len(placements) > 0 {
@@ -2248,7 +2272,7 @@ func (s *adsServiceImpl) GetPlacementEligibility(ctx context.Context, userId int
 	if selectedCandidate == nil {
 		var directCampaigns []models.AdCampaign
 		directErr := s.db.WithContext(ctx).
-			Where(`(UPPER("placementType") = ? OR UPPER("placementType") = ?) AND LOWER(status::text) IN ('active', 'approved', 'paid', 'pending') AND `+activeCampaignDateCondition, placementKeyUpper, ruleTypeUpper, placementKeyUpper, ruleTypeUpper).
+			Where(`(UPPER("placementType") = ? OR UPPER("placementType") = ?) AND LOWER(status::text) IN ('active', 'approved', 'paid', 'pending') AND `+activeCampaignDateCondition, placementKeyUpper, ruleTypeUpper).
 			Find(&directCampaigns).Error
 
 		if directErr == nil && len(directCampaigns) > 0 {

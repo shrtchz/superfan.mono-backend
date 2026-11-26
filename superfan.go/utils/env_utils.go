@@ -20,6 +20,15 @@ func GetInternalServiceKey() string {
 
 // LoadEnv initially load env
 func LoadEnv() {
+	// Render mounts Secret Files at /etc/secrets/.env (matching NestJS main.ts)
+	if _, err := os.Stat("/etc/secrets/.env"); err == nil {
+		if err := godotenv.Load("/etc/secrets/.env"); err != nil {
+			log.Printf("Warning: failed to load .env from /etc/secrets/.env: %v", err)
+		} else {
+			log.Printf(".env loaded successfully from /etc/secrets/.env")
+		}
+	}
+
 	wd, err := os.Getwd()
 	if err != nil {
 		log.Printf("Warning: unable to determine working directory: %v", err)
