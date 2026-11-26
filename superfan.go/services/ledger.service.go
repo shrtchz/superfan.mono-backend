@@ -387,10 +387,10 @@ func (s *ledgerServiceImpl) computeSummary(base *gorm.DB) (*models.LedgerSummary
 	if err := base.Session(&gorm.Session{}).Select(
 		`COALESCE(SUM(CASE WHEN ("transactionType" IN ('Deposit', 'Reward', 'Bonus', 'FUNDING') OR "type" IN ('Credit', 'credit', 'CREDIT')) AND status IN ('SUCCESS', 'Completed') AND currency = 'NGN' THEN amount ELSE 0 END), 0) as total_credits, ` +
 			`COALESCE(SUM(CASE WHEN ("transactionType" IN ('Withdrawal', 'WITHDRAWAL') OR "type" IN ('Debit', 'debit', 'DEBIT')) AND status IN ('SUCCESS', 'Completed') AND currency = 'NGN' THEN amount ELSE 0 END), 0) as total_debits, ` +
-			`COALESCE(SUM(CASE WHEN status = 'PENDING' AND currency = 'NGN' THEN amount ELSE 0 END), 0) as pending_settlement, ` +
-			`COALESCE(SUM(CASE WHEN status = 'PENDING' THEN 1 ELSE 0 END), 0) as pending_count, ` +
+			`COALESCE(SUM(CASE WHEN UPPER(COALESCE(status, '')) IN ('PENDING', 'HELD') AND currency = 'NGN' THEN amount ELSE 0 END), 0) as pending_settlement, ` +
+			`COALESCE(SUM(CASE WHEN UPPER(COALESCE(status, '')) IN ('PENDING', 'HELD') THEN 1 ELSE 0 END), 0) as pending_count, ` +
 			`COALESCE(SUM(CASE WHEN "transactionType" IN ('Deposit', 'FUNDING') AND status IN ('SUCCESS', 'Completed') AND currency = 'NGN' THEN amount ELSE 0 END), 0) as cash_bank, ` +
-			`COALESCE(SUM(CASE WHEN status = 'PENDING' AND "type" IN ('Credit', 'credit', 'CREDIT') AND currency = 'NGN' THEN amount ELSE 0 END), 0) as provider_clearing, ` +
+			`COALESCE(SUM(CASE WHEN UPPER(COALESCE(status, '')) = 'PENDING' AND UPPER(COALESCE("type", '')) = 'CREDIT' AND currency = 'NGN' THEN amount ELSE 0 END), 0) as provider_clearing, ` +
 			`COALESCE(SUM(CASE WHEN "transactionType" = 'Fee' AND status IN ('SUCCESS', 'Completed') AND currency = 'NGN' THEN amount ELSE 0 END), 0) as platform_revenue`,
 	).Scan(&summary).Error; err != nil {
 		return nil, fmt.Errorf("summary query failed: %w", err)

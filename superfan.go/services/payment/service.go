@@ -4160,6 +4160,85 @@ func markPaymentIntentPaidTx(tx *gorm.DB, txRef string) {
 	} else {
 		_ = tx.Exec(`RELEASE SAVEPOINT sp_mark_intent_paid`).Error
 	}
+	fulfillPaymentPurposeTx(tx, txRef)
+}
+
+// fulfillPaymentPurposeTx idempotently marks the target AdCampaign, Order, or Subscription
+// as paid/active when a direct or wallet payment succeeds, using savepoints so missing
+// tables in unit tests or partial environments never abort the ledger transaction.
+func fulfillPaymentPurposeTx(tx *gorm.DB, txRef string) {
+	if tx == nil || strings.TrimSpace(txRef) == "" {
+		return
+	}
+
+	var intent models.PaymentIntent
+	if err := tx.Exec(`SAVEPOINT sp_fulfill_intent`).Error; err == nil {
+		if findErr := tx.Where("reference = ?", txRef).First(&intent).Error; findErr != nil {
+			_ = tx.Exec(`ROLLBACK TO SAVEPOINT sp_fulfill_intent`).Error
+		} else {
+			_ = tx.Exec(`RELEASE SAVEPOINT sp_fulfill_intent`).Error
+		}
+	}
+
+	purpose := strings.ToLower(strings.TrimSpace(intent.Purpose))
+	targetID := ""
+	if intent.TargetID != nil {
+		targetID = strings.TrimSpace(*intent.TargetID)
+	}
+
+	// 1. AdCampaign fulfillment
+	if purpose == "" || strings.Contains(purpose, "ad") {
+		if err := tx.Exec(`SAVEPOINT sp_fulfill_ad`).Error; err == nil {
+			var execErr error
+			if targetID != "" {
+				execErr = tx.Exec(`UPDATE "AdCampaign" SET "paymentStatus" = 'PAID', "paymentRef" = COALESCE(NULLIF("paymentRef", ''), ?), "updatedAt" = NOW() WHERE id::text = ? OR "paymentRef" = ?`, txRef, targetID, txRef).Error
+			} else {
+				execErr = tx.Exec(`UPDATE "AdCampaign" SET "paymentStatus" = 'PAID', "updatedAt" = NOW() WHERE "paymentRef" = ?`, txRef).Error
+			}
+			if execErr != nil {
+				_ = tx.Exec(`ROLLBACK TO SAVEPOINT sp_fulfill_ad`).Error
+			} else {
+				_ = tx.Exec(`RELEASE SAVEPOINT sp_fulfill_ad`).Error
+			}
+		}
+	}
+
+	// 2. Shop Order fulfillment
+	if strings.Contains(purpose, "shop") || strings.Contains(purpose, "order") {
+		if targetID != "" {
+			if err := tx.Exec(`SAVEPOINT sp_fulfill_order`).Error; err == nil {
+				if execErr := tx.Exec(`UPDATE "Order" SET "paymentStatus" = 'PAID', "updatedAt" = NOW() WHERE "orderNumber" = ? OR id::text = ?`, targetID, targetID).Error; execErr != nil {
+					_ = tx.Exec(`ROLLBACK TO SAVEPOINT sp_fulfill_order`).Error
+				} else {
+					_ = tx.Exec(`RELEASE SAVEPOINT sp_fulfill_order`).Error
+				}
+			}
+		}
+	}
+
+	// 3. Subscription & SubscriptionDebit fulfillment
+	if purpose == "" || strings.Contains(purpose, "sub") {
+		if err := tx.Exec(`SAVEPOINT sp_fulfill_sub_debit`).Error; err == nil {
+			if execErr := tx.Exec(`UPDATE "SubscriptionDebit" SET "status" = 'SUCCESS', "transactionRef" = COALESCE(NULLIF("transactionRef", ''), ?) WHERE "paymentReference" = ? AND UPPER(COALESCE("status", '')) = 'PENDING'`, txRef, txRef).Error; execErr != nil {
+				_ = tx.Exec(`ROLLBACK TO SAVEPOINT sp_fulfill_sub_debit`).Error
+			} else {
+				_ = tx.Exec(`RELEASE SAVEPOINT sp_fulfill_sub_debit`).Error
+			}
+		}
+		if err := tx.Exec(`SAVEPOINT sp_fulfill_sub`).Error; err == nil {
+			var execErr error
+			if targetID != "" {
+				execErr = tx.Exec(`UPDATE "Subscription" SET "paymentStatus" = 'PAID', "status" = 'ACTIVE' WHERE "paymentReference" = ? OR id::text = ?`, txRef, targetID).Error
+			} else {
+				execErr = tx.Exec(`UPDATE "Subscription" SET "paymentStatus" = 'PAID', "status" = 'ACTIVE' WHERE "paymentReference" = ?`, txRef).Error
+			}
+			if execErr != nil {
+				_ = tx.Exec(`ROLLBACK TO SAVEPOINT sp_fulfill_sub`).Error
+			} else {
+				_ = tx.Exec(`RELEASE SAVEPOINT sp_fulfill_sub`).Error
+			}
+		}
+	}
 }
 
 // CreatePaymentIntent records a PENDING_PAYMENT intent before charging a card, bank, or wallet.
