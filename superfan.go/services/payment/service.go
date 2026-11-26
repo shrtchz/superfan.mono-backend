@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"quiz.superfan.com/apis/labels"
 	"quiz.superfan.com/apis/models"
 	"quiz.superfan.com/apis/services/accounting"
@@ -512,8 +513,8 @@ func (s *PaymentService) VerifyProviderWebhook(ctx context.Context, providerName
 		if s.monnifyProvider == nil {
 			return errors.New("monnify provider not configured")
 		}
-		if strings.TrimSpace(s.monnifyProvider.SecretKey) == "" && strings.TrimSpace(signature) == "" {
-			return nil
+		if strings.TrimSpace(s.monnifyProvider.SecretKey) == "" {
+			return errors.New("monnify webhook secret not configured")
 		}
 		if !s.monnifyProvider.VerifyWebhookSignature(rawBody, signature) {
 			return errors.New("invalid monnify webhook signature")
@@ -527,8 +528,8 @@ func (s *PaymentService) VerifyProviderWebhook(ctx context.Context, providerName
 		if secret == "" {
 			secret = strings.TrimSpace(s.bitnobProvider.ApiKey)
 		}
-		if secret == "" && strings.TrimSpace(signature) == "" {
-			return nil
+		if secret == "" {
+			return errors.New("bitnob webhook secret not configured")
 		}
 		if !s.bitnobProvider.VerifyWebhookSignature(rawBody, signature) {
 			return errors.New("invalid bitnob webhook signature")
@@ -678,8 +679,8 @@ func (s *PaymentService) VerifyBachsSignature(ctx context.Context, signature str
 	}
 
 	if secret == "" {
-		log.Printf("[PaymentService] Warning: Bachs secret key not configured in Admin (PaymentProcessor) or env; skipping signature verification")
-		return nil
+		log.Printf("[PaymentService] Error: Bachs secret key not configured in Admin (PaymentProcessor) or env")
+		return errors.New("bachs webhook secret not configured")
 	}
 
 	if signature == "" {
@@ -833,13 +834,20 @@ func (s *PaymentService) HandleBachsWebhook(ctx context.Context, signature strin
 			if err := s.db.WithContext(ctx).Where("\"trx_ref\" = ? AND (LOWER(COALESCE(\"transactionType\", '')) = 'withdrawal' OR LOWER(COALESCE(\"type\", '')) = 'debit')", ref).First(&wTx).Error; err == nil && wTx.ID > 0 {
 				log.Printf("[PaymentService] Bachs withdrawal failed for ref=%s (userID=%d, amount=%.2f): refunding user wallet", ref, wTx.UserID, wTx.Amount)
 				return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+					var lockedTx models.WalletTransaction
+					if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", wTx.ID).First(&lockedTx).Error; err != nil {
+						return err
+					}
+					if lockedTx.Status != nil && strings.EqualFold(*lockedTx.Status, "FAILED") {
+						return nil
+					}
 					failedStatus := "FAILED"
 					if err := tx.Model(&models.WalletTransaction{}).Where("id = ?", wTx.ID).Update("status", failedStatus).Error; err != nil {
 						return err
 					}
 					_ = tx.Model(&models.ActivityWallet{}).Where("reference = ?", ref).Update("status", "FAILED").Error
 					var w models.Wallet
-					if err := tx.Where("\"userId\" = ?", wTx.UserID).First(&w).Error; err == nil {
+					if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("\"userId\" = ?", wTx.UserID).First(&w).Error; err == nil {
 						w.CheckingBalance += wTx.Amount
 						w.Balance = w.CheckingBalance
 						return tx.Save(&w).Error
@@ -2942,9 +2950,9 @@ func (s *PaymentService) creditWalletWithFeeInDB(ctx context.Context, userID int
 	var updatedWallet models.Wallet
 
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		// 1. Fetch or create wallet
+		// 1. Fetch or create wallet with row lock
 		var wallet models.Wallet
-		err := tx.Where("\"userId\" = ?", userID).First(&wallet).Error
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("\"userId\" = ?", userID).First(&wallet).Error
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				log.Printf("[DB] No wallet found for userID=%d, creating new wallet", userID)
@@ -3202,7 +3210,7 @@ func (s *PaymentService) TransferBetweenWallets(ctx context.Context, userID int,
 
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var wallet models.Wallet
-		if err := tx.Where("\"userId\" = ?", userID).First(&wallet).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("\"userId\" = ?", userID).First(&wallet).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return errors.New("wallet not found for user")
 			}
@@ -3484,7 +3492,7 @@ func (s *PaymentService) ProcessWalletWithdrawal(ctx context.Context, userID int
 	var updatedWallet models.Wallet
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var wallet models.Wallet
-		if err := tx.Where("\"userId\" = ?", userID).First(&wallet).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("\"userId\" = ?", userID).First(&wallet).Error; err != nil {
 			return fmt.Errorf("wallet not found for user: %w", err)
 		}
 
@@ -3839,7 +3847,7 @@ func (s *PaymentService) DebitUserWalletFromAccount(ctx context.Context, userID 
 	var updatedWallet models.Wallet
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var wallet models.Wallet
-		if err := tx.Where("\"userId\" = ?", userID).First(&wallet).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("\"userId\" = ?", userID).First(&wallet).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return errors.New("wallet not found for user")
 			}

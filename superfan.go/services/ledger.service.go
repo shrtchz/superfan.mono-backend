@@ -313,7 +313,7 @@ func (s *ledgerServiceImpl) attachClientNames(entries []models.WalletTransaction
 	}
 
 	for i := range entries {
-		if entries[i].UserID <= 0 {
+		if entries[i].UserID <= 0 || isSystemRewardEntry(&entries[i]) || strings.EqualFold(strings.TrimSpace(entries[i].ClientName), accounting.ProviderInApp) {
 			entries[i].ClientName = accounting.ProviderInApp
 			continue
 		}
@@ -321,6 +321,28 @@ func (s *ledgerServiceImpl) attachClientNames(entries []models.WalletTransaction
 			entries[i].ClientName = resolved
 		}
 	}
+}
+
+func isSystemRewardEntry(entry *models.WalletTransaction) bool {
+	if entry == nil {
+		return false
+	}
+	txType := strings.ToUpper(strings.TrimSpace(derefStr(entry.TransactionType)))
+	if txType == "REWARD" || txType == "BONUS" {
+		return true
+	}
+	ref := strings.ToUpper(strings.TrimSpace(derefStr(entry.TrxRef)))
+	return strings.HasPrefix(ref, "QUIZ_") ||
+		strings.HasPrefix(ref, "ADSREW-") ||
+		strings.HasPrefix(ref, "REFERRAL") ||
+		strings.HasPrefix(ref, "LIVE_QUIZ_")
+}
+
+func derefStr(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }
 
 func (s *ledgerServiceImpl) GetReconciliation(ctx context.Context) (*accounting.ReconciliationReport, error) {

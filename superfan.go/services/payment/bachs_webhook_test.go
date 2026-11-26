@@ -44,11 +44,11 @@ func TestVerifyBachsSignature(t *testing.T) {
 		t.Fatalf("expected missing signature to fail when secret is set, but it passed")
 	}
 
-	// 5. No secret configured in env
+	// 5. No secret configured in env (must fail closed)
 	os.Unsetenv("BACHS_WEBHOOK_SECRET")
 	os.Unsetenv("BACHS_SECRET_KEY")
-	if err := svc.VerifyBachsSignature(ctx, "", rawBody); err != nil {
-		t.Fatalf("expected empty secret to log warning and pass for dev, got: %v", err)
+	if err := svc.VerifyBachsSignature(ctx, "", rawBody); err == nil {
+		t.Fatalf("expected empty secret to fail closed, but it passed")
 	}
 }
 
