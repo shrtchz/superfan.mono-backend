@@ -35,6 +35,17 @@ type ledgerServiceImpl struct {
 }
 
 func NewLedgerService(db *gorm.DB) LedgerService {
+	if db != nil {
+		if err := db.AutoMigrate(
+			&models.LedgerJournalLine{},
+			&models.LedgerApproval{},
+			&models.ReconciliationStatementRow{},
+			&models.ReconciliationResolution{},
+			&models.LedgerPeriodClose{},
+		); err != nil {
+			log.Printf("[LEDGER] auto-migrate failed: %v", err)
+		}
+	}
 	return &ledgerServiceImpl{db: db}
 }
 
