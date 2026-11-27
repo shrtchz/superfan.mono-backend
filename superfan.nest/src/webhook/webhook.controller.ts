@@ -10,6 +10,7 @@ import {
   RawBodyRequest,
   Req,
   Res,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { createHmac, timingSafeEqual } from 'crypto';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -692,12 +693,15 @@ private async handleCardCharge(payload: any) {
     const rawBody = req.rawBody?.toString('utf-8');
     const signature = diditSignature || altSignature;
 
-    if (rawBody && signature) {
-      const isValid = this.diditService.validateWebhookSignature(rawBody, signature);
-      if (!isValid) {
-        this.logger.warn('[Didit Webhook] Invalid HMAC signature');
-        throw new BadRequestException('Invalid webhook signature');
-      }
+    if (!rawBody || !signature) {
+      this.logger.warn('[Didit Webhook] Missing raw body or signature header');
+      throw new UnauthorizedException('Missing webhook signature or raw body');
+    }
+
+    const isValid = this.diditService.validateWebhookSignature(rawBody, signature);
+    if (!isValid) {
+      this.logger.warn('[Didit Webhook] Invalid HMAC signature');
+      throw new UnauthorizedException('Invalid webhook signature');
     }
 
     const sessionId = payload.session_id || payload.sessionId || payload.id;

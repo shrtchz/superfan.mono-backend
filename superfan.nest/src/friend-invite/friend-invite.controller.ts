@@ -9,7 +9,6 @@ import {
   Req,
 } from '@nestjs/common';
 import { ApiRoutes } from '../common/enums/routes.enum';
-import { Public } from '../common/decorators';
 import { FriendInviteService } from './friend-invite.service';
 import {
   AcceptChallengeInviteDto,
@@ -42,21 +41,21 @@ export class FriendInviteController {
     return this.friendInviteService.friends(req.user.id);
   }
 
-  @Public()
   @Post('/:inviteId/accept')
   accept(
+    @Req() req: any,
     @Param('inviteId', ParseIntPipe) inviteId: number,
     @Body() dto: AcceptChallengeInviteDto,
   ) {
-    return this.friendInviteService.accept(inviteId);
+    return this.friendInviteService.accept(inviteId, req.user.id);
   }
 
-  @Public()
   @Post('/:inviteId/decline')
   decline(
+    @Req() req: any,
     @Param('inviteId', ParseIntPipe) inviteId: number,
     @Body() dto: DeclineChallengeInviteDto,
   ) {
-    return this.friendInviteService.decline(inviteId);
+    return this.friendInviteService.decline(inviteId, req.user.id);
   }
 }

@@ -1223,19 +1223,24 @@ if (bankTransfer) {
       dbProcessor?.secretKey ||
       process.env.BACHS_WEBHOOK_SECRET ||
       process.env.BACHS_SECRET_KEY;
-    if (bachsSecret && signature && rawBody) {
-      const crypto = require('crypto');
-      const hash = crypto
-        .createHmac('sha256', bachsSecret)
-        .update(rawBody)
-        .digest('hex');
-      const cleanSig = signature.toLowerCase().replace(/^sha256=/, '');
-      if (hash.toLowerCase() !== cleanSig) {
-        this.logger.warn(
-          `Bachs webhook signature mismatch. Expected: ${hash}, Received: ${signature}`,
-        );
-        throw new UnauthorizedException('Invalid Bachs webhook signature');
-      }
+    if (!bachsSecret || !bachsSecret.trim()) {
+      this.logger.error('Bachs webhook secret is not configured');
+      throw new UnauthorizedException('Bachs webhook secret not configured');
+    }
+    if (!signature || !rawBody) {
+      this.logger.warn('Missing Bachs webhook signature or raw body');
+      throw new UnauthorizedException('Missing Bachs webhook signature or raw body');
+    }
+    const hash = createHmac('sha256', bachsSecret)
+      .update(rawBody)
+      .digest('hex')
+      .toLowerCase();
+    const cleanSig = String(signature).trim().toLowerCase().replace(/^sha256=/, '');
+    const a = Buffer.from(hash, 'utf8');
+    const b = Buffer.from(cleanSig, 'utf8');
+    if (a.length !== b.length || !timingSafeEqual(a, b)) {
+      this.logger.warn('Bachs webhook signature mismatch');
+      throw new UnauthorizedException('Invalid Bachs webhook signature');
     }
 
     const event = (

@@ -96,12 +96,14 @@ export class AdminController {
    *   - "full"       → Full Admin Access (all features, with optional allowManageAdmins)
    *   - "restricted" → Restricted Admin Access (permissionIds list required)
    */
+  @Roles(Role.superadmin)
   @Post('/invite-admin')
   @HttpCode(HttpStatus.OK)
   async inviteAdmin(
     @Body() body: InviteAdminDto,
     @Req() req: any,
   ): Promise<{ message: string; data?: { id: number } }> {
+    this.ensureOwner(req.user);
     return this.adminService.inviteAdmin(
       body.email,
       req.user.id,
@@ -132,7 +134,6 @@ export class AdminController {
     );
   }
 
-  @Public()
   @Post('/resend-subadmin-invite')
   @HttpCode(HttpStatus.OK)
   async resendSubAdminInvite(
@@ -148,8 +149,10 @@ export class AdminController {
     return this.adminService.acceptInvitedSubAdmin(dto);
   }
 
+  @Roles(Role.superadmin)
   @Delete('/delete/:adminId')
-  async deleteAdmin(@Param('adminId') adminId: number) {
+  async deleteAdmin(@Param('adminId') adminId: number, @Req() req: any) {
+    this.ensureOwner(req.user);
     return this.adminService.deleteAdmin(adminId);
   }
 
@@ -318,8 +321,10 @@ export class AdminController {
     return this.adminService.getSubAdminWithPermissions(Number(id));
   }
 
+  @Roles(Role.superadmin)
   @Post('/demote/:adminId')
-  async demoteAdmin(@Param('adminId') adminId: number) {
+  async demoteAdmin(@Param('adminId') adminId: number, @Req() req: any) {
+    this.ensureOwner(req.user);
     return this.adminService.demoteSubAdminToClient(adminId);
   }
 }

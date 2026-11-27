@@ -32,6 +32,8 @@ export class StreamingController {
     private readonly streamGateway: StreamGateway,
   ) {}
 
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin, Role.moderator)
   @Post('save_tokens')
   async saveToken(
     @Body() tokens: {
@@ -132,11 +134,15 @@ export class StreamingController {
     );
   }
 
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin, Role.moderator)
   @Post(':broadcastId/live')
   async goLive(@Param('broadcastId') broadcastId: string): Promise<void> {
     return this.streamingService.goLive(broadcastId);
   }
 
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin, Role.moderator)
   @Post(':broadcastId/end')
   async end(@Param('broadcastId') broadcastId: string): Promise<void> {
     return this.streamingService.endStream(broadcastId);

@@ -108,15 +108,17 @@ async function bootstrap() {
     return '';
   });
 
-  // Swagger
-  const config = new DocumentBuilder()
-    .setTitle('Superfan API')
-    .setDescription('Minimal reproduction of Superfan API')
-    .setVersion('0.1')
-    .build();
+  // Swagger (non-production only)
+  if (process.env.NODE_ENV !== 'production') {
+    const config = new DocumentBuilder()
+      .setTitle('Superfan API')
+      .setDescription('Minimal reproduction of Superfan API')
+      .setVersion('0.1')
+      .build();
 
-  const document = SwaggerModule.createDocument(app, config);
-  SwaggerModule.setup('api', app, document);
+    const document = SwaggerModule.createDocument(app, config);
+    SwaggerModule.setup('api', app, document);
+  }
 
   // Start microservice listeners before HTTP
   await app.startAllMicroservices();

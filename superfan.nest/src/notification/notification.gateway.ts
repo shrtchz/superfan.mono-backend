@@ -8,6 +8,7 @@ import {
   WebSocketServer
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
+import { authenticateSocketClient } from '../common/utils/ws-auth.util';
 
 const SOCKET_CORS_ORIGINS = [
   'http://localhost:9050',
@@ -39,11 +40,21 @@ export class NotificationGateway
 
   private clients: Map<string, string> = new Map(); // userId -> socketId
 
-  handleConnection(client: Socket) {
-    console.log(`Client connected: ${client.id}`);
+  async handleConnection(client: Socket) {
+    const user = await authenticateSocketClient(client);
+    if (user) {
+      this.registerUser(user.id, client);
+      console.log(`Client connected: ${client.id} (user ${user.id})`);
+    } else {
+      console.log(`Unauthenticated client connected: ${client.id}`);
+    }
   }
 
   handleDisconnect(client: Socket) {
+    const userId = client.data?.userId;
+    if (userId && this.clients.get(String(userId)) === client.id) {
+      this.clients.delete(String(userId));
+    }
     console.log(`Client disconnected: ${client.id}`);
   }
 
@@ -97,10 +108,15 @@ export class NotificationGateway
 
   @SubscribeMessage('register')
   handleRegister(
-    @MessageBody() userId: number | string,
+    @MessageBody() _userId: number | string,
     @ConnectedSocket() client: Socket,
   ) {
-    this.registerUser(userId, client);
+    const verifiedUserId = client.data?.userId;
+    if (!verifiedUserId) {
+      return { status: 'error', error: 'Unauthorized: authentication required' };
+    }
+    this.registerUser(verifiedUserId, client);
+    return { status: 'success', userId: verifiedUserId };
   }
 
   @SubscribeMessage('quiz:join_session')
@@ -110,8 +126,9 @@ export class NotificationGateway
   ) {
     if (data?.sessionId) {
       client.join(`quiz_session_${data.sessionId}`);
-      if (data.userId) {
-        this.registerUser(data.userId, client);
+      const verifiedUserId = client.data?.userId;
+      if (verifiedUserId) {
+        this.registerUser(verifiedUserId, client);
       }
     }
   }

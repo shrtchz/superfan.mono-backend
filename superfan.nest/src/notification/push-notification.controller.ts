@@ -1,11 +1,16 @@
-import { Body, Controller, Post } from '@nestjs/common';
+import { Body, Controller, Post, UseGuards } from '@nestjs/common';
+import { Roles } from '../common/decorators';
+import { Role } from '../common/enums/role.enum';
 import { ApiRoutes } from '../common/enums/routes.enum';
+import { RoleGuard } from '../common/guards/roles.guard';
 import { PushNotificationService } from './push-notification.service';
 import { SendToAllUsersDto, SendToUsersDto } from './notification.dto';
 
 
 
 @Controller(ApiRoutes.NOTIFICATION)
+@UseGuards(RoleGuard)
+@Roles(Role.superadmin, Role.subadmin)
 export class PushNotificationController {
   constructor(private pushNotificationService: PushNotificationService) {}
 

@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -55,7 +56,7 @@ export class FriendInviteService {
     return { success: true, invite };
   }
 
-  async accept(inviteId: number) {
+  async accept(inviteId: number, userId: number) {
     const { invite, alreadyFriends } = await prisma.$transaction(async (tx) => {
       const invite = await tx.challengeInvite.findUnique({
         where: { id: inviteId },
@@ -63,6 +64,10 @@ export class FriendInviteService {
 
       if (!invite) {
         throw new NotFoundException('Invite not found');
+      }
+
+      if (invite.receiverId !== userId) {
+        throw new ForbiddenException('You can only respond to invites sent to you');
       }
 
       if (invite.status !== 'pending') {
@@ -142,13 +147,17 @@ export class FriendInviteService {
     return { success: true };
   }
 
-  async decline(inviteId: number) {
+  async decline(inviteId: number, userId: number) {
     const invite = await prisma.challengeInvite.findUnique({
       where: { id: inviteId },
     });
 
     if (!invite) {
       throw new NotFoundException('Invite not found');
+    }
+
+    if (invite.receiverId !== userId) {
+      throw new ForbiddenException('You can only respond to invites sent to you');
     }
 
     if (invite.status === 'declined') {

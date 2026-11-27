@@ -11,6 +11,7 @@ import {
 } from '@nestjs/websockets';
 
 import { Server, Socket } from 'socket.io';
+import { authenticateSocketClient } from '../common/utils/ws-auth.util';
 import { QuizService } from '../quiz/quiz.service';
 import { StreamingService } from './stream.service';
 
@@ -339,11 +340,8 @@ export class StreamGateway
     this.liveQuizTicker = null;
   }
 
-  handleConnection(client: Socket) {
-    const queryUserId = Number(client.handshake?.query?.userId);
-    if (Number.isFinite(queryUserId) && queryUserId > 0) {
-      (client.data as { userId?: number }).userId = queryUserId;
-    }
+  async handleConnection(client: Socket) {
+    await authenticateSocketClient(client);
     this.startLiveQuizTicker();
   }
 
@@ -362,37 +360,22 @@ export class StreamGateway
 
   private resolveSocketUserId(
     client: Socket,
-    payloadUserId?: string | number | null,
   ): number | null {
-    const candidates = [
-      payloadUserId,
-      (client.data as { userId?: number })?.userId,
-      client.handshake?.query?.userId,
-    ];
-    for (const candidate of candidates) {
-      const parsed = Number(candidate);
-      if (Number.isFinite(parsed) && parsed > 0) return parsed;
-    }
-    return null;
+    const parsed = Number((client.data as { userId?: number })?.userId);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
   }
 
   @SubscribeMessage('register')
   handleRegister(
-    @MessageBody() payload: unknown,
+    @MessageBody() _payload: unknown,
     @ConnectedSocket() client: Socket,
   ) {
-    const userId =
-      typeof payload === 'object' && payload !== null
-        ? Number(
-            (payload as { userId?: string | number }).userId ??
-              (payload as { id?: string | number }).id,
-          )
-        : Number(payload);
-    if (Number.isFinite(userId) && userId > 0) {
-      (client.data as { userId?: number }).userId = userId;
-      void client.join(`user_${userId}`);
+    const userId = this.resolveSocketUserId(client);
+    if (!userId) {
+      return { status: 'error', error: 'Unauthorized: authentication required' };
     }
-    return { status: 'success' };
+    void client.join(`user_${userId}`);
+    return { status: 'success', userId };
   }
 
   @OnEvent('user.wallet.updated')
@@ -485,7 +468,7 @@ export class StreamGateway
     try {
       const streamId = Number(payload?.streamId);
       const message = String(payload?.message ?? payload?.comment ?? '').trim();
-      const userId = this.resolveSocketUserId(client, payload?.userId);
+      const userId = this.resolveSocketUserId(client);
       const parentCommentId =
         payload?.parentCommentId !== undefined && payload?.parentCommentId !== null
           ? Number(payload.parentCommentId)
@@ -553,7 +536,7 @@ export class StreamGateway
   ) {
     try {
       const { streamId } = payload;
-      const userId = this.resolveSocketUserId(client, payload?.userId);
+      const userId = this.resolveSocketUserId(client);
       this.logger.log(`[StreamGateway] fetchComments streamId=${streamId}`);
 
       const comments = await this.streamingService.getStreamCommentsandReplies(

@@ -215,16 +215,7 @@ func (ac *AdsController) UpdateCampaignStatus(c *gin.Context) {
 		return
 	}
 
-	var user models.User
-	if err := utils.DB.WithContext(c.Request.Context()).Select("roleName").First(&user, userID).Error; err != nil {
-		utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", "failed to verify campaign permissions")
-		return
-	}
-	roleName := ""
-	if user.RoleName != nil {
-		roleName = strings.ToLower(strings.TrimSpace(*user.RoleName))
-	}
-	isAdmin := roleName == "superadmin" || roleName == "subadmin"
+	isAdmin := middleware.IsAdmin(c)
 
 	campaign, err := ac.adsService.UpdateCampaignStatus(
 		c.Request.Context(),
@@ -379,11 +370,11 @@ func (ac *AdsController) LogAdEvent(c *gin.Context) {
 	if req.ClientIP == "" {
 		req.ClientIP = c.ClientIP()
 	}
-	if req.UserID == nil {
-		if uidVal, ok := c.Get(middleware.ContextUserIDKey); ok {
-			if uid, ok := uidVal.(int); ok && uid > 0 {
-				req.UserID = &uid
-			}
+	if uid := c.GetInt(middleware.ContextUserIDKey); uid > 0 && !middleware.IsAdmin(c) {
+		req.UserID = &uid
+	} else if req.UserID == nil {
+		if uid := c.GetInt(middleware.ContextUserIDKey); uid > 0 {
+			req.UserID = &uid
 		}
 	}
 
@@ -406,6 +397,9 @@ func (ac *AdsController) GetPlacementEligibility(c *gin.Context) {
 	userId := 0
 	if userIdStr != "" {
 		userId, _ = strconv.Atoi(userIdStr)
+	}
+	if authUserID := c.GetInt(middleware.ContextUserIDKey); authUserID > 0 && !middleware.IsAdmin(c) {
+		userId = authUserID
 	}
 
 	res, err := ac.adsService.GetPlacementEligibility(c.Request.Context(), userId, key)
@@ -431,6 +425,10 @@ func (ac *AdsController) GetPlacements(c *gin.Context) {
 // GetRewardAdQuota handles GET /v2/ads/reward-quota
 func (ac *AdsController) GetRewardAdQuota(c *gin.Context) {
 	userID, err := strconv.Atoi(c.Query("userId"))
+	if authUserID := c.GetInt(middleware.ContextUserIDKey); authUserID > 0 && !middleware.IsAdmin(c) {
+		userID = authUserID
+		err = nil
+	}
 	if err != nil || userID <= 0 {
 		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "a valid userId is required")
 		return

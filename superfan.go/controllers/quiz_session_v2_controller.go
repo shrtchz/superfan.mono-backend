@@ -21,6 +21,20 @@ func NewQuizSessionV2Controller(service *services.QuizSessionV2Service) *QuizSes
 	return &QuizSessionV2Controller{service: service}
 }
 
+func authorizeSessionUserID(ctx *gin.Context, requestedUserID int) (int, bool) {
+	authUserID := ctx.GetInt(middleware.ContextUserIDKey)
+	if authUserID <= 0 {
+		return requestedUserID, true
+	}
+	if requestedUserID <= 0 {
+		return authUserID, true
+	}
+	if requestedUserID != authUserID && !middleware.IsAdmin(ctx) {
+		return 0, false
+	}
+	return requestedUserID, true
+}
+
 // CreateSession handles POST /v2/quiz/sessions.
 func (c *QuizSessionV2Controller) CreateSession(ctx *gin.Context) {
 	var req models.CreateSessionV2Request
@@ -28,6 +42,13 @@ func (c *QuizSessionV2Controller) CreateSession(ctx *gin.Context) {
 		utils.SendError(ctx, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
 		return
 	}
+
+	userID, allowed := authorizeSessionUserID(ctx, req.UserID)
+	if !allowed {
+		utils.SendError(ctx, http.StatusForbidden, "FORBIDDEN", "Cannot create quiz session for another user")
+		return
+	}
+	req.UserID = userID
 
 	result, err := c.service.CreateSession(req)
 	if err != nil {
@@ -54,9 +75,24 @@ func (c *QuizSessionV2Controller) CreateSession(ctx *gin.Context) {
 // GetSession handles GET /v2/quiz/sessions/:sessionId.
 func (c *QuizSessionV2Controller) GetSession(ctx *gin.Context) {
 	sessionID := strings.TrimSpace(ctx.Param("sessionId"))
-	userID, err := parseRequiredUserID(ctx.Query("userId"))
-	if err != nil {
-		utils.SendError(ctx, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+	var userID int
+	if strings.TrimSpace(ctx.Query("userId")) == "" {
+		if authUserID := ctx.GetInt(middleware.ContextUserIDKey); authUserID > 0 {
+			userID = authUserID
+		}
+	}
+	if userID <= 0 {
+		var err error
+		userID, err = parseRequiredUserID(ctx.Query("userId"))
+		if err != nil {
+			utils.SendError(ctx, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+			return
+		}
+	}
+	var allowed bool
+	userID, allowed = authorizeSessionUserID(ctx, userID)
+	if !allowed {
+		utils.SendError(ctx, http.StatusForbidden, "FORBIDDEN", "Cannot access another user's quiz session")
 		return
 	}
 
@@ -86,6 +122,13 @@ func (c *QuizSessionV2Controller) BeginSession(ctx *gin.Context) {
 		return
 	}
 
+	userID, allowed := authorizeSessionUserID(ctx, req.UserID)
+	if !allowed {
+		utils.SendError(ctx, http.StatusForbidden, "FORBIDDEN", "Cannot begin another user's quiz session")
+		return
+	}
+	req.UserID = userID
+
 	session, err := c.service.BeginSession(sessionID, req.UserID)
 	if err != nil {
 		sendServiceError(ctx, err)
@@ -106,6 +149,13 @@ func (c *QuizSessionV2Controller) SaveAnswer(ctx *gin.Context) {
 		utils.SendError(ctx, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
 		return
 	}
+
+	userID, allowed := authorizeSessionUserID(ctx, req.UserID)
+	if !allowed {
+		utils.SendError(ctx, http.StatusForbidden, "FORBIDDEN", "Cannot save answer for another user's quiz session")
+		return
+	}
+	req.UserID = userID
 
 	result, err := c.service.SaveAnswer(sessionID, req)
 	if err != nil {
@@ -128,6 +178,13 @@ func (c *QuizSessionV2Controller) SubmitSession(ctx *gin.Context) {
 		utils.SendError(ctx, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
 		return
 	}
+
+	userID, allowed := authorizeSessionUserID(ctx, req.UserID)
+	if !allowed {
+		utils.SendError(ctx, http.StatusForbidden, "FORBIDDEN", "Cannot submit another user's quiz session")
+		return
+	}
+	req.UserID = userID
 
 	result, err := c.service.SubmitSession(sessionID, req)
 	if err != nil {
@@ -153,6 +210,13 @@ func (c *QuizSessionV2Controller) QuitSession(ctx *gin.Context) {
 		utils.SendError(ctx, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
 		return
 	}
+
+	userID, allowed := authorizeSessionUserID(ctx, req.UserID)
+	if !allowed {
+		utils.SendError(ctx, http.StatusForbidden, "FORBIDDEN", "Cannot quit another user's quiz session")
+		return
+	}
+	req.UserID = userID
 
 	result, err := c.service.QuitSession(sessionID, req)
 	if err != nil {

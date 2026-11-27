@@ -1,11 +1,13 @@
 import { Controller, Delete, HttpCode, HttpStatus, UseGuards } from '@nestjs/common';
 import { ApiRoutes } from '../common/enums/routes.enum';
+import { Role } from '../common/enums/role.enum';
 import { JwtGuard } from '../common/guards';
+import { RoleGuard } from '../common/guards/roles.guard';
 import { ResetService } from './reset.service';
-import { Public } from '../common/decorators';
+import { Roles } from '../common/decorators';
 
 @Controller(ApiRoutes.WIPE)
-@UseGuards(JwtGuard)
+@UseGuards(JwtGuard, RoleGuard)
 export class ResetController {
   constructor(private readonly resetService: ResetService) {}
 
@@ -18,9 +20,8 @@ export class ResetController {
    *
    * Restricted to ADMIN role only.
    */
-  @Public()
   @Delete('deallocate-and-wipe')
-//   @Roles(Role.superadmin)
+  @Roles(Role.superadmin)
   @HttpCode(HttpStatus.OK)
   async deallocateAndWipe() {
     return this.resetService.deallocateAndWipe();

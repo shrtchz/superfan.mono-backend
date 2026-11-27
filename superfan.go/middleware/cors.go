@@ -8,10 +8,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// CORSMiddleware allows browser clients (admin/client) to call Go directly.
-// Handles OPTIONS preflight before AuthRequired runs.
-func CORSMiddleware() gin.HandlerFunc {
-	defaultAllowed := []string{
+func defaultAllowedOrigins() []string {
+	return []string{
 		"http://localhost:9090",
 		"http://localhost:9050",
 		"http://localhost:3000",
@@ -30,6 +28,33 @@ func CORSMiddleware() gin.HandlerFunc {
 		"https://sa1.superfan.ng",
 		"https://sq1.superfan.ng",
 	}
+}
+
+// IsOriginAllowed checks whether an Origin header is permitted by CORS_ALLOWED_ORIGINS or default allowed origins.
+func IsOriginAllowed(origin string) bool {
+	origin = strings.TrimSpace(origin)
+	if origin == "" {
+		return false
+	}
+	defaultAllowed := defaultAllowedOrigins()
+	allowed := parseAllowedOrigins(os.Getenv("CORS_ALLOWED_ORIGINS"))
+	if len(allowed) == 0 {
+		allowed = defaultAllowed
+	} else {
+		allowed = mergeOrigins(allowed, defaultAllowed)
+	}
+	for _, o := range allowed {
+		if o == "*" {
+			return true
+		}
+	}
+	return originAllowed(origin, allowed)
+}
+
+// CORSMiddleware allows browser clients (admin/client) to call Go directly.
+// Handles OPTIONS preflight before AuthRequired runs.
+func CORSMiddleware() gin.HandlerFunc {
+	defaultAllowed := defaultAllowedOrigins()
 
 	allowed := parseAllowedOrigins(os.Getenv("CORS_ALLOWED_ORIGINS"))
 	if len(allowed) == 0 {

@@ -5,6 +5,7 @@ import {
   WebSocketServer,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
+import { authenticateSocketClient } from '../../common/utils/ws-auth.util';
 
 const SOCKET_CORS_ORIGINS = [
   'http://localhost:9050',
@@ -38,12 +39,12 @@ export class PresenceGateway
 
   private onlineUsers = new Map<number, string>();
 
-  handleConnection(client: Socket) {
-    const userId = Number(client.handshake.query.userId);
+  async handleConnection(client: Socket) {
+    const user = await authenticateSocketClient(client);
 
-    if (userId) {
-      this.onlineUsers.set(userId, client.id);
-      console.log(`User ${userId} is online`);
+    if (user) {
+      this.onlineUsers.set(user.id, client.id);
+      console.log(`User ${user.id} is online`);
     }
   }
 

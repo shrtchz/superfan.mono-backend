@@ -10,8 +10,11 @@ import {
   Query,
   Req,
   UnauthorizedException,
+  UseGuards,
 } from '@nestjs/common';
 import { ApiRoutes } from '../common/enums/routes.enum';
+import { Role } from '../common/enums/role.enum';
+import { RoleGuard } from '../common/guards/roles.guard';
 import { ShopService } from './shop.service';
 import {
   GetProductsQueryDto,
@@ -19,7 +22,7 @@ import {
   UpdateProductDto,
 } from './dto/product.dto';
 import { CreateOrderDto, CreateReturnDto } from './dto/order.dto';
-import { Public } from '../common/decorators';
+import { Public, Roles } from '../common/decorators';
 
 @Controller(ApiRoutes.SHOP)
 export class ShopController {
@@ -37,13 +40,15 @@ export class ShopController {
     return this.shopService.getProductById(id);
   }
 
-  @Public()
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin)
   @Post('products')
   createProduct(@Body() dto: CreateProductDto) {
     return this.shopService.createProduct(dto);
   }
 
-  @Public()
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin)
   @Patch('products/:id')
   updateProduct(
     @Param('id', ParseIntPipe) id: number,
@@ -52,7 +57,8 @@ export class ShopController {
     return this.shopService.updateProduct(id, dto);
   }
 
-  @Public()
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin)
   @Delete('products/:id')
   deleteProduct(@Param('id', ParseIntPipe) id: number) {
     return this.shopService.deleteProduct(id);
@@ -107,7 +113,8 @@ export class ShopController {
     return this.shopService.getUserReturns(userId);
   }
 
-  @Public()
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin)
   @Get('admin/orders')
   getAdminOrders(
     @Query('page') page?: number,
@@ -125,7 +132,8 @@ export class ShopController {
     });
   }
 
-  @Public()
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin)
   @Patch('admin/orders/:id/status')
   updateAdminOrderStatus(
     @Param('id', ParseIntPipe) id: number,
@@ -134,7 +142,8 @@ export class ShopController {
     return this.shopService.updateOrderStatus(id, body?.status);
   }
 
-  @Public()
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin)
   @Patch('orders/:id/status')
   updateOrderStatus(
     @Param('id', ParseIntPipe) id: number,

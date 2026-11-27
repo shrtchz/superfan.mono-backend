@@ -389,6 +389,10 @@ func (s *ledgerServiceImpl) computeSummary(base *gorm.DB) (*models.LedgerSummary
 			`COALESCE(SUM(CASE WHEN ("transactionType" IN ('Withdrawal', 'WITHDRAWAL') OR "type" IN ('Debit', 'debit', 'DEBIT')) AND status IN ('SUCCESS', 'Completed') AND currency = 'NGN' THEN amount ELSE 0 END), 0) as total_debits, ` +
 			`COALESCE(SUM(CASE WHEN UPPER(COALESCE(status, '')) IN ('PENDING', 'HELD') AND currency = 'NGN' THEN amount ELSE 0 END), 0) as pending_settlement, ` +
 			`COALESCE(SUM(CASE WHEN UPPER(COALESCE(status, '')) IN ('PENDING', 'HELD') THEN 1 ELSE 0 END), 0) as pending_count, ` +
+			`COALESCE(SUM(CASE WHEN UPPER(COALESCE(status, '')) IN ('PENDING', 'HELD') AND (UPPER(COALESCE("type", '')) = 'CREDIT' OR "transactionType" IN ('Deposit', 'FUNDING')) AND currency = 'NGN' THEN amount ELSE 0 END), 0) as incoming_settlement, ` +
+			`COALESCE(SUM(CASE WHEN UPPER(COALESCE(status, '')) IN ('PENDING', 'HELD') AND (UPPER(COALESCE("type", '')) = 'CREDIT' OR "transactionType" IN ('Deposit', 'FUNDING')) AND currency = 'NGN' THEN 1 ELSE 0 END), 0) as incoming_count, ` +
+			`COALESCE(SUM(CASE WHEN UPPER(COALESCE(status, '')) IN ('PENDING', 'HELD') AND (UPPER(COALESCE("type", '')) = 'DEBIT' OR "transactionType" IN ('Withdrawal', 'WITHDRAWAL')) AND currency = 'NGN' THEN amount ELSE 0 END), 0) as outgoing_settlement, ` +
+			`COALESCE(SUM(CASE WHEN UPPER(COALESCE(status, '')) IN ('PENDING', 'HELD') AND (UPPER(COALESCE("type", '')) = 'DEBIT' OR "transactionType" IN ('Withdrawal', 'WITHDRAWAL')) AND currency = 'NGN' THEN 1 ELSE 0 END), 0) as outgoing_count, ` +
 			`COALESCE(SUM(CASE WHEN "transactionType" IN ('Deposit', 'FUNDING') AND status IN ('SUCCESS', 'Completed') AND currency = 'NGN' THEN amount ELSE 0 END), 0) as cash_bank, ` +
 			`COALESCE(SUM(CASE WHEN UPPER(COALESCE(status, '')) = 'PENDING' AND UPPER(COALESCE("type", '')) = 'CREDIT' AND currency = 'NGN' THEN amount ELSE 0 END), 0) as provider_clearing, ` +
 			`COALESCE(SUM(CASE WHEN "transactionType" = 'Fee' AND status IN ('SUCCESS', 'Completed') AND currency = 'NGN' THEN amount ELSE 0 END), 0) as platform_revenue`,
