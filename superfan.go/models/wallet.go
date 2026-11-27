@@ -71,6 +71,10 @@ type LedgerSummary struct {
 	TotalDebits        float64                `json:"totalDebits"`
 	PendingSettlement  float64                `json:"pendingSettlement"`
 	PendingCount       int64                  `json:"pendingCount"`
+	IncomingSettlement float64                `json:"incomingSettlement"`
+	IncomingCount      int64                  `json:"incomingCount"`
+	OutgoingSettlement float64                `json:"outgoingSettlement"`
+	OutgoingCount      int64                  `json:"outgoingCount"`
 	CashBank           float64                `json:"cashBank"`
 	ProviderClearing   float64                `json:"providerClearing"` // pending deposits not yet settled to bank
 	CheckingWalletLiab float64                `json:"checkingWalletLiab"`

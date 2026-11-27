@@ -99,14 +99,7 @@ func (b *BitnobProvider) InitiateDeposit(ctx context.Context, req DepositRequest
 }
 
 func (b *BitnobProvider) VerifyTransaction(ctx context.Context, req VerifyTransactionRequest) (*VerifyTransactionResponse, error) {
-	// Verify through Webhook payload or API
-	return &VerifyTransactionResponse{
-		TransactionReference: req.TransactionReference,
-		Amount:               0,
-		ProviderName:         "Bitnob",
-		Currency:             "USDC",
-		Status:               "SUCCESS", // Mocked for now
-	}, nil
+	return nil, fmt.Errorf("bitnob VerifyTransaction is not implemented; transaction status must be verified via signed webhook")
 }
 
 // VerifyWebhookSignature validates Bitnob's `x-bitnob-signature` HMAC-SHA512 header.

@@ -8,12 +8,17 @@ import {
   Post,
   Put,
   Query,
+  UseGuards,
 } from '@nestjs/common';
-import { Public } from '../common/decorators/public.decorator';
+import { Roles } from '../common/decorators';
+import { Role } from '../common/enums/role.enum';
+import { JwtGuard } from '../common/guards';
+import { RoleGuard } from '../common/guards/roles.guard';
 import { ConfigurePaymentProcessorDto } from './dto/payment-processor.dto';
 import { PaymentProcessorService } from './payment-processor.service';
 
-@Public()
+@UseGuards(JwtGuard, RoleGuard)
+@Roles(Role.superadmin, Role.subadmin)
 @Controller(['api/v1/payment-processors', 'api/v1/payment/processors', 'payment-processors'])
 export class PaymentProcessorController {
   constructor(private readonly processorService: PaymentProcessorService) {}

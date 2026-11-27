@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Delete,
+  ForbiddenException,
   Get,
   HttpCode,
   HttpStatus,
@@ -16,9 +17,10 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FileFieldsInterceptor } from '@nestjs/platform-express';
-import { ApiPaginatedResponse, Public } from '../common/decorators';
+import { ApiPaginatedResponse, Public, Roles } from '../common/decorators';
 import { RealIp } from '../common/decorators/RealIp.decorator';
 import { PaginatedOutputDto } from '../common/dto/paginated-output.dto';
+import { Role } from '../common/enums/role.enum';
 import { ApiRoutes } from '../common/enums/routes.enum';
 import { JwtGuard } from '../common/guards';
 import { RoleGuard } from '../common/guards/roles.guard';
@@ -61,6 +63,19 @@ export class UserController {
     private presenceGateway: PresenceGateway,
   ) {}
 
+  private isAdmin(req: any): boolean {
+    return (
+      req.user?.roleName === Role.superadmin ||
+      req.user?.roleName === Role.subadmin
+    );
+  }
+
+  private assertOwnerOrAdmin(req: any, targetUserId: number): void {
+    if (!this.isAdmin(req) && Number(req.user?.id) !== Number(targetUserId)) {
+      throw new ForbiddenException('You can only access your own resources');
+    }
+  }
+
   @Public()
   @Get('my-ip')
   get(@RealIp() ip: string): string {
@@ -83,7 +98,7 @@ export class UserController {
   }
 
   // Debug endpoint to list all users with referral codes
-  @Public()
+  @Roles(Role.superadmin, Role.subadmin)
   @Get('/debug/referral-codes')
   async getAllReferralCodes() {
     const users = await this.userService.findAllUsersWithReferralCodes();
@@ -126,23 +141,31 @@ export class UserController {
     return this.syncUser(req, dto, ip);
   }
   @Get(':id/login-method')
-  async getLoginMethod(@Param('id', ParseIntPipe) userId: number) {
-    return this.userService.getUserLoginMethod(userId);
+  async getLoginMethod(@Req() req: any, @Param('id', ParseIntPipe) userId: number) {
+    this.assertOwnerOrAdmin(req, userId);
+    const effectiveUserId = this.isAdmin(req) ? userId : req.user.id;
+    return this.userService.getUserLoginMethod(effectiveUserId);
   }
 
   @Post('/logout/:userId')
-  async logout(@Param('userId') userId: number) {
-    return this.userService.logout(userId);
+  async logout(@Req() req: any, @Param('userId', ParseIntPipe) userId: number) {
+    this.assertOwnerOrAdmin(req, userId);
+    const effectiveUserId = this.isAdmin(req) ? userId : req.user.id;
+    return this.userService.logout(effectiveUserId);
   }
 
   @Post('/fund-wallet/:userId/:transactionReference')
   async fundUserWalletCard(
-    @Param('userId') userId: number,
+    @Req() req: any,
+    @Param('userId', ParseIntPipe) userId: number,
     @Param('transactionReference') transactionReference: string,
   ) {
-    return this.walletService.fundWalletWithCard(userId, transactionReference);
+    this.assertOwnerOrAdmin(req, userId);
+    const effectiveUserId = this.isAdmin(req) ? userId : req.user.id;
+    return this.walletService.fundWalletWithCard(effectiveUserId, transactionReference);
   }
 
+  @Roles(Role.superadmin, Role.subadmin)
   @Post(':userId/reward-wallet')
   async creditRewardToWallet(
     @Param('userId', ParseIntPipe) userId: number,
@@ -259,17 +282,23 @@ export class UserController {
 
   @Get('/subscription/:userId/:mandateCode')
   getSUbscriptionAcct(
+    @Req() req: any,
     @Param('userId', ParseIntPipe) userId: number,
     @Param('mandateCode') mandateCode: string,
   ): Promise<any> {
-    return this.userService.checkSubscriptionStatus(userId, mandateCode);
+    this.assertOwnerOrAdmin(req, userId);
+    const effectiveUserId = this.isAdmin(req) ? userId : req.user.id;
+    return this.userService.checkSubscriptionStatus(effectiveUserId, mandateCode);
   }
 
     @Get('/subscription/:userId/')
   getSubscriptionbyUserId(
+    @Req() req: any,
     @Param('userId', ParseIntPipe) userId: number,
   ): Promise<any> {
-    return this.userService.checkSubscriptionStatusbyUserId(userId);
+    this.assertOwnerOrAdmin(req, userId);
+    const effectiveUserId = this.isAdmin(req) ? userId : req.user.id;
+    return this.userService.checkSubscriptionStatusbyUserId(effectiveUserId);
   }
 
   @Patch('/update-profile')
@@ -277,6 +306,7 @@ export class UserController {
     return this.userService.updateUserDetails(req.user.id, dto);
   }
 
+  @Roles(Role.superadmin, Role.subadmin)
   @Get('/clients')
   @ApiPaginatedResponse(UserDto)
   getClients(
@@ -295,6 +325,7 @@ export class UserController {
     });
   }
 
+  @Roles(Role.superadmin, Role.subadmin)
   @Get('/list-clients')
   @ApiPaginatedResponse(UserDto)
   listClients(
@@ -314,8 +345,10 @@ export class UserController {
   }
 
   @Get('/user-details/:userId')
-  getUserById(@Param('userId', ParseIntPipe) userId: number): Promise<any> {
-    return this.userService.findUserById(userId);
+  getUserById(@Req() req: any, @Param('userId', ParseIntPipe) userId: number): Promise<any> {
+    this.assertOwnerOrAdmin(req, userId);
+    const effectiveUserId = this.isAdmin(req) ? userId : req.user.id;
+    return this.userService.findUserById(effectiveUserId);
   }
 
     @Get('search-username')
@@ -342,8 +375,10 @@ export class UserController {
   }
 
   @Get('/quiz-earnings/:userId')
-  getQuizEarnings(@Param('userId', ParseIntPipe) userId: number): Promise<any> {
-    return this.userService.getQuizEarnings(userId);
+  getQuizEarnings(@Req() req: any, @Param('userId', ParseIntPipe) userId: number): Promise<any> {
+    this.assertOwnerOrAdmin(req, userId);
+    const effectiveUserId = this.isAdmin(req) ? userId : req.user.id;
+    return this.userService.getQuizEarnings(effectiveUserId);
   }
 
   @Get('/top-earners')
@@ -353,36 +388,48 @@ export class UserController {
     return this.userService.getTopEarners(limit);
   }
 
+  @Roles(Role.superadmin, Role.subadmin)
   @Get('/all-users')
   getAllUser(): Promise<any> {
     return this.userService.findAllUsers();
   }
 
   @Get('/user-accounts/:userId')
-  getUserAccounts(@Param('userId', ParseIntPipe) userId: number): Promise<any> {
-    return this.userService.findUserAccount(userId);
+  getUserAccounts(@Req() req: any, @Param('userId', ParseIntPipe) userId: number): Promise<any> {
+    this.assertOwnerOrAdmin(req, userId);
+    const effectiveUserId = this.isAdmin(req) ? userId : req.user.id;
+    return this.userService.findUserAccount(effectiveUserId);
   }
 
   @Get('/user-cards/:userId')
-  getUserCards(@Param('userId', ParseIntPipe) userId: number) {
-    return this.userService.findUserCards(userId);
+  getUserCards(@Req() req: any, @Param('userId', ParseIntPipe) userId: number) {
+    this.assertOwnerOrAdmin(req, userId);
+    const effectiveUserId = this.isAdmin(req) ? userId : req.user.id;
+    return this.userService.findUserCards(effectiveUserId);
   }
 
     @Patch(':userId/set-default/:cardId')
   async setDefaultCard(
+    @Req() req: any,
     @Param('userId', ParseIntPipe) userId: number,
     @Param('cardId', ParseIntPipe) cardId: number,
   ) {
-    return this.userService.setDefaultCard(userId, cardId);
+    this.assertOwnerOrAdmin(req, userId);
+    const effectiveUserId = this.isAdmin(req) ? userId : req.user.id;
+    return this.userService.setDefaultCard(effectiveUserId, cardId);
   }
 
   @Get('/onboarding-details/:userId')
   getOnboardingDetails(
+    @Req() req: any,
     @Param('userId', ParseIntPipe) userId: number,
   ): Promise<any> {
-    return this.userService.fetchOnboardingdetails(userId);
+    this.assertOwnerOrAdmin(req, userId);
+    const effectiveUserId = this.isAdmin(req) ? userId : req.user.id;
+    return this.userService.fetchOnboardingdetails(effectiveUserId);
   }
 
+  @Roles(Role.superadmin, Role.subadmin)
   @Get('/subadmins')
   @ApiPaginatedResponse(UserDto)
   getAdmins(
@@ -397,6 +444,7 @@ export class UserController {
     });
   }
 
+  @Roles(Role.superadmin, Role.subadmin)
   @Patch('ban/:id')
   async banClient(
     @Param('id', ParseIntPipe) id: number,
@@ -411,6 +459,7 @@ export class UserController {
     );
   }
 
+  @Roles(Role.superadmin, Role.subadmin)
   @Patch('unban/:id')
   async unbanClient(
     @Param('id', ParseIntPipe) id: number,
@@ -425,14 +474,16 @@ export class UserController {
     );
   }
 
-  @Public()
   @Patch('onboarding/:id')
   async updateOnboarding(
+    @Req() req: any,
     @Param('id') id: string,
     @Body() dto: UpdateOnboardingDto,
   ) {
     const userId = parseInt(id);
-    return this.userService.updateOnboarding(userId, dto);
+    this.assertOwnerOrAdmin(req, userId);
+    const effectiveUserId = this.isAdmin(req) ? userId : req.user.id;
+    return this.userService.updateOnboarding(effectiveUserId, dto);
   }
 
   @Get('referral-link/:userId')
@@ -452,13 +503,15 @@ export class UserController {
     return this.userService.getBanStatus(Number(id));
   }
 
-  @Public()
   @Delete('/delete/:userId')
   async deleteUser(
+    @Req() req: any,
     @Param('userId', ParseIntPipe) userId: number,
     @Body() body?: { password?: string },
   ) {
-    return this.userService.deleteUser(userId, body?.password);
+    this.assertOwnerOrAdmin(req, userId);
+    const effectiveUserId = this.isAdmin(req) ? userId : req.user.id;
+    return this.userService.deleteUser(effectiveUserId, body?.password);
   }
 
   @Get('/payment-methods')
@@ -468,9 +521,12 @@ export class UserController {
 
     @Delete('delete/:userId/:cardId')
   async deleteCard(
+    @Req() req: any,
     @Param('userId', ParseIntPipe) userId: number,
     @Param('cardId', ParseIntPipe) cardId: number,
   ) {
-    return this.userService.deleteCard(userId, cardId);
+    this.assertOwnerOrAdmin(req, userId);
+    const effectiveUserId = this.isAdmin(req) ? userId : req.user.id;
+    return this.userService.deleteCard(effectiveUserId, cardId);
   }
 }

@@ -51,6 +51,13 @@ func (pc *PaymentController) InitiateDeposit(c *gin.Context) {
 		return
 	}
 
+	userID, allowed := resolveAuthorizedUserID(c, req.UserID)
+	if !allowed {
+		utils.SendError(c, http.StatusForbidden, "FORBIDDEN", "Cannot initiate deposit for another user")
+		return
+	}
+	req.UserID = userID
+
 	res, err := pc.paymentService.InitiateDeposit(c.Request.Context(), req)
 	if err != nil {
 		utils.SendError(c, http.StatusInternalServerError, "INTERNAL_SERVER_ERROR", err.Error())
@@ -201,7 +208,6 @@ func RegisterPaymentRoutes(rg *gin.RouterGroup, pc *PaymentController) {
 	authed.POST("/charge-card", pc.ChargeCard)
 	authed.POST("/authorize-card-otp", pc.AuthorizeCardOTP)
 	authed.GET("/query-transaction", pc.QueryTransaction)
-	authed.POST("/simulate-address-deposit", pc.SimulateAddressDeposit)
 	authed.GET("/user-wallet-balance", pc.GetUserWalletBalance)
 	authed.GET("/payments/history", pc.GetPaymentHistory)
 	authed.POST("/trf-btw-wallets/:userId", pc.TransferBetweenWallets)
@@ -214,10 +220,11 @@ func RegisterPaymentRoutes(rg *gin.RouterGroup, pc *PaymentController) {
 	authed.POST("/debit", pc.DebitWallet)
 	authed.POST("/validate-otp", pc.ValidateOTP)
 
-	// Admin-only payment processor configuration
+	// Admin-only payment processor configuration and simulation
 	adminOnly := paymentGroup.Group("", middleware.InternalOrAuthRequired(), middleware.InternalOrAdminRequired())
 	adminOnly.GET("/processors", pc.GetProcessors)
 	adminOnly.PATCH("/processors/:id/toggle", pc.ToggleProcessor)
+	adminOnly.POST("/simulate-address-deposit", pc.SimulateAddressDeposit)
 }
 
 // resolveAuthorizedUserID enforces that an authenticated non-admin caller
@@ -318,6 +325,12 @@ func (pc *PaymentController) GetWalletTransactions(c *gin.Context) {
 	if uidStr := c.Query("userId"); uidStr != "" {
 		fmt.Sscanf(uidStr, "%d", &filter.UserID)
 	}
+	userID, allowed := resolveAuthorizedUserID(c, filter.UserID)
+	if !allowed {
+		sendDetailedError(c, http.StatusForbidden, "FORBIDDEN", "Cannot view wallet transactions for another user", nil)
+		return
+	}
+	filter.UserID = userID
 	filter.AccountType = c.Query("accountType")
 	filter.Type = c.Query("type")
 	filter.Currency = c.Query("currency")
@@ -467,6 +480,10 @@ func (pc *PaymentController) ChargeCard(c *gin.Context) {
 		chargePayload["purpose"] = strings.TrimSpace(purpose)
 	}
 	if skipCredit, ok := req["skipWalletCredit"].(bool); ok && skipCredit {
+		if !middleware.IsAdmin(c) && !middleware.HasValidInternalServiceKey(c) {
+			sendDetailedError(c, http.StatusForbidden, "FORBIDDEN", "skipWalletCredit requires admin or internal service access", nil)
+			return
+		}
 		chargePayload["skipWalletCredit"] = true
 	}
 
@@ -547,6 +564,16 @@ func (pc *PaymentController) QueryTransaction(c *gin.Context) {
 		return
 	}
 
+	requestedUserID := 0
+	if uidStr := c.Query("userId"); uidStr != "" {
+		fmt.Sscanf(uidStr, "%d", &requestedUserID)
+	}
+	resolvedQueryUserID, allowed := resolveAuthorizedUserID(c, requestedUserID)
+	if !allowed {
+		sendDetailedError(c, http.StatusForbidden, "FORBIDDEN", "Cannot query transaction for another user", nil)
+		return
+	}
+
 	log.Printf("[PaymentController] GET /v1/payment/query-transaction?transactionReference=%s", txRef)
 
 	res, err := pc.paymentService.QueryTransaction(c.Request.Context(), txRef)
@@ -562,16 +589,18 @@ func (pc *PaymentController) QueryTransaction(c *gin.Context) {
 			payStatus, _ = body["status"].(string)
 		}
 		if strings.EqualFold(payStatus, "PAID") || strings.EqualFold(payStatus, "SUCCESS") {
-			userID := 0
-			if uidStr := c.Query("userId"); uidStr != "" {
-				fmt.Sscanf(uidStr, "%d", &userID)
-			}
+			userID := resolvedQueryUserID
 			if userID <= 0 {
 				if meta, ok := body["metaData"].(map[string]interface{}); ok && meta != nil {
 					if uidFloat, ok := meta["userId"].(float64); ok {
 						userID = int(uidFloat)
 					}
 				}
+			}
+			userID, allowed = resolveAuthorizedUserID(c, userID)
+			if !allowed {
+				sendDetailedError(c, http.StatusForbidden, "FORBIDDEN", "Cannot credit wallet for another user", nil)
+				return
 			}
 			if userID > 0 {
 				amountPaid := 0.0
@@ -604,6 +633,23 @@ func (pc *PaymentController) InitPaymentByTransfer(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		sendDetailedError(c, http.StatusBadRequest, "BAD_REQUEST", "Invalid request payload", err)
 		return
+	}
+
+	userID := 0
+	if uid, ok := req["userId"].(float64); ok {
+		userID = int(uid)
+	} else if uidInt, ok := req["userId"].(int); ok {
+		userID = uidInt
+	} else if uidStr, ok := req["userId"].(string); ok {
+		fmt.Sscanf(uidStr, "%d", &userID)
+	}
+	userID, allowed := resolveAuthorizedUserID(c, userID)
+	if !allowed {
+		sendDetailedError(c, http.StatusForbidden, "FORBIDDEN", "Cannot initiate transfer payment for another user", nil)
+		return
+	}
+	if userID > 0 {
+		req["userId"] = userID
 	}
 
 	res, err := pc.paymentService.InitPaymentByTransfer(c.Request.Context(), req)
@@ -739,14 +785,19 @@ func (pc *PaymentController) ConvertCurrency(c *gin.Context) {
 
 // GetUserWalletBalance handles GET /v1/payment/user-wallet-balance?userId=...
 func (pc *PaymentController) GetUserWalletBalance(c *gin.Context) {
-	userIdStr := c.Query("userId")
-	if userIdStr == "" {
+	userId := 0
+	if userIdStr := c.Query("userId"); userIdStr != "" {
+		fmt.Sscanf(userIdStr, "%d", &userId)
+	}
+	userId, allowed := resolveAuthorizedUserID(c, userId)
+	if !allowed {
+		utils.SendError(c, http.StatusForbidden, "FORBIDDEN", "Cannot access another user's wallet balance")
+		return
+	}
+	if userId <= 0 {
 		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "missing userId")
 		return
 	}
-
-	userId := 0
-	fmt.Sscanf(userIdStr, "%d", &userId)
 
 	wallet, err := pc.paymentService.GetWalletByUserID(c.Request.Context(), userId)
 	if err != nil {
@@ -761,13 +812,19 @@ func (pc *PaymentController) GetUserWalletBalance(c *gin.Context) {
 
 // GetPaymentHistory handles GET /v1/payment/payments/history?userId=...
 func (pc *PaymentController) GetPaymentHistory(c *gin.Context) {
-	userIdStr := c.Query("userId")
-	if userIdStr == "" {
+	userId := 0
+	if userIdStr := c.Query("userId"); userIdStr != "" {
+		fmt.Sscanf(userIdStr, "%d", &userId)
+	}
+	userId, allowed := resolveAuthorizedUserID(c, userId)
+	if !allowed {
+		utils.SendError(c, http.StatusForbidden, "FORBIDDEN", "Cannot access another user's payment history")
+		return
+	}
+	if userId <= 0 {
 		utils.SendError(c, http.StatusBadRequest, "BAD_REQUEST", "missing userId")
 		return
 	}
-	userId := 0
-	fmt.Sscanf(userIdStr, "%d", &userId)
 
 	history, err := pc.paymentService.GetPaymentHistoryByUserID(c.Request.Context(), userId)
 	if err != nil {
@@ -786,6 +843,11 @@ func (pc *PaymentController) TransferBetweenWallets(c *gin.Context) {
 	userIdStr := c.Param("userId")
 	userId := 0
 	fmt.Sscanf(userIdStr, "%d", &userId)
+	userId, allowed := resolveAuthorizedUserID(c, userId)
+	if !allowed {
+		sendDetailedError(c, http.StatusForbidden, "FORBIDDEN", "Cannot transfer between another user's wallets", nil)
+		return
+	}
 	if userId <= 0 {
 		sendDetailedError(c, http.StatusBadRequest, "BAD_REQUEST", "invalid or missing userId in URL path", nil)
 		return
@@ -910,6 +972,15 @@ func (pc *PaymentController) WalletWithdrawal(c *gin.Context) {
 	if userId <= 0 {
 		fmt.Sscanf(c.Query("userId"), "%d", &userId)
 	}
+	userId, allowed := resolveAuthorizedUserID(c, userId)
+	if !allowed {
+		sendDetailedError(c, http.StatusForbidden, "FORBIDDEN", "Cannot withdraw from another user's wallet", nil)
+		return
+	}
+	if userId <= 0 {
+		sendDetailedError(c, http.StatusBadRequest, "BAD_REQUEST", "userId must be a positive integer", nil)
+		return
+	}
 
 	log.Printf("[PaymentController] WalletWithdrawal - userId=%d amount=%.2f req=%+v", userId, amount, req)
 
@@ -1004,8 +1075,19 @@ func (pc *PaymentController) ValidateOTP(c *gin.Context) {
 	_, hasTokenId := req["tokenId"]
 	_, hasTxRef := req["transactionReference"]
 	if hasTokenId || hasTxRef {
-		userIDFloat, _ := req["userId"].(float64)
-		userID := int(userIDFloat)
+		userID := 0
+		if uid, ok := req["userId"].(float64); ok {
+			userID = int(uid)
+		} else if uidInt, ok := req["userId"].(int); ok {
+			userID = uidInt
+		} else if uidStr, ok := req["userId"].(string); ok {
+			fmt.Sscanf(uidStr, "%d", &userID)
+		}
+		userID, allowed := resolveAuthorizedUserID(c, userID)
+		if !allowed {
+			sendDetailedError(c, http.StatusForbidden, "FORBIDDEN", "Cannot authorize card OTP for another user", nil)
+			return
+		}
 		amount, _ := req["amount"].(float64)
 		currency, _ := req["currency"].(string)
 		if currency == "" {
@@ -1055,6 +1137,16 @@ func (pc *PaymentController) CreateUserWithdrawalBank(c *gin.Context) {
 	if req.UserID <= 0 {
 		fmt.Sscanf(c.Query("userId"), "%d", &req.UserID)
 	}
+	userID, allowed := resolveAuthorizedUserID(c, req.UserID)
+	if !allowed {
+		sendDetailedError(c, http.StatusForbidden, "FORBIDDEN", "Cannot add withdrawal bank for another user", nil)
+		return
+	}
+	if userID <= 0 {
+		sendDetailedError(c, http.StatusBadRequest, "BAD_REQUEST", "userId must be a positive integer", nil)
+		return
+	}
+	req.UserID = userID
 
 	log.Printf("[PaymentController] CreateUserWithdrawalBank - userId=%d bankName=%s accNum=%s", req.UserID, req.BankName, req.AccountNumber)
 
@@ -1085,6 +1177,11 @@ func (pc *PaymentController) GetUserWithdrawalBanks(c *gin.Context) {
 	}
 	userId := 0
 	fmt.Sscanf(userIdStr, "%d", &userId)
+	userId, allowed := resolveAuthorizedUserID(c, userId)
+	if !allowed {
+		sendDetailedError(c, http.StatusForbidden, "FORBIDDEN", "Cannot view withdrawal banks for another user", nil)
+		return
+	}
 	if userId <= 0 {
 		sendDetailedError(c, http.StatusBadRequest, "BAD_REQUEST", "invalid or missing userId", nil)
 		return
@@ -1116,6 +1213,16 @@ func (pc *PaymentController) CreateUserWithdrawalWallet(c *gin.Context) {
 	if req.UserID <= 0 {
 		fmt.Sscanf(c.Query("userId"), "%d", &req.UserID)
 	}
+	userID, allowed := resolveAuthorizedUserID(c, req.UserID)
+	if !allowed {
+		sendDetailedError(c, http.StatusForbidden, "FORBIDDEN", "Cannot add withdrawal wallet for another user", nil)
+		return
+	}
+	if userID <= 0 {
+		sendDetailedError(c, http.StatusBadRequest, "BAD_REQUEST", "userId must be a positive integer", nil)
+		return
+	}
+	req.UserID = userID
 
 	wallet, err := pc.paymentService.CreateUserWithdrawalWallet(c.Request.Context(), req.UserID, req.WalletAddress, req.Symbol, req.Network, req.RecipientID)
 	if err != nil {
@@ -1139,6 +1246,11 @@ func (pc *PaymentController) GetUserWithdrawalWallets(c *gin.Context) {
 	}
 	userId := 0
 	fmt.Sscanf(userIdStr, "%d", &userId)
+	userId, allowed := resolveAuthorizedUserID(c, userId)
+	if !allowed {
+		sendDetailedError(c, http.StatusForbidden, "FORBIDDEN", "Cannot view withdrawal wallets for another user", nil)
+		return
+	}
 	if userId <= 0 {
 		sendDetailedError(c, http.StatusBadRequest, "BAD_REQUEST", "invalid or missing userId", nil)
 		return

@@ -3,15 +3,21 @@ package controllers
 import (
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	"quiz.superfan.com/apis/middleware"
 )
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
-		return true // Allow all origins for development
+		origin := strings.TrimSpace(r.Header.Get("Origin"))
+		if origin == "" {
+			return true
+		}
+		return middleware.IsOriginAllowed(origin)
 	},
 }
 
@@ -81,6 +87,10 @@ func StreamWebSocket(c *gin.Context) {
 		switch msg.Event {
 		case "joinStream":
 			if room, ok := msg.Data.(string); ok {
+				if room == "admin_ledger" && !middleware.IsAdmin(c) {
+					_ = conn.WriteJSON(gin.H{"event": "error", "error": "Forbidden: administrator access required for admin_ledger"})
+					continue
+				}
 				if currentRoom != "" {
 					StreamHub.RemoveClient(currentRoom, conn)
 				}

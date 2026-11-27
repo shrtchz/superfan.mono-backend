@@ -8,6 +8,7 @@ import (
 	"log"
 	"math/big"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -106,6 +107,13 @@ func verifyClerkToken(tokenString string) (jwt.MapClaims, bool) {
 		if sub == "" {
 			lastErr = fmt.Errorf("token has no sub claim")
 			continue
+		}
+		if expectedIssuer := strings.TrimRight(strings.TrimSpace(os.Getenv("CLERK_ISSUER")), "/"); expectedIssuer != "" {
+			iss, _ := claims["iss"].(string)
+			if strings.TrimRight(strings.TrimSpace(iss), "/") != expectedIssuer {
+				lastErr = fmt.Errorf("token issuer mismatch")
+				continue
+			}
 		}
 		return claims, true
 	}

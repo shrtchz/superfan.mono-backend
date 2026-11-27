@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -21,6 +22,40 @@ type LedgerController struct {
 
 func NewLedgerController(ls services.LedgerService) *LedgerController {
 	return &LedgerController{ledgerService: ls}
+}
+
+func resolveLedgerActor(c *gin.Context, fallback string) (string, error) {
+	userID := c.GetInt(middleware.ContextUserIDKey)
+	if userID <= 0 {
+		if c.GetString(middleware.ContextAuthSource) == "internal" || middleware.HasValidInternalServiceKey(c) {
+			return strings.TrimSpace(fallback), nil
+		}
+		return "", errors.New("authenticated user is required")
+	}
+	if utils.DB == nil {
+		if email := strings.TrimSpace(c.GetString(middleware.ContextUserEmailKey)); email != "" {
+			return email, nil
+		}
+		return fmt.Sprintf("user:%d", userID), nil
+	}
+	var user models.User
+	if err := utils.DB.WithContext(c.Request.Context()).Select("id", "username", "email", "firstName", "lastName").First(&user, userID).Error; err != nil {
+		if email := strings.TrimSpace(c.GetString(middleware.ContextUserEmailKey)); email != "" {
+			return email, nil
+		}
+		return "", err
+	}
+	if strings.TrimSpace(user.Email) != "" {
+		return strings.TrimSpace(user.Email), nil
+	}
+	if strings.TrimSpace(user.Username) != "" {
+		return strings.TrimSpace(user.Username), nil
+	}
+	fullName := strings.TrimSpace(strings.TrimSpace(user.FirstName) + " " + strings.TrimSpace(user.LastName))
+	if fullName != "" {
+		return fullName, nil
+	}
+	return fmt.Sprintf("user:%d", userID), nil
 }
 
 func RegisterLedgerRoutes(router *gin.RouterGroup, lc *LedgerController) {
@@ -107,6 +142,12 @@ func (lc *LedgerController) CreateLedgerApproval(c *gin.Context) {
 		return
 	}
 
+	requestedBy, err := resolveLedgerActor(c, body.RequestedBy)
+	if err != nil {
+		utils.SendError(c, http.StatusUnauthorized, "UNAUTHORIZED", err.Error())
+		return
+	}
+
 	approval, err := lc.ledgerService.CreateLedgerApproval(services.CreateLedgerApprovalInput{
 		Reference:     body.Reference,
 		Kind:          body.Kind,
@@ -115,7 +156,7 @@ func (lc *LedgerController) CreateLedgerApproval(c *gin.Context) {
 		AccountType:   body.AccountType,
 		Currency:      body.Currency,
 		Reason:        body.Reason,
-		RequestedBy:   body.RequestedBy,
+		RequestedBy:   requestedBy,
 		ReversalOf:    body.ReversalOf,
 		CorrectsEntry: body.CorrectsEntry,
 		Lines:         body.Lines,
@@ -140,7 +181,13 @@ func (lc *LedgerController) ApproveLedgerApproval(c *gin.Context) {
 		return
 	}
 
-	approval, err := lc.ledgerService.ApproveLedgerApproval(uint(id), body.Reviewer, body.Note)
+	reviewer, err := resolveLedgerActor(c, body.Reviewer)
+	if err != nil {
+		utils.SendError(c, http.StatusUnauthorized, "UNAUTHORIZED", err.Error())
+		return
+	}
+
+	approval, err := lc.ledgerService.ApproveLedgerApproval(uint(id), reviewer, body.Note)
 	if err != nil {
 		sendApprovalError(c, err)
 		return
@@ -161,7 +208,13 @@ func (lc *LedgerController) RejectLedgerApproval(c *gin.Context) {
 		return
 	}
 
-	approval, err := lc.ledgerService.RejectLedgerApproval(uint(id), body.Reviewer, body.Note)
+	reviewer, err := resolveLedgerActor(c, body.Reviewer)
+	if err != nil {
+		utils.SendError(c, http.StatusUnauthorized, "UNAUTHORIZED", err.Error())
+		return
+	}
+
+	approval, err := lc.ledgerService.RejectLedgerApproval(uint(id), reviewer, body.Note)
 	if err != nil {
 		sendApprovalError(c, err)
 		return
@@ -212,7 +265,13 @@ func (lc *LedgerController) ResolveLedgerReconciliation(c *gin.Context) {
 		return
 	}
 
-	resolution, err := lc.ledgerService.ResolveReconciliation(body.RowKey, body.Note, body.ResolvedBy)
+	resolvedBy, err := resolveLedgerActor(c, body.ResolvedBy)
+	if err != nil {
+		utils.SendError(c, http.StatusUnauthorized, "UNAUTHORIZED", err.Error())
+		return
+	}
+
+	resolution, err := lc.ledgerService.ResolveReconciliation(body.RowKey, body.Note, resolvedBy)
 	if err != nil {
 		sendReconciliationError(c, err)
 		return
@@ -228,7 +287,13 @@ func (lc *LedgerController) ImportLedgerReconciliation(c *gin.Context) {
 		return
 	}
 
-	imported, err := lc.ledgerService.ImportReconciliationRows(body.SourceType, body.Source, body.ImportedBy, body.Rows)
+	importedBy, err := resolveLedgerActor(c, body.ImportedBy)
+	if err != nil {
+		utils.SendError(c, http.StatusUnauthorized, "UNAUTHORIZED", err.Error())
+		return
+	}
+
+	imported, err := lc.ledgerService.ImportReconciliationRows(body.SourceType, body.Source, importedBy, body.Rows)
 	if err != nil {
 		sendReconciliationError(c, err)
 		return
@@ -391,9 +456,15 @@ func (lc *LedgerController) ClosePeriod(c *gin.Context) {
 		return
 	}
 
+	closedBy, err := resolveLedgerActor(c, body.ClosedBy)
+	if err != nil {
+		utils.SendError(c, http.StatusUnauthorized, "UNAUTHORIZED", err.Error())
+		return
+	}
+
 	record, err := lc.ledgerService.ClosePeriod(c.Request.Context(), services.ClosePeriodInput{
 		Period:   body.Period,
-		ClosedBy: body.ClosedBy,
+		ClosedBy: closedBy,
 		Note:     body.Note,
 	})
 	if err != nil {

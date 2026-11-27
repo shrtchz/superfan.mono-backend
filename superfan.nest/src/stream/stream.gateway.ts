@@ -11,6 +11,7 @@ import {
 } from '@nestjs/websockets';
 
 import { Server, Socket } from 'socket.io';
+import { authenticateSocketClient } from '../common/utils/ws-auth.util';
 import { QuizService } from '../quiz/quiz.service';
 import { StreamingService } from './stream.service';
 
@@ -339,16 +340,19 @@ export class StreamGateway
     this.liveQuizTicker = null;
   }
 
-  handleConnection(client: Socket) {
-    const queryUserId = Number(client.handshake?.query?.userId);
-    if (Number.isFinite(queryUserId) && queryUserId > 0) {
-      (client.data as { userId?: number }).userId = queryUserId;
-    }
+  async handleConnection(client: Socket) {
+    await authenticateSocketClient(client);
     this.startLiveQuizTicker();
   }
 
   handleDisconnect(client: Socket) {
-    // Disconnect handled - no chat room cleanup needed
+    const joinedStreams = (client.data as { joinedStreams?: Set<string> })?.joinedStreams;
+    if (joinedStreams?.size) {
+      for (const streamId of joinedStreams) {
+        this.emitRoomMemberCount(streamId, client.id);
+      }
+      joinedStreams.clear();
+    }
     if (this.server?.sockets?.sockets.size === 0) {
       this.stopLiveQuizTicker();
     }
@@ -356,37 +360,22 @@ export class StreamGateway
 
   private resolveSocketUserId(
     client: Socket,
-    payloadUserId?: string | number | null,
   ): number | null {
-    const candidates = [
-      payloadUserId,
-      (client.data as { userId?: number })?.userId,
-      client.handshake?.query?.userId,
-    ];
-    for (const candidate of candidates) {
-      const parsed = Number(candidate);
-      if (Number.isFinite(parsed) && parsed > 0) return parsed;
-    }
-    return null;
+    const parsed = Number((client.data as { userId?: number })?.userId);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
   }
 
   @SubscribeMessage('register')
   handleRegister(
-    @MessageBody() payload: unknown,
+    @MessageBody() _payload: unknown,
     @ConnectedSocket() client: Socket,
   ) {
-    const userId =
-      typeof payload === 'object' && payload !== null
-        ? Number(
-            (payload as { userId?: string | number }).userId ??
-              (payload as { id?: string | number }).id,
-          )
-        : Number(payload);
-    if (Number.isFinite(userId) && userId > 0) {
-      (client.data as { userId?: number }).userId = userId;
-      void client.join(`user_${userId}`);
+    const userId = this.resolveSocketUserId(client);
+    if (!userId) {
+      return { status: 'error', error: 'Unauthorized: authentication required' };
     }
-    return { status: 'success' };
+    void client.join(`user_${userId}`);
+    return { status: 'success', userId };
   }
 
   @OnEvent('user.wallet.updated')
@@ -401,13 +390,22 @@ export class StreamGateway
     this.server.to(`user_${payload.userId}`).emit('payment_history_updated');
   }
 
-  private emitRoomMemberCount(streamId: string) {
+  private emitRoomMemberCount(streamId: string, excludeSocketId?: string) {
     if (!this.server) return;
     const room = `stream-${streamId}`;
-    const roomSize = this.server.sockets.adapter.rooms.get(room)?.size ?? 0;
+    const socketIds = this.server.sockets.adapter.rooms.get(room);
+    const uniqueMembers = new Set<string>();
+    if (socketIds) {
+      for (const socketId of socketIds) {
+        if (excludeSocketId && socketId === excludeSocketId) continue;
+        const memberSocket = this.server.sockets.sockets.get(socketId);
+        const userId = memberSocket ? this.resolveSocketUserId(memberSocket) : null;
+        uniqueMembers.add(userId ? `user:${userId}` : `socket:${socketId}`);
+      }
+    }
     this.server.to(room).emit('streamMemberCount', {
       streamId,
-      count: roomSize,
+      count: uniqueMembers.size,
     });
   }
 
@@ -420,6 +418,11 @@ export class StreamGateway
     const normalizedStreamId = String(streamId);
     const room = `stream-${normalizedStreamId}`;
     await client.join(room);
+    const data = client.data as { joinedStreams?: Set<string> };
+    if (!data.joinedStreams) {
+      data.joinedStreams = new Set<string>();
+    }
+    data.joinedStreams.add(normalizedStreamId);
     this.emitRoomMemberCount(normalizedStreamId);
     void this.emitLiveQuizUpdate('sync', client);
     return { message: `Joined room ${room}` };
@@ -432,6 +435,7 @@ export class StreamGateway
   ) {
     const normalizedStreamId = String(streamId);
     await client.leave(`stream-${normalizedStreamId}`);
+    (client.data as { joinedStreams?: Set<string> })?.joinedStreams?.delete(normalizedStreamId);
     this.emitRoomMemberCount(normalizedStreamId);
     return { message: 'Left stream room' };
   }
@@ -464,7 +468,7 @@ export class StreamGateway
     try {
       const streamId = Number(payload?.streamId);
       const message = String(payload?.message ?? payload?.comment ?? '').trim();
-      const userId = this.resolveSocketUserId(client, payload?.userId);
+      const userId = this.resolveSocketUserId(client);
       const parentCommentId =
         payload?.parentCommentId !== undefined && payload?.parentCommentId !== null
           ? Number(payload.parentCommentId)
@@ -532,7 +536,7 @@ export class StreamGateway
   ) {
     try {
       const { streamId } = payload;
-      const userId = this.resolveSocketUserId(client, payload?.userId);
+      const userId = this.resolveSocketUserId(client);
       this.logger.log(`[StreamGateway] fetchComments streamId=${streamId}`);
 
       const comments = await this.streamingService.getStreamCommentsandReplies(

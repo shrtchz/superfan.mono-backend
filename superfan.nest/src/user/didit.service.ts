@@ -456,8 +456,8 @@ export class DiditService {
    */
   validateWebhookSignature(rawBody: string, signature: string): boolean {
     if (!this.webhookSecret) {
-      this.logger.warn('[DiditService] DIDIT_WEBHOOK_SECRET not set; signature verification bypassed');
-      return true;
+      this.logger.error('[DiditService] DIDIT_WEBHOOK_SECRET not set; rejecting webhook');
+      return false;
     }
 
     if (!signature || !rawBody) {

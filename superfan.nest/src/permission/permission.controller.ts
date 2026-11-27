@@ -55,7 +55,6 @@ export class PermissionController {
     return this.permissionService.getRolePermissions(dto);
   }
 
-  @Public()
   @Get('/permissions/:userId')
   async getUserPermissions(@Param('userId', ParseIntPipe) userId: number) {
     return this.permissionService.getUserPermissions(userId);

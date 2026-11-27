@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -135,6 +136,24 @@ func (qc *QuizController) CreateQuiz(ctx *gin.Context) {
 
 // Airtable Webhook Endpoint
 func (qc *QuizController) AirtableWebhook(ctx *gin.Context) {
+	secret := strings.TrimSpace(os.Getenv("AIRTABLE_WEBHOOK_SECRET"))
+	if secret != "" {
+		provided := strings.TrimSpace(ctx.GetHeader("x-airtable-webhook-secret"))
+		if provided == "" {
+			authHeader := strings.TrimSpace(ctx.GetHeader("Authorization"))
+			if len(authHeader) > 7 && strings.EqualFold(authHeader[:7], "Bearer ") {
+				provided = strings.TrimSpace(authHeader[7:])
+			}
+		}
+		if len(provided) != len(secret) || subtle.ConstantTimeCompare([]byte(provided), []byte(secret)) != 1 {
+			utils.SendError(ctx, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid Airtable webhook secret")
+			return
+		}
+	} else if !middleware.HasValidInternalServiceKey(ctx) && !middleware.IsAdmin(ctx) {
+		utils.SendError(ctx, http.StatusUnauthorized, "UNAUTHORIZED", "Airtable webhook authentication required")
+		return
+	}
+
 	// Immediately trigger the background sync
 	go services.SyncFromAirtable(qc.QuizService)
 
@@ -356,6 +375,12 @@ func (qc *QuizController) GetOngoingQuiz(ctx *gin.Context) {
 		return
 	}
 
+	authUserID := ctx.GetInt(middleware.ContextUserIDKey)
+	if authUserID > 0 && userID != authUserID && !middleware.IsAdmin(ctx) {
+		utils.SendError(ctx, http.StatusForbidden, "FORBIDDEN", "Cannot access another user's ongoing quiz")
+		return
+	}
+
 	result, err := services.FetchOngoingQuiz(userID)
 	if errors.Is(err, services.ErrPostgresUnavailable) {
 		utils.SendError(ctx, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", err.Error())
@@ -423,6 +448,20 @@ func (qc *QuizController) SubmitQuiz(ctx *gin.Context) {
 		return
 	}
 
+	authUserID := ctx.GetInt(middleware.ContextUserIDKey)
+	if authUserID > 0 && !middleware.IsAdmin(ctx) {
+		trimmedUID := strings.TrimSpace(request.UserID)
+		if trimmedUID == "" {
+			request.UserID = strconv.Itoa(authUserID)
+		} else {
+			reqUserID, convErr := strconv.Atoi(trimmedUID)
+			if convErr != nil || reqUserID != authUserID {
+				utils.SendError(ctx, http.StatusForbidden, "FORBIDDEN", "Cannot submit quiz for another user")
+				return
+			}
+		}
+	}
+
 	response, err := qc.QuizService.SubmitQuiz(request)
 
 	if err != nil {
@@ -435,6 +474,15 @@ func (qc *QuizController) SubmitQuiz(ctx *gin.Context) {
 
 func (c *QuizSubmissionController) GetUserSubmissions(ctx *gin.Context) {
 	userID := ctx.Param("userId")
+
+	authUserID := ctx.GetInt(middleware.ContextUserIDKey)
+	if authUserID > 0 && !middleware.IsAdmin(ctx) {
+		reqUserID, convErr := strconv.Atoi(strings.TrimSpace(userID))
+		if convErr != nil || reqUserID != authUserID {
+			utils.SendError(ctx, http.StatusForbidden, "FORBIDDEN", "Cannot view another user's quiz submissions")
+			return
+		}
+	}
 
 	submissions, err := c.service.GetUserSubmissions(userID)
 	if err != nil {

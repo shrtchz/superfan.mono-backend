@@ -292,7 +292,7 @@ func main() {
 		utils.Success(c, http.StatusOK, "UP", nil)
 	})
 
-	server.GET("/health/debug-sentry", func(c *gin.Context) {
+	server.GET("/health/debug-sentry", middleware.InternalOrAuthRequired(), middleware.InternalOrAdminRequired(), func(c *gin.Context) {
 		err := errors.New("Go Sentry test error")
 		sentry.CaptureException(err)
 		panic("Go Sentry panic test")

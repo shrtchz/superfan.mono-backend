@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Delete,
+  ForbiddenException,
   Get,
   HttpCode,
   HttpException,
@@ -48,13 +49,34 @@ export class QuizController {
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
-  @Public()
+  private isAdmin(req: any): boolean {
+    return (
+      req.user?.roleName === Role.superadmin ||
+      req.user?.roleName === Role.subadmin ||
+      req.user?.roleName === Role.moderator
+    );
+  }
+
+  private assertOwnerOrAdmin(req: any, targetUserId: number | string): void {
+    if (
+      targetUserId !== undefined &&
+      targetUserId !== null &&
+      targetUserId !== '' &&
+      !this.isAdmin(req) &&
+      Number(req.user?.id) !== Number(targetUserId)
+    ) {
+      throw new ForbiddenException('You can only access your own quiz data');
+    }
+  }
+
   @Public()
   @Get('/points-conversion-rate')
   getPointsConversionRate(@Query('category') category?: 'quiz' | 'ads') {
     return this.quizService.getPointsConversionRate(category);
   }
 
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin, Role.moderator)
   @Post('/create')
   createQuiz(@Body() quizData: CreateQuizDto) {
     try {
@@ -64,7 +86,8 @@ export class QuizController {
     }
   }
 
-  @Public()
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin, Role.moderator)
   @Post('/create-live-quiz')
   createLiveQuiz(@Body() liveQuizData: CreateLiveQuizDto) {
     try {
@@ -117,7 +140,7 @@ export class QuizController {
   }
 
   @Post('/submit-quiz')
-  async submitQuiz(@Body() body: SubmitQuizDto) {
+  async submitQuiz(@Req() req: any, @Body() body: SubmitQuizDto) {
     const {
       userId,
       rewardType,
@@ -126,6 +149,9 @@ export class QuizController {
       responses,
       ad_bonuses = 0,
     } = body;
+
+    this.assertOwnerOrAdmin(req, userId);
+    const effectiveUserId = this.isAdmin(req) && userId ? userId : req.user.id;
 
     const effectiveQuizTimeSeconds =
       typeof quizTimeSeconds === 'number' && Number.isFinite(quizTimeSeconds)
@@ -139,7 +165,7 @@ export class QuizController {
     }
 
     return this.quizService.submitQuiz(
-      userId,
+      effectiveUserId,
       rewardType,
       effectiveQuizTimeSeconds,
       ad_bonuses,
@@ -147,13 +173,16 @@ export class QuizController {
     );
   }
 
-    @Post('submit/:userId')
+  @Post('submit/:userId')
   async submitLiveQuiz(
+    @Req() req: any,
     @Param('userId') userId: string,
   ) {
+    this.assertOwnerOrAdmin(req, userId);
+    const effectiveUserId = this.isAdmin(req) ? userId : String(req.user.id);
     const data =
       await this.quizService.submitLiveQuiz(
-        userId,
+        effectiveUserId,
       );
 
     return {
@@ -162,16 +191,19 @@ export class QuizController {
     };
   }
 
-      @Post('quit')
+  @Post('quit')
   async quitQuiz(
+    @Req() req: any,
     @Query('userId') userId: number,
     @Query('rewardType') rewardType: string,
     @Query('quizTime') quizTime: string,
     @Query('ad_bonuses') ad_bonuses: number
   ) {
+    this.assertOwnerOrAdmin(req, userId);
+    const effectiveUserId = this.isAdmin(req) && userId ? userId : req.user.id;
     const data =
       await this.quizService.quitQuiz(
-        userId,
+        effectiveUserId,
         rewardType,
         quizTime,
         ad_bonuses
@@ -393,17 +425,27 @@ async getCompletedQuiz() {
   }
 }
 
-    @Get(':streamId/:userId/submitted')
-  async hasSubmittedLiveQuizForStream(@Query('streamId') streamId: number, @Query('userId') userId: number) {
-    return this.quizService.hasSubmittedLiveQuizForStream(streamId, userId);
+  @Get(':streamId/:userId/submitted')
+  async hasSubmittedLiveQuizForStream(
+    @Req() req: any,
+    @Query('streamId') streamId: number,
+    @Query('userId') userId: number,
+  ) {
+    this.assertOwnerOrAdmin(req, userId);
+    const effectiveUserId = this.isAdmin(req) && userId ? userId : req.user.id;
+    return this.quizService.hasSubmittedLiveQuizForStream(streamId, effectiveUserId);
   }
 
 
-@Public()
 @Get('/get-quiz-result/:userId')
-async getQuizResult(@Param('userId', ParseIntPipe) userId: number) {
+async getQuizResult(
+  @Req() req: any,
+  @Param('userId', ParseIntPipe) userId: number,
+) {
+  this.assertOwnerOrAdmin(req, userId);
+  const effectiveUserId = this.isAdmin(req) ? userId : req.user.id;
   try {
-    const result = await this.quizService.getQuizResult(userId);
+    const result = await this.quizService.getQuizResult(effectiveUserId);
 
     if (!result) {
       throw new HttpException(
@@ -519,16 +561,18 @@ async getOngoingLiveQuiz(@Param('id', ParseIntPipe) id: number) {
    * Authentication: public (supports both auth header and ?userId query param
    * so the frontend can call it without a Clerk session on the streaming page).
    */
-  @Public()
   @Get('live-answer/:quizId')
   async getLiveQuizAnswer(
     @Req() req: any,
     @Param('quizId') quizId: string,
     @Query('userId') queryUserId?: string,
   ) {
-    const userId = req.user?.id ?? queryUserId;
+    if (queryUserId) {
+      this.assertOwnerOrAdmin(req, queryUserId);
+    }
+    const userId = this.isAdmin(req) ? (queryUserId ?? req.user?.id) : req.user?.id;
     if (!userId) {
-      throw new BadRequestException('userId is required (pass as ?userId= or use auth header)');
+      throw new BadRequestException('userId is required');
     }
     const data = await this.quizService.getLiveQuizAnswerFromDb(
       String(userId),
@@ -542,19 +586,22 @@ async getOngoingLiveQuiz(@Param('id', ParseIntPipe) id: number) {
     };
   }
 
-  @Public()
   @Post('live/:id/answer')
   async submitLiveAnswerByQuizId(
     @Req() req: any,
     @Param('id') quizId: string,
     @Body() dto: SubmitLiveAnswerDto,
   ) {
-    if (!req.user?.id && !dto.userId) {
-      throw new BadRequestException('userId is required for public live answer submission');
+    if (dto.userId) {
+      this.assertOwnerOrAdmin(req, dto.userId);
+    }
+    const effectiveUserId = this.isAdmin(req) ? (dto.userId ?? req.user?.id) : req.user?.id;
+    if (!effectiveUserId) {
+      throw new BadRequestException('userId is required');
     }
 
     const data = await this.quizService.submitLiveAnswerByQuizId(
-      req.user?.id ?? dto.userId,
+      effectiveUserId,
       quizId,
       dto.selectedAnswer,
     );
@@ -607,7 +654,8 @@ async getOngoingLiveQuiz(@Param('id', ParseIntPipe) id: number) {
     }
   }
 
-  @Public()
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin, Role.moderator)
   @Patch('/update/:id')
   async updateLiveQuiz(@Param('id') id: string, @Body() updateData: any) {
     try {
@@ -620,7 +668,8 @@ async getOngoingLiveQuiz(@Param('id', ParseIntPipe) id: number) {
     }
   }
 
-  @Public()
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin, Role.moderator)
   @Delete('/delete-live-quiz/:id')
   async deleteLiveQuiz(@Param('id') id: string) {
     try {
@@ -633,7 +682,8 @@ async getOngoingLiveQuiz(@Param('id', ParseIntPipe) id: number) {
     }
   }
 
-  @Public()
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin, Role.moderator)
   @Post('/create-category')
   createQuizCategory(@Body() quizcategory: CreateQuizCategoryDto) {
     try {
@@ -653,17 +703,19 @@ async getOngoingLiveQuiz(@Param('id', ParseIntPipe) id: number) {
     }
   }
 
-  @Public()
   @Get('/get-submissions/:id')
-  getQuizSubmissionbyUserId(@Param('id') id: string) {
+  getQuizSubmissionbyUserId(@Req() req: any, @Param('id') id: string) {
+    this.assertOwnerOrAdmin(req, id);
+    const effectiveUserId = this.isAdmin(req) ? id : String(req.user.id);
     try {
-      return this.quizService.getQuizSubmissionByUserId(id);
+      return this.quizService.getQuizSubmissionByUserId(effectiveUserId);
     } catch (error) {
       throw failureResponse(error.message || 'Failed to get quiz submissions');
     }
   }
 
-  @Public()
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin, Role.moderator)
   @Get('/getall-submissions')
   getAllQuizSubmissions() {
     try {
@@ -692,7 +744,8 @@ async getOngoingLiveQuiz(@Param('id', ParseIntPipe) id: number) {
     }
   }
 
-  @Public()
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin, Role.moderator)
   @Patch('update-quiz/:id')
   async updateQuiz(@Param('id') id: string, @Body() updateData: any) {
     try {
@@ -704,7 +757,8 @@ async getOngoingLiveQuiz(@Param('id', ParseIntPipe) id: number) {
     }
   }
 
-  @Public()
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin, Role.moderator)
   @Delete('/delete/:id')
   deleteQuiz(@Param('id') id: string) {
     try {

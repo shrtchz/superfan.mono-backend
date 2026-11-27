@@ -144,10 +144,10 @@ func RegisterStreamRoutes(router *gin.RouterGroup) {
 	streamGroup := router.Group("/streams")
 	streamGroup.Use(middleware.AuthRequired())
 	{
-		streamGroup.POST("/broadcast", ctrl.CreateBroadcast)
-		streamGroup.POST("/setup", ctrl.SetupStream)
-		streamGroup.POST("/transition", ctrl.TransitionBroadcast)
-		streamGroup.POST("/enable-embed", ctrl.EnableEmbed)
+		streamGroup.POST("/broadcast", middleware.InternalOrAdminRequired(), ctrl.CreateBroadcast)
+		streamGroup.POST("/setup", middleware.InternalOrAdminRequired(), ctrl.SetupStream)
+		streamGroup.POST("/transition", middleware.InternalOrAdminRequired(), ctrl.TransitionBroadcast)
+		streamGroup.POST("/enable-embed", middleware.InternalOrAdminRequired(), ctrl.EnableEmbed)
 		streamGroup.GET("/views", ctrl.GetVideoViews)
 	}
 }

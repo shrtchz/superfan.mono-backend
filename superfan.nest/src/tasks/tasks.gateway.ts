@@ -9,6 +9,8 @@ import {
 } from '@nestjs/websockets';
 
 import { Server, Socket } from 'socket.io';
+import { Role } from '../common/enums/role.enum';
+import { authenticateSocketClient } from '../common/utils/ws-auth.util';
 import { prisma } from '../prisma/prisma';
 
 const SOCKET_CORS_ORIGINS = [
@@ -43,13 +45,30 @@ export class TaskChatGateway
 
   private users = new Map<number, string>(); // userId -> socketId
 
-  // 🔌 When user connects
-  handleConnection(client: Socket) {
-    const userId = Number(client.handshake.query.userId);
+  private isAdmin(client: Socket): boolean {
+    const roleName = client.data?.roleName;
+    return roleName === Role.superadmin || roleName === Role.subadmin;
+  }
 
-    if (userId) {
-      this.users.set(userId, client.id);
-      console.log(`User ${userId} connected`);
+  private async canAccessTask(client: Socket, taskId: number): Promise<boolean> {
+    const userId = Number(client.data?.userId);
+    if (!Number.isFinite(userId) || userId <= 0) return false;
+    if (this.isAdmin(client)) return true;
+
+    const task = await prisma.task.findUnique({
+      where: { id: taskId },
+      select: { userId: true },
+    });
+    return Boolean(task && task.userId === userId);
+  }
+
+  // 🔌 When user connects
+  async handleConnection(client: Socket) {
+    const user = await authenticateSocketClient(client);
+
+    if (user) {
+      this.users.set(user.id, client.id);
+      console.log(`User ${user.id} connected`);
     }
   }
 
@@ -71,6 +90,9 @@ export class TaskChatGateway
     @ConnectedSocket() client: Socket,
   ) {
     const taskId = Number(data.taskId);
+    if (!(await this.canAccessTask(client, taskId))) {
+      return { status: 'error', error: 'Unauthorized' };
+    }
     const room = `task-${taskId}`;
     client.join(room);
 
@@ -126,15 +148,18 @@ export class TaskChatGateway
     @MessageBody()
     data: {
       taskId: number;
-      userId: number;
+      userId?: number;
     },
     @ConnectedSocket() client: Socket,
   ) {
+    const verifiedUserId = Number(client.data?.userId);
+    if (!Number.isFinite(verifiedUserId) || verifiedUserId <= 0) return;
+
     const room = `task-${data.taskId}`;
 
     // Emit to everyone in the room except sender
     client.to(room).emit('userTyping', {
-      userId: Number(data.userId),
+      userId: verifiedUserId,
       isTyping: true,
     });
   }
@@ -145,14 +170,17 @@ export class TaskChatGateway
     @MessageBody()
     data: {
       taskId: number;
-      userId: number;
+      userId?: number;
     },
     @ConnectedSocket() client: Socket,
   ) {
+    const verifiedUserId = Number(client.data?.userId);
+    if (!Number.isFinite(verifiedUserId) || verifiedUserId <= 0) return;
+
     const room = `task-${data.taskId}`;
 
     client.to(room).emit('userTyping', {
-      userId: Number(data.userId),
+      userId: verifiedUserId,
       isTyping: false,
     });
   }
@@ -163,12 +191,19 @@ export class TaskChatGateway
     @MessageBody()
     data: {
       taskId: number;
-      senderId: number;
+      senderId?: number;
       message: string;
     },
+    @ConnectedSocket() client: Socket,
   ) {
     const taskId = Number(data.taskId);
-    const senderId = Number(data.senderId);
+    const senderId = Number(client.data?.userId);
+    if (!Number.isFinite(senderId) || senderId <= 0) {
+      return { status: 'error', error: 'Unauthorized: authentication required' };
+    }
+    if (!(await this.canAccessTask(client, taskId))) {
+      return { status: 'error', error: 'Forbidden' };
+    }
 
     // ✅ Save to DB
     const newMessage = await prisma.taskMessage.create({
@@ -219,9 +254,23 @@ export class TaskChatGateway
   ) {
     const taskId = Number(data.taskId);
     const messageId = Number(data.messageId);
+    const verifiedUserId = Number(client.data?.userId);
+    if (!Number.isFinite(verifiedUserId) || verifiedUserId <= 0) {
+      return { status: 'error', error: 'Unauthorized: authentication required' };
+    }
 
     if (Number.isFinite(messageId) && messageId > 0 && data.message) {
       try {
+        const existing = await prisma.taskMessage.findUnique({
+          where: { id: messageId },
+          select: { senderId: true },
+        });
+        if (!existing) {
+          return { status: 'error', error: 'Message not found' };
+        }
+        if (existing.senderId !== verifiedUserId && !this.isAdmin(client)) {
+          return { status: 'error', error: 'Forbidden' };
+        }
         await prisma.taskMessage.update({
           where: { id: messageId },
           data: { message: data.message },
@@ -253,9 +302,20 @@ export class TaskChatGateway
   ) {
     const taskId = Number(data.taskId);
     const messageId = Number(data.messageId);
+    const verifiedUserId = Number(client.data?.userId);
+    if (!Number.isFinite(verifiedUserId) || verifiedUserId <= 0) {
+      return { status: 'error', error: 'Unauthorized: authentication required' };
+    }
 
     if (Number.isFinite(messageId) && messageId > 0) {
       try {
+        const existing = await prisma.taskMessage.findUnique({
+          where: { id: messageId },
+          select: { senderId: true },
+        });
+        if (existing && existing.senderId !== verifiedUserId && !this.isAdmin(client)) {
+          return { status: 'error', error: 'Forbidden' };
+        }
         await prisma.taskMessage.delete({
           where: { id: messageId },
         });

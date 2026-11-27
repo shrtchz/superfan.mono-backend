@@ -18,9 +18,11 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { Response } from 'express';
-import { Public } from '../common/decorators';
+import { Roles } from '../common/decorators';
+import { Role } from '../common/enums/role.enum';
 import { ApiRoutes } from '../common/enums/routes.enum';
 import { JwtGuard } from '../common/guards';
+import { RoleGuard } from '../common/guards/roles.guard';
 import { CreateClientHistoryDto, CreatePayoutDto, GetClientHistoryDto, GetTasksQueryDto, TaskDto, TaskMessageDto } from './dto/task.dto';
 import { TaskService } from './tasks.service';
 
@@ -29,7 +31,21 @@ import { TaskService } from './tasks.service';
 export class TaskController {
   constructor(private taskService: TaskService) {}
 
-  @Public()
+  private isAdmin(req: any): boolean {
+    return (
+      req.user?.roleName === Role.superadmin ||
+      req.user?.roleName === Role.subadmin
+    );
+  }
+
+  private assertOwnerOrAdmin(req: any, targetUserId: number): void {
+    if (!this.isAdmin(req) && Number(req.user?.id) !== Number(targetUserId)) {
+      throw new ForbiddenException('You can only access your own resources');
+    }
+  }
+
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin)
   @Post('/create-task')
   @HttpCode(HttpStatus.OK)
   async createTask(@Body() dto: TaskDto) {
@@ -44,7 +60,6 @@ export class TaskController {
     return this.taskService.sendMessage(dto);
   }
 
-  @Public()
   @Get('/:taskId/messages')
   @HttpCode(HttpStatus.OK)
   async fetchMessages(@Param('taskId') taskId: number) {
@@ -56,10 +71,13 @@ export class TaskController {
   editMessage(
     @Param('id', ParseIntPipe) id: number,
     @Body() body: { userId: number; message: string },
+    @Req() req: any,
   ) {
+    this.assertOwnerOrAdmin(req, body.userId);
+    const effectiveUserId = this.isAdmin(req) ? body.userId : req.user.id;
     return this.taskService.editMessage(
       id,
-      body.userId,
+      effectiveUserId,
       body.message,
     );
   }
@@ -74,33 +92,34 @@ export class TaskController {
     );
   }
 
-  @Public()
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin)
   @Put('/:id/edit-task')
   @HttpCode(HttpStatus.OK)
   async editTask(@Param('id') id: string, @Body() dto: TaskDto) {
     return this.taskService.updateTask(id, dto);
   }
 
-  @Public()
   @Get('/recent-activities')
   @HttpCode(HttpStatus.OK)
   getRecent() {
     return this.taskService.getRecentActivities();
   }
 
-  @Public()
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin)
   @Delete('/activity/activities')
   deleteAllActivities() {
     return this.taskService.deleteAllActivities();
   }
 
-  @Public()
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin)
   @Delete('/tasks')
   deleteAllTasks() {
     return this.taskService.deleteAllTasks();
   }
 
-  @Public()
   @Get('/')
   @HttpCode(HttpStatus.OK)
   getAllTasks() {
@@ -109,11 +128,18 @@ export class TaskController {
 
   @Get('/referrals/:userId')
   @HttpCode(HttpStatus.OK)
-  getMyReferralSummary(@Param('userId', ParseIntPipe) userId: number) {
-    return this.taskService.getMyReferralSummary(userId);
+  getMyReferralSummary(
+    @Param('userId', ParseIntPipe) userId: number,
+    @Req() req: any,
+  ) {
+    this.assertOwnerOrAdmin(req, userId);
+    const effectiveUserId = this.isAdmin(req) ? userId : req.user.id;
+    return this.taskService.getMyReferralSummary(effectiveUserId);
   }
 
-    @Post('/create-client-history')
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin)
+  @Post('/create-client-history')
   async createClientHistory(
     @Body()
     dto: CreateClientHistoryDto,
@@ -121,7 +147,9 @@ export class TaskController {
     return this.taskService.createClientHistory(dto);
   }
 
-     @Get('/client-history')
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin)
+  @Get('/client-history')
   async getClientHistory(
     @Query()
     dto: GetClientHistoryDto,
@@ -129,16 +157,20 @@ export class TaskController {
     return this.taskService.getClientHistory(dto);
   }
 
-  @Public()
   @Get(':userId/tasks')
   findTasks(
     @Param('userId') userId: string,
     @Query() query: GetTasksQueryDto,
+    @Req() req: any,
   ) {
-    return this.taskService.findTasksByUserId(+userId, query.status);
+    this.assertOwnerOrAdmin(req, +userId);
+    const effectiveUserId = this.isAdmin(req) ? +userId : req.user.id;
+    return this.taskService.findTasksByUserId(effectiveUserId, query.status);
   }
 
-     @Post('/create-user-payout')
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin)
+  @Post('/create-user-payout')
   async createUserPayouts(
     @Body()
     dto: CreatePayoutDto,
@@ -149,16 +181,23 @@ export class TaskController {
   @Get(':userId/payout/details')
   getPayouts(
     @Param('userId') userId: string,
+    @Req() req: any,
   ) {
-    return this.taskService.getUserPayoutDetail(+userId);
+    this.assertOwnerOrAdmin(req, +userId);
+    const effectiveUserId = this.isAdmin(req) ? +userId : req.user.id;
+    return this.taskService.getUserPayoutDetail(effectiveUserId);
   }
 
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin)
   @Get('/payout/all')
   getAllPayouts() {
     return this.taskService.getAllPayouts();
   }
 
-    @Get('/jobs')
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin)
+  @Get('/jobs')
   getJobs() {
     return this.taskService.getCronJobs();
   }
@@ -330,7 +369,7 @@ async exportUserPayouts(
   @Query('startDate') startDate?: string,
   @Query('endDate') endDate?: string,
 ) {
-  if (!req.user || req.user.role !== 'superadmin') {
+  if (!req.user || req.user.roleName !== 'superadmin') {
     throw new ForbiddenException('Unauthorized access');
   }
 
@@ -404,19 +443,22 @@ async exportUserPayouts(
   );
 }
 
-  @Public()
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin)
   @Delete('/activity/:id')
   deleteActivity(@Param('id') id: number) {
     return this.taskService.deleteActivity(id);
   }
 
-  @Public()
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin)
   @Delete('/delete-task/:id')
   deleteTaskById(@Param('id', ParseIntPipe) id: number) {
     return this.taskService.deleteTasks(id);
   }
 
-  @Public()
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin)
   @Delete('/tasks/:id')
   deleteTask(@Param('id', ParseIntPipe) id: number) {
     return this.taskService.deleteTasks(id);
