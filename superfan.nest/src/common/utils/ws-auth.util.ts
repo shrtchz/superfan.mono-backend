@@ -44,9 +44,16 @@ export function extractSocketToken(client: Socket): string | null {
   );
   if (headerToken) return headerToken;
 
-  return extractSessionCookie(
+  const cookieToken = extractSessionCookie(
     typeof client.handshake?.headers?.cookie === 'string'
       ? client.handshake.headers.cookie
+      : undefined,
+  );
+  if (cookieToken) return cookieToken;
+
+  return extractBearerToken(
+    typeof client.handshake?.query?.token === 'string'
+      ? client.handshake.query.token
       : undefined,
   );
 }
