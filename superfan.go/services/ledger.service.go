@@ -79,10 +79,11 @@ func (s *ledgerServiceImpl) baseQuery(filters map[string]interface{}, search str
 	base := s.db.Model(&models.WalletTransaction{})
 
 	if search != "" {
-		searchStr := "%" + search + "%"
+		searchStr := "%" + strings.ReplaceAll(strings.TrimSpace(search), "|", "-") + "%"
+		rawSearchStr := "%" + strings.TrimSpace(search) + "%"
 		base = base.Where(
-			`(description ILIKE ? OR trx_ref ILIKE ? OR username ILIKE ? OR `+userNameMatchSQL+`)`,
-			searchStr, searchStr, searchStr, searchStr, searchStr, searchStr, searchStr, searchStr,
+			`(description ILIKE ? OR REPLACE(COALESCE(trx_ref, ''), '|', '-') ILIKE ? OR REPLACE(COALESCE(reference, ''), '|', '-') ILIKE ? OR ('TXN-' || CAST(id AS TEXT)) ILIKE ? OR username ILIKE ? OR `+userNameMatchSQL+`)`,
+			rawSearchStr, searchStr, searchStr, rawSearchStr, rawSearchStr, rawSearchStr, rawSearchStr, rawSearchStr, rawSearchStr, rawSearchStr,
 		)
 	}
 
