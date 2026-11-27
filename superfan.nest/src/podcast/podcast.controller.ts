@@ -9,7 +9,7 @@ import { PodcastService } from './podcast.service';
 @Controller(ApiRoutes.PODCAST)
 export class PodcastController {
   constructor(private readonly podcasts: PodcastService) {}
-  @Public() @Get('published') listPublished() { return this.podcasts.listPublished(); }
+  @Get('published') listPublished() { return this.podcasts.listPublished(); }
   @UseGuards(RoleGuard) @Roles(Role.superadmin, Role.subadmin) @Get() listAdmin() { return this.podcasts.listAdmin(); }
   @UseGuards(RoleGuard) @Roles(Role.superadmin, Role.subadmin) @Post() create(@Body() dto: CreatePodcastDto, @Req() req: any) { return this.podcasts.create(Number(req.user?.id), dto); }
   @UseGuards(RoleGuard) @Roles(Role.superadmin, Role.subadmin) @Patch(':id') update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdatePodcastDto) { return this.podcasts.update(id, dto); }

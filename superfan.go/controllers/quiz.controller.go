@@ -1370,15 +1370,12 @@ func RegisterQuizRoutes(
 	// Airtable Webhook stays public (verified via webhook)
 	quizroute.POST("/airtable-webhook", qc.AirtableWebhook)
 
-	// Public / optional-auth live quiz reads
-	quizPublic := quizroute.Group("", middleware.OptionalAuth())
-	quizPublic.GET("/live", qc.GetAllLiveQuiz)
-	quizPublic.GET("/live/random/:number", qc.GetRandomLiveQuiz)
-	quizPublic.GET("/live/:id", qc.GetLiveQuiz)
-
 	// ── Authenticated Quiz User & Read Routes ──────────────
 	quizAuthed := quizroute.Group("", middleware.InternalOrAuthRequired())
 	quizAuthed.GET("/tts", qc.GetQuizTTS)
+	quizAuthed.GET("/live", qc.GetAllLiveQuiz)
+	quizAuthed.GET("/live/random/:number", qc.GetRandomLiveQuiz)
+	quizAuthed.GET("/live/:id", qc.GetLiveQuiz)
 	quizAuthed.GET("/live-answer/:id", qc.GetLiveQuizAnswerById)
 	quizAuthed.GET("/search", qc.SearchQuizzes)
 	quizAuthed.GET("/categories", qc.GetAllCategory)

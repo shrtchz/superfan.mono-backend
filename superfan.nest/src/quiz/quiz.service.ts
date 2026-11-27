@@ -1964,14 +1964,18 @@ async hasSubmittedLiveQuizForStream(
 
   async getLiveQuiz(id: string) {
     const response = await firstValueFrom(
-      this.httpService.get(`${this.liveQuizGoBaseUrl}/live/${id}`),
+      this.httpService.get(`${this.liveQuizGoBaseUrl}/live/${id}`, {
+        headers: this.getGoServiceAuthHeaders(),
+      }),
     );
     return response.data;
   }
 
   async getAllLiveQuiz() {
     const response = await firstValueFrom(
-      this.httpService.get(`${this.liveQuizGoBaseUrl}/live`),
+      this.httpService.get(`${this.liveQuizGoBaseUrl}/live`, {
+        headers: this.getGoServiceAuthHeaders(),
+      }),
     );
     return response.data;
   }

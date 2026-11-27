@@ -490,15 +490,12 @@ func (ac *AdsController) AwardMidQuizReward(c *gin.Context) {
 func RegisterAdsRoutes(rg *gin.RouterGroup, ac *AdsController) {
 	adsGroup := rg.Group("/ads")
 	{
-		// Public / optional-auth ad serving & event endpoints
-		publicAds := adsGroup.Group("", middleware.OptionalAuth())
-		publicAds.GET("/placements", ac.GetPlacements)
-		publicAds.GET("/campaigns", ac.GetCampaigns)
-		publicAds.GET("/placement/:key/eligibility", ac.GetPlacementEligibility)
-		publicAds.POST("/events", ac.LogAdEvent)
-
 		// Authenticated user endpoints
 		authed := adsGroup.Group("", middleware.InternalOrAuthRequired())
+		authed.GET("/placements", ac.GetPlacements)
+		authed.GET("/campaigns", ac.GetCampaigns)
+		authed.GET("/placement/:key/eligibility", ac.GetPlacementEligibility)
+		authed.POST("/events", ac.LogAdEvent)
 		authed.GET("/reward-quota", ac.GetRewardAdQuota)
 		authed.POST("/estimate", ac.EstimateAdCost)
 		authed.POST("/test-link", ac.TestLink)

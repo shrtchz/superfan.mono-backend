@@ -28,13 +28,11 @@ import { Public, Roles } from '../common/decorators';
 export class ShopController {
   constructor(private readonly shopService: ShopService) {}
 
-  @Public()
   @Get('products')
   getProducts(@Query() query: GetProductsQueryDto) {
     return this.shopService.getProducts(query);
   }
 
-  @Public()
   @Get('products/:id')
   getProductById(@Param('id', ParseIntPipe) id: number) {
     return this.shopService.getProductById(id);

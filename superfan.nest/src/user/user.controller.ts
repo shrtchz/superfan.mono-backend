@@ -497,7 +497,6 @@ export class UserController {
     return { userId, online: isOnline };
   }
 
-  @Public()
   @Get(':id/ban-status')
   getBanStatus(@Param('id') id: string) {
     return this.userService.getBanStatus(Number(id));

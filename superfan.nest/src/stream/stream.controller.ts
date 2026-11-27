@@ -52,7 +52,8 @@ export class StreamingController {
   }
 
   @Get('auth-url')
-  @Public()
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin)
   async getAuthUrl() {
     return { authUrl: this.streamingService.generateAuthUrl() };
   }

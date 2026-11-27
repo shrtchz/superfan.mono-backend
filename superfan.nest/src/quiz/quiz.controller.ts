@@ -69,7 +69,6 @@ export class QuizController {
     }
   }
 
-  @Public()
   @Get('/points-conversion-rate')
   getPointsConversionRate(@Query('category') category?: 'quiz' | 'ads') {
     return this.quizService.getPointsConversionRate(category);
@@ -295,8 +294,7 @@ export class QuizController {
     return await this.quizService.getUserSubjectStatistics(userId);
   }
 
-      @Public()
-      @Get('gq-leaderboard')
+  @Get('gq-leaderboard')
   async getGeneralQuizLeaderboard(
       @Query('filter')
   filter: 'all' | 'today' | 'weekly' | 'monthly' = 'all',
@@ -318,7 +316,6 @@ export class QuizController {
     }
   }
 
-    @Public()
   @Get('lq-leaderboard/stream')
   streamLiveQuizLeaderboard(
     @Req() req: Request,
@@ -388,11 +385,12 @@ export class QuizController {
     }
   }
 
-@Public()
 @Get('/get-ongoing-quiz/:id')
-async getOngoingQuiz(@Param('id', ParseIntPipe) id: number) {
+async getOngoingQuiz(@Req() req: any, @Param('id', ParseIntPipe) id: number) {
+  this.assertOwnerOrAdmin(req, id);
+  const effectiveUserId = this.isAdmin(req) ? id : req.user.id;
   try {
-    const result = await this.quizService.fetchOngoingQuiz(id);
+    const result = await this.quizService.fetchOngoingQuiz(effectiveUserId);
 
     if (!result) {
       throw new HttpException(
@@ -461,11 +459,12 @@ async getQuizResult(
   }
 }
 
-@Public()
 @Get('/get-ongoing-live-quiz/:id')
-async getOngoingLiveQuiz(@Param('id', ParseIntPipe) id: number) {
+async getOngoingLiveQuiz(@Req() req: any, @Param('id', ParseIntPipe) id: number) {
+  this.assertOwnerOrAdmin(req, id);
+  const effectiveUserId = this.isAdmin(req) ? id : req.user.id;
   try {
-    const result = await this.quizService.fetchOngoingLiveQuiz(id);
+    const result = await this.quizService.fetchOngoingLiveQuiz(effectiveUserId);
 
     if (!result) {
       throw new HttpException(
@@ -612,7 +611,6 @@ async getOngoingLiveQuiz(@Param('id', ParseIntPipe) id: number) {
     };
   }
 
-  @Public()
   @Get('/get-quiz-answer/:id')
   async getQuizAnswer(@Param('id') id: string) {
     try {
@@ -634,7 +632,6 @@ async getOngoingLiveQuiz(@Param('id', ParseIntPipe) id: number) {
     return this.quizService.getOngoingQuizAnswers(req.user.id);
   }
 
-  @Public()
   @Get('/getall-categories')
   getAllCategories() {
     try {
@@ -644,7 +641,6 @@ async getOngoingLiveQuiz(@Param('id', ParseIntPipe) id: number) {
     }
   }
 
-  @Public()
   @Get('/getall-live-quiz')
   getAllLiveQuiz() {
     try {
@@ -693,7 +689,6 @@ async getOngoingLiveQuiz(@Param('id', ParseIntPipe) id: number) {
     }
   }
 
-  @Public()
   @Get('/get/:id')
   getQuiz(@Param('id') id: string) {
     try {
@@ -729,7 +724,6 @@ async getOngoingLiveQuiz(@Param('id', ParseIntPipe) id: number) {
 
   
 
-  @Public()
   @Get('/getall')
   async getAllQuiz() {
     try {
