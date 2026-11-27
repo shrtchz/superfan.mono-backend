@@ -348,7 +348,13 @@ export class StreamGateway
   }
 
   handleDisconnect(client: Socket) {
-    // Disconnect handled - no chat room cleanup needed
+    const joinedStreams = (client.data as { joinedStreams?: Set<string> })?.joinedStreams;
+    if (joinedStreams?.size) {
+      for (const streamId of joinedStreams) {
+        this.emitRoomMemberCount(streamId, client.id);
+      }
+      joinedStreams.clear();
+    }
     if (this.server?.sockets?.sockets.size === 0) {
       this.stopLiveQuizTicker();
     }
@@ -401,13 +407,22 @@ export class StreamGateway
     this.server.to(`user_${payload.userId}`).emit('payment_history_updated');
   }
 
-  private emitRoomMemberCount(streamId: string) {
+  private emitRoomMemberCount(streamId: string, excludeSocketId?: string) {
     if (!this.server) return;
     const room = `stream-${streamId}`;
-    const roomSize = this.server.sockets.adapter.rooms.get(room)?.size ?? 0;
+    const socketIds = this.server.sockets.adapter.rooms.get(room);
+    const uniqueMembers = new Set<string>();
+    if (socketIds) {
+      for (const socketId of socketIds) {
+        if (excludeSocketId && socketId === excludeSocketId) continue;
+        const memberSocket = this.server.sockets.sockets.get(socketId);
+        const userId = memberSocket ? this.resolveSocketUserId(memberSocket) : null;
+        uniqueMembers.add(userId ? `user:${userId}` : `socket:${socketId}`);
+      }
+    }
     this.server.to(room).emit('streamMemberCount', {
       streamId,
-      count: roomSize,
+      count: uniqueMembers.size,
     });
   }
 
@@ -420,6 +435,11 @@ export class StreamGateway
     const normalizedStreamId = String(streamId);
     const room = `stream-${normalizedStreamId}`;
     await client.join(room);
+    const data = client.data as { joinedStreams?: Set<string> };
+    if (!data.joinedStreams) {
+      data.joinedStreams = new Set<string>();
+    }
+    data.joinedStreams.add(normalizedStreamId);
     this.emitRoomMemberCount(normalizedStreamId);
     void this.emitLiveQuizUpdate('sync', client);
     return { message: `Joined room ${room}` };
@@ -432,6 +452,7 @@ export class StreamGateway
   ) {
     const normalizedStreamId = String(streamId);
     await client.leave(`stream-${normalizedStreamId}`);
+    (client.data as { joinedStreams?: Set<string> })?.joinedStreams?.delete(normalizedStreamId);
     this.emitRoomMemberCount(normalizedStreamId);
     return { message: 'Left stream room' };
   }
