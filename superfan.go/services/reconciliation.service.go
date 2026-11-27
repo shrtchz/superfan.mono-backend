@@ -203,7 +203,7 @@ func (s *ledgerServiceImpl) loadReconciliationCandidates() ([]reconCandidate, er
 
 	var bankTransfers []models.BankTransfer
 	if err := s.db.
-		Where(`UPPER(COALESCE("status", '')) IN ?`, []string{"PAID", "SUCCESS", "COMPLETED", "FAILED"}).
+		Where(`UPPER(COALESCE(CAST("status" AS TEXT), '')) IN ?`, []string{"PAID", "SUCCESS", "COMPLETED", "FAILED"}).
 		Order(`"createdAt" DESC`).
 		Limit(reconciliationMaxSourceRows).
 		Find(&bankTransfers).Error; err != nil {
