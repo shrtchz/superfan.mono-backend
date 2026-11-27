@@ -104,11 +104,13 @@ func (s *ledgerServiceImpl) ListReconciliation(page, limit int, status, search s
 	}
 
 	for index := range candidates {
-		ref := strings.ToUpper(strings.TrimSpace(candidates[index].item.ProviderBankRef))
+		normalizedRef := strings.ReplaceAll(strings.TrimSpace(candidates[index].item.ProviderBankRef), "|", "-")
+		candidates[index].item.ProviderBankRef = normalizedRef
+		ref := strings.ToUpper(normalizedRef)
 		ledger := ledgerMap[ref]
 		itemStatus, reason := classifyReconciliation(candidates[index].providerStatus, candidates[index].item.StatementAmount, ledger)
 		if ledger != nil {
-			candidates[index].item.LedgerEntry = ledger.TrxRef
+			candidates[index].item.LedgerEntry = strings.ReplaceAll(ledger.TrxRef, "|", "-")
 			amount := round2(ledger.Amount)
 			candidates[index].item.LedgerAmount = &amount
 			candidates[index].item.Difference = round2(candidates[index].item.StatementAmount - ledger.Amount)
@@ -323,7 +325,7 @@ func (s *ledgerServiceImpl) loadReconciliationCandidates() ([]reconCandidate, er
 func (s *ledgerServiceImpl) lookupLedgerTransactions(candidates []reconCandidate) (map[string]*reconLedgerTx, error) {
 	unique := make(map[string]struct{})
 	for _, candidate := range candidates {
-		ref := strings.ToUpper(strings.TrimSpace(candidate.item.ProviderBankRef))
+		ref := strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(candidate.item.ProviderBankRef), "|", "-"))
 		if ref != "" {
 			unique[ref] = struct{}{}
 		}
@@ -343,7 +345,7 @@ func (s *ledgerServiceImpl) lookupLedgerTransactions(candidates []reconCandidate
 		var rows []models.WalletTransaction
 		if err := s.db.
 			Select(`id, "trx_ref", amount, currency, "status", "createdAt"`).
-			Where(`UPPER(COALESCE("trx_ref", '')) IN ?`, refs[start:end]).
+			Where(`REPLACE(UPPER(COALESCE("trx_ref", '')), '|', '-') IN ?`, refs[start:end]).
 			Order(`"createdAt" DESC`).
 			Find(&rows).Error; err != nil {
 			return nil, err
@@ -352,7 +354,7 @@ func (s *ledgerServiceImpl) lookupLedgerTransactions(candidates []reconCandidate
 			if row.TrxRef == nil {
 				continue
 			}
-			key := strings.ToUpper(strings.TrimSpace(*row.TrxRef))
+			key := strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(*row.TrxRef), "|", "-"))
 			if key == "" {
 				continue
 			}
