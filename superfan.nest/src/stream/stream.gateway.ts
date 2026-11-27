@@ -401,6 +401,16 @@ export class StreamGateway
     this.server.to(`user_${payload.userId}`).emit('payment_history_updated');
   }
 
+  private emitRoomMemberCount(streamId: string) {
+    if (!this.server) return;
+    const room = `stream-${streamId}`;
+    const roomSize = this.server.sockets.adapter.rooms.get(room)?.size ?? 0;
+    this.server.to(room).emit('streamMemberCount', {
+      streamId,
+      count: roomSize,
+    });
+  }
+
   @SubscribeMessage('joinStream')
   async joinStream(
     @MessageBody() streamId: string | number,
@@ -410,6 +420,7 @@ export class StreamGateway
     const normalizedStreamId = String(streamId);
     const room = `stream-${normalizedStreamId}`;
     await client.join(room);
+    this.emitRoomMemberCount(normalizedStreamId);
     void this.emitLiveQuizUpdate('sync', client);
     return { message: `Joined room ${room}` };
   }
@@ -421,6 +432,7 @@ export class StreamGateway
   ) {
     const normalizedStreamId = String(streamId);
     await client.leave(`stream-${normalizedStreamId}`);
+    this.emitRoomMemberCount(normalizedStreamId);
     return { message: 'Left stream room' };
   }
 
