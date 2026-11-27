@@ -28,6 +28,7 @@ type LedgerService interface {
 	GetPeriodCloseReport(ctx context.Context, period string) (*PeriodCloseReport, error)
 	ClosePeriod(ctx context.Context, input ClosePeriodInput) (*models.LedgerPeriodClose, error)
 	ListClosedPeriods(ctx context.Context) ([]models.LedgerPeriodClose, error)
+	GetLedgerReports(ctx context.Context, month string) (*LedgerReports, error)
 }
 
 type ledgerServiceImpl struct {

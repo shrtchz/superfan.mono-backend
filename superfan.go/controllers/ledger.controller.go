@@ -75,6 +75,7 @@ func RegisterLedgerRoutes(router *gin.RouterGroup, lc *LedgerController) {
 		ledgerGroup.GET("/period-close", lc.GetPeriodClose)
 		ledgerGroup.POST("/period-close", lc.ClosePeriod)
 		ledgerGroup.GET("/period-close/pack", lc.GetPeriodClosePack)
+		ledgerGroup.GET("/reports", lc.GetLedgerReports)
 	}
 }
 
@@ -488,4 +489,21 @@ func (lc *LedgerController) GetPeriodClosePack(c *gin.Context) {
 		"generatedAt": time.Now().UTC().Format(time.RFC3339),
 		"report":      report,
 	})
+}
+
+// GetLedgerReports handles GET /admin/ledger/reports — trial balance, P&L,
+// balance sheet, wallet tie-out and provider clearing for one month.
+func (lc *LedgerController) GetLedgerReports(c *gin.Context) {
+	reports, err := lc.ledgerService.GetLedgerReports(c.Request.Context(), c.Query("month"))
+	if err != nil {
+		if errors.Is(err, services.ErrPeriodInvalid) {
+			utils.SendError(c, http.StatusBadRequest, "INVALID_MONTH", err.Error())
+			return
+		}
+		log.Printf("[LEDGER_ERROR] GetLedgerReports failed: %v", err)
+		utils.SendError(c, http.StatusInternalServerError, "REPORTS_ERROR", "Failed to build ledger reports")
+		return
+	}
+
+	utils.Success(c, http.StatusOK, "Ledger reports retrieved successfully", reports)
 }
