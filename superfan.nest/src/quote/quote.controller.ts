@@ -17,7 +17,6 @@ export class QuotesController {
     return this.quotesService.create(createQuoteDto);
   }
 
-  @Public()
   @Get('/quote-of-the-day')
   getQuoteOfTheDay() {
     return this.quotesService.getQuoteOfTheDay();

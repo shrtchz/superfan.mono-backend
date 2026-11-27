@@ -7,11 +7,13 @@ import {
   Post,
   UseGuards,
 } from '@nestjs/common';
-import { Public } from '../common/decorators';
+import { Roles } from '../common/decorators';
+import { Role } from '../common/enums/role.enum';
 import { Permissions } from '../common/decorators/permission.decorator';
 import { ApiRoutes } from '../common/enums/routes.enum';
 import { JwtGuard } from '../common/guards/jwt.guard';
 import { PermissionGuard } from '../common/guards/permission.guard';
+import { RoleGuard } from '../common/guards/roles.guard';
 import {
   AssignPermissionsToSubAdminDto,
   GetRolePermissionsDto,
@@ -60,7 +62,8 @@ export class PermissionController {
     return this.permissionService.getUserPermissions(userId);
   }
 
-    @Public()
+  @UseGuards(RoleGuard)
+  @Roles(Role.superadmin, Role.subadmin)
   @Get('/')
   async getPermissions() {
     return this.permissionService.getPermissions();
